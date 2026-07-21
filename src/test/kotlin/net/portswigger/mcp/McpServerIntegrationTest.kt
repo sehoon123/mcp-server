@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test
 import java.net.ServerSocket
 
 class McpServerIntegrationTest {
-    private val client = TestSseMcpClient()
+    private val client = TestStreamableHttpMcpClient()
     private val api = mockk<MontoyaApi>(relaxed = true)
     private val serverManager = KtorServerManager(api)
     private val testPort = findAvailablePort()
@@ -74,9 +74,38 @@ class McpServerIntegrationTest {
     }
 
     @Test
-    fun `server should accept connections and list tools`() = runBlocking {
+    fun `server should accept browser-style requests from a loopback origin`() = runBlocking {
+        val browserClient = TestStreamableHttpMcpClient(
+            mapOf(
+                "Origin" to "http://localhost:6274",
+                "User-Agent" to "Mozilla/5.0 MCP Inspector"
+            )
+        )
+
         try {
-            client.connectToServer("http://127.0.0.1:${testPort}")
+            browserClient.connectToServer("http://127.0.0.1:${testPort}/mcp")
+            assertTrue(browserClient.listTools().isNotEmpty())
+        } finally {
+            browserClient.close()
+        }
+    }
+
+    @Test
+    fun `legacy SSE endpoint should remain available`() = runBlocking {
+        val legacyClient = TestSseMcpClient()
+
+        try {
+            legacyClient.connectToServer("http://127.0.0.1:${testPort}")
+            assertTrue(legacyClient.listTools().isNotEmpty())
+        } finally {
+            legacyClient.close()
+        }
+    }
+
+    @Test
+    fun `streamable HTTP endpoint should accept connections and list tools`() = runBlocking {
+        try {
+            client.connectToServer("http://127.0.0.1:${testPort}/mcp")
             assertTrue(client.isConnected(), "Client should be connected to server")
             
             val tools = client.listTools()

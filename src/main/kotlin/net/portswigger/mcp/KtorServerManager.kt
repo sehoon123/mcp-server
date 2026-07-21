@@ -6,13 +6,14 @@ import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.cors.routing.*
-import io.ktor.server.request.*
 import io.ktor.server.response.*
-import io.modelcontextprotocol.kotlin.sdk.Implementation
-import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
+import io.ktor.server.routing.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
+import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.tools.registerTools
 import java.net.URI
@@ -22,6 +23,11 @@ import java.util.concurrent.TimeUnit
 
 class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
+    private companion object {
+        val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+    }
+
+    private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
     private var server: EmbeddedServer<*, *>? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -34,24 +40,32 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                 server = null
 
                 val mcpServer = Server(
-                    serverInfo = Implementation("burp-suite", "1.1.2"), options = ServerOptions(
+                    serverInfo = Implementation("burp-suite", serverVersion), options = ServerOptions(
                         capabilities = ServerCapabilities(
                             tools = ServerCapabilities.Tools(listChanged = false)
                         )
                     )
                 )
+                mcpServer.registerTools(api, config)
 
                 server = embeddedServer(Netty, port = config.port, host = config.host) {
                     install(CORS) {
                         allowHost("localhost:${config.port}")
                         allowHost("127.0.0.1:${config.port}")
+                        allowOrigins(::isLoopbackOrigin)
 
+                        allowMethod(HttpMethod.Options)
                         allowMethod(HttpMethod.Get)
                         allowMethod(HttpMethod.Post)
+                        allowMethod(HttpMethod.Delete)
 
                         allowHeader(HttpHeaders.ContentType)
                         allowHeader(HttpHeaders.Accept)
                         allowHeader("Last-Event-ID")
+                        allowHeader("Mcp-Session-Id")
+                        allowHeader("Mcp-Protocol-Version")
+                        exposeHeader("Mcp-Session-Id")
+                        exposeHeader("Mcp-Protocol-Version")
 
                         allowCredentials = false
                         allowNonSimpleContentTypes = true
@@ -59,49 +73,31 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                     }
 
                     intercept(ApplicationCallPipeline.Call) {
-                        val origin = call.request.header("Origin")
-                        val host = call.request.header("Host")
-                        val referer = call.request.header("Referer")
-                        val userAgent = call.request.header("User-Agent")
-
-                        if (origin != null && !isValidOrigin(origin)) {
-                            api.logging().logToOutput("Blocked DNS rebinding attack from origin: $origin")
-                            call.respond(HttpStatusCode.Forbidden)
-                            return@intercept
-                        } else if (isBrowserRequest(userAgent)) {
-                            api.logging().logToOutput("Blocked browser request without Origin header")
-                            call.respond(HttpStatusCode.Forbidden)
-                            return@intercept
-                        }
-
-                        if (host != null && !isValidHost(host, config.port)) {
-                            api.logging().logToOutput("Blocked DNS rebinding attack from host: $host")
-                            call.respond(HttpStatusCode.Forbidden)
-                            return@intercept
-                        }
-
-                        if (referer != null && !isValidReferer(referer)) {
-                            api.logging().logToOutput("Blocked suspicious request from referer: $referer")
-                            call.respond(HttpStatusCode.Forbidden)
-                            return@intercept
-                        }
-
                         call.response.header("X-Frame-Options", "DENY")
                         call.response.header("X-Content-Type-Options", "nosniff")
                         call.response.header("Referrer-Policy", "same-origin")
                         call.response.header("Content-Security-Policy", "default-src 'none'")
                     }
 
-                    mcp {
+                    // Streamable HTTP is the primary transport. It uses one MCP endpoint and
+                    // returns JSON for ordinary request/response calls instead of the legacy two-endpoint SSE flow.
+                    mcpStreamableHttp(path = "/mcp") {
                         mcpServer
                     }
 
-                    mcpServer.registerTools(api, config)
+                    // Keep the deprecated HTTP+SSE transport at the original root endpoint
+                    // temporarily for existing proxy installations.
+                    routing {
+                        mcp(path = "/") { mcpServer }
+                    }
                 }.apply {
                     start(wait = false)
                 }
 
-                api.logging().logToOutput("Started MCP server on ${config.host}:${config.port}")
+                api.logging().logToOutput(
+                    "Started MCP server on ${config.host}:${config.port} " +
+                        "(Streamable HTTP: /mcp, legacy SSE: /)"
+                )
                 callback(ServerState.Running)
 
             } catch (e: Exception) {
@@ -127,69 +123,15 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
         }
     }
 
+    private fun isLoopbackOrigin(origin: String): Boolean = runCatching {
+        URI(origin).host?.lowercase() in LOOPBACK_HOSTS
+    }.getOrDefault(false)
+
     override fun shutdown() {
         server?.stop(1000, 5000)
         server = null
 
         executor.shutdown()
         executor.awaitTermination(10, TimeUnit.SECONDS)
-    }
-
-    private fun isValidOrigin(origin: String): Boolean {
-        try {
-            val url = URI(origin).toURL()
-            val hostname = url.host.lowercase()
-
-            val allowedHosts = setOf("localhost", "127.0.0.1")
-
-            return hostname in allowedHosts
-        } catch (_: Exception) {
-            return false
-        }
-    }
-
-    private fun isBrowserRequest(userAgent: String?): Boolean {
-        if (userAgent == null) return false
-
-        val userAgentLower = userAgent.lowercase()
-        val browserIndicators = listOf(
-            "mozilla/", "chrome/", "safari/", "webkit/", "gecko/", "firefox/", "edge/", "opera/", "browser"
-        )
-
-        return browserIndicators.any { userAgentLower.contains(it) }
-    }
-
-    private fun isValidHost(host: String, expectedPort: Int): Boolean {
-        try {
-            val parts = host.split(":")
-            val hostname = parts[0].lowercase()
-            val port = if (parts.size > 1) parts[1].toIntOrNull() else null
-
-            val allowedHosts = setOf("localhost", "127.0.0.1")
-            if (hostname !in allowedHosts) {
-                return false
-            }
-
-            if (port != null && port != expectedPort) {
-                return false
-            }
-
-            return true
-        } catch (_: Exception) {
-            return false
-        }
-    }
-
-    private fun isValidReferer(referer: String): Boolean {
-        try {
-            val url = URI(referer).toURL()
-            val hostname = url.host.lowercase()
-
-            val allowedHosts = setOf("localhost", "127.0.0.1")
-            return hostname in allowedHosts
-
-        } catch (_: Exception) {
-            return false
-        }
     }
 }
