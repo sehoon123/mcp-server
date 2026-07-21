@@ -22,6 +22,15 @@ interface Provider {
     fun install(config: McpConfig): String?
 }
 
+internal fun streamableHttpEndpoint(host: String, port: Int): String {
+    val connectHost = when (host.trim()) {
+        "0.0.0.0" -> "127.0.0.1"
+        "::", "[::]" -> "[::1]"
+        else -> host.trim().let { if (':' in it && !it.startsWith('[')) "[$it]" else it }
+    }
+    return "http://$connectHost:$port/mcp"
+}
+
 class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarManager: ProxyJarManager) : Provider {
 
     private val claudeConfigFileName = "claude_desktop_config.json"
@@ -41,14 +50,14 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
         val javaPath = javaPath()
         logging.logToOutput("Using Java from: $javaPath")
 
-        val sseUrl = "http://${config.host}:${config.port}"
+        val mcpUrl = streamableHttpEndpoint(config.host, config.port)
         val burpServerConfig = buildJsonObject {
             put("command", JsonPrimitive(javaPath))
             put("args", buildJsonArray {
                 add(JsonPrimitive("-jar"))
                 add(JsonPrimitive(proxyJarFile.toString()))
-                add(JsonPrimitive("--sse-url"))
-                add(JsonPrimitive(sseUrl))
+                add(JsonPrimitive("--mcp-url"))
+                add(JsonPrimitive(mcpUrl))
             })
         }
 

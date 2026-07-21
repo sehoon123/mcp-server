@@ -23,7 +23,7 @@
 	<li>Export and modify project and user configuration via JSON</li>
 	<li>Control proxy intercept, task execution engine, and message editor contents</li>
 	<li>Built-in encoding utilities (URL, Base64) and random string generation</li>
-	<li>Streamable HTTP transport with legacy SSE compatibility</li>
+	<li>Single Streamable HTTP endpoint with an embedded stdio compatibility proxy</li>
 	<li>Automatic Claude Desktop installation with packaged stdio proxy server</li>
 	<li>Configurable target approval system for HTTP requests and history access</li>
 	<li>Interact with Organizer entries</li>
@@ -34,8 +34,8 @@
 	<li>Navigate to the "MCP" tab and enable the MCP server.</li>
 	<li>Configure security settings including auto-approve targets and configuration editing permissions.</li>
 	<li>Use the installer button to automatically configure Claude Desktop, or manually configure your MCP client to
-		connect to <code class="InlineCode">http://127.0.0.1:9876/mcp</code> (Streamable HTTP). Legacy clients can use
-		the server root SSE endpoint or the packaged stdio proxy server.</li>
+		connect to <code class="InlineCode">http://127.0.0.1:9876/mcp</code>. Stdio-only clients use the proxy already
+		packaged inside the extension JAR; the proxy also connects to this Streamable HTTP endpoint.</li>
 	<li>Interact with Burp through your AI client using the available MCP tools.</li>
 </ol>
 

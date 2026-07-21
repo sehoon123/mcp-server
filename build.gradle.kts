@@ -1,11 +1,15 @@
+import java.security.MessageDigest
 import java.time.Instant
 
 abstract class EmbedProxyJarTask : DefaultTask() {
     @get:InputFile
     abstract val shadowJarFile: RegularFileProperty
 
-    @get:InputDirectory
-    abstract val projectDir: DirectoryProperty
+    @get:InputFile
+    abstract val proxySourceFile: RegularFileProperty
+
+    @get:InputFile
+    abstract val proxyJarFile: RegularFileProperty
 
     @get:Inject
     abstract val execOperations: ExecOperations
@@ -13,16 +17,36 @@ abstract class EmbedProxyJarTask : DefaultTask() {
     @TaskAction
     fun embedJar() {
         val shadowJar = shadowJarFile.get().asFile
-        val libsDir = projectDir.dir("libs").get().asFile
-        val proxyJarFile = File(libsDir, "mcp-proxy-all.jar")
+        val proxyJar = proxyJarFile.get().asFile
+        val libsDir = proxyJar.parentFile
 
-        if (!proxyJarFile.exists()) {
-            throw GradleException("Proxy JAR not found at: ${proxyJarFile.absolutePath}")
+        if (!proxyJar.exists()) {
+            throw GradleException("Proxy JAR not found at: ${proxyJar.absolutePath}")
+        }
+
+        val sourceMetadata = proxySourceFile.get().asFile.readText()
+        val expectedHash = Regex("(?m)^SHA-256: ([a-f0-9]{64})$")
+            .find(sourceMetadata)?.groupValues?.get(1)
+            ?: throw GradleException("Missing SHA-256 in ${proxySourceFile.get().asFile}")
+        val actualHash = MessageDigest.getInstance("SHA-256")
+            .digest(proxyJar.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        if (actualHash != expectedHash) {
+            throw GradleException("Proxy JAR checksum mismatch: expected $expectedHash, got $actualHash")
         }
 
         execOperations.exec {
-            workingDir(projectDir.get().asFile)
-            commandLine("jar", "uf", shadowJar.absolutePath, "-C", libsDir.absolutePath, proxyJarFile.name)
+            commandLine(
+                "jar",
+                "uf",
+                shadowJar.absolutePath,
+                "-C",
+                libsDir.absolutePath,
+                proxyJar.name,
+                "-C",
+                libsDir.absolutePath,
+                proxySourceFile.get().asFile.name
+            )
         }
 
         logger.lifecycle("Embedded proxy JAR into ${shadowJar.name}")
@@ -133,7 +157,8 @@ tasks {
         description = "Embeds the MCP proxy JAR into the shadow JAR"
         dependsOn(shadowJar)
         shadowJarFile.set(shadowJar.flatMap { it.archiveFile })
-        projectDir.set(layout.projectDirectory)
+        proxySourceFile.set(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
+        proxyJarFile.set(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
     }
 
     build {

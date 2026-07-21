@@ -23,9 +23,9 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * End-to-end test verifying the full stack:
- * TestStdioMcpClient (stdio) ↔ proxy subprocess ↔ KtorServerManager (SSE)
+ * TestStdioMcpClient (stdio) ↔ proxy subprocess ↔ KtorServerManager (Streamable HTTP)
  *
- * Requires libs/mcp-proxy-all.jar to be present (built via `./gradlew embedProxyJar` from root).
+ * Requires the Streamable HTTP proxy at libs/mcp-proxy-all.jar.
  */
 @Timeout(30, unit = TimeUnit.SECONDS)
 class ProxyEndToEndTest {
@@ -81,7 +81,7 @@ class ProxyEndToEndTest {
 
         val jarFile = File("libs/mcp-proxy-all.jar")
         check(jarFile.exists()) {
-            "libs/mcp-proxy-all.jar not found. Build it and copy it to libs first: ./gradlew embedProxyJar (from proxy repo root)"
+            "libs/mcp-proxy-all.jar not found. Build it in the mcp-proxy repository and copy it to libs first"
         }
 
         proxyProcess = ProcessBuilder(
@@ -89,8 +89,8 @@ class ProxyEndToEndTest {
             "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
             "-jar",
             jarFile.absolutePath,
-            "--sse-url",
-            "http://127.0.0.1:$testPort"
+            "--mcp-url",
+            "http://127.0.0.1:$testPort/mcp"
         ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
 
         client = TestStdioMcpClient()

@@ -91,15 +91,18 @@ class McpServerIntegrationTest {
     }
 
     @Test
-    fun `legacy SSE endpoint should remain available`() = runBlocking {
-        val legacyClient = TestSseMcpClient()
+    fun `legacy SSE root endpoint should not be exposed`() {
+        val request = java.net.http.HttpRequest.newBuilder()
+            .uri(java.net.URI("http://127.0.0.1:${testPort}/"))
+            .header("Accept", "text/event-stream")
+            .GET()
+            .build()
+        val response = java.net.http.HttpClient.newHttpClient().send(
+            request,
+            java.net.http.HttpResponse.BodyHandlers.ofString()
+        )
 
-        try {
-            legacyClient.connectToServer("http://127.0.0.1:${testPort}")
-            assertTrue(legacyClient.listTools().isNotEmpty())
-        } finally {
-            legacyClient.close()
-        }
+        assertEquals(404, response.statusCode())
     }
 
     @Test

@@ -57,4 +57,21 @@ class ClaudeDesktopProviderTest {
         assertTrue(paths.any { it.endsWith(Path.of("Claude_aaa/LocalCache/Roaming/Claude")) })
         assertTrue(paths.any { it.endsWith(Path.of("Claude_bbb/LocalCache/Roaming/Claude")) })
     }
+
+    @Test
+    fun `proxy endpoint uses the Streamable HTTP path`() {
+        assertEquals("http://127.0.0.1:9876/mcp", streamableHttpEndpoint("127.0.0.1", 9876))
+    }
+
+    @Test
+    fun `proxy endpoint converts wildcard bind addresses into connectable loopback addresses`() {
+        assertEquals("http://127.0.0.1:9876/mcp", streamableHttpEndpoint("0.0.0.0", 9876))
+        assertEquals("http://[::1]:9876/mcp", streamableHttpEndpoint("::", 9876))
+    }
+
+    @Test
+    fun `proxy endpoint formats IPv6 literals`() {
+        assertEquals("http://[::1]:9876/mcp", streamableHttpEndpoint("::1", 9876))
+        assertEquals("http://[::1]:9876/mcp", streamableHttpEndpoint("[::1]", 9876))
+    }
 }

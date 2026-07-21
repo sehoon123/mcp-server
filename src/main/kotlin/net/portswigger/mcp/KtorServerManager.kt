@@ -7,10 +7,8 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.response.*
-import io.ktor.server.routing.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
-import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
@@ -79,24 +77,17 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                         call.response.header("Content-Security-Policy", "default-src 'none'")
                     }
 
-                    // Streamable HTTP is the primary transport. It uses one MCP endpoint and
-                    // returns JSON for ordinary request/response calls instead of the legacy two-endpoint SSE flow.
+                    // All HTTP clients, including the packaged stdio proxy, use the single
+                    // Streamable HTTP endpoint. The deprecated two-endpoint SSE transport is removed.
                     mcpStreamableHttp(path = "/mcp") {
                         mcpServer
-                    }
-
-                    // Keep the deprecated HTTP+SSE transport at the original root endpoint
-                    // temporarily for existing proxy installations.
-                    routing {
-                        mcp(path = "/") { mcpServer }
                     }
                 }.apply {
                     start(wait = false)
                 }
 
                 api.logging().logToOutput(
-                    "Started MCP server on ${config.host}:${config.port} " +
-                        "(Streamable HTTP: /mcp, legacy SSE: /)"
+                    "Started MCP Streamable HTTP server at http://${config.host}:${config.port}/mcp"
                 )
                 callback(ServerState.Running)
 
