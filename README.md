@@ -38,11 +38,21 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 ## Build and install
 
-### Requirements
+### Install a release
 
-- JDK 21 or newer
+Download [`burp-mcp-all.jar`](https://github.com/sehoon123/mcp-server/releases/latest/download/burp-mcp-all.jar)
+and its [`SHA256SUMS`](https://github.com/sehoon123/mcp-server/releases/latest/download/SHA256SUMS) file from the
+latest release. Install the JAR through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR.
 
-### Build
+On systems with `sha256sum`, verify the download before installation:
+
+```shell
+sha256sum -c SHA256SUMS
+```
+
+### Build from source
+
+Building requires JDK 21 or newer:
 
 ```bash
 git clone https://github.com/sehoon123/mcp-server.git
@@ -65,7 +75,7 @@ When updating the companion proxy, build and record it reproducibly with:
 `embedProxyJar` verifies the pinned source checksum and the copy inside the completed extension. Proxy and extension
 archives use normalized timestamps and stable entry ordering so identical inputs produce byte-identical JARs.
 
-Load the final JAR in Burp through **Extensions → Installed → Add → Java**.
+Load the resulting JAR in Burp through **Extensions → Installed → Add → Java**.
 
 ## Configure Burp
 
@@ -170,15 +180,149 @@ non-destructive, idempotent tool annotations. Sensitive data approval is evaluat
 
 ## Configure clients
 
-### Native Streamable HTTP clients
+### Before connecting
 
-Point the client directly at:
+1. Install only `burp-mcp-all.jar` as a Java extension in Burp.
+2. Open Burp's **MCP** tab and make sure **Enabled** is on.
+3. Keep Burp running while the MCP client is in use.
+
+Native Streamable HTTP clients connect directly to:
 
 ```text
 http://127.0.0.1:9876/mcp
 ```
 
-A typical configuration is:
+The `/mcp` suffix is required. The endpoint is intentionally loopback-only by default and has no bearer-token or TLS
+layer, so do not expose it on a LAN or the internet. Ordinary calls return JSON; the same endpoint can optionally use
+an event stream for server-initiated requests.
+
+The following examples are alternatives. Configure only the clients you actually use.
+
+### Claude Code
+
+Claude Code supports Streamable HTTP directly, so it does not need the embedded stdio proxy.
+
+Add Burp for the current user:
+
+```shell
+claude mcp add --transport http burp --scope user http://127.0.0.1:9876/mcp
+claude mcp list
+```
+
+For a project-shared configuration, use `--scope project`. Claude creates `.mcp.json`; the equivalent file is:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "type": "http",
+      "url": "http://127.0.0.1:9876/mcp"
+    }
+  }
+}
+```
+
+Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
+project containing `.mcp.json`, review and approve the server when Claude asks whether to trust it.
+
+### Claude Desktop and other stdio-only clients
+
+Use **Install to Claude Desktop** in Burp's MCP tab. The installer extracts the proxy already packaged inside
+`burp-mcp-all.jar` and adds a `burp` entry to Claude Desktop's configuration. You do **not** need to download,
+install, or update `mcp-proxy-all.jar` separately.
+
+The generated configuration is equivalent to:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "command": "<path to the Java executable used by Burp>",
+      "args": [
+        "-jar",
+        "<path to the automatically extracted mcp-proxy-all.jar>",
+        "--mcp-url",
+        "http://127.0.0.1:9876/mcp"
+      ]
+    }
+  }
+}
+```
+
+A typical Windows installation resolves those placeholders to paths like:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "command": "C:\\Users\\<user>\\AppData\\Local\\BurpSuite\\jre\\bin\\java.exe",
+      "args": [
+        "-jar",
+        "C:\\Users\\<user>\\AppData\\Roaming\\BurpSuite\\mcp-proxy\\mcp-proxy-all.jar",
+        "--mcp-url",
+        "http://127.0.0.1:9876/mcp"
+      ]
+    }
+  }
+}
+```
+
+The actual Burp installation path can differ, so prefer the installer-generated values. Restart Claude Desktop after
+installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as migration aliases, but
+the proxy still uses Streamable HTTP at `/mcp`.
+
+### mcporter
+
+Register the native HTTP endpoint in the user-level mcporter configuration:
+
+```shell
+mcporter config add burp http://127.0.0.1:9876/mcp --scope home
+mcporter list burp --schema
+```
+
+For a repository-local configuration, use `--scope project`. The equivalent `config/mcporter.json` is:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "baseUrl": "http://127.0.0.1:9876/mcp"
+    }
+  }
+}
+```
+
+Example tool call:
+
+```shell
+mcporter call burp.search_http_messages \
+  --args '{"sources":["proxy"],"newestFirst":true,"limit":5}' \
+  --output json
+```
+
+Burp may show a project-data or action approval dialog depending on the tool and MCP-tab policy.
+
+### Visual Studio Code / GitHub Copilot
+
+Create `.vscode/mcp.json` for a workspace configuration, or run **MCP: Open User Configuration** from the Command
+Palette for a user-level configuration:
+
+```json
+{
+  "servers": {
+    "burp": {
+      "type": "http",
+      "url": "http://127.0.0.1:9876/mcp"
+    }
+  }
+}
+```
+
+Use the MCP server controls in VS Code to start or reconnect the entry after Burp is running.
+
+### Cursor
+
+Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for a global configuration:
 
 ```json
 {
@@ -190,34 +334,37 @@ A typical configuration is:
 }
 ```
 
-Ordinary request/response calls return JSON. Streamable HTTP can use an optional event stream through the same
-endpoint for server-initiated requests.
+Cursor recognizes this URL as a Streamable HTTP server.
 
-### Claude Desktop and other stdio-only clients
+### OpenAI Codex
 
-Use the installer in Burp's MCP tab. It extracts the proxy already packaged inside `burp-mcp-all.jar` and writes a
-configuration equivalent to:
+Codex CLI and the Codex IDE extension share `~/.codex/config.toml`. Trusted projects can instead use
+`.codex/config.toml`:
 
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "command": "<path to the Java executable packaged with Burp>",
-      "args": [
-        "-jar",
-        "/path/to/extracted/mcp-proxy-all.jar",
-        "--mcp-url",
-        "http://127.0.0.1:9876/mcp"
-      ]
-    }
-  }
-}
+```toml
+[mcp_servers.burp]
+url = "http://127.0.0.1:9876/mcp"
+enabled = true
 ```
 
-Previously generated configurations using `--sse-url http://127.0.0.1:9876` continue to work: proxy 2.x treats that
-option only as a migration alias and connects to `/mcp` with Streamable HTTP.
+Restart or reconnect Codex after saving the file.
 
-The proxy source is maintained in the companion fork:
+### Connection troubleshooting
+
+- A `404` usually means the client was pointed at `/` or an obsolete SSE path; use `/mcp`.
+- `Server not initialized` from a hand-written HTTP request means the endpoint is reachable but the request did not
+  perform the MCP initialization handshake.
+- Keep only one copy of the Burp MCP extension enabled to avoid a port conflict on `9876`.
+- Native HTTP clients do not use `mcp-proxy-all.jar`; stdio-only clients use the copy extracted by the extension.
+- `127.0.0.1` refers to the client's own host. A client inside a container or separate VM cannot reach Burp through
+  that address; do not weaken the loopback binding without adding an authenticated remote-access design.
+
+Client references: [Claude Code](https://code.claude.com/docs/en/mcp),
+[VS Code](https://code.visualstudio.com/docs/agent-customization/mcp-servers),
+[Cursor](https://cursor.com/docs/context/mcp), and
+[Codex](https://developers.openai.com/codex/mcp/).
+
+The embedded proxy source is maintained in the companion fork:
 [sehoon123/mcp-proxy](https://github.com/sehoon123/mcp-proxy).
 
 ## Developing tools
