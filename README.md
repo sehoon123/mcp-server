@@ -31,7 +31,9 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
-- Repeater, Intruder, Organizer, Scanner, and Collaborator integrations
+- Explicit Target scope checks/updates and bounded HTTP message comparison from stable references
+- Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
+- Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
 - Project and user configuration tools with credential filtering
 - URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
@@ -83,7 +85,7 @@ Open the **MCP** tab in Burp:
 
 - Enable or stop the MCP server.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
-- Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map items.
+- Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map and Collaborator items.
 - Enable configuration-editing tools only when they are required.
 
 The default loopback binding is recommended. Do not expose the endpoint to another network until authentication and
@@ -143,10 +145,13 @@ remains bound to its original host, port, and TLS mode.
 ```
 
 Source and resulting requests are capped at 2 MiB; replacement bodies at 1 MiB; header and parameter mutations at 64
-each. HTTP replay defaults to the source protocol, never follows redirects unless requested, uses a 30-second response
-timeout, and returns at most an 8 KiB body preview by default (64 KiB maximum). Responses are recorded in Site Map on
-a best-effort basis. Unmodified Organizer actions preserve a source response when the Montoya source supports it;
-patched requests never attach a now-mismatched response.
+each. `send_to_intruder_from_id` can additionally resolve up to 32 semantic parameter, header-value, or whole-body
+insertion points; clients cannot supply raw byte offsets. HTTP replay defaults to the source protocol, never follows
+redirects unless requested, uses a 30-second response timeout, and returns at most an 8 KiB body preview by default
+(64 KiB maximum). Responses are recorded in Site Map on a best-effort basis. When the recorded item can be located,
+`recordedRef` contains the exact opaque Site Map reference for follow-up reads or focused audits. Unmodified Organizer
+actions preserve a source response when the Montoya source supports it; patched requests never attach a now-mismatched
+response.
 
 Each action returns structured `status` and `executionState`. `not_started` is safe with respect to that invocation.
 `uncertain` means a Burp API call may already have completed and **must not be retried automatically**. Routing actions
@@ -155,6 +160,43 @@ provides **Allow Once**, **Always Allow**, and **Deny**. Always Allow intentiona
 future routing-action prompts until `Require approval for request routing actions` is re-enabled in the MCP tab. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
+
+## Scope, comparison, and focused Scanner audits
+
+Use `check_scope` for a bounded read of up to 32 explicit URLs or stable HTTP references. `update_scope` combines include
+and exclude operations through `operation: "include" | "exclude"`; it normalizes every URL, validates the project and
+all references first, and then always opens an **Allow Once / Deny** review. Scope mutation is verified after each URL.
+`executionState: "uncertain"` means a partial change may exist and must not be retried automatically.
+
+`compare_http_messages` compares 2–8 Proxy, Site Map, or Organizer references. It returns bounded inspected-byte hashes,
+header invariants/variants, a first-difference excerpt for two messages, and optional Burp response-variation attributes.
+The default per-message inspection limit is 256 KiB and the maximum is 1 MiB. `allEqual: null` means the inspected
+prefixes matched but truncation prevents a complete equality claim.
+
+Burp Professional additionally exposes:
+
+- `start_scanner_audit_from_ids`
+- `get_scanner_audit`
+- `cancel_scanner_audit`
+
+These tools do not crawl. Every target must already be in Burp Target scope. Passive mode accepts only messages with a
+response and sends no target traffic. Active mode accepts at most four targets and requires explicit semantic insertion
+points for every target; no implicit whole-request audit is permitted. Starting and cancelling always require explicit
+Burp approval. Task IDs are random, project-bound, retained only by this extension instance, and status/cancellation
+cannot address unrelated Burp tasks. Some Burp runtimes do not expose issue objects while an audit is live; in that
+case status and counters still return `status: "ok"` with `issuesUnavailable: true` and a bounded warning. If start or
+cancellation returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID and Burp
+Scanner UI first.
+
+## Collaborator polling
+
+On Burp Professional, `generate_collaborator_payload` returns both a payload and its interaction ID; optional
+`customData` follows Burp's 1–16 ASCII-alphanumeric limit. Pass that ID as
+`payloadId` to `get_collaborator_interactions`. The read tool supports an ISO-8601 `since` filter, Burp's
+interaction-ID filter, `waitSeconds` from 0 to 120, up to 50 results, newest/oldest ordering, and text or base64 detail
+slices. At most four waits run concurrently. Polling emits MCP progress when the client supplies a progress token and
+propagates cancellation; returned metadata, per-field details, total detail bytes, and scanned interactions are bounded.
+Collaborator interaction reads use their own **Always allow** data-access option in the MCP tab.
 
 ## Stable history access
 
@@ -176,7 +218,12 @@ offsets, default to 32 KiB, and are capped at 256 KiB per call. Responses includ
 byte-exact binary content.
 
 These read tools return both JSON text and MCP `structuredContent`, advertise output schemas, and carry read-only,
-non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read.
+non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read. On Professional,
+`get_scanner_issues` keeps legacy offset/count calls compatible with a 512 KiB text safety cap; set `cursorMode: true`
+or supply severity, confidence,
+exact-host, or name filters to use compact
+newest/oldest pagination. Cursor mode returns at most 50 summaries, scans at most 10,000 issues per call, and uses a
+signed project/query/snapshot cursor that is invalidated on MCP server restart.
 
 ## Configure clients
 

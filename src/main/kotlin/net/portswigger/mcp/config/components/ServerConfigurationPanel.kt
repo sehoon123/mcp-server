@@ -20,6 +20,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
+    private lateinit var alwaysAllowCollaboratorInteractionsCheckBox: JCheckBox
     private lateinit var requestActionApprovalCheckBox: JCheckBox
 
     init {
@@ -109,6 +110,14 @@ class ServerConfigurationPanel(
             config.requireDataAccessApproval
         ) { config.alwaysAllowScannerIssues = it }
         add(alwaysAllowScannerIssuesCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        alwaysAllowCollaboratorInteractionsCheckBox = createIndentedCheckBox(
+            "Always allow Collaborator interaction access",
+            config.alwaysAllowCollaboratorInteractions,
+            config.requireDataAccessApproval
+        ) { config.alwaysAllowCollaboratorInteractions = it }
+        add(alwaysAllowCollaboratorInteractionsCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
@@ -146,17 +155,20 @@ class ServerConfigurationPanel(
                 config.alwaysAllowWebSocketHistory = false
                 config.alwaysAllowOrganizer = false
                 config.alwaysAllowScannerIssues = false
+                config.alwaysAllowCollaboratorInteractions = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
                 alwaysAllowSiteMapCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
                 alwaysAllowOrganizerCheckBox.isSelected = false
                 alwaysAllowScannerIssuesCheckBox.isSelected = false
+                alwaysAllowCollaboratorInteractionsCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
             alwaysAllowSiteMapCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
             alwaysAllowOrganizerCheckBox.isEnabled = enabled
             alwaysAllowScannerIssuesCheckBox.isEnabled = enabled
+            alwaysAllowCollaboratorInteractionsCheckBox.isEnabled = enabled
         }
     }
 
@@ -167,6 +179,7 @@ class ServerConfigurationPanel(
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
             alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+            alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
         }
     }
 

@@ -2,6 +2,7 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.core.Range
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
@@ -14,6 +15,7 @@ import burp.api.montoya.http.message.params.HttpParameterType
 import burp.api.montoya.http.message.params.ParsedHttpParameter
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
+import burp.api.montoya.intruder.HttpRequestTemplate
 import burp.api.montoya.intruder.Intruder
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.organizer.Organizer
@@ -154,6 +156,37 @@ class HttpMessageActionsTest {
         assertTrue(result.changes.orEmpty().contains("set header x-test"))
         assertTrue(result.changes.orEmpty().contains("replace body (5 bytes"))
         verify(exactly = 1) { intruder.sendToIntruder(finalRequest, "patched") }
+    }
+
+    @Test
+    fun `structured patch fails closed if Burp reports a changed destination service`() = runBlocking {
+        val item = mockk<ProxyHttpRequestResponse>()
+        val original = request(method = "GET")
+        val changed = request(method = "POST")
+        val changedService = mockk<HttpService>()
+        every { changed.httpService() } returns changedService
+        every { changedService.host() } returns "attacker.test"
+        every { changedService.port() } returns 443
+        every { changedService.secure() } returns true
+        every { original.withMethod("POST") } returns changed
+        every { item.id() } returns 18
+        every { item.request() } returns original
+        every { item.response() } returns null
+        filteredHistory(item)
+        val intruder = mockk<Intruder>(relaxed = true)
+        every { api.intruder() } returns intruder
+
+        val result = service.sendToIntruder(
+            SendToIntruderFromId(
+                "project-123",
+                HttpMessageReference(HttpMessageSource.PROXY, "18"),
+                patch = HttpRequestPatch(method = "POST"),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
+        assertTrue(result.error.orEmpty().contains("destination service"))
+        verify(exactly = 0) { intruder.sendToIntruder(any<HttpRequest>()) }
     }
 
     @Test
@@ -415,6 +448,51 @@ class HttpMessageActionsTest {
     }
 
     @Test
+    fun `Intruder semantic insertion points become a bounded request template`() = runBlocking {
+        mockkStatic(Range::class)
+        mockkStatic(HttpRequestTemplate::class)
+        try {
+            val rawText = "POST /submit HTTP/1.1\r\nHost: example.test\r\n\r\nsecret"
+            val rawBytes = rawText.toByteArray()
+            val bodyOffset = rawText.indexOf("secret")
+            val request = request(method = "POST", path = "/submit", text = rawText, bytes = bodyOffset)
+            val body = mockk<MontoyaByteArray>()
+            every { request.body() } returns body
+            every { body.length() } returns rawBytes.size - bodyOffset
+            val range = mockk<Range>()
+            every { Range.range(bodyOffset, rawBytes.size) } returns range
+            val template = mockk<HttpRequestTemplate>()
+            every { HttpRequestTemplate.httpRequestTemplate(request, listOf(range)) } returns template
+            val item = mockk<ProxyHttpRequestResponse>()
+            every { item.id() } returns 19
+            every { item.request() } returns request
+            every { item.response() } returns null
+            filteredHistory(item)
+            val intruder = mockk<Intruder>(relaxed = true)
+            every { api.intruder() } returns intruder
+
+            val result = service.sendToIntruder(
+                SendToIntruderFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "19"),
+                    tabName = "focused",
+                    insertionPoints = listOf(HttpInsertionPointSelector(HttpInsertionPointKind.BODY)),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.OK, result.status)
+            assertEquals(1, result.insertionPointCount)
+            assertTrue(result.changes.orEmpty().contains("entire request body"))
+            verify(exactly = 1) { Range.range(bodyOffset, rawBytes.size) }
+            verify(exactly = 1) { intruder.sendToIntruder(any<HttpService>(), template, "focused") }
+            verify(exactly = 0) { intruder.sendToIntruder(request, any<String>()) }
+        } finally {
+            unmockkStatic(HttpRequestTemplate::class)
+            unmockkStatic(Range::class)
+        }
+    }
+
+    @Test
     fun `HTTP replay uses bounded request options and returns a bounded response preview`() = runBlocking {
         mockkStatic(RequestOptions::class)
         try {
@@ -432,13 +510,16 @@ class HttpMessageActionsTest {
             val responseBody = montoyaBytes("response-body")
             every { api.http() } returns http
             every { http.sendRequest(fixture.request, options) } returns envelope
+            every { envelope.request() } returns fixture.request
             every { envelope.response() } returns response
             every { response.statusCode() } returns 201
             every { response.mimeType() } returns MimeType.JSON
             every { response.httpVersion() } returns "HTTP/1.1"
+            every { response.headers() } returns emptyList()
             every { response.body() } returns responseBody
             val siteMap = mockk<SiteMap>(relaxed = true)
             every { api.siteMap() } returns siteMap
+            every { siteMap.requestResponses() } returns listOf(envelope)
 
             val result = service.send(
                 SendHttpRequestFromId(
@@ -456,6 +537,8 @@ class HttpMessageActionsTest {
             assertEquals(8, result.response?.body?.returnedBytes)
             assertEquals(8, result.response?.body?.nextOffsetBytes)
             assertEquals(true, result.recordedInSiteMap)
+            assertEquals(HttpMessageSource.SITE_MAP, result.recordedRef?.source)
+            assertTrue(result.recordedRef?.id.orEmpty().startsWith("sitemap_0_"))
             verify(exactly = 1) { http.sendRequest(fixture.request, options) }
             verify(exactly = 1) { siteMap.add(envelope) }
         } finally {
@@ -504,6 +587,26 @@ class HttpMessageActionsTest {
         } finally {
             unmockkStatic(RequestOptions::class)
         }
+    }
+
+    @Test
+    fun `project change after resolution prevents the destination side effect`() = runBlocking {
+        val fixture = proxyFixture(21)
+        filteredHistory(fixture.item)
+        every { project.id() } returnsMany listOf("project-123", "other-project")
+        val intruder = mockk<Intruder>(relaxed = true)
+        every { api.intruder() } returns intruder
+
+        val result = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "21"),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        verify(exactly = 0) { intruder.sendToIntruder(any<HttpRequest>()) }
     }
 
     @Test
@@ -577,6 +680,7 @@ class HttpMessageActionsTest {
         val bytes = mockk<MontoyaByteArray>()
         val raw = text.toByteArray()
         every { bytes.length() } returns raw.size
+        every { bytes.getByte(any()) } answers { raw[firstArg<Int>()] }
         every { bytes.subArray(any(), any()) } answers {
             val start = firstArg<Int>()
             val end = secondArg<Int>()

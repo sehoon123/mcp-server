@@ -17,7 +17,8 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
 | P1 | Content-search accounting ran before cheaper metadata filters | Host/method/status mismatches still queried message sizes and consumed the 32 MiB budget | Compile membership filters once and apply all metadata predicates before content sizing or scanning |
 | P1 | Stable-ID reads constructed complete Proxy/WebSocket/Organizer snapshots | A one-record lookup called the unfiltered list API and then searched locally | Use Montoya's filtered lookup overloads and return at most matching records |
-| P1 | Derived request actions could materialize and repeatedly parse a request | Exact replay needs a size check, but text is needed only for interactive approval; individual parameter edits repeatedly rebuild immutable requests | Compute size from header/body lengths without a full byte array, lazily render request text, and batch parameter removal/addition per patch |
+| P1 | Derived request actions could materialize and repeatedly parse a request | Exact replay needs a size check, but text is needed only for interactive approval; individual parameter edits repeatedly rebuild immutable requests | Compute size from header/body lengths without a full byte array, lazily render request text, batch parameter mutations, and resolve semantic Intruder insertion points once |
+| P1 | Scanner, comparison, issue filtering, and Collaborator workflows could expose unbounded data or model-side polling | Native lists and task details can grow with a project | Cap references, targets, inspected bytes, issue scans/results, interaction scans/details, concurrent waits, and retained Scanner task handles |
 | P1 | Raw HTTP prelude normalization made up to five full intermediate strings | A request passed through chained global `replace` calls | Normalize escapes and line endings in one bounded pass; preserve body bytes verbatim |
 | P1 | Auto-approved targets were split and trimmed on every outbound request | Approval checks reparsed an unchanged persisted string | Cache the parsed immutable target list until its raw setting changes |
 | P2 | Legacy user-supplied Java regexes scan complete Burp histories and have no time budget | A pathological pattern can monopolize CPU | Migrate clients to bounded literal search and add a constrained regex policy |
@@ -153,6 +154,10 @@ rebuilding the immutable request for every mutation. Response previews slice the
 conversion and are capped at 64 KiB. A 100 ms–120 s Montoya response timeout bounds response reading without wrapping
 an ambiguously delivered request in an unsafe coroutine retry.
 
+Intruder semantic selectors resolve at most 32 non-overlapping parameter/header/body ranges before approval and build one
+native request template. Replay recording searches at most the last 10,000 Site Map entries for the newly added response;
+a missing stable reference becomes a non-retryable warning after the request has completed.
+
 Existing raw HTTP/1.1, Repeater, and Intruder tools retain their output but now normalize request preludes in one pass
 instead of up to five complete replacement passes. Bodies remain untouched. HTTP/2 header construction reuses its
 ordered map rather than allocating a second merged map. The parsed auto-approval target list is also reused until the
@@ -188,11 +193,10 @@ following work remains:
 1. Cap or validate legacy pagination `count` and `offset` to prevent unbounded output requests.
 2. Migrate legacy source-specific list tools to the signed cursor model.
 3. Make compact summaries the default after a compatibility window and replace post-serialization 5,000-character truncation with a streaming/capped encoder.
-4. Paginate and bound Collaborator interaction output.
-5. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
-6. Add a constrained regex mode; new unified search intentionally supports bounded literal matching only.
-7. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove that cached entries are still live.
-8. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
+4. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
+5. Add a constrained regex mode; new unified search intentionally supports bounded literal matching only.
+6. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove that cached entries are still live.
+7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
 
 ## Regression checks
 
@@ -203,7 +207,11 @@ Performance changes should preserve the following:
 - Metadata-rejected search records never consume content budget or invoke body scans.
 - Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
 - Derived request actions render full request text only when an interactive approval needs it.
-- Signed search cursors reject tampering, project changes, and stale source boundaries.
+- Signed search and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.
+- HTTP comparison never inspects more than 1 MiB per reference and never claims equality for a truncated matching prefix.
+- Focused active audits reject out-of-scope requests and missing/overlapping insertion points before Scanner starts.
+- Scanner get/cancel accepts only extension-owned task IDs; at most eight active and 32 retained handles are tracked.
+- Collaborator waits, result counts, scan windows, per-field details, and total detail bytes remain bounded.
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
 - Server stop/restart closes all SDK sessions.
 - Proxy graceful shutdown sends DELETE when a session exists, but never blocks shutdown for more than two seconds.

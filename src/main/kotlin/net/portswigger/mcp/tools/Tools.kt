@@ -3,7 +3,6 @@ package net.portswigger.mcp.tools
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.PAUSED
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.RUNNING
-import burp.api.montoya.collaborator.InteractionFilter
 import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
@@ -15,7 +14,6 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
@@ -27,27 +25,6 @@ import net.portswigger.mcp.security.filterConfigCredentials
 import java.awt.KeyboardFocusManager
 import java.util.regex.Pattern
 import javax.swing.JTextArea
-
-private val READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint = true,
-    destructiveHint = false,
-    idempotentHint = true,
-    openWorldHint = false,
-)
-
-private val REQUEST_ROUTING_TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint = false,
-    destructiveHint = false,
-    idempotentHint = false,
-    openWorldHint = false,
-)
-
-private val HTTP_REQUEST_ACTION_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint = false,
-    destructiveHint = true,
-    idempotentHint = false,
-    openWorldHint = true,
-)
 
 private suspend fun checkDataAccessOrDeny(
     accessType: DataAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
@@ -172,9 +149,11 @@ private fun StringBuilder.appendNormalizedPrelude(content: String, endExclusive:
     }
 }
 
-fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
+internal fun Server.registerTools(api: MontoyaApi, config: McpConfig, services: ToolServices) {
     val httpMessageSearchService = HttpMessageSearchService(api, config)
     val httpMessageActionService = HttpMessageActionService(api, config)
+    val scopeToolService = ScopeToolService(api, config)
+    val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val fixedContent = normalizeHttpContent(content)
@@ -298,7 +277,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
+    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Export the current project options first to confirm the schema. The JSON must have a top-level 'project_options' object.") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Applying project-level configuration through MCP")
             api.burpSuite().importProjectOptionsFromJson(json)
@@ -310,7 +289,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
 
-    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
+    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Export the current user options first to confirm the schema. The JSON must have a top-level 'user_options' object.") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Applying user-level configuration through MCP")
             api.burpSuite().importUserOptionsFromJson(json)
@@ -322,18 +301,13 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
-        mcpPaginatedSequenceTool<GetScannerIssues, AuditIssue>(
-            "Displays information about issues identified by the scanner. Set summariesOnly to true for compact, stable issue IDs.",
-            mapper = {
-                if (summariesOnly == true) Json.encodeToString(it.toHistorySummary())
-                else Json.encodeToString(it.toSerializableForm())
-            }
-        ) {
-            val allowed = checkDataAccessOrDeny(DataAccessType.SCANNER_ISSUES, config, api, "Scanner issue")
-            if (!allowed) {
-                return@mcpPaginatedSequenceTool PaginatedSource.Message("Scanner issue access denied by Burp Suite")
-            }
-            PaginatedSource.Items(api.siteMap().issues().asSequence())
+        val scannerIssueSearchService = ScannerIssueSearchService(api, config)
+        val collaboratorToolService = services.collaborator
+        mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
+            description = "Reads Scanner issues. Existing offset/count calls retain their legacy text format with a 512 KiB safety cap. Set cursorMode=true, or supply severity/confidence/host/name filters, for bounded compact summaries with a signed project-bound snapshot cursor; cursor mode never serializes complete evidence messages.",
+            annotations = READ_ONLY_TOOL_ANNOTATIONS,
+        ) { input ->
+            scannerIssueSearchService.get(input)
         }
 
         mcpStructuredTool<GetScannerIssueById, ScannerIssueReadResult>(
@@ -370,44 +344,40 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             issue.readField(normalizedField, evidenceIndex, normalizedOffset, normalizedLimit, normalizedEncoding)
         }
 
-        val collaboratorClient by lazy { api.collaborator().createClient() }
-
-        mcpTool<GenerateCollaboratorPayload>(
-            "Generates a Burp Collaborator payload URL for out-of-band (OOB) testing. " +
-            "Inject this payload into requests to detect server-side interactions (DNS lookups, HTTP requests, SMTP). " +
-            "Use get_collaborator_interactions with the returned payloadId to check for interactions."
+        mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
+            description = "Starts a focused Professional Scanner audit from existing project-scoped HTTP references. Passive mode requires responses and sends no target traffic. Active mode requires explicit semantic insertionPoints for every target and rejects out-of-scope requests. This operation always requires Burp approval. actionState=uncertain means a task may exist and must not be started again automatically.",
+            annotations = SCANNER_START_TOOL_ANNOTATIONS,
         ) {
-            api.logging().logToOutput("MCP generating Collaborator payload${customData?.let { " with custom data" } ?: ""}")
-
-            val payload = if (customData != null) {
-                collaboratorClient.generatePayload(customData)
-            } else {
-                collaboratorClient.generatePayload()
-            }
-
-            val server = collaboratorClient.server()
-            "Payload: $payload\nPayload ID: ${payload.id()}\nCollaborator server: ${server.address()}"
+            services.scannerAudits.start(this, config)
         }
 
-        mcpTool<GetCollaboratorInteractions>(
-            "Polls Burp Collaborator for out-of-band interactions (DNS, HTTP, SMTP). " +
-            "Optionally filter by payloadId from generate_collaborator_payload. " +
-            "Returns interaction details including type, timestamp, client IP, and protocol-specific data."
+        mcpStructuredTool<GetScannerAudit, ScannerAuditResult>(
+            description = "Returns status, insertion-point/request/error counts, and bounded stable issue summaries for a Scanner audit started by this extension instance. Burp exposes a textual task status, so taskState is a conservative normalized interpretation and statusMessage remains authoritative. issuesUnavailable=true is a nonfatal warning when the current Burp runtime cannot expose live task issues.",
+            annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
-            api.logging().logToOutput("MCP polling Collaborator interactions${payloadId?.let { " for payload: $it" } ?: ""}")
+            services.scannerAudits.get(this, config)
+        }
 
-            val interactions = if (payloadId != null) {
-                collaboratorClient.getInteractions(InteractionFilter.interactionIdFilter(payloadId))
-            } else {
-                collaboratorClient.getAllInteractions()
-            }
+        mcpStructuredTool<CancelScannerAudit, ScannerAuditResult>(
+            description = "Cancels only a Scanner audit previously started by this extension instance. Cancellation always requires Burp approval. actionState=uncertain means the task may already have been deleted and cancellation must not be retried automatically.",
+            annotations = SCANNER_CANCEL_TOOL_ANNOTATIONS,
+        ) {
+            services.scannerAudits.cancel(this)
+        }
 
-            if (interactions.isEmpty()) {
-                "No interactions detected"
-            } else {
-                interactions.joinToString("\n\n") {
-                    Json.encodeToString(it.toSerializableForm())
-                }
+        mcpStructuredToolWithContext<GenerateCollaboratorPayload, GenerateCollaboratorPayloadResult>(
+            description = "Generates a bounded Burp Collaborator payload for out-of-band testing and returns its payloadId. Optional customData must contain 1–16 ASCII alphanumeric characters, matching Burp's native limit. Use get_collaborator_interactions with that payloadId; generation does not inject or send the payload.",
+            annotations = COLLABORATOR_GENERATE_TOOL_ANNOTATIONS,
+        ) { input ->
+            collaboratorToolService.generate(input)
+        }
+
+        mcpStructuredToolWithContext<GetCollaboratorInteractions, GetCollaboratorInteractionsResult>(
+            description = "Polls Burp Collaborator for bounded DNS, HTTP, or SMTP interactions. payloadId is the interaction ID returned by generate_collaborator_payload and is matched with Burp's interaction-ID filter. Optional since, waitSeconds (maximum 120), maxResults, detail slicing, progress, and cancellation avoid model-side polling and unbounded output.",
+            annotations = COLLABORATOR_READ_TOOL_ANNOTATIONS,
+        ) { input ->
+            collaboratorToolService.interactions(input, config) { progress, total, message ->
+                reportProgress(progress, total, message)
             }
         }
     }
@@ -419,6 +389,27 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         httpMessageSearchService.search(this)
     }
 
+    mcpStructuredTool<CheckScope, CheckScopeResult>(
+        description = "Checks whether up to 32 explicit URLs or project-scoped HTTP message references are currently in Burp Target scope. This tool never changes scope. Each target must contain exactly one of url or ref.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) {
+        scopeToolService.check(this)
+    }
+
+    mcpStructuredTool<UpdateScope, UpdateScopeResult>(
+        description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before an always-required Burp approval. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
+        annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
+    ) {
+        scopeToolService.update(this)
+    }
+
+    mcpStructuredTool<CompareHttpMessages, CompareHttpMessagesResult>(
+        description = "Compares 2 to 8 project-scoped Proxy, Site Map, or Organizer references without copying complete messages into the model. Returns bounded hashes, header differences, a two-message content excerpt, and optional Burp-native response variation attributes. allEqual=null means inspected prefixes matched but one or more selected parts were truncated.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageComparisonService.compare(this)
+    }
+
     mcpStructuredTool<GetSitemapMessageById, SiteMapMessageReadResult>(
         description = "Reads one Site Map message returned by search_http_messages. projectId and id must be copied from the search result. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and supports text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
@@ -427,7 +418,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<SendHttpRequestFromId, HttpMessageActionResult>(
-        description = "Replays a Proxy, Site Map, or Organizer request returned by search_http_messages. Applies only bounded structured method, path, header, parameter, or body patches; never asks the model to reconstruct raw HTTP. Requires the matching projectId and approvals. The response preview, timeout, redirects, and HTTP mode are bounded and explicit. executionState=uncertain means the request must not be retried automatically.",
+        description = "Replays a Proxy, Site Map, or Organizer request returned by search_http_messages. Applies only bounded structured method, path, header, parameter, or body patches; never asks the model to reconstruct raw HTTP. Requires the matching projectId and approvals. The response preview, timeout, redirects, and HTTP mode are bounded and explicit. Successful Site Map recording returns recordedRef for the exact replay result when Burp can locate it. executionState=uncertain means the request must not be retried automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         httpMessageActionService.send(this)
@@ -441,7 +432,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<SendToIntruderFromId, HttpMessageActionResult>(
-        description = "Sends an existing Proxy, Site Map, or Organizer request to Intruder, optionally after a bounded structured patch. Requires the matching projectId and approvals. This creates an Intruder tab but does not start an attack. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
+        description = "Sends an existing Proxy, Site Map, or Organizer request to Intruder, optionally after a bounded structured patch. Optional semantic insertionPoints select parameter values, header values, or the request body without model-supplied byte offsets. Requires the matching projectId and approvals. This creates an Intruder tab but does not start an attack. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         httpMessageActionService.sendToIntruder(this)
@@ -688,17 +679,69 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 }
 
-internal fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?): Boolean {
-    if (response == null) return false
-    return try {
+private const val MAX_SITE_MAP_RECORD_LOOKBACK = 10_000
+
+internal data class SiteMapRecordResult(
+    val recorded: Boolean,
+    val ref: HttpMessageReference? = null,
+    val warning: String? = null,
+)
+
+internal fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?): Boolean =
+    recordHttpResponseInSiteMap(api, response, projectId = null).recorded
+
+internal fun recordHttpResponseInSiteMap(
+    api: MontoyaApi,
+    response: HttpRequestResponse?,
+    projectId: String?,
+): SiteMapRecordResult {
+    if (response == null) return SiteMapRecordResult(recorded = false)
+    try {
         api.siteMap().add(response)
-        true
     } catch (_: Exception) {
         // The request may already have changed server state. Never turn a local recording failure into a retryable tool error.
         runCatching {
             api.logging().logToError("MCP request completed, but its response could not be added to Site Map")
         }
-        false
+        return SiteMapRecordResult(recorded = false)
+    }
+
+    if (projectId == null) return SiteMapRecordResult(recorded = true)
+    return try {
+        if (api.project().id() != projectId) {
+            val warning = "request was recorded, but the Burp project changed before a stable Site Map reference could be created"
+            runCatching { api.logging().logToError("MCP $warning") }
+            SiteMapRecordResult(recorded = true, warning = warning)
+        } else {
+            // Montoya's SiteMap.add API does not return an index. Take one post-add snapshot and search from the append end.
+            // Identity is normally preserved; the bounded anchor is a fallback for Burp implementations that wrap the object.
+            val items = api.siteMap().requestResponses()
+            val firstCandidate = (items.size - MAX_SITE_MAP_RECORD_LOOKBACK).coerceAtLeast(0)
+            val identityIndex = (items.lastIndex downTo firstCandidate).firstOrNull { items[it] === response } ?: -1
+            val index = if (identityIndex >= 0) identityIndex else {
+                val anchor = siteMapBoundaryAnchor(response)
+                (items.lastIndex downTo firstCandidate).firstOrNull { candidateIndex ->
+                    siteMapBoundaryAnchor(items[candidateIndex]) == anchor
+                } ?: -1
+            }
+            if (index < 0) {
+                val warning = "request was recorded, but its stable Site Map reference could not be located"
+                runCatching { api.logging().logToError("MCP $warning") }
+                SiteMapRecordResult(recorded = true, warning = warning)
+            } else {
+                SiteMapRecordResult(
+                    recorded = true,
+                    ref = HttpMessageReference(
+                        source = HttpMessageSource.SITE_MAP,
+                        id = stableSiteMapId(projectId, index, items[index]),
+                    ),
+                )
+            }
+        }
+    } catch (_: Exception) {
+        val warning = "request was recorded, but its stable Site Map reference could not be created"
+        runCatching { api.logging().logToError("MCP $warning") }
+        SiteMapRecordResult(recorded = true, warning = warning)
     }
 }
 
@@ -803,13 +846,6 @@ data class SetProxyInterceptState(val intercepting: Boolean)
 data class SetActiveEditorContents(val text: String)
 
 @Serializable
-data class GetScannerIssues(
-    override val count: Int,
-    override val offset: Int,
-    val summariesOnly: Boolean? = null,
-) : Paginated
-
-@Serializable
 data class GetProxyHttpHistory(
     override val count: Int,
     override val offset: Int,
@@ -898,9 +934,4 @@ data class GetScannerIssueById(
 @Serializable
 data class GenerateCollaboratorPayload(
     val customData: String? = null
-)
-
-@Serializable
-data class GetCollaboratorInteractions(
-    val payloadId: String? = null
 )

@@ -305,6 +305,20 @@ class McpConfigTest {
     }
 
     @Test
+    fun `always allow Collaborator interactions persists and notifies data access listeners`() {
+        var notifications = 0
+        config.addDataAccessChangeListener { notifications++ }
+
+        assertFalse(config.alwaysAllowCollaboratorInteractions)
+        config.alwaysAllowCollaboratorInteractions = true
+        config.alwaysAllowCollaboratorInteractions = true
+
+        assertTrue(config.alwaysAllowCollaboratorInteractions)
+        assertEquals(1, notifications)
+        verify { persistedObject.setBoolean("_alwaysAllowCollaboratorInteractions", true) }
+    }
+
+    @Test
     fun `request action approval should default to enabled and persist`() {
         assertTrue(config.requireRequestActionApproval)
 

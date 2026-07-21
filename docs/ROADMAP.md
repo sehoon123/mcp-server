@@ -33,12 +33,16 @@ Proposed behavior:
 - Keep per-operation approval for outbound requests, Intruder, Scanner, configuration edits, and destructive actions.
 - Show the exact normalized target and operation before approval.
 
-Implemented for stable-ID request actions:
+Implemented for stable-ID and focused active actions:
 
-- HTTP replay and Repeater/Intruder/Organizer routing carry explicit annotations.
-- Approval shows the source reference, immutable destination service, normalized patch summary, and exact resulting request.
-- Redacted Burp log lines record destination, source ID, target, byte count, patch flag, and outcome without bodies or header values.
+- HTTP replay, Repeater/Intruder/Organizer routing, scope mutation, focused Scanner start/cancel, comparison, and
+  Collaborator reads carry explicit annotations.
+- Approval shows the source reference, immutable destination service, normalized patch or scope/insertion-point summary,
+  and exact resulting request where applicable.
+- Redacted Burp log lines record bounded action metadata without bodies or header values.
 - Structured results distinguish `not_started`, `completed`, and ambiguous `uncertain` execution.
+- Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
+  restricted to random IDs created by this extension instance.
 
 Still required globally: apply the same policy to legacy mutating tools and write a durable, redacted audit format with
 client/session correlation and retention controls.
@@ -60,6 +64,10 @@ Implemented foundation:
 - Search results expose Burp's project ID; detail readers can reject identifiers copied from another project.
 - Per-call scan, content, result, cursor, URL, note, and byte-slice limits are bounded.
 - New read tools return MCP structured content, output schemas, and safety annotations.
+- Scanner issue filtering has a bounded compact cursor mode with signed project/query/snapshot cursors while retaining
+  legacy offset/count text behavior for existing callers.
+- Stable references can be compared through bounded hashes, header variants, first-difference excerpts, and Burp-native
+  response-variation attributes.
 
 Remaining work:
 
@@ -123,8 +131,10 @@ Prompts should guide the client to ask for scope and approval; they must not sil
 
 Long-running operations should not look like hung calls.
 
-- Emit progress for large history searches, Collaborator polling, Intruder preparation, and Scanner operations.
-- Propagate cancellation to Burp when the Montoya API supports it.
+- Collaborator long polling emits progress, propagates cancellation, limits concurrent waits, and bounds interaction
+  metadata/details. Extend progress to large history searches and other preparation work where it is materially useful.
+- Focused Scanner work is asynchronous in Burp and exposes extension-owned start/get/cancel lifecycle tools. Propagate
+  cancellation to additional Burp APIs when Montoya provides explicit cancellation handles.
 - Use MCP tasks for operations that outlive a single HTTP request.
 - Distinguish cancellation from timeout and partial completion.
 
@@ -147,7 +157,7 @@ Long-running operations should not look like hung calls.
   Inspector.
 - Add named security-policy profiles such as read-only review, scoped active testing, and full local control.
 - Support selecting a Burp project or task context so multiple Burp instances cannot be confused.
-- Add compact request/response diff tools based on stable IDs.
+- Add saved comparison profiles only if repeated workflows justify them; compact stable-ID HTTP comparison is implemented.
 - Add saved, scoped history queries and optional notifications instead of model-side polling.
 - Provide import/export of MCP settings with secrets excluded by default.
 
@@ -157,10 +167,10 @@ Long-running operations should not look like hung calls.
 |---|---|---|---|
 | 1 | Unified HTTP search, Site Map reads, project-scoped references | High daily-use and token improvement; implemented | Medium |
 | 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer | High-use workflow; implemented with bounded structured patches and approvals | Medium |
-| 3 | Scope query and management | Safety prerequisite for active automation | Low–medium |
-| 4 | Focused audit, crawl, and Scanner task lifecycle | High Professional-edition value | High |
-| 5 | Structured comparison and bounded request variants | Efficient auth and behavior analysis | Medium–high |
-| 6 | Collaborator wait tasks and bounded interaction reads | Better OOB workflow | Medium |
+| 3 | Scope query and management | Implemented with normalization, approval, verification, and uncertain partial-state reporting | Low–medium |
+| 4 | Focused audit and Scanner task lifecycle | Implemented for passive evidence and explicit active insertion points; crawl remains deferred | High |
+| 5 | Structured comparison and Intruder insertion points | Implemented with bounded diff/variation output and semantic selectors | Medium–high |
+| 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
 | 7 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
 | 8 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
 

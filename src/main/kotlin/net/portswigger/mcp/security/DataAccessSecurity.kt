@@ -11,6 +11,7 @@ enum class DataAccessType {
     WEBSOCKET_HISTORY,
     ORGANIZER,
     SCANNER_ISSUES,
+    COLLABORATOR_INTERACTIONS,
 }
 
 interface DataAccessApprovalHandler {
@@ -31,6 +32,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                     DataAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
                     DataAccessType.ORGANIZER -> "Organizer items"
                     DataAccessType.SCANNER_ISSUES -> "Scanner issues"
+                    DataAccessType.COLLABORATOR_INTERACTIONS -> "Collaborator interactions"
                 }
 
                 val message = buildString {
@@ -60,6 +62,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
                             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer = true
                             DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues = true
+                            DataAccessType.COLLABORATOR_INTERACTIONS -> config.alwaysAllowCollaboratorInteractions = true
                         }
                         true
                     }
@@ -88,6 +91,7 @@ object DataAccessSecurity {
             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory
             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer
             DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues
+            DataAccessType.COLLABORATOR_INTERACTIONS -> config.alwaysAllowCollaboratorInteractions
         }
 
         if (isAlwaysAllowed) {

@@ -76,6 +76,7 @@ class ToolsKtTest {
             every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
             every { getBoolean("_alwaysAllowOrganizer") } returns false
             every { getBoolean("_alwaysAllowScannerIssues") } returns false
+            every { getBoolean("_alwaysAllowCollaboratorInteractions") } returns false
             every { getString("host") } returns "127.0.0.1"
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
@@ -695,6 +696,14 @@ class ToolsKtTest {
                 delay(100)
                 projectResult.expectTextContent("Project configuration has been applied")
                 userResult.expectTextContent("User configuration has been applied")
+
+                val tools = client.listTools()
+                val projectDescription = tools.single { it.name == "set_project_options" }.description.orEmpty()
+                val userDescription = tools.single { it.name == "set_user_options" }.description.orEmpty()
+                assertTrue(projectDescription.contains("top-level 'project_options'"))
+                assertFalse(projectDescription.contains("top-level 'user_options'"))
+                assertTrue(userDescription.contains("top-level 'user_options'"))
+                assertFalse(userDescription.contains("top-level 'project_options'"))
             }
 
             verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(sensitiveJson) }
@@ -1251,6 +1260,68 @@ class ToolsKtTest {
         }
     }
     
+    @Test
+    fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
+        val tools = client.listTools()
+        assertEquals(36, tools.size)
+
+        val checkScope = tools.single { it.name == "check_scope" }
+        assertEquals(setOf("projectId", "targets"), checkScope.inputSchema.required?.toSet())
+        assertNotNull(checkScope.outputSchema?.properties?.get("targets"))
+        assertEquals(true, checkScope.annotations?.readOnlyHint)
+        assertEquals(true, checkScope.annotations?.idempotentHint)
+
+        val updateScope = tools.single { it.name == "update_scope" }
+        assertTrue(updateScope.inputSchema.properties?.get("operation").toString().contains("include"))
+        assertTrue(updateScope.inputSchema.properties?.get("operation").toString().contains("exclude"))
+        assertTrue(updateScope.outputSchema?.properties?.get("executionState").toString().contains("uncertain"))
+        assertEquals(true, updateScope.annotations?.destructiveHint)
+        assertEquals(true, updateScope.annotations?.idempotentHint)
+        assertEquals(false, updateScope.annotations?.openWorldHint)
+
+        val comparison = tools.single { it.name == "compare_http_messages" }
+        assertEquals(setOf("projectId", "refs"), comparison.inputSchema.required?.toSet())
+        assertTrue(comparison.inputSchema.properties?.get("part").toString().contains("response_body"))
+        assertTrue(comparison.inputSchema.properties?.get("excerptEncoding").toString().contains("base64"))
+        assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
+        assertEquals(true, comparison.annotations?.readOnlyHint)
+
+        val intruder = tools.single { it.name == "send_to_intruder_from_id" }
+        val insertionSchema = intruder.inputSchema.properties?.get("insertionPoints").toString()
+        assertTrue(insertionSchema.contains("parameter"))
+        assertTrue(insertionSchema.contains("header"))
+        assertTrue(insertionSchema.contains("body"))
+        assertNotNull(intruder.outputSchema?.properties?.get("insertionPointCount"))
+
+        val replay = tools.single { it.name == "send_http_request_from_id" }
+        assertNotNull(replay.outputSchema?.properties?.get("recordedRef"))
+
+        val project = mockk<burp.api.montoya.project.Project>()
+        val scope = mockk<burp.api.montoya.scope.Scope>()
+        every { api.project() } returns project
+        every { project.id() } returns "project-schema"
+        every { api.scope() } returns scope
+        every { scope.isInScope("https://example.test/") } returns true
+        val scopeResult = client.callTool(
+            "check_scope",
+            mapOf(
+                "projectId" to "project-schema",
+                "targets" to listOf(mapOf("url" to "https://EXAMPLE.test:443")),
+            ),
+        )
+        assertEquals("ok", scopeResult?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertTrue(scopeResult?.structuredContent?.get("targets").toString().contains("https://example.test/"))
+
+        val invalidComparison = client.callTool(
+            "compare_http_messages",
+            mapOf("projectId" to "project-schema", "refs" to emptyList<Any>()),
+        )
+        assertEquals(
+            "invalid_argument",
+            invalidComparison?.structuredContent?.get("status")?.jsonPrimitive?.content,
+        )
+    }
+
     @Nested
     inner class CollaboratorToolsTests {
         private val collaborator = mockk<Collaborator>()
@@ -1323,6 +1394,55 @@ class ToolsKtTest {
                 every { it.httpDetails() } returns Optional.ofNullable(httpDetails)
                 every { it.smtpDetails() } returns Optional.ofNullable(smtpDetails)
             }
+        }
+
+        @Test
+        fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
+            val tools = client.listTools()
+            assertEquals(43, tools.size)
+
+            val start = tools.single { it.name == "start_scanner_audit_from_ids" }
+            assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
+            assertTrue(start.inputSchema.properties?.get("mode").toString().contains("active"))
+            assertTrue(start.inputSchema.properties?.get("targets").toString().contains("insertionPoints"))
+            assertTrue(start.outputSchema?.properties?.get("actionState").toString().contains("uncertain"))
+            assertEquals(true, start.annotations?.destructiveHint)
+            assertEquals(true, start.annotations?.openWorldHint)
+            assertEquals(false, start.annotations?.idempotentHint)
+
+            val get = tools.single { it.name == "get_scanner_audit" }
+            assertEquals(setOf("projectId", "taskId"), get.inputSchema.required?.toSet())
+            assertNotNull(get.outputSchema?.properties?.get("issues"))
+            assertEquals(true, get.annotations?.readOnlyHint)
+
+            val cancel = tools.single { it.name == "cancel_scanner_audit" }
+            assertEquals(true, cancel.annotations?.destructiveHint)
+            assertEquals(true, cancel.annotations?.idempotentHint)
+            assertEquals(false, cancel.annotations?.openWorldHint)
+
+            val issues = tools.single { it.name == "get_scanner_issues" }
+            assertNotNull(issues.inputSchema.properties?.get("cursor"))
+            assertNotNull(issues.inputSchema.properties?.get("severities"))
+            assertNotNull(issues.outputSchema?.properties?.get("nextCursor"))
+
+            val interactions = tools.single { it.name == "get_collaborator_interactions" }
+            assertNotNull(interactions.inputSchema.properties?.get("waitSeconds"))
+            assertTrue(interactions.inputSchema.properties?.get("detailEncoding").toString().contains("base64"))
+            assertNotNull(interactions.outputSchema?.properties?.get("detailsTruncated"))
+            assertEquals(false, interactions.annotations?.idempotentHint)
+
+            val invalidStart = client.callTool(
+                "start_scanner_audit_from_ids",
+                mapOf("projectId" to "project", "mode" to "active", "targets" to emptyList<Any>()),
+            )
+            assertEquals(
+                "invalid_argument",
+                invalidStart?.structuredContent?.get("status")?.jsonPrimitive?.content,
+            )
+            assertEquals(
+                "not_started",
+                invalidStart?.structuredContent?.get("actionState")?.jsonPrimitive?.content,
+            )
         }
 
         @Test

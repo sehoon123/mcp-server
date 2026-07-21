@@ -5,6 +5,9 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.ContentBlock
+import io.modelcontextprotocol.kotlin.sdk.types.ProgressNotification
+import io.modelcontextprotocol.kotlin.sdk.types.ProgressNotificationParams
+import io.modelcontextprotocol.kotlin.sdk.types.ProgressToken
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
@@ -21,6 +24,63 @@ import net.portswigger.mcp.schema.asOutputSchema
 import kotlin.experimental.ExperimentalTypeInference
 
 private const val MAX_CONCURRENT_TOOL_EXECUTIONS = 16
+private const val MAX_PROGRESS_MESSAGE_CHARS = 256
+
+internal val READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = true,
+    destructiveHint = false,
+    idempotentHint = true,
+    openWorldHint = false,
+)
+
+internal val REQUEST_ROUTING_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = false,
+    idempotentHint = false,
+    openWorldHint = false,
+)
+
+internal val HTTP_REQUEST_ACTION_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = false,
+    openWorldHint = true,
+)
+
+internal val SCOPE_MUTATION_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = true,
+    openWorldHint = false,
+)
+
+internal val SCANNER_START_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = false,
+    openWorldHint = true,
+)
+
+internal val SCANNER_CANCEL_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = true,
+    openWorldHint = false,
+)
+
+internal val COLLABORATOR_READ_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = true,
+    destructiveHint = false,
+    idempotentHint = false,
+    openWorldHint = true,
+)
+
+internal val COLLABORATOR_GENERATE_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = false,
+    idempotentHint = false,
+    openWorldHint = true,
+)
 
 @PublishedApi
 internal val toolExecutionDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_TOOL_EXECUTIONS)
@@ -198,6 +258,86 @@ inline fun Server.mcpTool(
         )
     }
     addTool(name = name, description = description, inputSchema = ToolSchema(), handler = handler)
+}
+
+data class StructuredToolResponse<O : Any>(
+    val output: O,
+    val text: String? = null,
+)
+
+class ToolCallContext @PublishedApi internal constructor(
+    private val connection: ClientConnection,
+    private val progressToken: ProgressToken?,
+) {
+    suspend fun reportProgress(progress: Double, total: Double? = null, message: String? = null) {
+        if (progressToken == null) return
+        require(progress.isFinite() && progress >= 0.0) { "progress must be a finite non-negative number" }
+        require(total == null || (total.isFinite() && total >= 0.0)) {
+            "progress total must be a finite non-negative number"
+        }
+        try {
+            connection.notification(
+                ProgressNotification(
+                    ProgressNotificationParams(
+                        progressToken = progressToken,
+                        progress = progress,
+                        total = total,
+                        message = message?.take(MAX_PROGRESS_MESSAGE_CHARS),
+                    )
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Progress is optional. A client that cannot receive it must not turn a completed Burp action into failure.
+        }
+    }
+}
+
+@OptIn(InternalSerializationApi::class)
+inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContext(
+    description: String,
+    annotations: ToolAnnotations? = null,
+    crossinline execute: suspend ToolCallContext.(I) -> StructuredToolResponse<O>,
+) {
+    val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
+    val inputSerializer = I::class.serializer()
+    val outputSerializer = O::class.serializer()
+    val inputSchema = inputSerializer.descriptor.asInputSchema()
+    val outputSchema = outputSerializer.descriptor.asOutputSchema()
+
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
+        try {
+            val input = Json.decodeFromJsonElement(
+                inputSerializer,
+                request.params.arguments ?: JsonObject(emptyMap()),
+            )
+            val context = ToolCallContext(connection, request.params.meta?.progressToken)
+            val response = withContext(toolExecutionDispatcher) { context.execute(input) }
+            val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
+            CallToolResult(
+                content = listOf(TextContent(response.text ?: structuredContent.toString())),
+                isError = false,
+                structuredContent = structuredContent,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            CallToolResult(
+                content = listOf(TextContent("Error: ${e.message}")),
+                isError = true,
+            )
+        }
+    }
+
+    addTool(
+        name = toolName,
+        description = description,
+        inputSchema = inputSchema,
+        outputSchema = outputSchema,
+        toolAnnotations = annotations,
+        handler = handler,
+    )
 }
 
 @OptIn(InternalSerializationApi::class)

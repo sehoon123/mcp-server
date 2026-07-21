@@ -80,8 +80,11 @@ data class OrganizerItemSummary(
 data class ScannerIssueSummary(
     val id: String,
     val name: String?,
+    val nameTruncated: Boolean = false,
     val baseUrl: String?,
+    val baseUrlTruncated: Boolean = false,
     val host: String?,
+    val hostTruncated: Boolean = false,
     val port: Int?,
     val secure: Boolean?,
     val severity: String,
@@ -238,11 +241,17 @@ internal fun OrganizerItem.toHistorySummary(): OrganizerItemSummary {
 
 internal fun AuditIssue.toHistorySummary(): ScannerIssueSummary {
     val service = httpService()
+    val rawName = name()
+    val rawBaseUrl = baseUrl()
+    val rawHost = service?.host()
     return ScannerIssueSummary(
         id = stableHistoryId(),
-        name = name(),
-        baseUrl = baseUrl(),
-        host = service?.host(),
+        name = rawName?.take(512),
+        nameTruncated = (rawName?.length ?: 0) > 512,
+        baseUrl = rawBaseUrl?.take(MAX_HTTP_SEARCH_URL_CHARS),
+        baseUrlTruncated = (rawBaseUrl?.length ?: 0) > MAX_HTTP_SEARCH_URL_CHARS,
+        host = rawHost?.take(MAX_HTTP_SEARCH_HOST_CHARS),
+        hostTruncated = (rawHost?.length ?: 0) > MAX_HTTP_SEARCH_HOST_CHARS,
         port = service?.port(),
         secure = service?.secure(),
         severity = severity().name,
@@ -255,7 +264,8 @@ internal fun AuditIssue.toHistorySummary(): ScannerIssueSummary {
 /** A deterministic ID scoped to the current Burp project and the issue's identity fields. */
 internal fun AuditIssue.stableHistoryId(): String {
     val service = httpService()
-    val canonicalIdentity = listOf(
+    val digest = MessageDigest.getInstance("SHA-256")
+    sequenceOf(
         definition().typeIndex().toString(),
         name().orEmpty(),
         baseUrl().orEmpty(),
@@ -265,9 +275,12 @@ internal fun AuditIssue.stableHistoryId(): String {
         severity().name,
         confidence().name,
         detail().orEmpty(),
-    ).joinToString(separator = "\u0000")
-    val digest = MessageDigest.getInstance("SHA-256").digest(canonicalIdentity.toByteArray(Charsets.UTF_8))
-    return "issue_" + HexFormat.of().formatHex(digest, 0, 16)
+    ).forEachIndexed { index, value ->
+        if (index > 0) digest.update(0)
+        digest.update(value.toByteArray(Charsets.UTF_8))
+    }
+    val identity = digest.digest()
+    return "issue_" + HexFormat.of().formatHex(identity, 0, 16)
 }
 
 internal fun ProxyHttpRequestResponse.readPart(

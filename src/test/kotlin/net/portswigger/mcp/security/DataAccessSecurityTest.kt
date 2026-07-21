@@ -113,6 +113,29 @@ class DataAccessSecurityTest {
     }
 
     @Test
+    fun `Collaborator interaction reads require approval unless explicitly allowed`() = runBlocking {
+        val values = mutableMapOf<String, Any>("requireDataAccessApproval" to true)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { values[firstArg()] as? Boolean ?: false }
+        every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg<Boolean>() }
+        every { storage.getString(any()) } returns ""
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        var approvals = 0
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                approvals++
+                assertTrue(accessType == DataAccessType.COLLABORATOR_INTERACTIONS)
+                return false
+            }
+        }
+
+        assertFalse(DataAccessSecurity.checkDataAccessPermission(DataAccessType.COLLABORATOR_INTERACTIONS, config))
+        config.alwaysAllowCollaboratorInteractions = true
+        assertTrue(DataAccessSecurity.checkDataAccessPermission(DataAccessType.COLLABORATOR_INTERACTIONS, config))
+        assertTrue(approvals == 1)
+    }
+
+    @Test
     fun `Scanner issue reads require approval unless explicitly allowed`() = runBlocking {
         val values = mutableMapOf<String, Any>("requireDataAccessApproval" to true)
         val storage = mockk<PersistedObject>(relaxed = true)

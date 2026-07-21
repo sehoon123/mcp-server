@@ -302,6 +302,21 @@ object Dialogs {
             wrapStyleWord = true
             columns = 30
             rows = 0
+            minimumSize = Dimension(0, 0)
+            preferredSize = Dimension(400, 200)
+            maximumSize = Dimension(400, 220)
+            alignmentX = Component.CENTER_ALIGNMENT
+        }
+
+        val messageScrollPane = JScrollPane(messageArea).apply {
+            border = null
+            isOpaque = false
+            viewport.isOpaque = false
+            verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+            horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+            minimumSize = Dimension(0, 0)
+            preferredSize = Dimension(400, 200)
+            maximumSize = Dimension(400, 220)
             alignmentX = Component.CENTER_ALIGNMENT
         }
 
@@ -371,8 +386,7 @@ object Dialogs {
                 border = EmptyBorder(Design.Spacing.XL, Design.Spacing.LG, Design.Spacing.XL, Design.Spacing.XL)
             }
 
-            messageArea.alignmentX = Component.CENTER_ALIGNMENT
-            rightPanel.add(messageArea)
+            rightPanel.add(messageScrollPane)
             rightPanel.add(Box.createVerticalStrut(Design.Spacing.LG))
             rightPanel.add(Box.createVerticalGlue())
 
@@ -413,8 +427,7 @@ object Dialogs {
             contentPanel.border =
                 EmptyBorder(Design.Spacing.XL, Design.Spacing.XL, Design.Spacing.XL, Design.Spacing.XL)
 
-            messageArea.alignmentX = Component.CENTER_ALIGNMENT
-            contentPanel.add(messageArea)
+            contentPanel.add(messageScrollPane)
             contentPanel.add(Box.createVerticalStrut(Design.Spacing.XL))
 
             val buttonPanel = JPanel().apply {

@@ -11,14 +11,13 @@ import burp.api.montoya.http.message.params.HttpParameter
 import burp.api.montoya.http.message.params.HttpParameterType
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
+import burp.api.montoya.intruder.HttpRequestTemplate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
-import net.portswigger.mcp.security.DataAccessSecurity
-import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.RequestActionSecurity
 import java.nio.charset.StandardCharsets
@@ -29,8 +28,6 @@ import java.util.HexFormat
 internal const val MAX_ACTION_REQUEST_BYTES = 2 * 1024 * 1024
 internal const val DEFAULT_ACTION_RESPONSE_BODY_BYTES = 8 * 1024
 internal const val MAX_ACTION_RESPONSE_BODY_BYTES = 64 * 1024
-private const val MAX_ACTION_PROJECT_ID_CHARS = 256
-private const val MAX_ACTION_ID_CHARS = 128
 private const val MAX_ACTION_TAB_NAME_CHARS = 128
 private const val MAX_ACTION_PATH_CHARS = 8 * 1024
 private const val MAX_ACTION_HEADER_NAME_CHARS = 256
@@ -70,6 +67,7 @@ data class SendToIntruderFromId(
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
     val tabName: String? = null,
+    val insertionPoints: List<HttpInsertionPointSelector>? = null,
 )
 
 @Serializable
@@ -254,8 +252,10 @@ data class HttpMessageActionResult(
     val changes: String? = null,
     val requestBytes: Int? = null,
     val tabName: String? = null,
+    val insertionPointCount: Int? = null,
     val response: HttpActionResponseSummary? = null,
     val recordedInSiteMap: Boolean? = null,
+    val recordedRef: HttpMessageReference? = null,
     val preservedResponseInOrganizer: Boolean? = null,
     val error: String? = null,
 )
@@ -264,9 +264,9 @@ internal class HttpMessageActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
 ) {
+    private val resolver = HttpMessageResolver(api, config)
+
     suspend fun send(input: SendHttpRequestFromId): HttpMessageActionResult {
-        val validated = validateCommon(input.projectId, input.ref)
-            ?: return invalidArgument(input.projectId, input.ref, HttpMessageActionDestination.HTTP, "invalid reference")
         val timeout = input.responseTimeoutMs ?: DEFAULT_ACTION_TIMEOUT_MS
         if (timeout !in MIN_ACTION_TIMEOUT_MS..MAX_ACTION_TIMEOUT_MS) {
             return invalidArgument(
@@ -291,9 +291,13 @@ internal class HttpMessageActionService(
             return invalidArgument(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e.message.orEmpty())
         }
 
-        val resolved = when (val outcome = resolveSafely(validated)) {
-            is Resolution.Found -> outcome.message
-            is Resolution.Failed -> return resolutionFailure(input.ref, HttpMessageActionDestination.HTTP, outcome)
+        val resolved = when (val outcome = resolveSafely(input.projectId, input.ref)) {
+            is HttpMessageBatchResolution.Found -> outcome.messages.single()
+            is HttpMessageBatchResolution.Failed -> return resolutionFailure(
+                input.ref,
+                HttpMessageActionDestination.HTTP,
+                outcome,
+            )
         }
         val patched = try {
             applyPatch(resolved.request, input.patch)
@@ -323,6 +327,7 @@ internal class HttpMessageActionService(
         }
 
         currentCoroutineContext().ensureActive()
+        recheckProject(input.projectId, input.ref, HttpMessageActionDestination.HTTP)?.let { return it }
         val response = try {
             api.http().sendRequest(patched.request, options)
         } catch (e: CancellationException) {
@@ -336,13 +341,13 @@ internal class HttpMessageActionService(
             return uncertain(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched, e)
         }
 
-        val recorded = recordHttpResponseInSiteMap(api, response)
-        var summaryError: String? = null
+        val recorded = recordHttpResponseInSiteMap(api, response, input.projectId)
+        var summaryError: String? = recorded.warning
         val responseSummary = try {
             response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
         } catch (e: Exception) {
             val message = "request completed but its response preview could not be created: ${safeException(e)}"
-            summaryError = message
+            summaryError = listOfNotNull(summaryError, message).joinToString("; ")
             runCatching { api.logging().logToError(message) }
             null
         }
@@ -357,7 +362,8 @@ internal class HttpMessageActionService(
             HttpMessageActionDestination.HTTP,
             patched,
             response = responseSummary,
-            recordedInSiteMap = recorded,
+            recordedInSiteMap = recorded.recorded,
+            recordedRef = recorded.ref,
             error = summaryError,
         )
     }
@@ -368,7 +374,7 @@ internal class HttpMessageActionService(
         patch = input.patch,
         destination = HttpMessageActionDestination.REPEATER,
         tabName = input.tabName,
-    ) { _, patched, tabName ->
+    ) { _, patched, tabName, _ ->
         if (tabName == null) api.repeater().sendToRepeater(patched.request)
         else api.repeater().sendToRepeater(patched.request, tabName)
         false
@@ -380,9 +386,19 @@ internal class HttpMessageActionService(
         patch = input.patch,
         destination = HttpMessageActionDestination.INTRUDER,
         tabName = input.tabName,
-    ) { _, patched, tabName ->
-        if (tabName == null) api.intruder().sendToIntruder(patched.request)
-        else api.intruder().sendToIntruder(patched.request, tabName)
+        insertionPointSelectors = input.insertionPoints,
+    ) { _, patched, tabName, preparedInsertionPoints ->
+        if (preparedInsertionPoints == null) {
+            if (tabName == null) api.intruder().sendToIntruder(patched.request)
+            else api.intruder().sendToIntruder(patched.request, tabName)
+        } else {
+            val template = HttpRequestTemplate.httpRequestTemplate(patched.request, preparedInsertionPoints.ranges)
+            if (tabName == null) {
+                api.intruder().sendToIntruder(patched.service, template)
+            } else {
+                api.intruder().sendToIntruder(patched.service, template, tabName)
+            }
+        }
         false
     }
 
@@ -392,7 +408,7 @@ internal class HttpMessageActionService(
         patch = input.patch,
         destination = HttpMessageActionDestination.ORGANIZER,
         tabName = null,
-    ) { resolved, patched, _ ->
+    ) { resolved, patched, _, _ ->
         val envelope = if (!patched.changed && resolved.response != null) {
             resolved.envelope ?: MontoyaHttpRequestResponse.httpRequestResponse(patched.request, resolved.response)
         } else {
@@ -412,18 +428,17 @@ internal class HttpMessageActionService(
         patch: HttpRequestPatch?,
         destination: HttpMessageActionDestination,
         tabName: String?,
-        execute: (ResolvedHttpMessage, PatchedRequest, String?) -> Boolean,
+        insertionPointSelectors: List<HttpInsertionPointSelector>? = null,
+        execute: (ResolvedHttpMessage, PatchedRequest, String?, PreparedInsertionPoints?) -> Boolean,
     ): HttpMessageActionResult {
-        val validated = validateCommon(projectId, ref)
-            ?: return invalidArgument(projectId, ref, destination, "invalid reference")
         val normalizedTabName = try {
             normalizeTabName(tabName)
         } catch (e: IllegalArgumentException) {
             return invalidArgument(projectId, ref, destination, e.message.orEmpty())
         }
-        val resolved = when (val outcome = resolveSafely(validated)) {
-            is Resolution.Found -> outcome.message
-            is Resolution.Failed -> return resolutionFailure(ref, destination, outcome)
+        val resolved = when (val outcome = resolveSafely(projectId, ref)) {
+            is HttpMessageBatchResolution.Found -> outcome.messages.single()
+            is HttpMessageBatchResolution.Failed -> return resolutionFailure(ref, destination, outcome)
         }
         val patched = try {
             applyPatch(resolved.request, patch)
@@ -432,25 +447,51 @@ internal class HttpMessageActionService(
         } catch (e: Exception) {
             return burpError(projectId, ref, destination, e)
         }
+        val preparedInsertionPoints = try {
+            insertionPointSelectors?.let { prepareInsertionPoints(patched.request, it) }
+        } catch (e: IllegalArgumentException) {
+            return invalidArgument(projectId, ref, destination, e.message.orEmpty())
+        } catch (e: Exception) {
+            return burpError(projectId, ref, destination, e)
+        }
+        val actionChanges = listOfNotNull(patched.summary, preparedInsertionPoints?.summary).joinToString("; ").take(2_048)
         val approved = try {
-            approveRoutingAction(destination, resolved, patched)
+            approveRoutingAction(destination, resolved, patched, actionChanges)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return burpError(projectId, ref, destination, e)
         }
         if (!approved) {
-            return denied(projectId, ref, destination, patched, normalizedTabName)
+            return denied(
+                projectId,
+                ref,
+                destination,
+                patched,
+                normalizedTabName,
+                changes = actionChanges,
+                insertionPointCount = preparedInsertionPoints?.ranges?.size,
+            )
         }
 
         currentCoroutineContext().ensureActive()
+        recheckProject(projectId, ref, destination)?.let { return it }
         val preserved = try {
-            execute(resolved, patched, normalizedTabName)
+            execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "execution uncertain")) }
-            return uncertain(projectId, ref, destination, patched, e, normalizedTabName)
+            return uncertain(
+                projectId,
+                ref,
+                destination,
+                patched,
+                e,
+                normalizedTabName,
+                changes = actionChanges,
+                insertionPointCount = preparedInsertionPoints?.ranges?.size,
+            )
         }
         runCatching { api.logging().logToOutput(auditLine(destination, resolved, patched, "completed")) }
         return success(
@@ -459,127 +500,43 @@ internal class HttpMessageActionService(
             destination,
             patched,
             tabName = normalizedTabName,
+            changes = actionChanges,
+            insertionPointCount = preparedInsertionPoints?.ranges?.size,
             preservedResponseInOrganizer = if (destination == HttpMessageActionDestination.ORGANIZER) preserved else null,
         )
     }
 
-    private suspend fun resolveSafely(validated: ValidatedReference): Resolution = try {
-        resolve(validated)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Resolution.Failed(
-            HttpMessageActionStatus.BURP_ERROR,
-            validated.projectId,
-            "Burp could not resolve the HTTP message: ${safeException(e)}",
-        )
-    }
-
-    private suspend fun resolve(validated: ValidatedReference): Resolution {
-        val currentProjectId = api.project().id()
-        if (validated.projectId != currentProjectId) {
-            return Resolution.Failed(
-                HttpMessageActionStatus.PROJECT_MISMATCH,
-                currentProjectId,
-                "reference belongs to a different Burp project",
-            )
-        }
-
-        val parsedSiteMapId = if (validated.ref.source == HttpMessageSource.SITE_MAP) {
-            parseSiteMapId(validated.ref.id) ?: return Resolution.Failed(
-                HttpMessageActionStatus.INVALID_ID,
-                currentProjectId,
-                "Site Map reference ID must come from search_http_messages",
-            )
-        } else {
-            null
-        }
-        if (validated.ref.source != HttpMessageSource.SITE_MAP && validated.numericId == null) {
-            return Resolution.Failed(
-                HttpMessageActionStatus.INVALID_ID,
-                currentProjectId,
-                "${validated.ref.source.displayNameForAction()} reference ID must be a non-negative integer",
-            )
-        }
-
-        val accessType = when (validated.ref.source) {
-            HttpMessageSource.PROXY -> DataAccessType.HTTP_HISTORY
-            HttpMessageSource.SITE_MAP -> DataAccessType.SITE_MAP
-            HttpMessageSource.ORGANIZER -> DataAccessType.ORGANIZER
-        }
-        if (!DataAccessSecurity.checkDataAccessPermission(accessType, config)) {
-            api.logging().logToOutput("MCP request action source access denied: ${validated.ref.source.serialName()}")
-            return Resolution.Failed(
-                HttpMessageActionStatus.ACCESS_DENIED,
-                currentProjectId,
-                "${validated.ref.source.displayNameForAction()} access denied by Burp Suite",
-            )
-        }
-        api.logging().logToOutput("MCP request action source access granted: ${validated.ref.source.serialName()}")
-
-        return when (validated.ref.source) {
-            HttpMessageSource.PROXY -> {
-                val item = api.proxy().history { it.id() == validated.numericId }.firstOrNull()
-                    ?: return notFound(currentProjectId)
-                val request = item.request() ?: return requestUnavailable(currentProjectId)
-                Resolution.Found(
-                    ResolvedHttpMessage(validated.ref, request, item.response(), null),
-                )
-            }
-
-            HttpMessageSource.ORGANIZER -> {
-                val item = api.organizer().items { it.id() == validated.numericId }.firstOrNull()
-                    ?: return notFound(currentProjectId)
-                val request = item.request() ?: return requestUnavailable(currentProjectId)
-                Resolution.Found(
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item),
-                )
-            }
-
-            HttpMessageSource.SITE_MAP -> {
-                val parsed = requireNotNull(parsedSiteMapId)
-                val item = api.siteMap().requestResponses().getOrNull(parsed.index)
-                    ?: return notFound(currentProjectId)
-                if (stableSiteMapId(currentProjectId, parsed.index, item) != validated.ref.id) {
-                    return notFound(currentProjectId)
-                }
-                val request = item.request() ?: return requestUnavailable(currentProjectId)
-                Resolution.Found(
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item),
-                )
-            }
-        }
-    }
-
-    private fun notFound(projectId: String) = Resolution.Failed(
-        HttpMessageActionStatus.NOT_FOUND,
-        projectId,
-        "HTTP message reference was not found or changed after it was issued",
-    )
-
-    private fun requestUnavailable(projectId: String) = Resolution.Failed(
-        HttpMessageActionStatus.REQUEST_UNAVAILABLE,
-        projectId,
-        "HTTP message exists but its request is unavailable",
-    )
-
-    private fun validateCommon(
+    private suspend fun resolveSafely(
         projectId: String,
         ref: HttpMessageReference,
-    ): ValidatedReference? {
-        if (projectId.isEmpty() || projectId.length > MAX_ACTION_PROJECT_ID_CHARS || projectId.any(Char::isISOControl)) {
-            return null
+    ): HttpMessageBatchResolution = resolver.resolve(projectId, ref)
+
+    private fun recheckProject(
+        expectedProjectId: String,
+        ref: HttpMessageReference,
+        destination: HttpMessageActionDestination,
+    ): HttpMessageActionResult? {
+        val currentProjectId = try {
+            api.project().id()
+        } catch (e: Exception) {
+            return burpError(expectedProjectId, ref, destination, e)
         }
-        if (ref.id.isEmpty() || ref.id.length > MAX_ACTION_ID_CHARS || ref.id.any(Char::isISOControl)) return null
-        val numericId = if (ref.source == HttpMessageSource.SITE_MAP) null else ref.id.toIntOrNull()?.takeIf { it >= 0 }
-        return ValidatedReference(projectId, ref, numericId)
+        if (currentProjectId == expectedProjectId) return null
+        return HttpMessageActionResult(
+            status = HttpMessageActionStatus.PROJECT_MISMATCH,
+            executionState = HttpMessageExecutionState.NOT_STARTED,
+            projectId = currentProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+            ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
+            destination = destination,
+            error = "Burp project changed before the request action executed",
+        )
     }
 
     private suspend fun approveNetworkAction(
         resolved: ResolvedHttpMessage,
         patched: PatchedRequest,
     ): Boolean {
-        val service = patched.request.httpService()
+        val service = patched.service
         if (config.requireRequestActionApproval) {
             return approveRoutingAction(HttpMessageActionDestination.HTTP, resolved, patched)
         }
@@ -595,14 +552,15 @@ internal class HttpMessageActionService(
         destination: HttpMessageActionDestination,
         resolved: ResolvedHttpMessage,
         patched: PatchedRequest,
+        changes: String = patched.summary,
     ): Boolean {
         if (!config.requireRequestActionApproval) return true
-        val service = patched.request.httpService()
+        val service = patched.service
         return RequestActionSecurity.checkPermission(
             action = destination.approvalLabel(),
             source = "${resolved.ref.source.serialName()}:${resolved.ref.id}",
             target = "${service.host()}:${service.port()} (${if (service.secure()) "HTTPS" else "HTTP"})",
-            changes = patched.summary,
+            changes = changes,
             requestContent = patched.requestContent,
             config = config,
             api = api,
@@ -610,30 +568,10 @@ internal class HttpMessageActionService(
     }
 }
 
-private data class ValidatedReference(
-    val projectId: String,
-    val ref: HttpMessageReference,
-    val numericId: Int?,
-)
-
-private sealed interface Resolution {
-    data class Found(val message: ResolvedHttpMessage) : Resolution
-    data class Failed(
-        val status: HttpMessageActionStatus,
-        val projectId: String?,
-        val error: String,
-    ) : Resolution
-}
-
-private data class ResolvedHttpMessage(
-    val ref: HttpMessageReference,
-    val request: HttpRequest,
-    val response: HttpResponse?,
-    val envelope: MontoyaHttpRequestResponse?,
-)
-
 private class PatchedRequest(
     val request: HttpRequest,
+    val service: HttpService,
+    val target: HttpActionTarget,
     val changed: Boolean,
     val summary: String,
     val requestBytes: Int,
@@ -642,6 +580,7 @@ private class PatchedRequest(
 }
 
 private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): PatchedRequest {
+    val immutableTarget = original.httpService().toActionTarget()
     val originalBytes = requestByteLength(original)
     require(originalBytes <= MAX_ACTION_REQUEST_BYTES) {
         "source request exceeds the $MAX_ACTION_REQUEST_BYTES-byte action limit"
@@ -651,6 +590,7 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
             original,
             false,
             listOf("none (exact source request)"),
+            expectedTarget = immutableTarget,
             knownBytes = originalBytes,
         )
     }
@@ -748,21 +688,32 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
         changes += "replace body (${bytes.size} bytes, sha256:${HexFormat.of().formatHex(digest, 0, 8)})"
     }
 
-    return finalizePatchedRequest(request, changes.isNotEmpty(), changes.ifEmpty { listOf("none (patch was a no-op)") })
+    return finalizePatchedRequest(
+        request,
+        changes.isNotEmpty(),
+        changes.ifEmpty { listOf("none (patch was a no-op)") },
+        expectedTarget = immutableTarget,
+    )
 }
 
 private fun finalizePatchedRequest(
     request: HttpRequest,
     changed: Boolean,
     changes: List<String>,
+    expectedTarget: HttpActionTarget,
     knownBytes: Int? = null,
 ): PatchedRequest {
     val bytes = knownBytes ?: requestByteLength(request)
     require(bytes <= MAX_ACTION_REQUEST_BYTES) {
         "resulting request exceeds the $MAX_ACTION_REQUEST_BYTES-byte action limit"
     }
+    val service = request.httpService()
+    val target = service.toActionTarget()
+    require(target == expectedTarget) { "structured patches must not change the destination service" }
     return PatchedRequest(
         request = request,
+        service = service,
+        target = target,
         changed = changed,
         summary = changes.joinToString("; ").take(2_048),
         requestBytes = bytes,
@@ -894,24 +845,28 @@ private fun HttpMessageActionDestination.approvalLabel(): String = when (this) {
     HttpMessageActionDestination.ORGANIZER -> "send this request to Organizer"
 }
 
-private fun HttpMessageSource.displayNameForAction(): String = when (this) {
-    HttpMessageSource.PROXY -> "Proxy history"
-    HttpMessageSource.SITE_MAP -> "Site Map"
-    HttpMessageSource.ORGANIZER -> "Organizer"
-}
-
 private fun HttpMessageActionService.resolutionFailure(
     ref: HttpMessageReference,
     destination: HttpMessageActionDestination,
-    failure: Resolution.Failed,
+    failure: HttpMessageBatchResolution.Failed,
 ) = HttpMessageActionResult(
-    status = failure.status,
+    status = failure.status.toActionStatus(),
     executionState = HttpMessageExecutionState.NOT_STARTED,
     projectId = failure.projectId,
     ref = ref,
     destination = destination,
     error = failure.error.take(512),
 )
+
+private fun HttpMessageResolutionStatus.toActionStatus(): HttpMessageActionStatus = when (this) {
+    HttpMessageResolutionStatus.ACCESS_DENIED -> HttpMessageActionStatus.ACCESS_DENIED
+    HttpMessageResolutionStatus.INVALID_ARGUMENT -> HttpMessageActionStatus.INVALID_ARGUMENT
+    HttpMessageResolutionStatus.INVALID_ID -> HttpMessageActionStatus.INVALID_ID
+    HttpMessageResolutionStatus.PROJECT_MISMATCH -> HttpMessageActionStatus.PROJECT_MISMATCH
+    HttpMessageResolutionStatus.NOT_FOUND -> HttpMessageActionStatus.NOT_FOUND
+    HttpMessageResolutionStatus.REQUEST_UNAVAILABLE -> HttpMessageActionStatus.REQUEST_UNAVAILABLE
+    HttpMessageResolutionStatus.BURP_ERROR -> HttpMessageActionStatus.BURP_ERROR
+}
 
 private fun invalidArgument(
     projectId: String,
@@ -921,8 +876,8 @@ private fun invalidArgument(
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.INVALID_ARGUMENT,
     executionState = HttpMessageExecutionState.NOT_STARTED,
-    projectId = projectId.take(MAX_ACTION_PROJECT_ID_CHARS),
-    ref = HttpMessageReference(ref.source, ref.id.take(MAX_ACTION_ID_CHARS)),
+    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
     destination = destination,
     error = error.take(512),
 )
@@ -935,8 +890,8 @@ private fun burpError(
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.BURP_ERROR,
     executionState = HttpMessageExecutionState.NOT_STARTED,
-    projectId = projectId.take(MAX_ACTION_PROJECT_ID_CHARS),
-    ref = HttpMessageReference(ref.source, ref.id.take(MAX_ACTION_ID_CHARS)),
+    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
     destination = destination,
     error = "Burp could not prepare the request action: ${safeException(error)}",
 )
@@ -947,17 +902,20 @@ private fun denied(
     destination: HttpMessageActionDestination,
     patched: PatchedRequest,
     tabName: String? = null,
+    changes: String = patched.summary,
+    insertionPointCount: Int? = null,
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.ACTION_DENIED,
     executionState = HttpMessageExecutionState.NOT_STARTED,
     projectId = projectId,
     ref = ref,
     destination = destination,
-    target = patched.request.httpService().toActionTarget(),
+    target = patched.target,
     patchApplied = patched.changed,
-    changes = patched.summary,
+    changes = changes,
     requestBytes = patched.requestBytes,
     tabName = tabName,
+    insertionPointCount = insertionPointCount,
     error = "action denied by Burp Suite",
 )
 
@@ -967,8 +925,11 @@ private fun success(
     destination: HttpMessageActionDestination,
     patched: PatchedRequest,
     tabName: String? = null,
+    changes: String = patched.summary,
+    insertionPointCount: Int? = null,
     response: HttpActionResponseSummary? = null,
     recordedInSiteMap: Boolean? = null,
+    recordedRef: HttpMessageReference? = null,
     preservedResponseInOrganizer: Boolean? = null,
     error: String? = null,
 ) = HttpMessageActionResult(
@@ -977,13 +938,15 @@ private fun success(
     projectId = projectId,
     ref = ref,
     destination = destination,
-    target = patched.request.httpService().toActionTarget(),
+    target = patched.target,
     patchApplied = patched.changed,
-    changes = patched.summary,
+    changes = changes,
     requestBytes = patched.requestBytes,
     tabName = tabName,
+    insertionPointCount = insertionPointCount,
     response = response,
     recordedInSiteMap = recordedInSiteMap,
+    recordedRef = recordedRef,
     preservedResponseInOrganizer = preservedResponseInOrganizer,
     error = error?.take(512),
 )
@@ -995,17 +958,20 @@ private fun uncertain(
     patched: PatchedRequest,
     error: Exception,
     tabName: String? = null,
+    changes: String = patched.summary,
+    insertionPointCount: Int? = null,
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.EXECUTION_UNCERTAIN,
     executionState = HttpMessageExecutionState.UNCERTAIN,
     projectId = projectId,
     ref = ref,
     destination = destination,
-    target = patched.request.httpService().toActionTarget(),
+    target = patched.target,
     patchApplied = patched.changed,
-    changes = patched.summary,
+    changes = changes,
     requestBytes = patched.requestBytes,
     tabName = tabName,
+    insertionPointCount = insertionPointCount,
     error = safeException(error),
 )
 
@@ -1024,8 +990,7 @@ private fun auditLine(
     patched: PatchedRequest,
     outcome: String,
 ): String {
-    val target = patched.request.httpService()
     return "MCP request action: destination=${destination.name.lowercase()} source=${resolved.ref.source.name.lowercase()}:" +
-        "${resolved.ref.id.take(MAX_ACTION_ID_CHARS)} target=${target.host().take(MAX_HTTP_SEARCH_HOST_CHARS)}:" +
-        "${target.port()} requestBytes=${patched.requestBytes} patchApplied=${patched.changed} outcome=$outcome"
+        "${resolved.ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)} target=${patched.target.host}:" +
+        "${patched.target.port} requestBytes=${patched.requestBytes} patchApplied=${patched.changed} outcome=$outcome"
 }

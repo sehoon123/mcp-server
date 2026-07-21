@@ -75,6 +75,16 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             }
         }
 
+    private var _alwaysAllowCollaboratorInteractions by storage.boolean(false)
+    var alwaysAllowCollaboratorInteractions: Boolean
+        get() = _alwaysAllowCollaboratorInteractions
+        set(value) {
+            if (_alwaysAllowCollaboratorInteractions != value) {
+                _alwaysAllowCollaboratorInteractions = value
+                notifyDataAccessChanged()
+            }
+        }
+
     var filterConfigCredentials by storage.boolean(true)
 
     private var _autoApproveTargets by storage.stringList("")

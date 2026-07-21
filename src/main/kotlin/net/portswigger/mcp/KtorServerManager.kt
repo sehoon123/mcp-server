@@ -14,6 +14,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.tools.ToolServices
 import net.portswigger.mcp.tools.registerTools
 import java.net.URI
 import java.util.concurrent.ExecutorService
@@ -69,6 +70,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
+    private val toolServices = ToolServices(api)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
@@ -85,7 +87,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                         )
                     )
                 )
-                newMcpServer.registerTools(api, config)
+                newMcpServer.registerTools(api, config, toolServices)
                 mcpServer = newMcpServer
 
                 val newEngine = embeddedServer(Netty, port = config.port, host = config.host) {
