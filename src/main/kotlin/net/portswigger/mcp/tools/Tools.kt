@@ -8,6 +8,7 @@ import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpHeader
+import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.organizer.OrganizerItem
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
@@ -45,6 +46,9 @@ private suspend fun checkDataAccessOrDeny(
     api.logging().logToOutput("MCP $logMessage access granted")
     return true
 }
+
+private fun String?.matchesCurrentProject(api: MontoyaApi): Boolean =
+    this == null || this == api.project().id()
 
 private fun truncateIfNeeded(serialized: String): String {
     return if (serialized.length > 5000) {
@@ -127,6 +131,7 @@ private fun normalizePrelude(prelude: String): String = prelude
     .replace("\n", "\r\n")      // All LF → proper CRLF
 
 fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
+    val httpMessageSearchService = HttpMessageSearchService(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = HttpRequestSecurity.checkHttpRequestPermission(targetHostname, targetPort, config, content, api)
@@ -141,6 +146,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         val response = api.http().sendRequest(request)
+        recordHttpResponseInSiteMap(api, response)
 
         response?.toString() ?: "<no response>"
     }
@@ -178,6 +184,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
         val response = api.http().sendRequest(request, HttpMode.HTTP_2)
+        recordHttpResponseInSiteMap(api, response)
 
         response?.toString() ?: "<no response>"
     }
@@ -286,7 +293,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         }
 
         mcpStructuredTool<GetScannerIssueById, ScannerIssueReadResult>(
-            description = "Reads one Scanner issue by its stable issue ID. Select metadata, detail, remediation, evidence_request, or evidence_response. Evidence content is byte-paginated and can be returned as text or base64.",
+            description = "Reads one Scanner issue by its stable issue ID. Pass projectId when it is available to reject cross-project IDs. Select metadata, detail, remediation, evidence_request, or evidence_response. Evidence content is byte-paginated and can be returned as text or base64.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
             val normalizedField = normalizeScannerIssueField(field)
@@ -299,6 +306,14 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                     id = id,
                     field = normalizedField,
                     error = "Scanner issue access denied by Burp Suite",
+                )
+            }
+            if (!projectId.matchesCurrentProject(api)) {
+                return@mcpStructuredTool ScannerIssueReadResult(
+                    status = HistoryReadStatus.PROJECT_MISMATCH,
+                    id = id,
+                    field = normalizedField,
+                    error = "Scanner issue ID belongs to a different Burp project",
                 )
             }
             val issue = api.siteMap().issues().firstOrNull { it.stableHistoryId() == id }
@@ -351,6 +366,20 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 }
             }
         }
+    }
+
+    mcpStructuredTool<SearchHttpMessages, SearchHttpMessagesResult>(
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Read a result with get_sitemap_message_by_id for source=site_map, get_http_message_by_id for source=proxy, or get_organizer_item_by_id for source=organizer.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageSearchService.search(this)
+    }
+
+    mcpStructuredTool<GetSitemapMessageById, SiteMapMessageReadResult>(
+        description = "Reads one Site Map message returned by search_http_messages. projectId and id must be copied from the search result. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and supports text or base64.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageSearchService.readSiteMapMessage(this)
     }
 
     mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
@@ -416,7 +445,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<GetOrganizerItemById, HttpMessageReadResult>(
-        description = "Reads one Organizer item by its stable Burp ID. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
+        description = "Reads one Organizer item by its stable Burp ID. Pass projectId from search_http_messages to reject cross-project IDs. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         val normalizedPart = normalizeHttpPart(part)
@@ -429,6 +458,14 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 id = id,
                 part = normalizedPart,
                 error = "Organizer access denied by Burp Suite",
+            )
+        }
+        if (!projectId.matchesCurrentProject(api)) {
+            return@mcpStructuredTool HttpMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = id,
+                part = normalizedPart,
+                error = "Organizer item ID belongs to a different Burp project",
             )
         }
 
@@ -474,7 +511,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<GetHttpMessageById, HttpMessageReadResult>(
-        description = "Reads one proxy HTTP history item by its stable Burp ID. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
+        description = "Reads one proxy HTTP history item by its stable Burp ID. Pass projectId from search_http_messages to reject cross-project IDs. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         val normalizedPart = normalizeHttpPart(part)
@@ -489,6 +526,14 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 error = "HTTP history access denied by Burp Suite",
             )
         }
+        if (!projectId.matchesCurrentProject(api)) {
+            return@mcpStructuredTool HttpMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = id,
+                part = normalizedPart,
+                error = "HTTP history ID belongs to a different Burp project",
+            )
+        }
 
         val item = api.proxy().history().firstOrNull { it.id() == id }
             ?: return@mcpStructuredTool HttpMessageReadResult(
@@ -501,7 +546,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(
-        description = "Reads one proxy WebSocket payload by its stable Burp ID. Content is byte-paginated and can be returned as text or base64.",
+        description = "Reads one proxy WebSocket payload by its stable Burp ID. Pass projectId when it is available to reject cross-project IDs. Content is byte-paginated and can be returned as text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         val normalizedOffset = normalizeHistoryOffset(offset)
@@ -518,6 +563,14 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 status = HistoryReadStatus.ACCESS_DENIED,
                 id = id,
                 error = "WebSocket history access denied by Burp Suite",
+            )
+        }
+
+        if (!projectId.matchesCurrentProject(api)) {
+            return@mcpStructuredTool WebSocketMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = id,
+                error = "WebSocket history ID belongs to a different Burp project",
             )
         }
 
@@ -560,6 +613,16 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         editor.text = text
 
         "Editor text has been set"
+    }
+}
+
+private fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?) {
+    if (response == null) return
+    try {
+        api.siteMap().add(response)
+    } catch (_: Exception) {
+        // The request may already have changed server state. Never turn a local recording failure into a retryable tool error.
+        api.logging().logToError("MCP request completed, but its response could not be added to Site Map")
     }
 }
 
@@ -718,6 +781,7 @@ data class GetProxyWebsocketHistoryRegex(
 @Serializable
 data class GetHttpMessageById(
     val id: Int,
+    val projectId: String? = null,
     val part: String? = null,
     val offset: Int? = null,
     val limit: Int? = null,
@@ -727,6 +791,7 @@ data class GetHttpMessageById(
 @Serializable
 data class GetWebsocketMessageById(
     val id: Int,
+    val projectId: String? = null,
     val edited: Boolean? = null,
     val offset: Int? = null,
     val limit: Int? = null,
@@ -736,6 +801,7 @@ data class GetWebsocketMessageById(
 @Serializable
 data class GetOrganizerItemById(
     val id: Int,
+    val projectId: String? = null,
     val part: String? = null,
     val offset: Int? = null,
     val limit: Int? = null,
@@ -745,6 +811,7 @@ data class GetOrganizerItemById(
 @Serializable
 data class GetScannerIssueById(
     val id: String,
+    val projectId: String? = null,
     val field: String? = null,
     val evidenceIndex: Int? = null,
     val offset: Int? = null,

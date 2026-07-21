@@ -28,7 +28,8 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
 - HTTP/1.1 and HTTP/2 request tools with target approval controls
-- Proxy, WebSocket, Organizer, and Scanner summaries with stable IDs and bounded detail reads
+- Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
+- Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Repeater, Intruder, Organizer, Scanner, and Collaborator integrations
 - Project and user configuration tools with credential filtering
 - URL/Base64 utilities and random data generation
@@ -71,11 +72,36 @@ Open the **MCP** tab in Burp:
 
 - Enable or stop the MCP server.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
-- Configure approval requirements for outbound HTTP requests and access to sensitive Burp data.
+- Configure approval requirements for outbound HTTP requests and access to sensitive Burp data, including Site Map items.
 - Enable configuration-editing tools only when they are required.
 
 The default loopback binding is recommended. Do not expose the endpoint to another network until authentication and
 TLS are configured in front of it.
+
+## Unified HTTP search
+
+Use `search_http_messages` to search compact HTTP metadata. It searches Proxy history by default; set `sources` to any
+combination of `proxy`, `site_map`, and `organizer` to search those stores in a fixed order. Available filters include
+exact host, literal path or request/response content, methods, status codes, MIME types, in-scope state, and response
+presence. Results default to newest-first within each source.
+
+The default page size is 25 and the maximum is 50. If `hasMore` is true, call the tool again with only `nextCursor`
+(and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original query, and preserve
+the source sizes seen by the first page. Appended traffic does not leak into an existing snapshot; cleared or reordered
+sources return `stale_cursor` instead of silently skipping or duplicating records. Cursors are intentionally invalidated
+when the MCP server restarts.
+
+Each result contains the current Burp `projectId` and a `{source, id}` reference. Use:
+
+- `get_http_message_by_id` with the numeric ID when `source` is `proxy`
+- `get_organizer_item_by_id` with the numeric ID when `source` is `organizer`
+- `get_sitemap_message_by_id` with both `projectId` and the opaque ID when `source` is `site_map`
+
+Search work is bounded per call to 10,000 metadata records. Literal content searches additionally inspect at most
+32 MiB of message data; individually oversized messages are counted in `oversizedContentSkipped`. URLs, notes, result
+counts, cursor sizes, and detail reads are also bounded. Successful requests issued through `send_http1_request` or
+`send_http2_request` are added to Burp's Site Map on a best-effort basis without changing the already-completed request
+result if local recording fails.
 
 ## Stable history access
 
@@ -90,7 +116,7 @@ Use the corresponding read tool to fetch only the required record and field:
 - `get_organizer_item_by_id`
 - `get_scanner_issue_by_id` (Burp Professional)
 
-HTTP and Organizer reads support `metadata`, complete request/response messages, headers, or bodies. Scanner reads
+HTTP, Site Map, and Organizer reads support `metadata`, complete request/response messages, headers, or bodies. Scanner reads
 support metadata, detail, remediation, and individual evidence request/response messages. Content reads use byte
 offsets, default to 32 KiB, and are capped at 256 KiB per call. Responses include `totalBytes`, `hasMore`, and
 `nextOffsetBytes`; repeat the call with the next offset to retrieve the complete field. Use `encoding: "base64"` for

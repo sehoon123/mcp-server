@@ -52,9 +52,15 @@ fun getJsonSchemaForProperty(kType: kotlin.reflect.KType): JsonElement {
 }
 
 @OptIn(ExperimentalSerializationApi::class)
-fun SerialDescriptor.asOutputSchema(): ToolSchema {
+fun SerialDescriptor.asInputSchema(): ToolSchema = asToolSchema("input")
+
+@OptIn(ExperimentalSerializationApi::class)
+fun SerialDescriptor.asOutputSchema(): ToolSchema = asToolSchema("output")
+
+@OptIn(ExperimentalSerializationApi::class)
+private fun SerialDescriptor.asToolSchema(schemaRole: String): ToolSchema {
     require(kind == StructureKind.CLASS || kind == StructureKind.OBJECT) {
-        "Tool output must serialize as an object, but $serialName uses $kind"
+        "Tool $schemaRole must serialize as an object, but $serialName uses $kind"
     }
     val properties = buildMap {
         for (index in 0 until elementsCount) {

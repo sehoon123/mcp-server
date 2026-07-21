@@ -14,7 +14,8 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Result-size limits are applied after full message conversion and JSON serialization | Large request/response bodies are converted before the 5,000-character cut | Address with bounded structured output in the feature phase |
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
 | P1 | Build metadata and post-build `jar uf` mutation made extension bytes change on every build | Identical sources produced artifacts with different timestamps and manifest values | Package the proxy through Gradle's reproducible archive pipeline and verify embedded provenance |
-| P2 | User-supplied Java regexes scan complete Burp histories and have no time budget | A pathological pattern can monopolize CPU | Add safe search modes or a bounded regex policy in the feature phase |
+| P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
+| P2 | Legacy user-supplied Java regexes scan complete Burp histories and have no time budget | A pathological pattern can monopolize CPU | Migrate clients to bounded literal search and add a constrained regex policy |
 
 ## Pagination probe
 
@@ -108,6 +109,24 @@ failures because the current message has not been sent. After send, only a defin
 TCP connection, or an initialization-only transient failure is retried. Arbitrary and custom requests are not retried
 after parser, transport, or server failures whose delivery status is ambiguous.
 
+## Bounded unified HTTP search
+
+`search_http_messages` takes one source snapshot per call and applies metadata filters before notes, stable Site Map
+fingerprints, or result serialization. A page returns at most 50 compact records. Work that finds few or no matches is
+also bounded: each call examines at most 10,000 metadata records, and literal request/response searches inspect at most
+32 MiB of message data. A single message larger than that content budget is advanced past and reported through
+`oversizedContentSkipped`, preventing an infinite cursor loop.
+
+The continuation cursor records the next raw source index rather than a count of matched results. Deep pages therefore
+resume filtering where the previous page stopped instead of rescanning all earlier candidates. Cursors are HMAC-signed,
+query- and project-bound, and capture source sizes plus boundary anchors. Appended records are excluded from an active
+snapshot; a cleared or boundary-reordered source fails with `stale_cursor`. Montoya still creates each requested source
+list, but skipped records are never converted to JSON or full byte arrays.
+
+Site Map IDs combine the original list index with a bounded identity fingerprint. Normal lookup validates that index in
+O(1); it does not hash every Site Map message. Fingerprints sample bounded request/response metadata and body regions,
+so very large bodies do not cause proportional ID-generation allocation.
+
 ## Reproducible packaging
 
 The extension manifest previously included build time, user, JDK, and Gradle fields, and `embedProxyJar` mutated the
@@ -123,11 +142,11 @@ complete HTTP/WebSocket messages, return MCP structured content, and expose expl
 following work remains:
 
 1. Cap or validate legacy pagination `count` and `offset` to prevent unbounded output requests.
-2. Add cursor pagination with deterministic snapshot semantics and a project context identifier.
+2. Migrate legacy source-specific list tools to the signed cursor model.
 3. Make compact summaries the default after a compatibility window and remove silent legacy 5,000-character truncation.
 4. Paginate and bound Collaborator interaction output.
 5. Add configurable hard request timeouts and cancellation without breaking long approval waits.
-6. Add safe literal/field search and a constrained regex mode.
+6. Add a constrained regex mode; new unified search intentionally supports bounded literal matching only.
 7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
 
 ## Regression checks
@@ -135,6 +154,8 @@ following work remains:
 Performance changes should preserve the following:
 
 - Only selected page items invoke serialization.
+- Unified search never exceeds its result, metadata-scan, content-scan, cursor, URL, or note bounds.
+- Signed search cursors reject tampering, project changes, and stale source boundaries.
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
 - Server stop/restart closes all SDK sessions.
 - Proxy graceful shutdown sends DELETE when a session exists, but never blocks shutdown for more than two seconds.

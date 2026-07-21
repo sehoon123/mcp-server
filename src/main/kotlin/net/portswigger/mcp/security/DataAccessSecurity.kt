@@ -7,6 +7,7 @@ import javax.swing.SwingUtilities
 
 enum class DataAccessType {
     HTTP_HISTORY,
+    SITE_MAP,
     WEBSOCKET_HISTORY,
     ORGANIZER,
     SCANNER_ISSUES,
@@ -26,6 +27,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
 
                 val accessTypeName = when (accessType) {
                     DataAccessType.HTTP_HISTORY -> "HTTP history"
+                    DataAccessType.SITE_MAP -> "Site Map items"
                     DataAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
                     DataAccessType.ORGANIZER -> "Organizer items"
                     DataAccessType.SCANNER_ISSUES -> "Scanner issues"
@@ -53,6 +55,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                     1 -> {
                         when (accessType) {
                             DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory = true
+                            DataAccessType.SITE_MAP -> config.alwaysAllowSiteMap = true
                             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
                             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer = true
                             DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues = true
@@ -80,6 +83,7 @@ object DataAccessSecurity {
 
         val isAlwaysAllowed = when (accessType) {
             DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory
+            DataAccessType.SITE_MAP -> config.alwaysAllowSiteMap
             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory
             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer
             DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues

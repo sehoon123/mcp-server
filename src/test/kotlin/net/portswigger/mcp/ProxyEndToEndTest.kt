@@ -2,6 +2,7 @@ package net.portswigger.mcp
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.Annotations
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
@@ -165,9 +166,13 @@ class ProxyEndToEndTest {
         val proxy = mockk<Proxy>()
         val item = mockk<ProxyHttpRequestResponse>()
         val request = mockk<HttpRequest>()
+        val body = mockk<MontoyaByteArray>()
         val service = mockk<burp.api.montoya.http.HttpService>()
         val annotations = mockk<Annotations>()
+        val project = mockk<burp.api.montoya.project.Project>()
         every { api.proxy() } returns proxy
+        every { api.project() } returns project
+        every { project.id() } returns "proxy-e2e-project"
         every { proxy.history() } returns listOf(item)
         every { item.id() } returns 42
         every { item.request() } returns request
@@ -179,6 +184,10 @@ class ProxyEndToEndTest {
         every { item.annotations() } returns annotations
         every { request.method() } returns "GET"
         every { request.url() } returns "https://example.test/"
+        every { request.path() } returns "/"
+        every { request.isInScope() } returns true
+        every { request.body() } returns body
+        every { body.length() } returns 0
         every { service.host() } returns "example.test"
         every { service.port() } returns 443
         every { service.secure() } returns true
@@ -188,6 +197,11 @@ class ProxyEndToEndTest {
             val result = client.callTool("get_http_message_by_id", mapOf("id" to 42))
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("42", result?.structuredContent?.get("id")?.jsonPrimitive?.content)
+
+            val search = client.callTool("search_http_messages", mapOf("host" to "example.test"))
+            assertEquals("ok", search?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("proxy-e2e-project", search?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+            assertTrue(search?.structuredContent?.get("items").toString().contains("\"id\":\"42\""))
         }
     }
 

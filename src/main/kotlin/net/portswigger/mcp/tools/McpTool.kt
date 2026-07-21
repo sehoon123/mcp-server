@@ -209,7 +209,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
     val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
     val inputSerializer = I::class.serializer()
     val outputSerializer = O::class.serializer()
-    val inputSchema = I::class.asInputSchema()
+    val inputSchema = inputSerializer.descriptor.asInputSchema()
     val outputSchema = outputSerializer.descriptor.asOutputSchema()
 
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, request ->

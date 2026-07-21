@@ -16,6 +16,7 @@ class ServerConfigurationPanel(
 ) : JPanel() {
 
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
+    private lateinit var alwaysAllowSiteMapCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
@@ -73,6 +74,12 @@ class ServerConfigurationPanel(
         add(alwaysAllowHttpHistoryCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
+        alwaysAllowSiteMapCheckBox = createIndentedCheckBox(
+            "Always allow Site Map access", config.alwaysAllowSiteMap, config.requireDataAccessApproval
+        ) { config.alwaysAllowSiteMap = it }
+        add(alwaysAllowSiteMapCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
         alwaysAllowWebSocketHistoryCheckBox = createIndentedCheckBox(
             "Always allow WebSocket history access",
             config.alwaysAllowWebSocketHistory,
@@ -128,15 +135,18 @@ class ServerConfigurationPanel(
             config.requireDataAccessApproval = enabled
             if (!enabled) {
                 config.alwaysAllowHttpHistory = false
+                config.alwaysAllowSiteMap = false
                 config.alwaysAllowWebSocketHistory = false
                 config.alwaysAllowOrganizer = false
                 config.alwaysAllowScannerIssues = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
+                alwaysAllowSiteMapCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
                 alwaysAllowOrganizerCheckBox.isSelected = false
                 alwaysAllowScannerIssuesCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
+            alwaysAllowSiteMapCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
             alwaysAllowOrganizerCheckBox.isEnabled = enabled
             alwaysAllowScannerIssuesCheckBox.isEnabled = enabled
@@ -146,6 +156,7 @@ class ServerConfigurationPanel(
     fun updateDataAccessCheckboxes() {
         SwingUtilities.invokeLater {
             alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
+            alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
             alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues

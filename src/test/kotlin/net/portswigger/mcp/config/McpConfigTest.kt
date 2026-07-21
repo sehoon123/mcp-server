@@ -273,6 +273,15 @@ class McpConfigTest {
     }
 
     @Test
+    fun `always allow Site Map should persist correctly`() {
+        assertFalse(config.alwaysAllowSiteMap)
+
+        config.alwaysAllowSiteMap = true
+        assertTrue(config.alwaysAllowSiteMap)
+        verify { persistedObject.setBoolean("_alwaysAllowSiteMap", true) }
+    }
+
+    @Test
     fun `always allow Scanner issues should persist correctly`() {
         assertFalse(config.alwaysAllowScannerIssues)
 

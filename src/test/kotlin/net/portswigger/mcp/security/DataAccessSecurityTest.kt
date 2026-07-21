@@ -51,6 +51,33 @@ class DataAccessSecurityTest {
     }
 
     @Test
+    fun `Site Map reads require approval unless explicitly allowed`() = runBlocking {
+        val values = mutableMapOf<String, Any>("requireDataAccessApproval" to true)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { values[firstArg()] as? Boolean ?: false }
+        every { storage.setBoolean(any(), any()) } answers {
+            values[firstArg()] = secondArg<Boolean>()
+        }
+        every { storage.getString(any()) } returns ""
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        var approvalRequests = 0
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                approvalRequests++
+                assertTrue(accessType == DataAccessType.SITE_MAP)
+                return false
+            }
+        }
+
+        assertFalse(DataAccessSecurity.checkDataAccessPermission(DataAccessType.SITE_MAP, config))
+        assertTrue(approvalRequests == 1)
+
+        config.alwaysAllowSiteMap = true
+        assertTrue(DataAccessSecurity.checkDataAccessPermission(DataAccessType.SITE_MAP, config))
+        assertTrue(approvalRequests == 1)
+    }
+
+    @Test
     fun `Scanner issue reads require approval unless explicitly allowed`() = runBlocking {
         val values = mutableMapOf<String, Any>("requireDataAccessApproval" to true)
         val storage = mockk<PersistedObject>(relaxed = true)

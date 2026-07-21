@@ -44,14 +44,18 @@ Implemented foundation:
 
 - Optional compact summaries expose project-scoped HTTP, WebSocket, Organizer, and deterministic Scanner issue IDs.
 - ID lookup tools support explicit message/field selection and byte-exact base64 reads.
-- Per-call limits are bounded and every slice reports its total size and next offset.
+- Unified HTTP search covers Proxy history, Site Map, and Organizer with structured filters and compact references.
+- Search cursors are signed, project-bound, query-bound, and preserve append-only snapshot sizes while detecting cleared
+  or reordered source boundaries.
+- Search results expose Burp's project ID; detail readers can reject identifiers copied from another project.
+- Per-call scan, content, result, cursor, URL, note, and byte-slice limits are bounded.
 - New read tools return MCP structured content, output schemas, and safety annotations.
 
 Remaining work:
 
 - Make summary mode the default after a compatibility window and remove silent legacy 5,000-character truncation.
-- Add cursor pagination with deterministic ordering and snapshot semantics.
-- Persist a project context identifier so clients can detect IDs from a different Burp project.
+- Migrate the legacy source-specific list tools from offset pagination to the signed cursor model.
+- Add event-backed indexes for frequent ID lookups without retaining unbounded message objects.
 
 ### 4. Standardize structured results and errors
 
@@ -80,7 +84,7 @@ Remaining work:
 
 ### 6. Expose read-heavy Burp data as resources
 
-Resources reduce the number of custom tools and give clients addressable data:
+Resources can reuse the project-scoped resolver introduced by unified HTTP search and reduce the number of custom tools:
 
 ```text
 burp://proxy/history/{requestId}
@@ -141,13 +145,14 @@ Long-running operations should not look like hung calls.
 
 | Order | Change | Benefit | Risk/effort |
 |---|---|---|---|
-| 1 | Stable IDs, field selection, configurable limits | High token and reliability improvement | Medium |
-| 2 | Tool annotations, read-only mode, audit log | High safety improvement | Medium |
-| 3 | Structured outputs and error taxonomy | Better interoperability | Medium |
-| 4 | Reproducible proxy build and SBOM | Supply-chain confidence | Low–medium |
-| 5 | Resources for history and issues | More MCP-native API | Medium |
-| 6 | Progress, cancellation, and tasks | Better long-operation UX | Medium–high |
-| 7 | Authenticated remote mode | Enables remote clients safely | High |
+| 1 | Unified HTTP search, Site Map reads, project-scoped references | High daily-use and token improvement; implemented | Medium |
+| 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer | Completes the most common testing workflow | Medium |
+| 3 | Scope query and management | Safety prerequisite for active automation | Low–medium |
+| 4 | Focused audit, crawl, and Scanner task lifecycle | High Professional-edition value | High |
+| 5 | Structured comparison and bounded request variants | Efficient auth and behavior analysis | Medium–high |
+| 6 | Collaborator wait tasks and bounded interaction reads | Better OOB workflow | Medium |
+| 7 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
+| 8 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
 
 ## Design constraints
 

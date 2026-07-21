@@ -28,6 +28,16 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
             }
         }
 
+    private var _alwaysAllowSiteMap by storage.boolean(false)
+    var alwaysAllowSiteMap: Boolean
+        get() = _alwaysAllowSiteMap
+        set(value) {
+            if (_alwaysAllowSiteMap != value) {
+                _alwaysAllowSiteMap = value
+                notifyDataAccessChanged()
+            }
+        }
+
     private var _alwaysAllowWebSocketHistory by storage.boolean(false)
     var alwaysAllowWebSocketHistory: Boolean
         get() = _alwaysAllowWebSocketHistory

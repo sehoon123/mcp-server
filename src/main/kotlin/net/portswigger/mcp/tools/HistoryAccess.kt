@@ -15,7 +15,7 @@ import kotlin.math.min
 
 internal const val DEFAULT_HISTORY_SLICE_BYTES = 32 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
-private const val MAX_NOTES_CHARS = 2_000
+internal const val MAX_NOTES_CHARS = 2_000
 private val HTTP_MESSAGE_PARTS = setOf(
     "metadata",
     "request",
@@ -100,6 +100,9 @@ enum class HistoryReadStatus {
 
     @SerialName("not_found")
     NOT_FOUND,
+
+    @SerialName("project_mismatch")
+    PROJECT_MISMATCH,
 
     @SerialName("part_unavailable")
     PART_UNAVAILABLE,
@@ -523,7 +526,7 @@ internal fun normalizeHistoryLimit(limit: Int?): Int {
     return normalized
 }
 
-private fun MontoyaByteArray.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
+internal fun MontoyaByteArray.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
     val totalBytes = length()
     require(offset <= totalBytes) { "offset must not exceed totalBytes ($totalBytes)" }
     val end = min(totalBytes.toLong(), offset.toLong() + limit).toInt()

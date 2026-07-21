@@ -71,6 +71,7 @@ class ToolsKtTest {
             every { getBoolean("requireHttpRequestApproval") } returns false
             every { getBoolean("requireDataAccessApproval") } returns false
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
+            every { getBoolean("_alwaysAllowSiteMap") } returns false
             every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
             every { getBoolean("_alwaysAllowOrganizer") } returns false
             every { getBoolean("_alwaysAllowScannerIssues") } returns false
@@ -176,6 +177,7 @@ class ToolsKtTest {
         fun `http1 line endings should be normalized`() {
             val httpService = mockk<Http>()
             val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            val siteMap = mockk<SiteMap>(relaxed = true)
             val contentSlot = slot<String>()
 
             every { HttpRequest.httpRequest(any(), capture(contentSlot)) } answers {
@@ -185,6 +187,7 @@ class ToolsKtTest {
                 }
             }
             every { api.http() } returns httpService
+            every { api.siteMap() } returns siteMap
             every { httpResponse.toString() } returns "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
             every { httpService.sendRequest(capture(capturedRequest)) } returns httpResponse
 
@@ -205,6 +208,7 @@ class ToolsKtTest {
             }
 
             verify(exactly = 1) { httpService.sendRequest(any<HttpRequest>()) }
+            verify(exactly = 1) { siteMap.add(httpResponse) }
             assertEquals("GET /foo HTTP/1.1\r\nHost: example.com\r\n\r\n", capturedRequest.captured.toString(), "Request body should match")
         }
 
@@ -234,6 +238,42 @@ class ToolsKtTest {
 
                 delay(100)
                 result.expectTextContent("<no response>")
+            }
+        }
+
+        @Test
+        fun `Site Map recording failure does not make a completed HTTP request retryable`() {
+            val http = mockk<Http>()
+            val response = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            val siteMap = mockk<SiteMap>()
+            val apiLogging = mockk<Logging>(relaxed = true)
+
+            every { HttpRequest.httpRequest(any(), any<String>()) } returns mockk()
+            every { api.http() } returns http
+            every { api.siteMap() } returns siteMap
+            every { api.logging() } returns apiLogging
+            every { http.sendRequest(any()) } returns response
+            every { response.toString() } returns "HTTP/1.1 204 No Content"
+            every { siteMap.add(response) } throws IllegalStateException("local Site Map failure")
+
+            runBlocking {
+                val result = client.callTool(
+                    "send_http1_request",
+                    mapOf(
+                        "content" to "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+                        "targetHostname" to "example.com",
+                        "targetPort" to 443,
+                        "usesHttps" to true,
+                    ),
+                )
+
+                result.expectTextContent("HTTP/1.1 204 No Content")
+            }
+
+            verify(exactly = 1) { http.sendRequest(any()) }
+            verify(exactly = 1) { siteMap.add(response) }
+            verify(exactly = 1) {
+                apiLogging.logToError(match<String> { "could not be added to Site Map" in it })
             }
         }
 
@@ -885,6 +925,77 @@ class ToolsKtTest {
                 
                 delay(100)
                 assertEquals("Reached end of items", result3.expectTextContent())
+            }
+        }
+    }
+
+    @Nested
+    inner class HttpMessageSearchToolsTests {
+        @Test
+        fun `unified HTTP search returns structured compact results and precise schemas`() {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val body = mockk<MontoyaByteArray>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val annotations = mockk<Annotations>()
+
+            every { api.project() } returns project
+            every { project.id() } returns "project-integration"
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(item)
+            every { item.id() } returns 81
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { item.httpService() } returns service
+            every { item.annotations() } returns annotations
+            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+            every { item.listenerPort() } returns 8080
+            every { item.edited() } returns false
+            every { request.method() } returns "GET"
+            every { request.url() } returns "https://example.test/search"
+            every { request.path() } returns "/search"
+            every { request.isInScope() } returns true
+            every { request.body() } returns body
+            every { body.length() } returns 0
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { annotations.notes() } returns null
+
+            runBlocking {
+                val result = client.callTool(
+                    "search_http_messages",
+                    mapOf("host" to "example.test", "pathContains" to "/search"),
+                )
+                assertEquals(false, result?.isError)
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("project-integration", result?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+                assertTrue(result?.structuredContent?.get("items").toString().contains("\"id\":\"81\""))
+
+                val wrongProject = client.callTool(
+                    "get_http_message_by_id",
+                    mapOf("id" to 81, "projectId" to "another-project"),
+                )
+                assertEquals(
+                    "project_mismatch",
+                    wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
+                )
+
+                val searchTool = client.listTools().single { it.name == "search_http_messages" }
+                assertEquals(emptyList<String>(), searchTool.inputSchema.required)
+                val sourceSchema = searchTool.inputSchema.properties?.get("sources").toString()
+                assertTrue(sourceSchema.contains("\"proxy\""))
+                assertTrue(sourceSchema.contains("\"site_map\""))
+                assertTrue(sourceSchema.contains("\"organizer\""))
+                assertNotNull(searchTool.outputSchema?.properties?.get("items"))
+                assertEquals(true, searchTool.annotations?.readOnlyHint)
+                assertEquals(false, searchTool.annotations?.destructiveHint)
+
+                val detailTool = client.listTools().single { it.name == "get_sitemap_message_by_id" }
+                assertEquals(setOf("projectId", "id"), detailTool.inputSchema.required?.toSet())
+                assertTrue(detailTool.outputSchema?.properties?.get("status").toString().contains("project_mismatch"))
             }
         }
     }
