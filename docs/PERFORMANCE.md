@@ -175,8 +175,9 @@ including byte-for-byte preservation of body text.
 The extension manifest previously included build time, user, JDK, and Gradle fields, and `embedProxyJar` mutated the
 completed Shadow JAR through the platform `jar` command. Both paths introduced timestamps outside Gradle's reproducible
 archive controls. The proxy and extension now disable file timestamps, use reproducible entry ordering, add the nested
-proxy as a normal Shadow input, and stream-verify the source and embedded SHA-256. Two clean reruns from identical
-inputs must produce byte-identical proxy and extension JARs.
+proxy as a normal Shadow input, and stream-verify the source and embedded SHA-256. Incremental Kotlin compilation is
+disabled because clean and incremental compilation can emit different debug line tables for the same source. A clean
+build and a forced rerun from identical inputs must produce byte-identical proxy and extension JARs.
 
 ## Deferred changes that affect behavior or APIs
 

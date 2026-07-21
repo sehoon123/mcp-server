@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/streamable-http, perf/runtime-optimization, feat/stable-history-access]
+    branches: [main, feat/streamable-http, perf/runtime-optimization, feat/stable-history-access, feat/http-message-search]
 
 permissions:
   contents: read
