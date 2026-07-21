@@ -1,55 +1,75 @@
+import java.io.InputStream
 import java.security.MessageDigest
-import java.time.Instant
+import java.util.zip.ZipFile
 
-abstract class EmbedProxyJarTask : DefaultTask() {
-    @get:InputFile
-    abstract val shadowJarFile: RegularFileProperty
+private object ProxyArtifactVerification {
+    fun expectedHash(metadataFile: File): String = Regex("(?m)^SHA-256: ([a-f0-9]{64})$")
+        .find(metadataFile.readText())?.groupValues?.get(1)
+        ?: throw GradleException("Missing SHA-256 in $metadataFile")
 
+    fun sha256(input: InputStream): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+}
+
+abstract class VerifyProxyJarTask : DefaultTask() {
     @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val proxySourceFile: RegularFileProperty
 
     @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val proxyJarFile: RegularFileProperty
 
-    @get:Inject
-    abstract val execOperations: ExecOperations
-
     @TaskAction
-    fun embedJar() {
-        val shadowJar = shadowJarFile.get().asFile
+    fun verifyJar() {
         val proxyJar = proxyJarFile.get().asFile
-        val libsDir = proxyJar.parentFile
-
-        if (!proxyJar.exists()) {
-            throw GradleException("Proxy JAR not found at: ${proxyJar.absolutePath}")
-        }
-
-        val sourceMetadata = proxySourceFile.get().asFile.readText()
-        val expectedHash = Regex("(?m)^SHA-256: ([a-f0-9]{64})$")
-            .find(sourceMetadata)?.groupValues?.get(1)
-            ?: throw GradleException("Missing SHA-256 in ${proxySourceFile.get().asFile}")
-        val actualHash = MessageDigest.getInstance("SHA-256")
-            .digest(proxyJar.readBytes())
-            .joinToString("") { "%02x".format(it) }
+        val expectedHash = ProxyArtifactVerification.expectedHash(proxySourceFile.get().asFile)
+        val actualHash = proxyJar.inputStream().use(ProxyArtifactVerification::sha256)
         if (actualHash != expectedHash) {
             throw GradleException("Proxy JAR checksum mismatch: expected $expectedHash, got $actualHash")
         }
+    }
+}
 
-        execOperations.exec {
-            commandLine(
-                "jar",
-                "uf",
-                shadowJar.absolutePath,
-                "-C",
-                libsDir.absolutePath,
-                proxyJar.name,
-                "-C",
-                libsDir.absolutePath,
-                proxySourceFile.get().asFile.name
-            )
+abstract class VerifyEmbeddedProxyJarTask : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val extensionJarFile: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val proxySourceFile: RegularFileProperty
+
+    @TaskAction
+    fun verifyEmbeddedJar() {
+        val extensionJar = extensionJarFile.get().asFile
+        val sourceMetadata = proxySourceFile.get().asFile.readText()
+        val expectedHash = ProxyArtifactVerification.expectedHash(proxySourceFile.get().asFile)
+
+        ZipFile(extensionJar).use { zip ->
+            val proxyEntry = zip.getEntry("mcp-proxy-all.jar")
+                ?: throw GradleException("Missing mcp-proxy-all.jar in $extensionJar")
+            val sourceEntry = zip.getEntry("mcp-proxy-source.txt")
+                ?: throw GradleException("Missing mcp-proxy-source.txt in $extensionJar")
+            val embeddedHash = zip.getInputStream(proxyEntry).use(ProxyArtifactVerification::sha256)
+            if (embeddedHash != expectedHash) {
+                throw GradleException("Embedded proxy checksum mismatch: expected $expectedHash, got $embeddedHash")
+            }
+            val embeddedMetadata = zip.getInputStream(sourceEntry).bufferedReader().use { it.readText() }
+            if (embeddedMetadata != sourceMetadata) {
+                throw GradleException("Embedded proxy source metadata does not match ${proxySourceFile.get().asFile}")
+            }
         }
 
-        logger.lifecycle("Embedded proxy JAR into ${shadowJar.name}")
+        logger.lifecycle("Verified embedded proxy in ${extensionJar.name}")
     }
 }
 
@@ -119,22 +139,34 @@ tasks {
         enabled = false
     }
 
+    register<JavaExec>("runConformanceServer") {
+        group = "verification"
+        description = "Runs the production MCP HTTP endpoint with a deterministic conformance fixture"
+        dependsOn(testClasses)
+        classpath = sourceSets["test"].runtimeClasspath
+        mainClass.set("net.portswigger.mcp.ConformanceServerMainKt")
+    }
+
+    val verifyProxyJar = register<VerifyProxyJarTask>("verifyProxyJar") {
+        group = "verification"
+        description = "Verifies the pinned MCP proxy checksum before packaging"
+        proxySourceFile.set(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
+        proxyJarFile.set(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
+    }
+
     shadowJar {
+        dependsOn(verifyProxyJar)
         archiveClassifier.set("")
         mergeServiceFiles()
+        from(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
+        from(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
 
         manifest {
             attributes(
                 mapOf(
                     "Implementation-Title" to project.name,
                     "Implementation-Version" to project.version,
-                    "Implementation-Vendor" to "PortSwigger",
-                    "Built-By" to System.getProperty("user.name"),
-                    "Built-Date" to Instant.now().toString(),
-                    "Built-JDK" to "${System.getProperty("java.version")} (${System.getProperty("java.vendor")} ${
-                        System.getProperty("java.vm.version")
-                    })",
-                    "Created-By" to "Gradle ${gradle.gradleVersion}"
+                    "Implementation-Vendor" to "PortSwigger"
                 )
             )
         }
@@ -152,13 +184,12 @@ tasks {
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     }
 
-    register<EmbedProxyJarTask>("embedProxyJar") {
+    register<VerifyEmbeddedProxyJarTask>("embedProxyJar") {
         group = "build"
-        description = "Embeds the MCP proxy JAR into the shadow JAR"
+        description = "Builds the extension and verifies its embedded MCP proxy"
         dependsOn(shadowJar)
-        shadowJarFile.set(shadowJar.flatMap { it.archiveFile })
+        extensionJarFile.set(shadowJar.flatMap { it.archiveFile })
         proxySourceFile.set(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
-        proxyJarFile.set(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
     }
 
     build {

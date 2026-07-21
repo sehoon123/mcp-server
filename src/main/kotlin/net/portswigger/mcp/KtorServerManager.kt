@@ -20,11 +20,51 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-class KtorServerManager(private val api: MontoyaApi) : ServerManager {
+private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
 
-    private companion object {
-        val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+internal fun Application.configureMcpHttpEndpoint(mcpServer: Server, port: Int) {
+    install(CORS) {
+        allowHost("localhost:$port")
+        allowHost("127.0.0.1:$port")
+        allowOrigins(::isLoopbackOrigin)
+
+        allowMethod(HttpMethod.Options)
+        allowMethod(HttpMethod.Get)
+        allowMethod(HttpMethod.Post)
+        allowMethod(HttpMethod.Delete)
+
+        allowHeader(HttpHeaders.ContentType)
+        allowHeader(HttpHeaders.Accept)
+        allowHeader("Last-Event-ID")
+        allowHeader("Mcp-Session-Id")
+        allowHeader("Mcp-Protocol-Version")
+        exposeHeader("Mcp-Session-Id")
+        exposeHeader("Mcp-Protocol-Version")
+
+        allowCredentials = false
+        allowNonSimpleContentTypes = true
+        maxAgeInSeconds = 3600
     }
+
+    intercept(ApplicationCallPipeline.Call) {
+        call.response.header("X-Frame-Options", "DENY")
+        call.response.header("X-Content-Type-Options", "nosniff")
+        call.response.header("Referrer-Policy", "same-origin")
+        call.response.header("Content-Security-Policy", "default-src 'none'")
+    }
+
+    // All HTTP clients, including the packaged stdio proxy, use the single
+    // Streamable HTTP endpoint. The deprecated two-endpoint SSE transport is removed.
+    mcpStreamableHttp(path = "/mcp") {
+        mcpServer
+    }
+}
+
+private fun isLoopbackOrigin(origin: String): Boolean = runCatching {
+    URI(origin).host?.lowercase() in LOOPBACK_HOSTS
+}.getOrDefault(false)
+
+class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
     private var server: EmbeddedServer<*, *>? = null
@@ -49,41 +89,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                 mcpServer = newMcpServer
 
                 val newEngine = embeddedServer(Netty, port = config.port, host = config.host) {
-                    install(CORS) {
-                        allowHost("localhost:${config.port}")
-                        allowHost("127.0.0.1:${config.port}")
-                        allowOrigins(::isLoopbackOrigin)
-
-                        allowMethod(HttpMethod.Options)
-                        allowMethod(HttpMethod.Get)
-                        allowMethod(HttpMethod.Post)
-                        allowMethod(HttpMethod.Delete)
-
-                        allowHeader(HttpHeaders.ContentType)
-                        allowHeader(HttpHeaders.Accept)
-                        allowHeader("Last-Event-ID")
-                        allowHeader("Mcp-Session-Id")
-                        allowHeader("Mcp-Protocol-Version")
-                        exposeHeader("Mcp-Session-Id")
-                        exposeHeader("Mcp-Protocol-Version")
-
-                        allowCredentials = false
-                        allowNonSimpleContentTypes = true
-                        maxAgeInSeconds = 3600
-                    }
-
-                    intercept(ApplicationCallPipeline.Call) {
-                        call.response.header("X-Frame-Options", "DENY")
-                        call.response.header("X-Content-Type-Options", "nosniff")
-                        call.response.header("Referrer-Policy", "same-origin")
-                        call.response.header("Content-Security-Policy", "default-src 'none'")
-                    }
-
-                    // All HTTP clients, including the packaged stdio proxy, use the single
-                    // Streamable HTTP endpoint. The deprecated two-endpoint SSE transport is removed.
-                    mcpStreamableHttp(path = "/mcp") {
-                        newMcpServer
-                    }
+                    configureMcpHttpEndpoint(newMcpServer, config.port)
                 }
                 server = newEngine
                 newEngine.start(wait = false)
@@ -116,10 +122,6 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
             }
         }
     }
-
-    private fun isLoopbackOrigin(origin: String): Boolean = runCatching {
-        URI(origin).host?.lowercase() in LOOPBACK_HOSTS
-    }.getOrDefault(false)
 
     private fun stopCurrentServer() {
         val currentEngine = server

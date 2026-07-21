@@ -39,7 +39,6 @@ Streamable HTTP, so users do not need to download or install a second component.
 ### Requirements
 
 - JDK 21 or newer
-- The `jar` command available on `PATH`
 
 ### Build
 
@@ -61,7 +60,8 @@ When updating the companion proxy, build and record it reproducibly with:
 ./scripts/update-proxy.sh ../mcp-proxy
 ```
 
-`embedProxyJar` verifies the SHA-256 recorded in `libs/mcp-proxy-source.txt` before packaging.
+`embedProxyJar` verifies the pinned source checksum and the copy inside the completed extension. Proxy and extension
+archives use normalized timestamps and stable entry ordering so identical inputs produce byte-identical JARs.
 
 Load the final JAR in Burp through **Extensions → Installed → Add → Java**.
 
@@ -133,6 +133,9 @@ The proxy source is maintained in the companion fork:
 
 Tools are defined in `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt`. Parameters use serializable data classes;
 tool names and JSON schemas are derived from those types. Implement `Paginated` for potentially large result sets.
+
+CI also runs the official MCP conformance scenarios for initialization, ping, tool discovery, DNS-rebinding
+protection, and concurrent Streamable HTTP POST requests.
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the runtime analysis and measurements, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for proposed security, protocol, and tool improvements.

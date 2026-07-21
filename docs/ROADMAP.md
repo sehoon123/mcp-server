@@ -9,7 +9,7 @@ scoped, auditable, and safe to invoke from an LLM.
 - No deprecated two-endpoint HTTP+SSE route
 - Native HTTP clients connect directly
 - Stdio-only clients use the proxy embedded in `burp-mcp-all.jar`
-- The proxy transparently relays JSON-RPC and restores sessions after Burp restarts
+- The proxy relays JSON-RPC methods and parameters supported by the pinned SDK, restores sessions after Burp restarts, and never retries ambiguous arbitrary requests
 - Loopback Host/Origin validation is enabled by default
 
 ## Priority 0 — security and correctness
@@ -57,9 +57,15 @@ Large histories should not be copied into every model response.
 
 ### 5. Make the embedded proxy reproducible
 
-- Build `mcp-proxy` from a pinned source commit in CI.
-- Record the source commit and SHA-256 next to the embedded binary.
-- Verify the checksum before packaging the extension.
+Implemented foundation:
+
+- Build `mcp-proxy` from a pinned source commit and record its commit and SHA-256.
+- Verify both the source proxy and the copy embedded in the extension.
+- Produce byte-identical proxy and extension JARs from identical inputs.
+- Run official lifecycle, ping, tool-list, DNS-rebinding, and concurrent-POST conformance scenarios in CI.
+
+Remaining work:
+
 - Generate an SBOM and dependency vulnerability report for both JARs.
 - Publish matching source tags and signed release artifacts.
 

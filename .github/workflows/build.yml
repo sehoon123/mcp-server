@@ -31,14 +31,72 @@ jobs:
         with:
           validate-wrappers: true
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
       - name: Validate helper scripts
         run: bash -n scripts/update-proxy.sh
 
       - name: Run tests
         run: ./gradlew test
 
+      - name: Run official MCP conformance checks
+        shell: bash
+        run: |
+          set -uo pipefail
+          server_log="$RUNNER_TEMP/mcp-conformance-server.log"
+          MCP_CONFORMANCE_PORT=19877 ./gradlew runConformanceServer --no-daemon >"$server_log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            pkill -TERM -P "$server_pid" 2>/dev/null || true
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            code=$(curl --silent --show-error --max-time 1 --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:19877/mcp \
+              --header 'Content-Type: application/json' \
+              --header 'Accept: application/json, text/event-stream' \
+              --data-binary '{}' 2>/dev/null || true)
+            if [[ "$code" != "000" ]]; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            cat "$server_log"
+            exit 1
+          fi
+
+          status=0
+          for scenario in server-initialize ping tools-list dns-rebinding-protection server-sse-multiple-streams; do
+            npx --yes @modelcontextprotocol/conformance@0.1.11 server \
+              --url http://127.0.0.1:19877/mcp \
+              --scenario "$scenario" \
+              --verbose || status=1
+          done
+          if [[ "$status" -ne 0 ]]; then
+            cat "$server_log"
+          fi
+          exit "$status"
+
       - name: Build extension JAR
         run: ./gradlew embedProxyJar
+
+      - name: Verify reproducible extension JAR
+        shell: bash
+        run: |
+          cp build/libs/burp-mcp-all.jar "$RUNNER_TEMP/burp-mcp-first.jar"
+          ./gradlew embedProxyJar --rerun-tasks
+          cmp "$RUNNER_TEMP/burp-mcp-first.jar" build/libs/burp-mcp-all.jar
 
       - name: Upload test reports
         if: failure()
