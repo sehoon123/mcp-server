@@ -227,6 +227,45 @@ class HttpMessageSearchTest {
     }
 
     @Test
+    fun `content budget is spent only after metadata filters match`() = runBlocking {
+        val metadataMismatch = proxyItem(
+            id = 8,
+            method = "GET",
+            url = "https://example.test/large",
+            status = 200,
+            requestBodyBytes = MAX_HTTP_SEARCH_TEXT_BYTES.toInt() + 1,
+        )
+        val selected = proxyItem(
+            id = 9,
+            method = "POST",
+            url = "https://example.test/selected",
+            status = 201,
+        )
+        every { selected.request.contains("needle", false) } returns true
+        proxyHistory += metadataMismatch.item
+        proxyHistory += selected.item
+
+        val result = service.search(
+            SearchHttpMessages(
+                methods = listOf("POST"),
+                statusCodes = listOf(201),
+                text = "needle",
+                searchIn = HttpSearchLocation.REQUEST,
+                newestFirst = false,
+            )
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals(2, result.scanned)
+        assertEquals(0, result.oversizedContentSkipped)
+        assertEquals(1, result.returned)
+        assertEquals("9", result.items.single().ref.id)
+        verify(exactly = 0) { metadataMismatch.request.bodyOffset() }
+        verify(exactly = 0) { metadataMismatch.request.contains(any<String>(), any<Boolean>()) }
+        verify(exactly = 1) { selected.request.contains("needle", false) }
+    }
+
+    @Test
     fun `oversized content search skips the item without scanning its bytes`() = runBlocking {
         val oversized = proxyItem(
             id = 9,

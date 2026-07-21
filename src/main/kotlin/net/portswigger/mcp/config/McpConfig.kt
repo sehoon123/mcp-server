@@ -9,13 +9,20 @@ import kotlin.reflect.KProperty
 
 private const val TARGET_SEPARATOR = "\n"
 
-class McpConfig(storage: PersistedObject, private val logging: Logging) {
+class McpConfig(private val storage: PersistedObject, private val logging: Logging) {
 
     var enabled by storage.boolean(true)
     var configEditingTooling by storage.boolean(false)
     var host by storage.string("127.0.0.1")
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(true)
+    var requireRequestActionApproval: Boolean
+        get() = storage.getBoolean("requireRequestActionApproval") ?: true
+        set(value) {
+            val previous = requireRequestActionApproval
+            storage.setBoolean("requireRequestActionApproval", value)
+            if (previous != value) notifyRequestActionApprovalChanged()
+        }
     var requireDataAccessApproval by storage.boolean(true)
 
     private var _alwaysAllowHttpHistory by storage.boolean(false)
@@ -71,14 +78,20 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     var filterConfigCredentials by storage.boolean(true)
 
     private var _autoApproveTargets by storage.stringList("")
+    @Volatile
+    private var cachedTargetsRaw: String? = null
+    @Volatile
+    private var cachedTargets: List<String> = emptyList()
     private val targetsChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val dataAccessChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
+    private val requestActionApprovalChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
 
     var autoApproveTargets: String
         get() = _autoApproveTargets
         set(value) {
             if (_autoApproveTargets != value) {
                 _autoApproveTargets = value
+                cacheTargets(value)
                 notifyTargetsChanged()
             }
         }
@@ -87,7 +100,9 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
         val current = getAutoApproveTargetsList()
         val valid = current.filter { TargetValidation.isValidTarget(it) }
         if (valid.size != current.size) {
-            _autoApproveTargets = valid.joinToString(TARGET_SEPARATOR)
+            val normalized = valid.joinToString(TARGET_SEPARATOR)
+            _autoApproveTargets = normalized
+            cacheTargets(normalized)
         }
     }
 
@@ -112,11 +127,22 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     }
 
     fun getAutoApproveTargetsList(): List<String> {
-        return if (_autoApproveTargets.isBlank()) {
+        val raw = _autoApproveTargets
+        if (raw == cachedTargetsRaw) return cachedTargets
+        return cacheTargets(raw)
+    }
+
+    @Synchronized
+    private fun cacheTargets(raw: String): List<String> {
+        if (raw == cachedTargetsRaw) return cachedTargets
+        val parsed = if (raw.isBlank()) {
             emptyList()
         } else {
-            _autoApproveTargets.split(TARGET_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
+            raw.split(TARGET_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
         }
+        cachedTargets = parsed
+        cachedTargetsRaw = raw
+        return parsed
     }
 
     fun clearAutoApproveTargets() {
@@ -167,6 +193,24 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
         }
     }
 
+    fun addRequestActionApprovalChangeListener(listener: () -> Unit): ListenerHandle {
+        val registration = ListenerRegistration(listener)
+        requestActionApprovalChangeListeners.add(registration)
+        return ListenerHandle { requestActionApprovalChangeListeners.remove(registration) }
+    }
+
+    private fun notifyRequestActionApprovalChanged() {
+        cleanupStaleListeners(requestActionApprovalChangeListeners)
+        val listeners = requestActionApprovalChangeListeners.mapNotNull { it.listener.get() }
+        listeners.forEach { listener ->
+            try {
+                listener()
+            } catch (e: Exception) {
+                logging.logToError("Request action approval listener failed: ${e.message}")
+            }
+        }
+    }
+
     private fun cleanupStaleListeners(listenerList: CopyOnWriteArrayList<ListenerRegistration>) {
         val staleListeners = listenerList.filter { it.listener.get() == null }
         listenerList.removeAll(staleListeners)
@@ -175,6 +219,7 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     fun cleanup() {
         targetsChangeListeners.clear()
         dataAccessChangeListeners.clear()
+        requestActionApprovalChangeListeners.clear()
     }
 }
 

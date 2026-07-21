@@ -41,12 +41,40 @@ class NormalizeHttpContentTest {
         }
 
         @Test
+        fun `single pass normalization matches the legacy replacement pipeline`() {
+            val tokens = listOf("A", " ", "\\r\\n", "\\n", "\\r", "\r", "\n", ":")
+            val random = kotlin.random.Random(519)
+
+            repeat(500) {
+                val input = buildString {
+                    repeat(40) { append(tokens[random.nextInt(tokens.size)]) }
+                }
+                assertEquals(referenceNormalization(input), normalizeHttpContent(input))
+            }
+        }
+
+        @Test
         fun `stray literal backslash-r characters are stripped`() {
             val input = "GET /foo HTTP/1.1\\r\\nHost: example.com\\r\\r\\n\\r\\n"
             val expected = "GET /foo HTTP/1.1\r\nHost: example.com\r\n\r\n"
 
             assertEquals(expected, normalizeHttpContent(input))
         }
+    }
+
+    private fun referenceNormalization(content: String): String {
+        val markers = listOf("\r\n\r\n", "\n\n", "\\r\\n\\r\\n", "\\n\\n")
+        val match = markers.mapNotNull { marker ->
+            content.indexOf(marker).takeIf { it >= 0 }?.let { it to marker.length }
+        }.minByOrNull { it.first }
+        val preludeEnd = match?.let { it.first + it.second } ?: content.length
+        val normalizedPrelude = content.substring(0, preludeEnd)
+            .replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\r", "")
+            .replace("\r", "")
+            .replace("\n", "\r\n")
+        return normalizedPrelude + content.substring(preludeEnd)
     }
 
     @Nested

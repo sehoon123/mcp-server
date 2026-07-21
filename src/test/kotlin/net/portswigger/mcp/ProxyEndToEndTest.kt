@@ -8,8 +8,7 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
-import io.mockk.every
-import io.mockk.mockk
+import io.mockk.*
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -48,6 +47,7 @@ class ProxyEndToEndTest {
 
     init {
         every { persistedObject.getBoolean(any()) } returns true
+        every { persistedObject.getBoolean("requireRequestActionApproval") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
         every { persistedObject.getInteger("port") } returns testPort
         every { persistedObject.setBoolean(any(), any()) } returns Unit
@@ -158,6 +158,10 @@ class ProxyEndToEndTest {
             val tools = client.listTools()
             assertFalse(tools.isEmpty(), "Tool list should not be empty")
             assertTrue(tools.any { it.name == "url_encode" }, "url_encode tool should be present")
+            val action = tools.single { it.name == "send_http_request_from_id" }
+            assertEquals(true, action.annotations?.destructiveHint)
+            assertEquals(true, action.annotations?.openWorldHint)
+            assertNotNull(action.outputSchema?.properties?.get("executionState"))
         }
     }
 
@@ -174,6 +178,10 @@ class ProxyEndToEndTest {
         every { api.project() } returns project
         every { project.id() } returns "proxy-e2e-project"
         every { proxy.history() } returns listOf(item)
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
         every { item.id() } returns 42
         every { item.request() } returns request
         every { item.response() } returns null
@@ -188,6 +196,11 @@ class ProxyEndToEndTest {
         every { request.isInScope() } returns true
         every { request.body() } returns body
         every { body.length() } returns 0
+        every { request.bodyOffset() } returns 48
+        every { request.toByteArray() } returns body
+        every { request.toString() } returns "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        every { request.httpService() } returns service
+        every { request.httpVersion() } returns "HTTP/1.1"
         every { service.host() } returns "example.test"
         every { service.port() } returns 443
         every { service.secure() } returns true
@@ -202,6 +215,20 @@ class ProxyEndToEndTest {
             assertEquals("ok", search?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("proxy-e2e-project", search?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
             assertTrue(search?.structuredContent?.get("items").toString().contains("\"id\":\"42\""))
+
+            val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
+            every { api.repeater() } returns repeater
+            val action = client.callTool(
+                "create_repeater_tab_from_id",
+                mapOf(
+                    "projectId" to "proxy-e2e-project",
+                    "ref" to mapOf("source" to "proxy", "id" to "42"),
+                    "tabName" to "proxy-e2e",
+                ),
+            )
+            assertEquals("ok", action?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("completed", action?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            verify(exactly = 1) { repeater.sendToRepeater(request, "proxy-e2e") }
         }
     }
 

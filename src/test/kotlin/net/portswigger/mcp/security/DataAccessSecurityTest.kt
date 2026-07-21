@@ -4,6 +4,7 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import io.mockk.*
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -44,6 +45,40 @@ class DataAccessSecurityTest {
 
             assertTrue(approval.isCancelled)
             verify(exactly = 0) { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) }
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+    }
+
+    @Test
+    fun `cancellation while data approval is open cannot persist Always Allow`() = runBlocking {
+        val values = mutableMapOf<String, Boolean>()
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { values[firstArg()] ?: false }
+        every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg() }
+        every { storage.getString(any()) } returns ""
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val queuedAction = slot<Runnable>()
+        lateinit var approval: Deferred<Boolean>
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } answers {
+                approval.cancel()
+                1
+            }
+
+            approval = async(start = CoroutineStart.UNDISPATCHED) {
+                SwingDataAccessApprovalHandler().requestDataAccess(DataAccessType.SITE_MAP, config)
+            }
+            queuedAction.captured.run()
+            approval.join()
+
+            assertTrue(approval.isCancelled)
+            assertFalse(config.alwaysAllowSiteMap)
+            verify(exactly = 0) { storage.setBoolean("_alwaysAllowSiteMap", true) }
         } finally {
             unmockkObject(Dialogs)
             unmockkStatic(SwingUtilities::class)

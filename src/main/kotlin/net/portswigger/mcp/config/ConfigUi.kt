@@ -54,9 +54,10 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     private var suppressToggleEvents: Boolean = false
 
     private val dataAccessRefreshListener: () -> Unit = {
-        SwingUtilities.invokeLater {
-            serverConfigurationPanel.updateDataAccessCheckboxes()
-        }
+        serverConfigurationPanel.updateDataAccessCheckboxes()
+    }
+    private val requestActionApprovalRefreshListener: () -> Unit = {
+        serverConfigurationPanel.updateRequestActionApprovalCheckbox()
     }
 
     init {
@@ -87,8 +88,8 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     }
 
     private fun setupConfigListeners() {
-        val handle = config.addDataAccessChangeListener(dataAccessRefreshListener)
-        listenerHandles.add(handle)
+        listenerHandles += config.addDataAccessChangeListener(dataAccessRefreshListener)
+        listenerHandles += config.addRequestActionApprovalChangeListener(requestActionApprovalRefreshListener)
     }
 
     fun cleanup() {

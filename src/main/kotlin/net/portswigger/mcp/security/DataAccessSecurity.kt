@@ -49,6 +49,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                 val result = Dialogs.showOptionDialog(
                     burpFrame, message, options
                 )
+                if (!continuation.isActive) return@ui
 
                 val approved = when (result) {
                     0 -> true

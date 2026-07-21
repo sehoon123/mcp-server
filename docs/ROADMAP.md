@@ -32,6 +32,16 @@ Proposed behavior:
 - Apply MCP tool annotations such as read-only, destructive, idempotent, and open-world behavior.
 - Keep per-operation approval for outbound requests, Intruder, Scanner, configuration edits, and destructive actions.
 - Show the exact normalized target and operation before approval.
+
+Implemented for stable-ID request actions:
+
+- HTTP replay and Repeater/Intruder/Organizer routing carry explicit annotations.
+- Approval shows the source reference, immutable destination service, normalized patch summary, and exact resulting request.
+- Redacted Burp log lines record destination, source ID, target, byte count, patch flag, and outcome without bodies or header values.
+- Structured results distinguish `not_started`, `completed`, and ambiguous `uncertain` execution.
+
+Still required globally: apply the same policy to legacy mutating tools and write a durable, redacted audit format with
+client/session correlation and retention controls.
 - Record timestamp, client/session, tool, normalized arguments, approval decision, duration, and result status.
 - Redact credentials and message bodies according to policy before writing audit records.
 - Add an emergency "read-only session" switch.
@@ -146,7 +156,7 @@ Long-running operations should not look like hung calls.
 | Order | Change | Benefit | Risk/effort |
 |---|---|---|---|
 | 1 | Unified HTTP search, Site Map reads, project-scoped references | High daily-use and token improvement; implemented | Medium |
-| 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer | Completes the most common testing workflow | Medium |
+| 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer | High-use workflow; implemented with bounded structured patches and approvals | Medium |
 | 3 | Scope query and management | Safety prerequisite for active automation | Low–medium |
 | 4 | Focused audit, crawl, and Scanner task lifecycle | High Professional-edition value | High |
 | 5 | Structured comparison and bounded request variants | Efficient auth and behavior analysis | Medium–high |
@@ -158,6 +168,7 @@ Long-running operations should not look like hung calls.
 
 - Never weaken loopback, Host, or Origin validation merely to make a client connect.
 - Never retry an ambiguous state-changing action automatically.
+- Treat `executionState=uncertain` as potentially completed and require explicit user reconciliation before another attempt.
 - Preserve stable identifiers and explicit scope across every operation.
 - Prefer Montoya APIs and MCP SDK capabilities over custom protocols.
 - Keep the default installation to one `burp-mcp-all.jar` file.

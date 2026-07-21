@@ -35,6 +35,20 @@ private val READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     openWorldHint = false,
 )
 
+private val REQUEST_ROUTING_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = false,
+    idempotentHint = false,
+    openWorldHint = false,
+)
+
+private val HTTP_REQUEST_ACTION_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = false,
+    openWorldHint = true,
+)
+
 private suspend fun checkDataAccessOrDeny(
     accessType: DataAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
 ): Boolean {
@@ -79,7 +93,8 @@ private fun buildHttp2HeaderList(
         }
     }
 
-    return (fixedPseudoHeaders + headers).map { HttpHeader.httpHeader(it.key.lowercase(), it.value) }
+    headers.forEach { (name, value) -> fixedPseudoHeaders[name] = value }
+    return fixedPseudoHeaders.map { HttpHeader.httpHeader(it.key.lowercase(), it.value) }
 }
 
 /**
@@ -99,8 +114,11 @@ private fun buildHttp2HeaderList(
  * line is present, the entire content is treated as prelude.
  */
 internal fun normalizeHttpContent(content: String): String {
-    val preludeEnd = findPreludeEnd(content) ?: return normalizePrelude(content)
-    return normalizePrelude(content.substring(0, preludeEnd)) + content.substring(preludeEnd)
+    val preludeEnd = findPreludeEnd(content) ?: content.length
+    return buildString(content.length + 16) {
+        appendNormalizedPrelude(content, preludeEnd)
+        if (preludeEnd < content.length) append(content, preludeEnd, content.length)
+    }
 }
 
 private val BLANK_LINE_MARKERS = listOf(
@@ -123,26 +141,56 @@ private fun findPreludeEnd(content: String): Int? {
     return if (bestStart < 0) null else bestStart + bestLen
 }
 
-private fun normalizePrelude(prelude: String): String = prelude
-    .replace("\\r\\n", "\n")   // Literal \r\n escape sequences → LF
-    .replace("\\n", "\n")      // Remaining literal \n → LF
-    .replace("\\r", "")        // Remaining literal \r → remove
-    .replace("\r", "")          // Actual CR → remove
-    .replace("\n", "\r\n")      // All LF → proper CRLF
+private fun StringBuilder.appendNormalizedPrelude(content: String, endExclusive: Int) {
+    var index = 0
+    while (index < endExclusive) {
+        when (content[index]) {
+            '\\' -> when {
+                index + 3 < endExclusive && content[index + 1] == 'r' &&
+                    content[index + 2] == '\\' && content[index + 3] == 'n' -> {
+                    append("\r\n")
+                    index += 4
+                }
+
+                index + 1 < endExclusive && content[index + 1] == 'n' -> {
+                    append("\r\n")
+                    index += 2
+                }
+
+                index + 1 < endExclusive && content[index + 1] == 'r' -> index += 2
+                else -> append(content[index++])
+            }
+
+            '\r' -> index++
+            '\n' -> {
+                append("\r\n")
+                index++
+            }
+
+            else -> append(content[index++])
+        }
+    }
+}
 
 fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     val httpMessageSearchService = HttpMessageSearchService(api, config)
+    val httpMessageActionService = HttpMessageActionService(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
-        val allowed = HttpRequestSecurity.checkHttpRequestPermission(targetHostname, targetPort, config, content, api)
+        val fixedContent = normalizeHttpContent(content)
+        val allowed = HttpRequestSecurity.checkHttpRequestPermission(
+            targetHostname,
+            targetPort,
+            config,
+            fixedContent,
+            api,
+        )
         if (!allowed) {
             api.logging().logToOutput("MCP HTTP request denied: $targetHostname:$targetPort")
             return@mcpTool "Send HTTP request denied by Burp Suite"
         }
 
         api.logging().logToOutput("MCP HTTP/1.1 request: $targetHostname:$targetPort")
-
-        val fixedContent = normalizeHttpContent(content)
 
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         val response = api.http().sendRequest(request)
@@ -152,14 +200,9 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpTool<SendHttp2Request>("Issues an HTTP/2 request and returns the response. Do NOT pass headers to the body parameter.") {
+        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
         val http2RequestDisplay = buildString {
-            pseudoHeaders.forEach { (key, value) ->
-                val headerName = if (key.startsWith(":")) key else ":$key"
-                appendLine("$headerName: $value")
-            }
-            headers.forEach { (key, value) ->
-                appendLine("$key: $value")
-            }
+            headerList.forEach { header -> appendLine("${header.name()}: ${header.value()}") }
             if (requestBody.isNotBlank()) {
                 appendLine()
                 append(requestBody)
@@ -180,8 +223,6 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
         api.logging().logToOutput("MCP HTTP/2 request: $targetHostname:$targetPort")
 
-        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
-
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
         val response = api.http().sendRequest(request, HttpMode.HTTP_2)
         recordHttpResponseInSiteMap(api, response)
@@ -192,19 +233,22 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     mcpTool<CreateRepeaterTab>("Creates an HTTP/1.1 Repeater tab with the specified raw HTTP request and optional tab name. Make sure to use carriage returns appropriately. Prefer create_repeater_tab_http2 for modern web targets that speak HTTP/2.") {
         val fixedContent = normalizeHttpContent(content)
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        api.repeater().sendToRepeater(request, tabName)
+        if (tabName == null) api.repeater().sendToRepeater(request)
+        else api.repeater().sendToRepeater(request, tabName)
     }
 
     mcpTool<CreateRepeaterTabHttp2>("Creates an HTTP/2 Repeater tab with the specified HTTP/2 request and optional tab name. Use this by default for modern web targets. Do NOT pass headers to the body parameter.") {
         val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
-        api.repeater().sendToRepeater(request, tabName)
+        if (tabName == null) api.repeater().sendToRepeater(request)
+        else api.repeater().sendToRepeater(request, tabName)
     }
 
     mcpTool<SendToIntruder>("Sends an HTTP request to Intruder with the specified HTTP request and optional tab name. Make sure to use carriage returns appropriately.") {
         val fixedContent = normalizeHttpContent(content)
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        api.intruder().sendToIntruder(request, tabName)
+        if (tabName == null) api.intruder().sendToIntruder(request)
+        else api.intruder().sendToIntruder(request, tabName)
     }
 
     mcpTool<UrlEncode>("URL encodes the input string") {
@@ -369,7 +413,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpStructuredTool<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Read a result with get_sitemap_message_by_id for source=site_map, get_http_message_by_id for source=proxy, or get_organizer_item_by_id for source=organizer.",
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Read a result with the source-specific get-by-ID tool, or copy projectId and ref into the *_from_id replay and routing tools.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         httpMessageSearchService.search(this)
@@ -380,6 +424,34 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         httpMessageSearchService.readSiteMapMessage(this)
+    }
+
+    mcpStructuredTool<SendHttpRequestFromId, HttpMessageActionResult>(
+        description = "Replays a Proxy, Site Map, or Organizer request returned by search_http_messages. Applies only bounded structured method, path, header, parameter, or body patches; never asks the model to reconstruct raw HTTP. Requires the matching projectId and approvals. The response preview, timeout, redirects, and HTTP mode are bounded and explicit. executionState=uncertain means the request must not be retried automatically.",
+        annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
+    ) {
+        httpMessageActionService.send(this)
+    }
+
+    mcpStructuredTool<CreateRepeaterTabFromId, HttpMessageActionResult>(
+        description = "Creates a Repeater tab from an existing Proxy, Site Map, or Organizer request, optionally after a bounded structured patch. Requires the matching projectId and approvals. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
+        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageActionService.createRepeaterTab(this)
+    }
+
+    mcpStructuredTool<SendToIntruderFromId, HttpMessageActionResult>(
+        description = "Sends an existing Proxy, Site Map, or Organizer request to Intruder, optionally after a bounded structured patch. Requires the matching projectId and approvals. This creates an Intruder tab but does not start an attack. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
+        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageActionService.sendToIntruder(this)
+    }
+
+    mcpStructuredTool<SendToOrganizerFromId, HttpMessageActionResult>(
+        description = "Sends an existing Proxy, Site Map, or Organizer request to Organizer, optionally after a bounded structured patch. An unmodified source response is preserved when the Montoya source supports it; patched requests never attach a mismatched response. executionState=uncertain means an item may already exist and the action must not be retried automatically.",
+        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
+    ) {
+        httpMessageActionService.sendToOrganizer(this)
     }
 
     mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
@@ -469,7 +541,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             )
         }
 
-        val item = api.organizer().items().firstOrNull { it.id() == id }
+        val item = api.organizer().items { it.id() == id }.firstOrNull()
             ?: return@mcpStructuredTool HttpMessageReadResult(
                 status = HistoryReadStatus.NOT_FOUND,
                 id = id,
@@ -535,7 +607,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             )
         }
 
-        val item = api.proxy().history().firstOrNull { it.id() == id }
+        val item = api.proxy().history { it.id() == id }.firstOrNull()
             ?: return@mcpStructuredTool HttpMessageReadResult(
                 status = HistoryReadStatus.NOT_FOUND,
                 id = id,
@@ -574,7 +646,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             )
         }
 
-        val item = api.proxy().webSocketHistory().firstOrNull { it.id() == id }
+        val item = api.proxy().webSocketHistory { it.id() == id }.firstOrNull()
             ?: return@mcpStructuredTool WebSocketMessageReadResult(
                 status = HistoryReadStatus.NOT_FOUND,
                 id = id,
@@ -616,13 +688,17 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 }
 
-private fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?) {
-    if (response == null) return
-    try {
+internal fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?): Boolean {
+    if (response == null) return false
+    return try {
         api.siteMap().add(response)
+        true
     } catch (_: Exception) {
         // The request may already have changed server state. Never turn a local recording failure into a retryable tool error.
-        api.logging().logToError("MCP request completed, but its response could not be added to Site Map")
+        runCatching {
+            api.logging().logToError("MCP request completed, but its response could not be added to Site Map")
+        }
+        false
     }
 }
 
@@ -669,7 +745,7 @@ data class SendHttp2Request(
 
 @Serializable
 data class CreateRepeaterTab(
-    val tabName: String?,
+    val tabName: String? = null,
     val content: String,
     override val targetHostname: String,
     override val targetPort: Int,
@@ -678,7 +754,7 @@ data class CreateRepeaterTab(
 
 @Serializable
 data class CreateRepeaterTabHttp2(
-    val tabName: String?,
+    val tabName: String? = null,
     val pseudoHeaders: Map<String, String>,
     val headers: Map<String, String>,
     val requestBody: String,
@@ -689,7 +765,7 @@ data class CreateRepeaterTabHttp2(
 
 @Serializable
 data class SendToIntruder(
-    val tabName: String?,
+    val tabName: String? = null,
     val content: String,
     override val targetHostname: String,
     override val targetPort: Int,

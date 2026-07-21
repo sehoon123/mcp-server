@@ -30,6 +30,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 - HTTP/1.1 and HTTP/2 request tools with target approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
+- Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
 - Repeater, Intruder, Organizer, Scanner, and Collaborator integrations
 - Project and user configuration tools with credential filtering
 - URL/Base64 utilities and random data generation
@@ -72,7 +73,7 @@ Open the **MCP** tab in Burp:
 
 - Enable or stop the MCP server.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
-- Configure approval requirements for outbound HTTP requests and access to sensitive Burp data, including Site Map items.
+- Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map items.
 - Enable configuration-editing tools only when they are required.
 
 The default loopback binding is recommended. Do not expose the endpoint to another network until authentication and
@@ -102,6 +103,48 @@ Search work is bounded per call to 10,000 metadata records. Literal content sear
 counts, cursor sizes, and detail reads are also bounded. Successful requests issued through `send_http1_request` or
 `send_http2_request` are added to Burp's Site Map on a best-effort basis without changing the already-completed request
 result if local recording fails.
+
+## Stable-ID request actions
+
+Copy `projectId` and the complete `{source, id}` reference from `search_http_messages`; do not reconstruct the original
+HTTP message in the model. The following structured tools resolve the current Burp item and fail closed if its project
+or opaque Site Map identity no longer matches:
+
+- `send_http_request_from_id`
+- `create_repeater_tab_from_id`
+- `send_to_intruder_from_id`
+- `send_to_organizer_from_id`
+
+An optional `patch` can change the method or path; remove, set, or add headers; remove, set, or add typed URL/body/cookie/
+XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Body replacement cannot be mixed with
+body-backed parameter mutations. The destination service cannot be changed by a patch, so the approved Burp request
+remains bound to its original host, port, and TLS mode.
+
+```json
+{
+  "projectId": "<projectId from search_http_messages>",
+  "ref": {"source": "proxy", "id": "42"},
+  "patch": {
+    "method": "POST",
+    "setHeaders": [{"name": "Content-Type", "value": "application/json"}],
+    "body": {"encoding": "text", "data": "{\"enabled\":true}"}
+  }
+}
+```
+
+Source and resulting requests are capped at 2 MiB; replacement bodies at 1 MiB; header and parameter mutations at 64
+each. HTTP replay defaults to the source protocol, never follows redirects unless requested, uses a 30-second response
+timeout, and returns at most an 8 KiB body preview by default (64 KiB maximum). Responses are recorded in Site Map on
+a best-effort basis. Unmodified Organizer actions preserve a source response when the Montoya source supports it;
+patched requests never attach a now-mismatched response.
+
+Each action returns structured `status` and `executionState`. `not_started` is safe with respect to that invocation.
+`uncertain` means a Burp API call may already have completed and **must not be retried automatically**. Routing actions
+show the exact resulting request and a normalized change summary when request-action approval is enabled. The dialog
+provides **Allow Once**, **Always Allow**, and **Deny**. Always Allow intentionally disables all
+future routing-action prompts until `Require approval for request routing actions` is re-enabled in the MCP tab. Audit
+lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
+values are not logged.
 
 ## Stable history access
 

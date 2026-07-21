@@ -20,6 +20,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
+    private lateinit var requestActionApprovalCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -62,6 +63,12 @@ class ServerConfigurationPanel(
             "Require approval for HTTP requests", config.requireHttpRequestApproval
         ) { config.requireHttpRequestApproval = it }
         add(httpRequestApprovalCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        requestActionApprovalCheckBox = createStandardCheckBox(
+            "Require approval for request routing actions", config.requireRequestActionApproval
+        ) { config.requireRequestActionApproval = it }
+        add(requestActionApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val dataAccessApprovalCheckBox = createDataAccessApprovalCheckBox()
@@ -160,6 +167,12 @@ class ServerConfigurationPanel(
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
             alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+        }
+    }
+
+    fun updateRequestActionApprovalCheckbox() {
+        SwingUtilities.invokeLater {
+            requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
         }
     }
 

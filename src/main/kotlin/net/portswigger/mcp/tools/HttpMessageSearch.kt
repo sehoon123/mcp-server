@@ -28,7 +28,6 @@ internal const val MAX_HTTP_SEARCH_LIMIT = 50
 internal const val MAX_HTTP_SEARCH_SCANNED_ITEMS = 10_000
 internal const val MAX_HTTP_SEARCH_TEXT_BYTES = 32L * 1024 * 1024
 private const val MAX_HTTP_SEARCH_CURSOR_CHARS = 32_768
-private const val MAX_HTTP_SEARCH_QUERY_JSON_BYTES = 16_384
 internal const val MAX_HTTP_SEARCH_HOST_CHARS = 253
 private const val MAX_HTTP_SEARCH_PATH_CHARS = 2_048
 private const val MAX_HTTP_SEARCH_TEXT_CHARS = 512
@@ -234,10 +233,6 @@ internal class HttpMessageSearchService(
             return searchError(e.status, e.message)
         }
 
-        if (cursorJson.encodeToString(query).toByteArray(StandardCharsets.UTF_8).size > MAX_HTTP_SEARCH_QUERY_JSON_BYTES) {
-            return searchError(HttpMessageSearchStatus.INVALID_ARGUMENT, "normalized search filters are too large")
-        }
-
         val limit = input.limit ?: DEFAULT_HTTP_SEARCH_LIMIT
         if (limit !in 1..MAX_HTTP_SEARCH_LIMIT) {
             return searchError(
@@ -283,6 +278,7 @@ internal class HttpMessageSearchService(
         }
         normalizePosition(position, snapshots, query.newestFirst)
 
+        val matcher = CompiledHttpSearchQuery(query)
         val results = ArrayList<HttpMessageSearchItem>(limit)
         var scanned = 0
         var scannedContentBytes = 0L
@@ -304,25 +300,31 @@ internal class HttpMessageSearchService(
                 continue
             }
 
+            scanned++
+            if (!candidate.matchesMetadata(matcher)) {
+                advancePosition(position, snapshots, query.newestFirst)
+                continue
+            }
+
             if (query.text != null) {
                 val candidateBytes = candidate.approximateContentBytes()
                 if (candidateBytes > maxTextBytes) {
-                    scanned++
                     oversizedContentSkipped++
                     advancePosition(position, snapshots, query.newestFirst)
                     continue
                 }
-                if (scannedContentBytes + candidateBytes > maxTextBytes && scanned > 0) {
+                if (scannedContentBytes + candidateBytes > maxTextBytes) {
                     stoppedByScanBudget = true
                     break
                 }
                 scannedContentBytes += candidateBytes
+                if (!candidate.matchesText(matcher)) {
+                    advancePosition(position, snapshots, query.newestFirst)
+                    continue
+                }
             }
 
-            scanned++
-            if (candidate.matches(query)) {
-                results += candidate.toSummary(projectId, position.itemIndex)
-            }
+            results += candidate.toSummary(projectId, position.itemIndex)
             advancePosition(position, snapshots, query.newestFirst)
         }
 
@@ -514,15 +516,15 @@ internal class HttpMessageSearchService(
         if (value.length !in 1..MAX_HTTP_SEARCH_CURSOR_CHARS) {
             throw ExpectedSearchError(HttpMessageSearchStatus.INVALID_CURSOR, "cursor is too large or empty")
         }
-        val parts = value.split('.')
-        if (parts.size != 2) {
+        val separator = value.indexOf('.')
+        if (separator <= 0 || separator != value.lastIndexOf('.') || separator == value.lastIndex) {
             throw ExpectedSearchError(HttpMessageSearchStatus.INVALID_CURSOR, "cursor format is invalid")
         }
         val payload: ByteArray
         val suppliedSignature: ByteArray
         try {
-            payload = Base64.getUrlDecoder().decode(parts[0])
-            suppliedSignature = Base64.getUrlDecoder().decode(parts[1])
+            payload = Base64.getUrlDecoder().decode(value.substring(0, separator))
+            suppliedSignature = Base64.getUrlDecoder().decode(value.substring(separator + 1))
         } catch (_: IllegalArgumentException) {
             throw ExpectedSearchError(HttpMessageSearchStatus.INVALID_CURSOR, "cursor encoding is invalid")
         }
@@ -616,6 +618,12 @@ private class OrganizerSourceView(private val items: List<OrganizerItem>) : Sour
     override fun anchor(index: Int): String? = items.getOrNull(index)?.id()?.toString()
 }
 
+private class CompiledHttpSearchQuery(val query: NormalizedHttpSearchQuery) {
+    val methods = query.methods?.toHashSet()
+    val statusCodes = query.statusCodes?.toHashSet()
+    val mimeTypes = query.mimeTypes?.toHashSet()
+}
+
 private data class SearchCandidate(
     val source: HttpMessageSource,
     val request: HttpRequest,
@@ -627,24 +635,31 @@ private data class SearchCandidate(
 ) {
     fun approximateContentBytes(): Long = messageBytes(request) + (response?.let(::messageBytes) ?: 0L)
 
-    fun matches(query: NormalizedHttpSearchQuery): Boolean {
-        if (query.host != null && service.host().trimEnd('.').lowercase() != query.host) return false
+    fun matchesMetadata(matcher: CompiledHttpSearchQuery): Boolean {
+        val query = matcher.query
+        if (query.host != null && !service.host().trimEnd('.').equals(query.host, ignoreCase = true)) return false
         if (query.pathContains != null &&
             !request.path().contains(query.pathContains, ignoreCase = !query.caseSensitive)
         ) return false
-        if (query.methods != null && request.method().uppercase() !in query.methods) return false
-        if (query.statusCodes != null && response?.statusCode()?.toInt() !in query.statusCodes) return false
-        if (query.mimeTypes != null && response?.mimeType()?.name?.uppercase() !in query.mimeTypes) return false
+        if (matcher.methods != null) {
+            val method = request.method()
+            if (method !in matcher.methods && method.uppercase() !in matcher.methods) return false
+        }
+        if (matcher.statusCodes != null && response?.statusCode()?.toInt() !in matcher.statusCodes) return false
+        if (matcher.mimeTypes != null && response?.mimeType()?.name !in matcher.mimeTypes) return false
         if (query.inScopeOnly && !request.isInScope()) return false
         if (query.hasResponse != null && (response != null) != query.hasResponse) return false
-        if (query.text != null) {
-            val requestMatches = query.searchIn != HttpSearchLocation.RESPONSE &&
-                request.contains(query.text, query.caseSensitive)
-            val responseMatches = query.searchIn != HttpSearchLocation.REQUEST &&
-                response?.contains(query.text, query.caseSensitive) == true
-            if (!requestMatches && !responseMatches) return false
-        }
         return true
+    }
+
+    fun matchesText(matcher: CompiledHttpSearchQuery): Boolean {
+        val query = matcher.query
+        val text = query.text ?: return true
+        val requestMatches = query.searchIn != HttpSearchLocation.RESPONSE &&
+            request.contains(text, query.caseSensitive)
+        if (requestMatches) return true
+        return query.searchIn != HttpSearchLocation.REQUEST &&
+            response?.contains(text, query.caseSensitive) == true
     }
 
     fun toSummary(projectId: String, sourceIndex: Int): HttpMessageSearchItem {

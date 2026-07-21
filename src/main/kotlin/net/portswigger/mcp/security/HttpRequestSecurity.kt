@@ -36,6 +36,7 @@ class SwingUserApprovalHandler : UserApprovalHandler {
                 val result = Dialogs.showOptionDialog(
                     burpFrame, message, options, requestContent, api
                 )
+                if (!continuation.isActive) return@ui
 
                 val approved = when (result) {
                     0 -> true
@@ -112,5 +113,19 @@ object HttpRequestSecurity {
         }
 
         return approvalHandler.requestApproval(hostname, port, config, requestContent, api)
+    }
+
+    /** Avoids materializing a potentially large request unless interactive approval is actually required. */
+    suspend fun checkHttpRequestPermissionLazy(
+        hostname: String,
+        port: Int,
+        config: McpConfig,
+        api: MontoyaApi? = null,
+        requestContent: () -> String,
+    ): Boolean {
+        if (!config.requireHttpRequestApproval || isAutoApproved(hostname, port, config)) {
+            return true
+        }
+        return approvalHandler.requestApproval(hostname, port, config, requestContent(), api)
     }
 }

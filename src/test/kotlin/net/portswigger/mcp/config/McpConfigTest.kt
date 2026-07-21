@@ -24,7 +24,7 @@ class McpConfigTest {
                 val key = firstArg<String>()
                 storage[key] as? Boolean ?: when (key) {
                     "enabled" -> true
-                    "requireHttpRequestApproval" -> true
+                    "requireHttpRequestApproval", "requireRequestActionApproval" -> true
                     else -> false
                 }
             }
@@ -141,6 +141,20 @@ class McpConfigTest {
 
         assertEquals("", config.autoApproveTargets)
         assertEquals(emptyList<String>(), config.getAutoApproveTargetsList())
+    }
+
+    @Test
+    fun `parsed auto approve targets are reused until the raw setting changes`() {
+        config.autoApproveTargets = "example.com\ntest.org"
+
+        val first = config.getAutoApproveTargetsList()
+        val second = config.getAutoApproveTargetsList()
+        assertSame(first, second)
+
+        config.autoApproveTargets = "other.test"
+        val changed = config.getAutoApproveTargetsList()
+        assertNotSame(first, changed)
+        assertEquals(listOf("other.test"), changed)
     }
 
     @Test
@@ -288,6 +302,32 @@ class McpConfigTest {
         config.alwaysAllowScannerIssues = true
         assertTrue(config.alwaysAllowScannerIssues)
         verify { persistedObject.setBoolean("_alwaysAllowScannerIssues", true) }
+    }
+
+    @Test
+    fun `request action approval should default to enabled and persist`() {
+        assertTrue(config.requireRequestActionApproval)
+
+        config.requireRequestActionApproval = false
+
+        assertFalse(config.requireRequestActionApproval)
+        verify { persistedObject.setBoolean("requireRequestActionApproval", false) }
+    }
+
+    @Test
+    fun `request action approval listeners observe actual changes only`() {
+        var notificationCount = 0
+        val listener = {
+            notificationCount++
+            Unit
+        }
+        config.addRequestActionApprovalChangeListener(listener)
+
+        config.requireRequestActionApproval = false
+        config.requireRequestActionApproval = false
+        config.requireRequestActionApproval = true
+
+        assertEquals(2, notificationCount)
     }
 
     @Test

@@ -69,6 +69,7 @@ class ToolsKtTest {
             every { getBoolean("enabled") } returns true
             every { getBoolean("configEditingTooling") } returns true
             every { getBoolean("requireHttpRequestApproval") } returns false
+            every { getBoolean("requireRequestActionApproval") } returns false
             every { getBoolean("requireDataAccessApproval") } returns false
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
             every { getBoolean("_alwaysAllowSiteMap") } returns false
@@ -406,6 +407,30 @@ class ToolsKtTest {
                 assertEquals(expectedOrder[i], pseudoHeaderNames[i],
                     "Pseudo headers should follow the order: scheme, method, path, authority")
             }
+        }
+
+        @Test
+        fun `raw routing tools use no-name Montoya overload when tab name is absent`() {
+            val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
+            val intruder = mockk<burp.api.montoya.intruder.Intruder>(relaxed = true)
+            val request = mockk<HttpRequest>()
+            every { HttpRequest.httpRequest(any(), any<String>()) } returns request
+            every { api.repeater() } returns repeater
+            every { api.intruder() } returns intruder
+            val arguments: Map<String, Any> = mapOf(
+                "content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                "targetHostname" to "example.test",
+                "targetPort" to 443,
+                "usesHttps" to true,
+            )
+
+            runBlocking {
+                assertNotNull(client.callTool("create_repeater_tab", arguments))
+                assertNotNull(client.callTool("send_to_intruder", arguments))
+            }
+
+            verify(exactly = 1) { repeater.sendToRepeater(request) }
+            verify(exactly = 1) { intruder.sendToIntruder(request) }
         }
 
         @Test
@@ -1001,6 +1026,79 @@ class ToolsKtTest {
     }
 
     @Nested
+    inner class HttpMessageActionToolsTests {
+        @Test
+        fun `ID based Repeater action is structured bounded and correctly annotated`() {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val raw = mockk<MontoyaByteArray>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
+
+            every { api.project() } returns project
+            every { project.id() } returns "project-actions"
+            every { api.proxy() } returns proxy
+            every { proxy.history(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+                listOf(item).filter(filter::matches)
+            }
+            every { item.id() } returns 91
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { item.httpService() } returns service
+            every { request.toByteArray() } returns raw
+            every { request.bodyOffset() } returns 48
+            every { request.body() } returns raw
+            every { raw.length() } returns 0
+            every { request.toString() } returns "GET /action HTTP/1.1\r\nHost: example.test\r\n\r\n"
+            every { request.httpService() } returns service
+            every { request.method() } returns "GET"
+            every { request.path() } returns "/action"
+            every { request.httpVersion() } returns "HTTP/1.1"
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { api.repeater() } returns repeater
+
+            runBlocking {
+                val result = client.callTool(
+                    "create_repeater_tab_from_id",
+                    mapOf(
+                        "projectId" to "project-actions",
+                        "ref" to mapOf("source" to "proxy", "id" to "91"),
+                        "tabName" to "derived",
+                    ),
+                )
+
+                assertEquals(false, result?.isError)
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                verify(exactly = 1) { repeater.sendToRepeater(request, "derived") }
+
+                val tools = client.listTools()
+                val repeaterTool = tools.single { it.name == "create_repeater_tab_from_id" }
+                assertEquals(setOf("projectId", "ref"), repeaterTool.inputSchema.required?.toSet())
+                assertEquals(false, repeaterTool.annotations?.readOnlyHint)
+                assertEquals(false, repeaterTool.annotations?.destructiveHint)
+                assertEquals(false, repeaterTool.annotations?.idempotentHint)
+                assertEquals(false, repeaterTool.annotations?.openWorldHint)
+                assertTrue(repeaterTool.outputSchema?.properties?.get("status").toString().contains("execution_uncertain"))
+
+                val sendTool = tools.single { it.name == "send_http_request_from_id" }
+                assertEquals(true, sendTool.annotations?.destructiveHint)
+                assertEquals(true, sendTool.annotations?.openWorldHint)
+                val modeSchema = sendTool.inputSchema.properties?.get("httpMode").toString()
+                assertTrue(modeSchema.contains("http_2_ignore_alpn"))
+
+                assertNotNull(tools.singleOrNull { it.name == "send_to_intruder_from_id" })
+                assertNotNull(tools.singleOrNull { it.name == "send_to_organizer_from_id" })
+            }
+        }
+    }
+
+    @Nested
     inner class StableHistoryAccessTests {
         @Test
         fun `HTTP message lookup returns bounded structured content and read-only metadata`() {
@@ -1013,7 +1111,10 @@ class ToolsKtTest {
             val annotations = mockk<Annotations>()
 
             every { api.proxy() } returns proxy
-            every { proxy.history() } returns listOf(item)
+            every { proxy.history(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+                listOf(item).filter(filter::matches)
+            }
             every { item.id() } returns 42
             every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
             every { item.request() } returns request
@@ -1066,6 +1167,9 @@ class ToolsKtTest {
                 assertEquals(true, tool.annotations?.idempotentHint)
                 assertEquals(false, tool.annotations?.openWorldHint)
             }
+
+            verify(exactly = 1) { proxy.history(any()) }
+            verify(exactly = 0) { proxy.history() }
         }
 
         @Test
@@ -1077,7 +1181,10 @@ class ToolsKtTest {
             val annotations = mockk<Annotations>()
 
             every { api.organizer() } returns organizer
-            every { organizer.items() } returns listOf(item)
+            every { organizer.items(any()) } answers {
+                val filter = firstArg<burp.api.montoya.organizer.OrganizerItemFilter>()
+                listOf(item).filter(filter::matches)
+            }
             every { item.id() } returns 73
             every { item.request() } returns request
             every { item.response() } returns null
@@ -1095,6 +1202,9 @@ class ToolsKtTest {
                 assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertTrue(result?.structuredContent?.get("metadata").toString().contains("\"source\":\"organizer\""))
             }
+
+            verify(exactly = 1) { organizer.items(any()) }
+            verify(exactly = 0) { organizer.items() }
         }
 
         @Test
@@ -1106,7 +1216,10 @@ class ToolsKtTest {
             val annotations = mockk<Annotations>()
 
             every { api.proxy() } returns proxy
-            every { proxy.webSocketHistory() } returns listOf(item)
+            every { proxy.webSocketHistory(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyWebSocketHistoryFilter>()
+                listOf(item).filter(filter::matches)
+            }
             every { item.id() } returns 17
             every { item.webSocketId() } returns 9
             every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
@@ -1132,6 +1245,9 @@ class ToolsKtTest {
                 val missing = client.callTool("get_websocket_message_by_id", mapOf("id" to 999))
                 assertEquals("not_found", missing?.structuredContent?.get("status")?.jsonPrimitive?.content)
             }
+
+            verify(exactly = 2) { proxy.webSocketHistory(any()) }
+            verify(exactly = 0) { proxy.webSocketHistory() }
         }
     }
     

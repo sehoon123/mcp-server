@@ -15,6 +15,11 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
 | P1 | Build metadata and post-build `jar uf` mutation made extension bytes change on every build | Identical sources produced artifacts with different timestamps and manifest values | Package the proxy through Gradle's reproducible archive pipeline and verify embedded provenance |
 | P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
+| P1 | Content-search accounting ran before cheaper metadata filters | Host/method/status mismatches still queried message sizes and consumed the 32 MiB budget | Compile membership filters once and apply all metadata predicates before content sizing or scanning |
+| P1 | Stable-ID reads constructed complete Proxy/WebSocket/Organizer snapshots | A one-record lookup called the unfiltered list API and then searched locally | Use Montoya's filtered lookup overloads and return at most matching records |
+| P1 | Derived request actions could materialize and repeatedly parse a request | Exact replay needs a size check, but text is needed only for interactive approval; individual parameter edits repeatedly rebuild immutable requests | Compute size from header/body lengths without a full byte array, lazily render request text, and batch parameter removal/addition per patch |
+| P1 | Raw HTTP prelude normalization made up to five full intermediate strings | A request passed through chained global `replace` calls | Normalize escapes and line endings in one bounded pass; preserve body bytes verbatim |
+| P1 | Auto-approved targets were split and trimmed on every outbound request | Approval checks reparsed an unchanged persisted string | Cache the parsed immutable target list until its raw setting changes |
 | P2 | Legacy user-supplied Java regexes scan complete Burp histories and have no time budget | A pathological pattern can monopolize CPU | Migrate clients to bounded literal search and add a constrained regex policy |
 
 ## Pagination probe
@@ -127,6 +132,44 @@ Site Map IDs combine the original list index with a bounded identity fingerprint
 O(1); it does not hash every Site Map message. Fingerprints sample bounded request/response metadata and body regions,
 so very large bodies do not cause proportional ID-generation allocation.
 
+Metadata predicates now run before content accounting. A host, path, method, status, MIME, scope, or response-presence
+mismatch performs no body-size query and consumes none of the 32 MiB content budget. Method, status, and MIME lists are
+compiled to hash sets once per call rather than searched linearly for every candidate. Regression tests verify zero
+`bodyOffset`, body scan, note, fingerprint, and serialization calls for the relevant rejected records.
+
+## Stable-ID lookup and action hot paths
+
+Proxy HTTP, Proxy WebSocket, and Organizer get-by-ID paths use Montoya's filtered overloads. Montoya may still inspect
+its internal store, but the extension no longer asks it to construct and return a complete list before selecting one
+record. Site Map keeps positional validation because its opaque ID deliberately fails closed after removal or reorder
+and Montoya exposes no direct stable-ID lookup.
+
+Stable-ID request actions cap source and resulting requests at 2 MiB. Exact replay computes byte length from
+`bodyOffset + body.length` and does not materialize a complete byte array. Request text is held behind a non-thread-safe
+lazy value scoped to the invocation: when action approval is disabled,
+or HTTP approval is disabled/auto-approved, the potentially large string is never created. Parameter replacements are
+resolved once per affected parameter type and applied as at most one removal plus one addition, rather than reparsing and
+rebuilding the immutable request for every mutation. Response previews slice the Montoya byte array before text/base64
+conversion and are capped at 64 KiB. A 100 ms–120 s Montoya response timeout bounds response reading without wrapping
+an ambiguously delivered request in an unsafe coroutine retry.
+
+Existing raw HTTP/1.1, Repeater, and Intruder tools retain their output but now normalize request preludes in one pass
+instead of up to five complete replacement passes. Bodies remain untouched. HTTP/2 header construction reuses its
+ordered map rather than allocating a second merged map. The parsed auto-approval target list is also reused until the
+persisted raw value changes.
+
+A standalone Java 21 `ThreadMXBean` probe compared the previous replacement/substrings pipeline with the current
+compiled `normalizeHttpContent` implementation. After warm-up, the median of nine alternating rounds was:
+
+| Input | Previous median / allocation | One-pass median / allocation | Allocation reduction |
+|---|---:|---:|---:|
+| 1 MiB body after a 3 KiB escaped prelude | 1.65 ms / 3,165,616 B | 1.57 ms / 2,103,648 B | 33.5% |
+| 256 KiB escaped prelude, no body | 0.98 ms / 1,039,736 B | 1.00 ms / 494,064 B | 52.5% |
+
+Latency is effectively neutral for the header-only synthetic case and about 5% lower for the large-body case; the
+reliable gain is fewer temporary strings and substantially lower allocation. Both paths produced identical output,
+including byte-for-byte preservation of body text.
+
 ## Reproducible packaging
 
 The extension manifest previously included build time, user, JDK, and Gradle fields, and `embedProxyJar` mutated the
@@ -143,11 +186,12 @@ following work remains:
 
 1. Cap or validate legacy pagination `count` and `offset` to prevent unbounded output requests.
 2. Migrate legacy source-specific list tools to the signed cursor model.
-3. Make compact summaries the default after a compatibility window and remove silent legacy 5,000-character truncation.
+3. Make compact summaries the default after a compatibility window and replace post-serialization 5,000-character truncation with a streaming/capped encoder.
 4. Paginate and bound Collaborator interaction output.
-5. Add configurable hard request timeouts and cancellation without breaking long approval waits.
+5. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
 6. Add a constrained regex mode; new unified search intentionally supports bounded literal matching only.
-7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
+7. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove that cached entries are still live.
+8. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
 
 ## Regression checks
 
@@ -155,6 +199,9 @@ Performance changes should preserve the following:
 
 - Only selected page items invoke serialization.
 - Unified search never exceeds its result, metadata-scan, content-scan, cursor, URL, or note bounds.
+- Metadata-rejected search records never consume content budget or invoke body scans.
+- Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
+- Derived request actions render full request text only when an interactive approval needs it.
 - Signed search cursors reject tampering, project changes, and stale source boundaries.
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
 - Server stop/restart closes all SDK sessions.

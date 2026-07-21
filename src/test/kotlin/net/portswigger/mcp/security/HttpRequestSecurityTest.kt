@@ -12,6 +12,7 @@ import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -99,6 +100,33 @@ class HttpRequestSecurityTest {
     }
 
     @Test
+    fun `cancellation while Swing approval is open cannot persist an Always Allow target`() = runBlocking {
+        val queuedAction = slot<Runnable>()
+        lateinit var approval: Deferred<Boolean>
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } answers {
+                approval.cancel()
+                1
+            }
+
+            approval = async(start = CoroutineStart.UNDISPATCHED) {
+                SwingUserApprovalHandler().requestApproval("example.com", 443, config)
+            }
+            queuedAction.captured.run()
+            approval.join()
+
+            assertTrue(approval.isCancelled)
+            assertTrue(config.getAutoApproveTargetsList().isEmpty())
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+    }
+
+    @Test
     fun `checkHttpRequestPermission should allow when approval disabled`() {
         config.requireHttpRequestApproval = false
 
@@ -106,6 +134,42 @@ class HttpRequestSecurityTest {
             val result = HttpRequestSecurity.checkHttpRequestPermission("example.com", 80, config)
             assertTrue(result)
         }
+    }
+
+    @Test
+    fun `lazy request content is materialized only for an interactive approval`() = runBlocking {
+        var materializations = 0
+        val requestContent = {
+            materializations++
+            "GET / HTTP/1.1\r\n\r\n"
+        }
+
+        config.requireHttpRequestApproval = false
+        assertTrue(
+            HttpRequestSecurity.checkHttpRequestPermissionLazy(
+                "example.com", 443, config, requestContent = requestContent
+            )
+        )
+        assertEquals(0, materializations)
+
+        config.requireHttpRequestApproval = true
+        config.addAutoApproveTarget("example.com")
+        assertTrue(
+            HttpRequestSecurity.checkHttpRequestPermissionLazy(
+                "example.com", 443, config, requestContent = requestContent
+            )
+        )
+        assertEquals(0, materializations)
+
+        coEvery {
+            mockApprovalHandler.requestApproval("other.test", 443, config, any(), null)
+        } returns false
+        assertFalse(
+            HttpRequestSecurity.checkHttpRequestPermissionLazy(
+                "other.test", 443, config, requestContent = requestContent
+            )
+        )
+        assertEquals(1, materializations)
     }
 
     @Test
