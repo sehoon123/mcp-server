@@ -1,7 +1,7 @@
 Source: https://github.com/sehoon123/mcp-proxy.git
-Commit: 59bb06c366920a4e0992e0e536b69e46548f8772
+Commit: 192eaf207b3a9dd6d558ece7a226e5c95ee11bbe
 Branch: feat/streamable-http-proxy
 Version: 2.0.0
 Build: ./gradlew clean test shadowJar
 Artifact: build/libs/mcp-proxy-all.jar
-SHA-256: cffdd4ccf91a6b6dd2d3abf5ae0a38d5160162851a9dafa34ac3f8af517153e0
+SHA-256: b0bf94b3e768f5c9db66fa454c11bd0881904f3570eebabfac523e04fb419a15
