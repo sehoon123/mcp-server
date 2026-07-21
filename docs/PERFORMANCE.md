@@ -99,8 +99,9 @@ JAR while copying it to disk, avoiding the full in-memory byte array.
 The stdio transport already bounds raw frame and output buffering, but the proxy previously detached every decoded
 message into a new coroutine. A disconnected Burp instance or slow approval could therefore accumulate an unbounded
 number of suspended relays. The proxy now separates lifecycle, normal request, and control traffic into bounded
-channels. Sixteen request workers consume a 64-request queue, while initialized/cancellation/response traffic remains
-independent so a request burst cannot starve control messages.
+channels. Sixteen request workers consume a 64-request queue. Once that admission budget is full, another request is
+rejected with an immediate not-forwarded JSON-RPC error instead of allocating another coroutine or delaying
+initialized/cancellation/response traffic.
 
 The retry decision is also split by delivery phase. Connection establishment can retry transient availability
 failures because the current message has not been sent. After send, only a definitive missing-session 404, a refused
@@ -123,10 +124,9 @@ These items should be handled in the feature phase with explicit schemas and com
 2. Add stable history IDs, cursor pagination, field selection, and per-field body limits.
 3. Avoid converting entire HTTP messages before limiting output; return valid structured JSON plus truncation metadata.
 4. Paginate Collaborator interactions and bound Scanner issue evidence.
-5. Define an explicit overload JSON-RPC error if bounded stdio backpressure is later exposed over a non-backpressured transport.
-6. Add configurable hard request timeouts and cancellation without breaking long approval waits.
-7. Add safe literal/field search and a constrained regex mode.
-8. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
+5. Add configurable hard request timeouts and cancellation without breaking long approval waits.
+6. Add safe literal/field search and a constrained regex mode.
+7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
 
 ## Regression checks
 
@@ -136,7 +136,7 @@ Performance changes should preserve the following:
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
 - Server stop/restart closes all SDK sessions.
 - Proxy graceful shutdown sends DELETE when a session exists, but never blocks shutdown for more than two seconds.
-- Proxy request concurrency and pending queues remain bounded under bursts.
+- Proxy request concurrency and pending queues remain bounded under bursts; rejected requests are never forwarded.
 - Ambiguous post-send failures never retry arbitrary or custom requests.
 - Existing proxy extraction is skipped without reading the nested JAR.
 - Repeated builds from identical inputs produce byte-identical proxy and extension JARs.

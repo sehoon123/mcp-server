@@ -1,7 +1,7 @@
 Source: https://github.com/sehoon123/mcp-proxy.git
-Commit: 3a10337f5a01923adf4ba7d6c752ecf238847788
+Commit: de8b770ba48c5709056f2cb713bc2886d155e4c1
 Branch: perf/runtime-optimization
 Version: 2.0.0
 Build: ./gradlew clean test shadowJar
 Artifact: build/libs/mcp-proxy-all.jar
-SHA-256: 1efb859acd0485bbd598b9dd1ee0fe7dc965cf586a5b18ef398979a6248a7887
+SHA-256: 533cd24cbb39b9855234b8d14c4d19a2293b70711282222c7f905927851ba244
