@@ -597,42 +597,46 @@ class ToolsKtTest {
         }
         
         @Test
-        fun `config editing tools should respect config settings`() {
+        fun `config editing tools should respect config settings without logging their contents`() {
             val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
-            
+            val apiLogging = mockk<Logging>(relaxed = true)
+            val sensitiveJson = "{\"api_key\":\"secret-value\"}"
+
             every { api.burpSuite() } returns burpSuite
+            every { api.logging() } returns apiLogging
             every { burpSuite.importProjectOptionsFromJson(any()) } just runs
-            every { api.logging().logToOutput(any()) } just runs
-            
+            every { burpSuite.importUserOptionsFromJson(any()) } just runs
+
             runBlocking {
-                val result = client.callTool(
-                    "set_project_options", mapOf(
-                        "json" to "{\"test\": true}"
-                    )
+                val projectResult = client.callTool(
+                    "set_project_options", mapOf("json" to sensitiveJson)
                 )
-                
+                val userResult = client.callTool(
+                    "set_user_options", mapOf("json" to sensitiveJson)
+                )
+
                 delay(100)
-                result.expectTextContent("Project configuration has been applied")
+                projectResult.expectTextContent("Project configuration has been applied")
+                userResult.expectTextContent("User configuration has been applied")
             }
-            
-            verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(any()) }
-            
+
+            verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(sensitiveJson) }
+            verify(exactly = 1) { burpSuite.importUserOptionsFromJson(sensitiveJson) }
+            verify(exactly = 0) { apiLogging.logToOutput(match { "secret-value" in it }) }
+
             clearMocks(burpSuite, answers = false)
-            
+
             every { config.configEditingTooling } returns false
-            
+
             runBlocking {
-                
                 val result = client.callTool(
-                    "set_project_options", mapOf(
-                        "json" to "{\"test\": true}"
-                    )
+                    "set_project_options", mapOf("json" to sensitiveJson)
                 )
-                
+
                 delay(100)
                 result.expectTextContent("User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'")
             }
-            
+
             verify(exactly = 0) { burpSuite.importProjectOptionsFromJson(any()) }
         }
     }

@@ -1,11 +1,10 @@
 package net.portswigger.mcp.security
 
 import burp.api.montoya.MontoyaApi
+import kotlinx.coroutines.suspendCancellableCoroutine
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import javax.swing.SwingUtilities
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 interface UserApprovalHandler {
     suspend fun requestApproval(
@@ -17,8 +16,10 @@ class SwingUserApprovalHandler : UserApprovalHandler {
     override suspend fun requestApproval(
         hostname: String, port: Int, config: McpConfig, requestContent: String?, api: MontoyaApi?
     ): Boolean {
-        return suspendCoroutine { continuation ->
-            SwingUtilities.invokeLater {
+        return suspendCancellableCoroutine { continuation ->
+            SwingUtilities.invokeLater ui@{
+                if (!continuation.isActive) return@ui
+
                 val message = buildString {
                     appendLine("An MCP client is requesting to send an HTTP request to:")
                     appendLine()
@@ -36,25 +37,19 @@ class SwingUserApprovalHandler : UserApprovalHandler {
                     burpFrame, message, options, requestContent, api
                 )
 
-                when (result) {
-                    0 -> {
-                        continuation.resume(true)
-                    }
-
+                val approved = when (result) {
+                    0 -> true
                     1 -> {
                         config.addAutoApproveTarget(hostname)
-                        continuation.resume(true)
+                        true
                     }
-
                     2 -> {
                         config.addAutoApproveTarget("$hostname:$port")
-                        continuation.resume(true)
+                        true
                     }
-
-                    else -> {
-                        continuation.resume(false)
-                    }
+                    else -> false
                 }
+                if (continuation.isActive) continuation.resume(approved) { _, _, _ -> }
             }
         }
     }

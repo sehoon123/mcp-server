@@ -5,7 +5,17 @@ import burp.api.montoya.persistence.PersistedObject
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.mockkStatic
+import io.mockk.slot
+import io.mockk.unmockkObject
+import io.mockk.unmockkStatic
+import io.mockk.verify
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -13,6 +23,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import javax.swing.SwingUtilities
 
 class HttpRequestSecurityTest {
 
@@ -62,6 +73,29 @@ class HttpRequestSecurityTest {
     @AfterEach
     fun tearDown() {
         HttpRequestSecurity.approvalHandler = originalApprovalHandler
+    }
+
+    @Test
+    fun `cancelled Swing approval does not open a queued dialog`() = runBlocking {
+        val queuedAction = slot<Runnable>()
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } returns 0
+
+            val approval = async(start = CoroutineStart.UNDISPATCHED) {
+                SwingUserApprovalHandler().requestApproval("example.com", 443, config)
+            }
+            approval.cancelAndJoin()
+            queuedAction.captured.run()
+
+            assertTrue(approval.isCancelled)
+            verify(exactly = 0) { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) }
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
     }
 
     @Test

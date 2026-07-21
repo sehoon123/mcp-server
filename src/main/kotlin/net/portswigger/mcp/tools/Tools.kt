@@ -241,7 +241,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
     mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
         if (config.configEditingTooling) {
-            api.logging().logToOutput("Setting project-level configuration: $json")
+            api.logging().logToOutput("Applying project-level configuration through MCP")
             api.burpSuite().importProjectOptionsFromJson(json)
 
             "Project configuration has been applied"
@@ -253,7 +253,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
     mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
         if (config.configEditingTooling) {
-            api.logging().logToOutput("Setting user-level configuration: $json")
+            api.logging().logToOutput("Applying user-level configuration through MCP")
             api.burpSuite().importUserOptionsFromJson(json)
 
             "User configuration has been applied"

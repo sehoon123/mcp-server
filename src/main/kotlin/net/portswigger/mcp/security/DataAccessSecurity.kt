@@ -1,10 +1,9 @@
 package net.portswigger.mcp.security
 
+import kotlinx.coroutines.suspendCancellableCoroutine
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import javax.swing.SwingUtilities
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 enum class DataAccessType() {
     HTTP_HISTORY(), WEBSOCKET_HISTORY(), ORGANIZER();
@@ -18,8 +17,10 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
     override suspend fun requestDataAccess(
         accessType: DataAccessType, config: McpConfig
     ): Boolean {
-        return suspendCoroutine { continuation ->
-            SwingUtilities.invokeLater {
+        return suspendCancellableCoroutine { continuation ->
+            SwingUtilities.invokeLater ui@{
+                if (!continuation.isActive) return@ui
+
                 val accessTypeName = when (accessType) {
                     DataAccessType.HTTP_HISTORY -> "HTTP history"
                     DataAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
@@ -43,24 +44,19 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                     burpFrame, message, options
                 )
 
-                when (result) {
-                    0 -> {
-                        continuation.resume(true)
-                    }
-
+                val approved = when (result) {
+                    0 -> true
                     1 -> {
                         when (accessType) {
                             DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory = true
                             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
                             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer = true
                         }
-                        continuation.resume(true)
+                        true
                     }
-
-                    else -> {
-                        continuation.resume(false)
-                    }
+                    else -> false
                 }
+                if (continuation.isActive) continuation.resume(approved) { _, _, _ -> }
             }
         }
     }
