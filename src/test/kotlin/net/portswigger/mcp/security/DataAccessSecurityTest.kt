@@ -3,12 +3,17 @@ package net.portswigger.mcp.security
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import io.mockk.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import javax.swing.SwingUtilities
 
 class DataAccessSecurityTest {
     private val originalHandler = DataAccessSecurity.approvalHandler
@@ -16,6 +21,33 @@ class DataAccessSecurityTest {
     @AfterEach
     fun restoreHandler() {
         DataAccessSecurity.approvalHandler = originalHandler
+    }
+
+    @Test
+    fun `cancelled data approval does not open a queued dialog`() = runBlocking {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns false
+        every { storage.getString(any()) } returns ""
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val queuedAction = slot<Runnable>()
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } returns 0
+
+            val approval = async(start = CoroutineStart.UNDISPATCHED) {
+                SwingDataAccessApprovalHandler().requestDataAccess(DataAccessType.HTTP_HISTORY, config)
+            }
+            approval.cancelAndJoin()
+            queuedAction.captured.run()
+
+            assertTrue(approval.isCancelled)
+            verify(exactly = 0) { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) }
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
     }
 
     @Test
