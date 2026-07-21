@@ -18,6 +18,8 @@ class ExtensionBase : BurpExtension {
         val serverManager = KtorServerManager(api)
 
         val proxyJarManager = ProxyJarManager(api.logging())
+        runCatching { proxyJarManager.getProxyJar() }
+            .onFailure { api.logging().logToError("Failed to refresh the packaged MCP proxy: ${it.message}") }
 
         val configUi = ConfigUi(
             config = config, providers = listOf(

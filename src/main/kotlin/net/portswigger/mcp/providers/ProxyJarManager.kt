@@ -27,11 +27,10 @@ class ProxyJarManager(private val logging: Logging) {
             }
         }
 
-        val resourceStream = javaClass.classLoader.getResourceAsStream(PROXY_JAR_NAME)
+        val resourceBytes = javaClass.classLoader.getResourceAsStream(PROXY_JAR_NAME)?.use { it.readAllBytes() }
             ?: throw RuntimeException("Could not find $PROXY_JAR_NAME in extension resources")
 
         val digest = MessageDigest.getInstance("SHA-256")
-        val resourceBytes = resourceStream.readAllBytes()
         val resourceHash = digest.digest(resourceBytes).joinToString("") { "%02x".format(it) }
 
         val needsExtraction =
