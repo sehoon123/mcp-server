@@ -12,6 +12,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.tools.registerTools
 import java.net.URI
@@ -27,6 +28,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
     private var server: EmbeddedServer<*, *>? = null
+    private var mcpServer: Server? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
@@ -34,19 +36,19 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
         executor.submit {
             try {
-                server?.stop(1000, 5000)
-                server = null
+                stopCurrentServer()
 
-                val mcpServer = Server(
+                val newMcpServer = Server(
                     serverInfo = Implementation("burp-suite", serverVersion), options = ServerOptions(
                         capabilities = ServerCapabilities(
                             tools = ServerCapabilities.Tools(listChanged = false)
                         )
                     )
                 )
-                mcpServer.registerTools(api, config)
+                newMcpServer.registerTools(api, config)
+                mcpServer = newMcpServer
 
-                server = embeddedServer(Netty, port = config.port, host = config.host) {
+                val newEngine = embeddedServer(Netty, port = config.port, host = config.host) {
                     install(CORS) {
                         allowHost("localhost:${config.port}")
                         allowHost("127.0.0.1:${config.port}")
@@ -80,11 +82,11 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                     // All HTTP clients, including the packaged stdio proxy, use the single
                     // Streamable HTTP endpoint. The deprecated two-endpoint SSE transport is removed.
                     mcpStreamableHttp(path = "/mcp") {
-                        mcpServer
+                        newMcpServer
                     }
-                }.apply {
-                    start(wait = false)
                 }
+                server = newEngine
+                newEngine.start(wait = false)
 
                 api.logging().logToOutput(
                     "Started MCP Streamable HTTP server at http://${config.host}:${config.port}/mcp"
@@ -92,6 +94,8 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                 callback(ServerState.Running)
 
             } catch (e: Exception) {
+                runCatching { stopCurrentServer() }
+                    .onFailure { cleanupError -> api.logging().logToError(cleanupError) }
                 api.logging().logToError(e)
                 callback(ServerState.Failed(e))
             }
@@ -103,8 +107,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
         executor.submit {
             try {
-                server?.stop(1000, 5000)
-                server = null
+                stopCurrentServer()
                 api.logging().logToOutput("Stopped MCP server")
                 callback(ServerState.Stopped)
             } catch (e: Exception) {
@@ -118,11 +121,28 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
         URI(origin).host?.lowercase() in LOOPBACK_HOSTS
     }.getOrDefault(false)
 
-    override fun shutdown() {
-        server?.stop(1000, 5000)
+    private fun stopCurrentServer() {
+        val currentEngine = server
         server = null
+        try {
+            currentEngine?.stop(1000, 5000)
+        } finally {
+            val currentMcpServer = mcpServer
+            mcpServer = null
+            if (currentMcpServer != null) {
+                runBlocking { currentMcpServer.close() }
+            }
+        }
+    }
+
+    override fun shutdown() {
+        runCatching {
+            executor.submit { stopCurrentServer() }.get(10, TimeUnit.SECONDS)
+        }.onFailure { api.logging().logToError(it) }
 
         executor.shutdown()
-        executor.awaitTermination(10, TimeUnit.SECONDS)
+        if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+            executor.shutdownNow()
+        }
     }
 }

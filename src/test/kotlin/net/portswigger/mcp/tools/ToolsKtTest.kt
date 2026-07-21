@@ -155,7 +155,7 @@ class ToolsKtTest {
     @AfterEach
     fun tearDown() {
         runBlocking { if (client.isConnected()) client.close() }
-        serverManager.stop {}
+        serverManager.shutdown()
     }
 
     @Nested
@@ -733,6 +733,36 @@ class ToolsKtTest {
     
     @Nested
     inner class PaginatedToolsTests {
+        @Test
+        fun `deep pagination serializes only the selected history items`() {
+            val proxy = mockk<Proxy>()
+            val proxyHistory = List(100) { mockk<ProxyHttpRequestResponse>() }
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns proxyHistory
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            proxyHistory.forEachIndexed { index, item ->
+                every { item.toSerializableForm() } returns HttpRequestResponse(
+                    request = "GET /item$index HTTP/1.1",
+                    response = "HTTP/1.1 200 OK",
+                    notes = null
+                )
+            }
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history", mapOf("count" to 1, "offset" to 99)
+                )
+                assertTrue(result.expectTextContent().contains("GET /item99"))
+            }
+
+            proxyHistory.dropLast(1).forEach { skipped ->
+                verify(exactly = 0) { skipped.toSerializableForm() }
+            }
+            verify(exactly = 1) { proxyHistory.last().toSerializableForm() }
+        }
+
         @Test
         fun `get proxy history should paginate properly`() {
             val proxy = mockk<Proxy>()

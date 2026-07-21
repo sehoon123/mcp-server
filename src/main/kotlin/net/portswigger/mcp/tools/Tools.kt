@@ -9,8 +9,11 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.organizer.OrganizerItem
+import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import burp.api.montoya.proxy.ProxyWebSocketMessage
+import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
@@ -118,9 +121,7 @@ private fun normalizePrelude(prelude: String): String = prelude
 fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
-        val allowed = runBlocking {
-            HttpRequestSecurity.checkHttpRequestPermission(targetHostname, targetPort, config, content, api)
-        }
+        val allowed = HttpRequestSecurity.checkHttpRequestPermission(targetHostname, targetPort, config, content, api)
         if (!allowed) {
             api.logging().logToOutput("MCP HTTP request denied: $targetHostname:$targetPort")
             return@mcpTool "Send HTTP request denied by Burp Suite"
@@ -151,9 +152,13 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             }
         }
 
-        val allowed = runBlocking {
-            HttpRequestSecurity.checkHttpRequestPermission(targetHostname, targetPort, config, http2RequestDisplay, api)
-        }
+        val allowed = HttpRequestSecurity.checkHttpRequestPermission(
+            targetHostname,
+            targetPort,
+            config,
+            http2RequestDisplay,
+            api
+        )
         if (!allowed) {
             api.logging().logToOutput("MCP HTTP request denied: $targetHostname:$targetPort")
             return@mcpTool "Send HTTP request denied by Burp Suite"
@@ -258,8 +263,11 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
-        mcpPaginatedTool<GetScannerIssues>("Displays information about issues identified by the scanner") {
-            api.siteMap().issues().asSequence().map { Json.encodeToString(it.toSerializableForm()) }
+        mcpPaginatedSequenceTool<GetScannerIssues, AuditIssue>(
+            "Displays information about issues identified by the scanner",
+            mapper = { Json.encodeToString(it.toSerializableForm()) }
+        ) {
+            PaginatedSource.Items(api.siteMap().issues().asSequence())
         }
 
         val collaboratorClient by lazy { api.collaborator().createClient() }
@@ -304,77 +312,79 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         }
     }
 
-    mcpPaginatedTool<GetProxyHttpHistory>("Displays items within the proxy HTTP history") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
-        }
+    mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
+        "Displays items within the proxy HTTP history",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("HTTP history access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("HTTP history access denied by Burp Suite")
         }
 
-        api.proxy().history().asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.proxy().history().asSequence())
     }
 
-    mcpPaginatedTool<GetProxyHttpHistoryRegex>("Displays items matching a specified regex within the proxy HTTP history") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
-        }
+    mcpPaginatedSequenceTool<GetProxyHttpHistoryRegex, ProxyHttpRequestResponse>(
+        "Displays items matching a specified regex within the proxy HTTP history",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("HTTP history access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("HTTP history access denied by Burp Suite")
         }
 
         val compiledRegex = Pattern.compile(regex)
-        api.proxy().history { it.contains(compiledRegex) }.asSequence()
-            .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.proxy().history { it.contains(compiledRegex) }.asSequence())
     }
 
-    mcpPaginatedTool<GetOrganizerItems>("Displays items within the Organizer tab") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
-        }
+    mcpPaginatedSequenceTool<GetOrganizerItems, OrganizerItem>(
+        "Displays items within the Organizer tab",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("Organizer access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("Organizer access denied by Burp Suite")
         }
 
-        api.organizer().items().asSequence().map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.organizer().items().asSequence())
     }
 
-    mcpPaginatedTool<GetOrganizerItemsRegex>("Displays items matching a specified regex within the Organizer tab") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
-        }
+    mcpPaginatedSequenceTool<GetOrganizerItemsRegex, OrganizerItem>(
+        "Displays items matching a specified regex within the Organizer tab",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("Organizer access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("Organizer access denied by Burp Suite")
         }
 
         val compiledRegex = Pattern.compile(regex)
-        api.organizer().items { it.contains(compiledRegex) }.asSequence()
-            .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.organizer().items { it.contains(compiledRegex) }.asSequence())
     }
 
-    mcpPaginatedTool<GetProxyWebsocketHistory>("Displays items within the proxy WebSocket history") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
-        }
+    mcpPaginatedSequenceTool<GetProxyWebsocketHistory, ProxyWebSocketMessage>(
+        "Displays items within the proxy WebSocket history",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("WebSocket history access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("WebSocket history access denied by Burp Suite")
         }
 
-        api.proxy().webSocketHistory().asSequence()
-            .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.proxy().webSocketHistory().asSequence())
     }
 
-    mcpPaginatedTool<GetProxyWebsocketHistoryRegex>("Displays items matching a specified regex within the proxy WebSocket history") {
-        val allowed = runBlocking {
-            checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
-        }
+    mcpPaginatedSequenceTool<GetProxyWebsocketHistoryRegex, ProxyWebSocketMessage>(
+        "Displays items matching a specified regex within the proxy WebSocket history",
+        mapper = { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+    ) {
+        val allowed = checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("WebSocket history access denied by Burp Suite")
+            return@mcpPaginatedSequenceTool PaginatedSource.Message("WebSocket history access denied by Burp Suite")
         }
 
         val compiledRegex = Pattern.compile(regex)
-        api.proxy().webSocketHistory { it.contains(compiledRegex) }.asSequence()
-            .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
+        PaginatedSource.Items(api.proxy().webSocketHistory { it.contains(compiledRegex) }.asSequence())
     }
 
     mcpTool<SetTaskExecutionEngineState>("Sets the state of Burp's task execution engine (paused or unpaused)") {

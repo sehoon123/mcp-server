@@ -70,7 +70,7 @@ class McpServerIntegrationTest {
                 client.close()
             }
         }
-        serverManager.stop {}
+        serverManager.shutdown()
     }
 
     @Test

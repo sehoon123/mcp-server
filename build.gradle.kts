@@ -162,7 +162,7 @@ tasks {
     }
 
     build {
-        dependsOn(shadowJar)
+        dependsOn("embedProxyJar")
     }
 
     withType<AbstractArchiveTask>().configureEach {

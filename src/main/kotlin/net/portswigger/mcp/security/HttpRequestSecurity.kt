@@ -62,6 +62,8 @@ class SwingUserApprovalHandler : UserApprovalHandler {
 
 object HttpRequestSecurity {
 
+    private val hostLabelPattern = Regex("^[a-zA-Z0-9-]+$")
+
     var approvalHandler: UserApprovalHandler = SwingUserApprovalHandler()
 
     private fun isAutoApproved(hostname: String, port: Int, config: McpConfig): Boolean {
@@ -98,9 +100,8 @@ object HttpRequestSecurity {
         if (subdomain.isEmpty()) return false
 
         return subdomain.split(".").all { label ->
-            label.isNotEmpty() && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-") && label.matches(
-                Regex("^[a-zA-Z0-9-]+$")
-            )
+            label.isNotEmpty() && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-") &&
+                label.matches(hostLabelPattern)
         }
     }
 

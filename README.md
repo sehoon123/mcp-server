@@ -134,4 +134,5 @@ The proxy source is maintained in the companion fork:
 Tools are defined in `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt`. Parameters use serializable data classes;
 tool names and JSON schemas are derived from those types. Implement `Paginated` for potentially large result sets.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for proposed security, protocol, and tool improvements.
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the runtime analysis and measurements, and
+[docs/ROADMAP.md](docs/ROADMAP.md) for proposed security, protocol, and tool improvements.
