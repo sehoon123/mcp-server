@@ -6,6 +6,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.ContentBlock
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -13,8 +14,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.serializer
 import net.portswigger.mcp.schema.asInputSchema
+import net.portswigger.mcp.schema.asOutputSchema
 import kotlin.experimental.ExperimentalTypeInference
 
 private const val MAX_CONCURRENT_TOOL_EXECUTIONS = 16
@@ -115,11 +118,12 @@ internal sealed interface PaginatedSource<out J> {
 /** Applies offset/count before mapping so skipped records are never serialized. */
 internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequenceTool(
     description: String,
-    noinline mapper: (J) -> CharSequence = { it.toString() },
+    noinline mapper: I.(J) -> CharSequence = { it.toString() },
     crossinline execute: suspend I.() -> PaginatedSource<J>
 ) {
     mcpTool<I>(description, execute = {
-        when (val source = execute(this)) {
+        val input = this
+        when (val source = execute(input)) {
             is PaginatedSource.Message -> {
                 val message = sequenceOf(source.text).drop(offset).take(count).firstOrNull()
                 listOf(TextContent(message ?: "Reached end of items"))
@@ -131,10 +135,10 @@ internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequence
                     listOf(TextContent("Reached end of items"))
                 } else {
                     val output = buildString {
-                        append(mapper(iterator.next()))
+                        append(mapper(input, iterator.next()))
                         while (iterator.hasNext()) {
                             append("\n\n")
-                            append(mapper(iterator.next()))
+                            append(mapper(input, iterator.next()))
                         }
                     }
                     listOf(TextContent(output))
@@ -194,6 +198,51 @@ inline fun Server.mcpTool(
         )
     }
     addTool(name = name, description = description, inputSchema = ToolSchema(), handler = handler)
+}
+
+@OptIn(InternalSerializationApi::class)
+inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
+    description: String,
+    annotations: ToolAnnotations? = null,
+    crossinline execute: suspend I.() -> O,
+) {
+    val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
+    val inputSerializer = I::class.serializer()
+    val outputSerializer = O::class.serializer()
+    val inputSchema = I::class.asInputSchema()
+    val outputSchema = outputSerializer.descriptor.asOutputSchema()
+
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, request ->
+        try {
+            val input = Json.decodeFromJsonElement(
+                inputSerializer,
+                request.params.arguments ?: JsonObject(emptyMap()),
+            )
+            val output = withContext(toolExecutionDispatcher) { execute(input) }
+            val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
+            CallToolResult(
+                content = listOf(TextContent(structuredContent.toString())),
+                isError = false,
+                structuredContent = structuredContent,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            CallToolResult(
+                content = listOf(TextContent("Error: ${e.message}")),
+                isError = true,
+            )
+        }
+    }
+
+    addTool(
+        name = toolName,
+        description = description,
+        inputSchema = inputSchema,
+        outputSchema = outputSchema,
+        toolAnnotations = annotations,
+        handler = handler,
+    )
 }
 
 fun String.toLowerSnakeCase(): String {

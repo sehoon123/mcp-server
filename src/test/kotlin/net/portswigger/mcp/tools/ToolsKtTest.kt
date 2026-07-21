@@ -3,31 +3,39 @@ package net.portswigger.mcp.tools
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine
 import burp.api.montoya.collaborator.*
+import burp.api.montoya.core.Annotations
 import burp.api.montoya.core.BurpSuiteEdition
-import burp.api.montoya.core.ByteArray
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
+import burp.api.montoya.organizer.Organizer
+import burp.api.montoya.organizer.OrganizerItem
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import burp.api.montoya.proxy.ProxyWebSocketMessage
+import burp.api.montoya.scanner.audit.issues.AuditIssue
+import burp.api.montoya.scanner.audit.issues.AuditIssueConfidence
+import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
+import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
+import burp.api.montoya.sitemap.SiteMap
 import burp.api.montoya.utilities.Base64Utils
 import burp.api.montoya.utilities.RandomUtils
 import burp.api.montoya.utilities.URLUtils
 import burp.api.montoya.utilities.Utilities
-import io.mockk.*
-import java.net.InetAddress
-import java.time.ZonedDateTime
-import java.util.Optional
+import burp.api.montoya.websocket.Direction
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.mockk.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
@@ -39,7 +47,10 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import java.net.InetAddress
 import java.net.ServerSocket
+import java.time.ZonedDateTime
+import java.util.Optional
 import javax.swing.JTextArea
 
 class ToolsKtTest {
@@ -62,6 +73,7 @@ class ToolsKtTest {
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
             every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
             every { getBoolean("_alwaysAllowOrganizer") } returns false
+            every { getBoolean("_alwaysAllowScannerIssues") } returns false
             every { getString("host") } returns "127.0.0.1"
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
@@ -473,7 +485,7 @@ class ToolsKtTest {
         fun `base64 decode should work properly`() {
             val base64Utils = mockk<Base64Utils>()
             val utilities = mockk<Utilities>()
-            val burpByteArray = mockk<ByteArray>()
+            val burpByteArray = mockk<MontoyaByteArray>()
             
             every { api.utilities() } returns utilities
             every { utilities.base64Utils() } returns base64Utils
@@ -768,6 +780,48 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `summary mode exposes stable HTTP IDs without serializing full messages`() {
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val body = mockk<MontoyaByteArray>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val annotations = mockk<Annotations>()
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(item)
+            every { item.id() } returns 41
+            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { item.httpService() } returns service
+            every { item.listenerPort() } returns 8080
+            every { item.edited() } returns false
+            every { item.annotations() } returns annotations
+            every { request.method() } returns "GET"
+            every { request.url() } returns "https://example.test/path"
+            every { request.body() } returns body
+            every { body.length() } returns 0
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { annotations.notes() } returns null
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history",
+                    mapOf("count" to 1, "offset" to 0, "summariesOnly" to true),
+                )
+                val text = result.expectTextContent()
+                assertTrue(text.contains("\"id\":41"))
+                assertTrue(text.contains("\"url\":\"https://example.test/path\""))
+                assertFalse(text.contains("\"request\":"))
+            }
+
+            verify(exactly = 0) { item.toSerializableForm() }
+        }
+
+        @Test
         fun `get proxy history should paginate properly`() {
             val proxy = mockk<Proxy>()
             val proxyHistory = listOf(
@@ -831,6 +885,141 @@ class ToolsKtTest {
                 
                 delay(100)
                 assertEquals("Reached end of items", result3.expectTextContent())
+            }
+        }
+    }
+
+    @Nested
+    inner class StableHistoryAccessTests {
+        @Test
+        fun `HTTP message lookup returns bounded structured content and read-only metadata`() {
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            val request = mockk<HttpRequest>()
+            val body = mockk<MontoyaByteArray>()
+            val selected = mockk<MontoyaByteArray>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val annotations = mockk<Annotations>()
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(item)
+            every { item.id() } returns 42
+            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { item.httpService() } returns service
+            every { item.listenerPort() } returns 8080
+            every { item.edited() } returns false
+            every { item.annotations() } returns annotations
+            every { request.method() } returns "POST"
+            every { request.url() } returns "https://example.test/upload"
+            every { request.body() } returns body
+            every { body.length() } returns 10
+            every { body.subArray(2, 6) } returns selected
+            every { selected.toString() } returns "cdef"
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { annotations.notes() } returns "reviewed"
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_http_message_by_id",
+                    mapOf(
+                        "id" to 42,
+                        "part" to "request_body",
+                        "offset" to 2,
+                        "limit" to 4,
+                        "encoding" to "text",
+                    ),
+                )
+                assertEquals(false, result?.isError)
+                assertNotNull(result?.structuredContent)
+                val structured = result!!.structuredContent!!
+                assertEquals("ok", structured["status"]?.jsonPrimitive?.content)
+                assertEquals("42", structured["id"]?.jsonPrimitive?.content)
+                val content = structured["content"]
+                assertNotNull(content)
+                assertTrue(content.toString().contains("\"data\":\"cdef\""))
+                assertTrue(content.toString().contains("\"nextOffsetBytes\":6"))
+
+                val tool = client.listTools().single { it.name == "get_http_message_by_id" }
+                assertEquals(listOf("id"), tool.inputSchema.required)
+                val outputProperties = tool.outputSchema?.properties
+                assertNotNull(outputProperties)
+                assertTrue(outputProperties!!.containsKey("status"))
+                assertTrue(outputProperties["status"].toString().contains("\"not_found\""))
+                assertTrue(outputProperties.containsKey("content"))
+                assertEquals(true, tool.annotations?.readOnlyHint)
+                assertEquals(false, tool.annotations?.destructiveHint)
+                assertEquals(true, tool.annotations?.idempotentHint)
+                assertEquals(false, tool.annotations?.openWorldHint)
+            }
+        }
+
+        @Test
+        fun `Organizer lookup returns metadata by stable ID`() {
+            val organizer = mockk<Organizer>()
+            val item = mockk<OrganizerItem>()
+            val request = mockk<HttpRequest>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val annotations = mockk<Annotations>()
+
+            every { api.organizer() } returns organizer
+            every { organizer.items() } returns listOf(item)
+            every { item.id() } returns 73
+            every { item.request() } returns request
+            every { item.response() } returns null
+            every { item.httpService() } returns service
+            every { item.annotations() } returns annotations
+            every { request.method() } returns "GET"
+            every { request.url() } returns "https://example.test/organized"
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { annotations.notes() } returns null
+
+            runBlocking {
+                val result = client.callTool("get_organizer_item_by_id", mapOf("id" to 73))
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertTrue(result?.structuredContent?.get("metadata").toString().contains("\"source\":\"organizer\""))
+            }
+        }
+
+        @Test
+        fun `WebSocket lookup supports base64 slices and missing IDs`() {
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyWebSocketMessage>()
+            val payload = mockk<MontoyaByteArray>()
+            val selected = mockk<MontoyaByteArray>()
+            val annotations = mockk<Annotations>()
+
+            every { api.proxy() } returns proxy
+            every { proxy.webSocketHistory() } returns listOf(item)
+            every { item.id() } returns 17
+            every { item.webSocketId() } returns 9
+            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+            every { item.direction() } returns Direction.SERVER_TO_CLIENT
+            every { item.listenerPort() } returns 8080
+            every { item.payload() } returns payload
+            every { item.annotations() } returns annotations
+            every { annotations.notes() } returns null
+            every { payload.length() } returns 5
+            every { payload.subArray(1, 4) } returns selected
+            every { selected.getBytes() } returns byteArrayOf(2, 3, 4)
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_websocket_message_by_id",
+                    mapOf("id" to 17, "offset" to 1, "limit" to 3, "encoding" to "base64"),
+                )
+                assertNotNull(result?.structuredContent)
+                val structured = result!!.structuredContent!!
+                assertEquals("ok", structured["status"]?.jsonPrimitive?.content)
+                assertTrue(structured["content"].toString().contains("\"data\":\"AgME\""))
+
+                val missing = client.callTool("get_websocket_message_by_id", mapOf("id" to 999))
+                assertEquals("not_found", missing?.structuredContent?.get("status")?.jsonPrimitive?.content)
             }
         }
     }
@@ -906,6 +1095,35 @@ class ToolsKtTest {
                 every { it.dnsDetails() } returns Optional.ofNullable(dnsDetails)
                 every { it.httpDetails() } returns Optional.ofNullable(httpDetails)
                 every { it.smtpDetails() } returns Optional.ofNullable(smtpDetails)
+            }
+        }
+
+        @Test
+        fun `Scanner issue lookup resolves a stable ID`() {
+            val siteMap = mockk<SiteMap>()
+            val issue = mockk<AuditIssue>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val definition = mockk<AuditIssueDefinition>()
+            every { api.siteMap() } returns siteMap
+            every { siteMap.issues() } returns listOf(issue)
+            every { issue.definition() } returns definition
+            every { definition.typeIndex() } returns 123
+            every { issue.name() } returns "Example issue"
+            every { issue.baseUrl() } returns "https://example.test/path"
+            every { issue.httpService() } returns service
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { issue.severity() } returns AuditIssueSeverity.HIGH
+            every { issue.confidence() } returns AuditIssueConfidence.CERTAIN
+            every { issue.detail() } returns "Issue detail"
+            every { issue.requestResponses() } returns emptyList()
+            val id = issue.stableHistoryId()
+
+            runBlocking {
+                val result = client.callTool("get_scanner_issue_by_id", mapOf("id" to id))
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals(id, result?.structuredContent?.get("id")?.jsonPrimitive?.content)
             }
         }
 

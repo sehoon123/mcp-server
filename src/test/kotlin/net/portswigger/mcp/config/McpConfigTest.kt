@@ -273,6 +273,15 @@ class McpConfigTest {
     }
 
     @Test
+    fun `always allow Scanner issues should persist correctly`() {
+        assertFalse(config.alwaysAllowScannerIssues)
+
+        config.alwaysAllowScannerIssues = true
+        assertTrue(config.alwaysAllowScannerIssues)
+        verify { persistedObject.setBoolean("_alwaysAllowScannerIssues", true) }
+    }
+
+    @Test
     fun `requireHttpRequestApproval should persist correctly`() {
         assertTrue(config.requireHttpRequestApproval)
 

@@ -5,8 +5,11 @@ import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import javax.swing.SwingUtilities
 
-enum class DataAccessType() {
-    HTTP_HISTORY(), WEBSOCKET_HISTORY(), ORGANIZER();
+enum class DataAccessType {
+    HTTP_HISTORY,
+    WEBSOCKET_HISTORY,
+    ORGANIZER,
+    SCANNER_ISSUES,
 }
 
 interface DataAccessApprovalHandler {
@@ -25,6 +28,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                     DataAccessType.HTTP_HISTORY -> "HTTP history"
                     DataAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
                     DataAccessType.ORGANIZER -> "Organizer items"
+                    DataAccessType.SCANNER_ISSUES -> "Scanner issues"
                 }
 
                 val message = buildString {
@@ -51,6 +55,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                             DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory = true
                             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
                             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer = true
+                            DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues = true
                         }
                         true
                     }
@@ -77,6 +82,7 @@ object DataAccessSecurity {
             DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory
             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory
             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer
+            DataAccessType.SCANNER_ISSUES -> config.alwaysAllowScannerIssues
         }
 
         if (isAlwaysAllowed) {

@@ -18,6 +18,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
+    private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -86,6 +87,14 @@ class ServerConfigurationPanel(
             config.requireDataAccessApproval
         ) { config.alwaysAllowOrganizer = it }
         add(alwaysAllowOrganizerCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        alwaysAllowScannerIssuesCheckBox = createIndentedCheckBox(
+            "Always allow Scanner issue access",
+            config.alwaysAllowScannerIssues,
+            config.requireDataAccessApproval
+        ) { config.alwaysAllowScannerIssues = it }
+        add(alwaysAllowScannerIssuesCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
@@ -121,13 +130,16 @@ class ServerConfigurationPanel(
                 config.alwaysAllowHttpHistory = false
                 config.alwaysAllowWebSocketHistory = false
                 config.alwaysAllowOrganizer = false
+                config.alwaysAllowScannerIssues = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
                 alwaysAllowOrganizerCheckBox.isSelected = false
+                alwaysAllowScannerIssuesCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
             alwaysAllowOrganizerCheckBox.isEnabled = enabled
+            alwaysAllowScannerIssuesCheckBox.isEnabled = enabled
         }
     }
 
@@ -136,6 +148,7 @@ class ServerConfigurationPanel(
             alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+            alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
         }
     }
 

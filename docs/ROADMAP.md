@@ -40,11 +40,18 @@ Proposed behavior:
 
 Large histories should not be copied into every model response.
 
-- Return compact summaries containing stable request, response, issue, and WebSocket IDs.
-- Add `get_http_message_by_id`, `get_websocket_message_by_id`, and `get_scanner_issue_by_id`.
-- Support explicit field selection such as metadata, headers, body, request, or response.
-- Make response limits configurable and report truncation metadata rather than silently cutting at 5,000 characters.
+Implemented foundation:
+
+- Optional compact summaries expose project-scoped HTTP, WebSocket, Organizer, and deterministic Scanner issue IDs.
+- ID lookup tools support explicit message/field selection and byte-exact base64 reads.
+- Per-call limits are bounded and every slice reports its total size and next offset.
+- New read tools return MCP structured content, output schemas, and safety annotations.
+
+Remaining work:
+
+- Make summary mode the default after a compatibility window and remove silent legacy 5,000-character truncation.
 - Add cursor pagination with deterministic ordering and snapshot semantics.
+- Persist a project context identifier so clients can detect IDs from a different Burp project.
 
 ### 4. Standardize structured results and errors
 

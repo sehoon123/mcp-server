@@ -118,12 +118,14 @@ inputs must produce byte-identical proxy and extension JARs.
 
 ## Deferred changes that affect behavior or APIs
 
-These items should be handled in the feature phase with explicit schemas and compatibility tests:
+The first feature phase added compact stable-ID summaries and bounded field reads. New detail tools avoid converting
+complete HTTP/WebSocket messages, return MCP structured content, and expose explicit byte-slice metadata. The
+following work remains:
 
-1. Cap or validate pagination `count` and `offset` to prevent unbounded output requests.
-2. Add stable history IDs, cursor pagination, field selection, and per-field body limits.
-3. Avoid converting entire HTTP messages before limiting output; return valid structured JSON plus truncation metadata.
-4. Paginate Collaborator interactions and bound Scanner issue evidence.
+1. Cap or validate legacy pagination `count` and `offset` to prevent unbounded output requests.
+2. Add cursor pagination with deterministic snapshot semantics and a project context identifier.
+3. Make compact summaries the default after a compatibility window and remove silent legacy 5,000-character truncation.
+4. Paginate and bound Collaborator interaction output.
 5. Add configurable hard request timeouts and cancellation without breaking long approval waits.
 6. Add safe literal/field search and a constrained regex mode.
 7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.

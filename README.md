@@ -28,7 +28,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
 - HTTP/1.1 and HTTP/2 request tools with target approval controls
-- Proxy and WebSocket history search with pagination
+- Proxy, WebSocket, Organizer, and Scanner summaries with stable IDs and bounded detail reads
 - Repeater, Intruder, Organizer, Scanner, and Collaborator integrations
 - Project and user configuration tools with credential filtering
 - URL/Base64 utilities and random data generation
@@ -76,6 +76,28 @@ Open the **MCP** tab in Burp:
 
 The default loopback binding is recommended. Do not expose the endpoint to another network until authentication and
 TLS are configured in front of it.
+
+## Stable history access
+
+Set `summariesOnly` to `true` on the existing paginated Proxy, WebSocket, Organizer, or Scanner tools to return compact
+metadata instead of complete messages. Summaries expose Burp's project-scoped numeric IDs; Scanner issue IDs are
+deterministic `issue_<hash>` values derived from issue identity fields.
+
+Use the corresponding read tool to fetch only the required record and field:
+
+- `get_http_message_by_id`
+- `get_websocket_message_by_id`
+- `get_organizer_item_by_id`
+- `get_scanner_issue_by_id` (Burp Professional)
+
+HTTP and Organizer reads support `metadata`, complete request/response messages, headers, or bodies. Scanner reads
+support metadata, detail, remediation, and individual evidence request/response messages. Content reads use byte
+offsets, default to 32 KiB, and are capped at 256 KiB per call. Responses include `totalBytes`, `hasMore`, and
+`nextOffsetBytes`; repeat the call with the next offset to retrieve the complete field. Use `encoding: "base64"` for
+byte-exact binary content.
+
+These read tools return both JSON text and MCP `structuredContent`, advertise output schemas, and carry read-only,
+non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read.
 
 ## Configure clients
 

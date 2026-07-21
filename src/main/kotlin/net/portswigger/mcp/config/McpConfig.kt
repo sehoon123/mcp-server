@@ -48,6 +48,16 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
             }
         }
 
+    private var _alwaysAllowScannerIssues by storage.boolean(false)
+    var alwaysAllowScannerIssues: Boolean
+        get() = _alwaysAllowScannerIssues
+        set(value) {
+            if (_alwaysAllowScannerIssues != value) {
+                _alwaysAllowScannerIssues = value
+                notifyDataAccessChanged()
+            }
+        }
+
     var filterConfigCredentials by storage.boolean(true)
 
     private var _autoApproveTargets by storage.stringList("")

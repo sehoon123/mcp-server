@@ -1,13 +1,18 @@
 package net.portswigger.mcp
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.Annotations
+import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.proxy.Proxy
+import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.every
 import io.mockk.mockk
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
@@ -18,6 +23,7 @@ import org.junit.jupiter.api.assertDoesNotThrow
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.net.ServerSocket
+import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -151,6 +157,37 @@ class ProxyEndToEndTest {
             val tools = client.listTools()
             assertFalse(tools.isEmpty(), "Tool list should not be empty")
             assertTrue(tools.any { it.name == "url_encode" }, "url_encode tool should be present")
+        }
+    }
+
+    @Test
+    fun `proxy should preserve structured history results`() {
+        val proxy = mockk<Proxy>()
+        val item = mockk<ProxyHttpRequestResponse>()
+        val request = mockk<HttpRequest>()
+        val service = mockk<burp.api.montoya.http.HttpService>()
+        val annotations = mockk<Annotations>()
+        every { api.proxy() } returns proxy
+        every { proxy.history() } returns listOf(item)
+        every { item.id() } returns 42
+        every { item.request() } returns request
+        every { item.response() } returns null
+        every { item.httpService() } returns service
+        every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+        every { item.listenerPort() } returns 8080
+        every { item.edited() } returns false
+        every { item.annotations() } returns annotations
+        every { request.method() } returns "GET"
+        every { request.url() } returns "https://example.test/"
+        every { service.host() } returns "example.test"
+        every { service.port() } returns 443
+        every { service.secure() } returns true
+        every { annotations.notes() } returns null
+
+        runBlocking {
+            val result = client.callTool("get_http_message_by_id", mapOf("id" to 42))
+            assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("42", result?.structuredContent?.get("id")?.jsonPrimitive?.content)
         }
     }
 
