@@ -24,7 +24,7 @@ private data class TestToolWithProgressResult(val status: String)
 fun main() {
     val port = System.getenv("MCP_CONFORMANCE_PORT")?.toIntOrNull() ?: 9877
     val mcpServer = Server(
-        serverInfo = Implementation(name = "burp-mcp-conformance", version = "2.1.0"),
+        serverInfo = Implementation(name = "burp-mcp-conformance", version = "2.1.1"),
         options = ServerOptions(
             capabilities = ServerCapabilities(
                 tools = ServerCapabilities.Tools(listChanged = false),

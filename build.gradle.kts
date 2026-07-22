@@ -2,6 +2,7 @@ import groovy.json.JsonOutput
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 
 private object ProxyArtifactVerification {
     fun expectedHash(metadataFile: File): String = Regex("(?m)^SHA-256: ([a-f0-9]{64})$")
@@ -37,6 +38,135 @@ abstract class VerifyProxyJarTask : DefaultTask() {
         if (actualHash != expectedHash) {
             throw GradleException("Proxy JAR checksum mismatch: expected $expectedHash, got $actualHash")
         }
+    }
+}
+
+@CacheableTask
+abstract class GenerateSbomTask : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val runtimeArtifactFiles: ConfigurableFileCollection
+
+    @get:Input
+    abstract val runtimeArtifactMetadata: ListProperty<String>
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val proxyJarFile: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val proxySourceFile: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val extensionJarFile: RegularFileProperty
+
+    @get:Input
+    abstract val rootVersion: Property<String>
+
+    @get:OutputFile
+    abstract val outputFile: RegularFileProperty
+
+    @TaskAction
+    fun generate() {
+        fun sha256(file: File): String = file.inputStream().use(ProxyArtifactVerification::sha256)
+        fun licenseFor(group: String): String = if (group == "org.slf4j") "MIT" else "Apache-2.0"
+
+        val artifactsByName = runtimeArtifactFiles.files.groupBy(File::getName)
+        val components = runtimeArtifactMetadata.get().map { encoded ->
+            val fields = encoded.split('\t')
+            if (fields.size != 4) throw GradleException("Invalid runtime artifact metadata entry")
+            val (fileName, group, name, version) = fields
+            val artifactFiles = artifactsByName[fileName].orEmpty()
+            if (artifactFiles.size != 1) {
+                throw GradleException("Runtime artifact filename is missing or ambiguous: $fileName")
+            }
+            val reference = "pkg:maven/$group/$name@$version"
+            linkedMapOf<String, Any>(
+                "type" to "library",
+                "bom-ref" to reference,
+                "group" to group,
+                "name" to name,
+                "version" to version,
+                "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to sha256(artifactFiles.single()))),
+                "licenses" to listOf(mapOf("license" to mapOf("id" to licenseFor(group)))),
+                "purl" to reference,
+            )
+        }.distinctBy { it["bom-ref"] }
+            .sortedBy { it["bom-ref"].toString() }
+            .toMutableList()
+
+        val metadataFile = proxySourceFile.get().asFile
+        val metadata = metadataFile.readText()
+        val proxyCommit = Regex("(?m)^Commit: ([a-f0-9]{40})$").find(metadata)?.groupValues?.get(1)
+            ?: throw GradleException("Missing source commit in proxy metadata")
+        val proxyHash = ProxyArtifactVerification.expectedHash(metadataFile)
+        val actualProxyHash = sha256(proxyJarFile.get().asFile)
+        if (actualProxyHash != proxyHash) {
+            throw GradleException("Proxy JAR checksum mismatch while generating SBOM")
+        }
+        val proxyReference = "pkg:generic/burp-mcp-proxy@$proxyCommit"
+        components += linkedMapOf(
+            "type" to "application",
+            "bom-ref" to proxyReference,
+            "name" to "burp-mcp-proxy",
+            "version" to proxyCommit,
+            "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to proxyHash)),
+            "licenses" to listOf(mapOf("license" to mapOf("id" to "GPL-3.0-only"))),
+            "purl" to proxyReference,
+            "properties" to listOf(mapOf("name" to "embedded", "value" to "true")),
+        )
+
+        val componentPattern = Regex(
+            "(?m)^Runtime component: ([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([^\\s]+) ([a-f0-9]{64})$"
+        )
+        val existingReferences = components.mapTo(mutableSetOf()) { it["bom-ref"].toString() }
+        componentPattern.findAll(metadata).forEach { match ->
+            val (group, name, version, hash) = match.destructured
+            val reference = "pkg:maven/$group/$name@$version"
+            if (existingReferences.add(reference)) {
+                components += linkedMapOf(
+                    "type" to "library",
+                    "bom-ref" to reference,
+                    "group" to group,
+                    "name" to name,
+                    "version" to version,
+                    "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to hash)),
+                    "licenses" to listOf(mapOf("license" to mapOf("id" to licenseFor(group)))),
+                    "purl" to reference,
+                    "properties" to listOf(mapOf("name" to "embeddedVia", "value" to "burp-mcp-proxy")),
+                )
+            }
+        }
+        components.sortBy { it["bom-ref"].toString() }
+
+        val version = rootVersion.get()
+        val rootReference = "pkg:generic/burp-mcp-server@$version"
+        val dependencyRefs = components.map { it["bom-ref"].toString() }.sorted()
+        val document = linkedMapOf<String, Any>(
+            "bomFormat" to "CycloneDX",
+            "specVersion" to "1.6",
+            "version" to 1,
+            "metadata" to mapOf(
+                "component" to linkedMapOf(
+                    "type" to "application",
+                    "bom-ref" to rootReference,
+                    "name" to "burp-mcp-server",
+                    "version" to version,
+                    "hashes" to listOf(
+                        mapOf("alg" to "SHA-256", "content" to sha256(extensionJarFile.get().asFile))
+                    ),
+                    "licenses" to listOf(mapOf("license" to mapOf("id" to "GPL-3.0-only"))),
+                    "purl" to rootReference,
+                )
+            ),
+            "components" to components,
+            "dependencies" to listOf(mapOf("ref" to rootReference, "dependsOn" to dependencyRefs)),
+        )
+        val destination = outputFile.get().asFile
+        destination.parentFile.mkdirs()
+        destination.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(document)) + "\n", Charsets.UTF_8)
     }
 }
 
@@ -209,109 +339,30 @@ tasks {
     }
 }
 
-val generateSbom by tasks.registering {
+val runtimeSbomArtifacts = configurations.runtimeClasspath.get().incoming.artifacts
+val generateSbom by tasks.registering(GenerateSbomTask::class) {
     group = "documentation"
     description = "Generates a deterministic CycloneDX JSON SBOM for the shaded extension and embedded proxy."
-    notCompatibleWithConfigurationCache(
-        "SBOM generation resolves Maven component metadata and artifact hashes during task execution"
-    )
     dependsOn("embedProxyJar")
-    val outputFile = layout.buildDirectory.file("reports/compliance/bom.cdx.json")
-    val extensionJar = tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar")
-        .flatMap { it.archiveFile }
-    inputs.files(configurations.runtimeClasspath)
-    inputs.file(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
-    inputs.file(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
-    inputs.file(extensionJar)
-    outputs.file(outputFile)
 
-    doLast {
-        fun sha256(file: File): String = file.inputStream().use(ProxyArtifactVerification::sha256)
-        fun licenseFor(group: String): String = if (group == "org.slf4j") "MIT" else "Apache-2.0"
-
-        val components = configurations.runtimeClasspath.get().resolvedConfiguration.resolvedArtifacts
-            .map { artifact ->
-                val id = artifact.moduleVersion.id
-                val reference = "pkg:maven/${id.group}/${id.name}@${id.version}"
-                linkedMapOf<String, Any>(
-                    "type" to "library",
-                    "bom-ref" to reference,
-                    "group" to id.group,
-                    "name" to id.name,
-                    "version" to id.version,
-                    "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to sha256(artifact.file))),
-                    "licenses" to listOf(mapOf("license" to mapOf("id" to licenseFor(id.group)))),
-                    "purl" to reference,
-                )
+    runtimeArtifactFiles.from(runtimeSbomArtifacts.artifactFiles)
+    runtimeArtifactMetadata.set(runtimeSbomArtifacts.resolvedArtifacts.map { artifacts ->
+        artifacts.map { artifact ->
+            val identifier = artifact.id.componentIdentifier
+            if (identifier !is ModuleComponentIdentifier) {
+                throw GradleException("Unsupported non-module runtime artifact: ${identifier.displayName}")
             }
-            .distinctBy { it["bom-ref"] }
-            .sortedBy { it["bom-ref"].toString() }
-            .toMutableList()
-
-        val metadataFile = layout.projectDirectory.file("libs/mcp-proxy-source.txt").asFile
-        val metadata = metadataFile.readText()
-        val proxyCommit = Regex("(?m)^Commit: ([a-f0-9]{40})$").find(metadata)?.groupValues?.get(1)
-            ?: throw GradleException("Missing source commit in proxy metadata")
-        val proxyHash = ProxyArtifactVerification.expectedHash(metadataFile)
-        val proxyReference = "pkg:generic/burp-mcp-proxy@$proxyCommit"
-        components += linkedMapOf(
-            "type" to "application",
-            "bom-ref" to proxyReference,
-            "name" to "burp-mcp-proxy",
-            "version" to proxyCommit,
-            "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to proxyHash)),
-            "licenses" to listOf(mapOf("license" to mapOf("id" to "GPL-3.0-only"))),
-            "purl" to proxyReference,
-            "properties" to listOf(mapOf("name" to "embedded", "value" to "true")),
-        )
-
-        val componentPattern = Regex(
-            "(?m)^Runtime component: ([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([^\\s]+) ([a-f0-9]{64})$"
-        )
-        val existingReferences = components.mapTo(mutableSetOf()) { it["bom-ref"].toString() }
-        componentPattern.findAll(metadata).forEach { match ->
-            val (group, name, version, hash) = match.destructured
-            val reference = "pkg:maven/$group/$name@$version"
-            if (existingReferences.add(reference)) {
-                components += linkedMapOf(
-                    "type" to "library",
-                    "bom-ref" to reference,
-                    "group" to group,
-                    "name" to name,
-                    "version" to version,
-                    "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to hash)),
-                    "licenses" to listOf(mapOf("license" to mapOf("id" to licenseFor(group)))),
-                    "purl" to reference,
-                    "properties" to listOf(mapOf("name" to "embeddedVia", "value" to "burp-mcp-proxy")),
-                )
-            }
-        }
-        components.sortBy { it["bom-ref"].toString() }
-
-        val rootReference = "pkg:generic/burp-mcp-server@${project.version}"
-        val dependencyRefs = components.map { it["bom-ref"].toString() }.sorted()
-        val document = linkedMapOf<String, Any>(
-            "bomFormat" to "CycloneDX",
-            "specVersion" to "1.6",
-            "version" to 1,
-            "metadata" to mapOf(
-                "component" to linkedMapOf(
-                    "type" to "application",
-                    "bom-ref" to rootReference,
-                    "name" to "burp-mcp-server",
-                    "version" to project.version.toString(),
-                    "hashes" to listOf(mapOf("alg" to "SHA-256", "content" to sha256(extensionJar.get().asFile))),
-                    "licenses" to listOf(mapOf("license" to mapOf("id" to "GPL-3.0-only"))),
-                    "purl" to rootReference,
-                )
-            ),
-            "components" to components,
-            "dependencies" to listOf(mapOf("ref" to rootReference, "dependsOn" to dependencyRefs)),
-        )
-        val destination = outputFile.get().asFile
-        destination.parentFile.mkdirs()
-        destination.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(document)) + "\n", Charsets.UTF_8)
-    }
+            listOf(artifact.file.name, identifier.group, identifier.module, identifier.version).joinToString("\t")
+        }.sorted()
+    })
+    proxyJarFile.set(layout.projectDirectory.file("libs/mcp-proxy-all.jar"))
+    proxySourceFile.set(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
+    extensionJarFile.set(
+        tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar")
+            .flatMap { it.archiveFile }
+    )
+    rootVersion.set(providers.gradleProperty("version"))
+    outputFile.set(layout.buildDirectory.file("reports/compliance/bom.cdx.json"))
 }
 
 tasks.wrapper {

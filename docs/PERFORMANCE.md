@@ -10,6 +10,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Deep pagination serialized every skipped record | 18,010 serializations for a 10-item page at offset 18,000 | Apply offset/count before mapping and serialization |
 | P0 | Approval waits used `runBlocking` inside request handlers | A four-thread probe completed 20 waits in 1,038 ms instead of 209 ms | Make tool callbacks suspend and execute blocking Burp work on a bounded IO dispatcher |
 | P0 | Graceful Streamable HTTP client close retained server sessions | 20 connect/close cycles retained 20 sessions; explicit DELETE retained 0 | Terminate the proxy's HTTP session and close the MCP server during lifecycle transitions |
+| P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | A live JS SDK close left the server socket in `CLOSE_WAIT` and the active-call counter nonzero | Track the handler job, cancel it on session close, and emit a comment-only heartbeat to detect a dead peer |
 | P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
 | P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
@@ -22,6 +23,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Raw HTTP prelude normalization made up to five full intermediate strings | A request passed through chained global `replace` calls | Normalize escapes and line endings in one bounded pass; preserve body bytes verbatim |
 | P1 | Auto-approved targets were split and trimmed on every outbound request | Approval checks reparsed an unchanged persisted string | Cache the parsed immutable target list until its raw setting changes |
 | P2 | Legacy user-supplied Java regexes could scan complete Burp histories without a time budget | A pathological pattern could monopolize CPU | Prefer bounded literal search and enforce a 512-character conservative regex grammar |
+| P2 | Per-tool durable audit writes could amplify persistence I/O during bursts | Up to 16 tool handlers may finish concurrently | Retain only bounded value-free records and debounce serialized extension-data writes by 250 ms |
 
 ## Pagination probe
 
@@ -139,14 +141,19 @@ following admission limits are exceeded:
 | Pending plus active sessions | 32 |
 | Session idle age | 15 minutes |
 | Session sweep interval | 60 seconds |
+| Optional GET SSE heartbeat | 15 seconds |
 | CIO connection idle timeout | 180 seconds |
 | Session cleanup wait during stop | 2 seconds |
 
 Duplicate `Mcp-Session-Id`, ambiguous framing (`Content-Length` plus `Transfer-Encoding`), duplicate or malformed
-`Content-Length`, and oversized chunked bodies fail before dispatch. The 180-second CIO value is an idle connection
-limit, not a total tool-execution deadline. A separate receive-pipeline wall-clock timeout was not added because Ktor
-can pre-buffer the body before that interceptor; the byte cap remains authoritative and slow chunks are covered by the
-engine idle policy.
+`Content-Length`, and oversized chunked bodies fail before dispatch. The optional GET event stream emits only an SSE
+comment every 15 seconds, allowing a closed peer to release its concurrent HTTP slot without creating an MCP message;
+DELETE, eviction, and server shutdown also cancel its registered handler immediately. Disconnect still does not delete
+the stateful session, which remains subject to the separate 32-session and idle-lifetime bounds described above.
+
+The 180-second CIO value is an idle connection limit, not a total tool-execution deadline. A separate receive-pipeline
+wall-clock timeout was not added because Ktor can pre-buffer the body before that interceptor; the byte cap remains
+authoritative and slow chunks are covered by the engine idle policy.
 
 ## Bounded unified HTTP search
 
@@ -208,6 +215,18 @@ Latency is effectively neutral for the header-only synthetic case and about 5% l
 reliable gain is fewer temporary strings and substantially lower allocation. Both paths produced identical output,
 including byte-for-byte preservation of body text.
 
+## Diagnostics and audit overhead
+
+Runtime diagnostics use atomic counters and timestamps on the HTTP admission and session-registry paths. They retain no
+request metadata, client names, headers, bodies, or Montoya objects. The Swing diagnostics view samples one immutable
+snapshot per second, so it does not poll Burp history or session transports.
+
+The audit path constructs one small record at tool completion. Argument keys are capped at 16, approvals at 8, and all
+stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized. The
+in-memory deque holds 50–1,000 records (250 by default) for at most 30 days, the persisted JSON document is capped at 1 MiB, and copied
+JSONL is capped at 100 records/64 KiB. A single daemon writer coalesces completions for 250 ms, keeps persistence off
+request workers and the Swing event thread, and flushes synchronously only during explicit test/lifecycle barriers.
+
 ## Reproducible packaging
 
 The extension manifest previously included build time, user, JDK, and Gradle fields, and `embedProxyJar` mutated the
@@ -224,7 +243,8 @@ constrained regex policy. Remaining performance work is deliberately narrower:
 
 1. Migrate legacy source-specific list tools to signed cursors where compatibility permits.
 2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
-3. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove cached entries are still live.
+3. Add a body-free, project-bounded metadata index, discard it on project changes, and re-resolve plus fingerprint-check
+   every selected record before use; add event hooks only where Montoya lifecycle events make freshness provable.
 4. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
 
 ## Regression checks

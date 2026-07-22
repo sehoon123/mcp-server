@@ -47,11 +47,16 @@ Implemented for stable-ID and focused active actions:
 
 Legacy raw Repeater/Intruder routing now uses the shared request-routing approval gate. Configuration imports, task
 engine state, Proxy Intercept, active-editor reads/writes, and configuration exports use explicit sensitive-action
-approval and accurate annotations. Still required globally: write a durable, redacted audit format with client/session
-correlation and retention controls.
-- Record timestamp, client/session, tool, normalized arguments, approval decision, duration, and result status.
-- Redact credentials and message bodies according to policy before writing audit records.
-- Add an emergency "read-only session" switch.
+approval and accurate annotations.
+
+Implemented globally for v2.1.1:
+
+- A central wrapper audits every registered tool with timestamp, one-way session correlation, tool/read-only metadata,
+  declared argument field names (never values), approval decisions, duration, result status, and exception type only.
+- Audit persistence is asynchronous, bounded to 50–1,000 retained records, a 30-day maximum age, and a 1 MiB ASCII
+  JSON document, and has bounded JSONL copy/clear controls. Bodies, header values, credentials, paths, and raw exception messages are excluded.
+- An emergency read-only switch rejects every tool not explicitly annotated read-only before its input handler runs.
+  It intentionally does not claim to cancel Scanner work already started inside Burp.
 
 ### 3. Replace positional history access with stable IDs
 
@@ -77,7 +82,8 @@ Remaining work:
 - Migrate the remaining legacy source-specific list tools from offset pagination to the signed cursor model. Summary mode
   is now the default for Proxy/WebSocket/Organizer lists; selected previews and pages are bounded and silent mid-JSON
   5,000-character truncation has been removed.
-- Add event-backed indexes for frequent ID lookups without retaining unbounded message objects.
+- Add a project-bounded metadata index for frequent discovery/ID lookups without retaining bodies or Montoya objects;
+  discard it on project changes and re-resolve plus fingerprint-check every selected source record.
 
 ### 4. Standardize structured results and errors
 
@@ -97,10 +103,15 @@ Implemented foundation:
 - Produce byte-identical proxy and extension JARs from identical inputs.
 - Run official lifecycle, ping, tool-list, DNS-rebinding, and concurrent-POST conformance scenarios in CI.
 
+Implemented release controls:
+
+- Deterministic CycloneDX 1.6 SBOM generation covers the extension runtime and the pinned proxy runtime metadata.
+- The SBOM task is configuration-cache compatible and verifies the proxy artifact against its recorded SHA-256.
+- Releases include the SBOM, dependency vulnerability review, third-party notices, license, and `SHA256SUMS`.
+
 Remaining work:
 
-- Generate an SBOM and dependency vulnerability report for both JARs.
-- Publish matching source tags and signed release artifacts.
+- Publish matching source tags and evaluate GitHub artifact attestations or signed checksums.
 
 ## Priority 1 — use more of MCP
 
@@ -150,10 +161,18 @@ Long-running operations should not look like hung calls.
 
 ### 10. Add protocol diagnostics
 
-- Show active MCP sessions, negotiated protocol versions, client names, and last activity in the Burp UI.
-- Provide a local health/diagnostics panel without exposing sensitive traffic.
-- Add configurable structured logging and correlation IDs across stdio proxy and HTTP server.
-- Report proxy source version and checksum in diagnostics.
+Implemented for v2.1.1:
+
+- A local Burp panel shows listener state/endpoint, the production protocol target, request and active/peak call counts,
+  pending/active/initialized sessions, idle evictions, admission/authentication rejections, and last activity.
+- Copyable diagnostics exclude credentials, traffic, client identifiers, and paths; only a centrally sanitized startup or
+  shutdown error can appear.
+- The panel reports the embedded proxy version, full source commit, SHA-256, and extraction verification state.
+
+Remaining work:
+
+- Track bounded per-session negotiated protocol distribution without retaining client names or capabilities.
+- Add proxy-to-server correlation only if it can remain value-redacted and bounded across reconnects.
 
 ## Priority 2 — usability and integrations
 

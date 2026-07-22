@@ -15,6 +15,44 @@ import kotlin.test.assertTrue
 
 class ProxyJarManagerTest {
     @Test
+    fun `packaged provenance is parsed from bounded metadata`(@TempDir proxyDirectory: Path) {
+        val metadata = """
+            Source: https://github.com/sehoon123/mcp-proxy.git
+            Commit: f46c402adc54ee45aff9a0ffea371708d2b6b004
+            Version: 2.1.0
+            SHA-256: ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82
+        """.trimIndent()
+        val manager = ProxyJarManager(
+            logging = mockk<Logging>(relaxed = true),
+            resourceProvider = { name -> if (name == "mcp-proxy-source.txt") metadata.byteInputStream() else null },
+            proxyDirectory = proxyDirectory,
+        )
+
+        assertEquals(
+            ProxyProvenance(
+                version = "2.1.0",
+                commit = "f46c402adc54ee45aff9a0ffea371708d2b6b004",
+                sha256 = "ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82",
+            ),
+            manager.packagedProvenance(),
+        )
+    }
+
+    @Test
+    fun `packaged provenance rejects oversized metadata`(@TempDir proxyDirectory: Path) {
+        val manager = ProxyJarManager(
+            logging = mockk<Logging>(relaxed = true),
+            resourceProvider = { name ->
+                if (name == "mcp-proxy-source.txt") "x".repeat(128 * 1024 + 1).byteInputStream() else null
+            },
+            proxyDirectory = proxyDirectory,
+        )
+
+        val error = assertThrows<IllegalArgumentException> { manager.packagedProvenance() }
+        assertTrue(error.message.orEmpty().contains("too large"))
+    }
+
+    @Test
     fun `proxy extraction refuses a symlinked parent directory`(@TempDir directory: Path) {
         val realDirectory = directory.resolve("real").also { Files.createDirectory(it) }
         val linkedDirectory = directory.resolve("linked")

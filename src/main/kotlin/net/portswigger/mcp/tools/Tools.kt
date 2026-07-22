@@ -23,6 +23,8 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.HttpRequestSecurity
+import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.RequestActionSecurity
 import net.portswigger.mcp.security.SensitiveActionSecurity
 import net.portswigger.mcp.security.filterConfigCredentials
@@ -272,7 +274,13 @@ private fun StringBuilder.appendNormalizedPrelude(content: String, endExclusive:
     }
 }
 
-internal fun Server.registerTools(api: MontoyaApi, config: McpConfig, services: ToolServices) {
+internal fun Server.registerTools(
+    api: MontoyaApi,
+    config: McpConfig,
+    services: ToolServices,
+    auditSink: McpAuditSink = NoOpMcpAuditSink,
+) {
+    bindToolRuntimePolicy(config, auditSink)
     val httpMessageSearchService = HttpMessageSearchService(api, config)
     val httpMessageActionService = HttpMessageActionService(api, config)
     val scopeToolService = ScopeToolService(api, config)

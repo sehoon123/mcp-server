@@ -1,5 +1,5 @@
 server:
-  # v2.1.0 deliberately targets the stateful MCP 2025-11-25 lifecycle through Kotlin SDK 0.14.0.
+  # v2.1.1 deliberately targets the stateful MCP 2025-11-25 lifecycle through Kotlin SDK 0.14.0.
   # Remove this whole-scenario baseline when SEP-2575 stateless support is implemented and replace it
   # with per-check entries only if a smaller upstream SDK gap remains.
   - server-stateless

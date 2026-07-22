@@ -100,12 +100,21 @@ jobs:
       - name: Build extension JAR and SBOM
         run: ./gradlew embedProxyJar generateSbom
 
-      - name: Verify reproducible extension JAR
+      - name: Verify SBOM configuration-cache reuse
+        shell: bash
+        run: |
+          output=$(./gradlew embedProxyJar generateSbom)
+          printf '%s\n' "$output"
+          grep -F 'Configuration cache entry reused.' <<<"$output"
+
+      - name: Verify reproducible extension JAR and SBOM
         shell: bash
         run: |
           cp build/libs/burp-mcp-all.jar "$RUNNER_TEMP/burp-mcp-first.jar"
-          ./gradlew embedProxyJar --rerun-tasks
+          cp build/reports/compliance/bom.cdx.json "$RUNNER_TEMP/bom-first.cdx.json"
+          ./gradlew embedProxyJar generateSbom --rerun-tasks
           cmp "$RUNNER_TEMP/burp-mcp-first.jar" build/libs/burp-mcp-all.jar
+          cmp "$RUNNER_TEMP/bom-first.cdx.json" build/reports/compliance/bom.cdx.json
 
       - name: Upload test reports
         if: failure()

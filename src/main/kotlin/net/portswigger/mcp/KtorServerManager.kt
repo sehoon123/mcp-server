@@ -6,9 +6,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.sse.ServerSentEvent
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
@@ -42,6 +44,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.RPCError
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -49,9 +53,12 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import net.portswigger.mcp.config.ConfigValidation
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.tools.ToolServices
 import net.portswigger.mcp.tools.registerTools
+import net.portswigger.mcp.tools.unbindToolRuntimePolicy
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -71,6 +78,7 @@ private const val MCP_MAX_SESSIONS = 32
 private const val MCP_SESSION_IDLE_MILLIS = 15L * 60 * 1000
 private const val MCP_SESSION_SWEEP_MILLIS = 60L * 1000
 private const val CIO_IDLE_TIMEOUT_SECONDS = 180
+private const val MCP_SSE_HEARTBEAT_MILLIS = 15_000L
 private const val MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS = 2_000L
 private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1")
 private val DNS_ALLOWED_HOSTS = listOf("localhost", "127.0.0.1", "[::1]")
@@ -86,6 +94,7 @@ internal fun Application.configureMcpHttpEndpoint(
     mcpServer: Server,
     port: Int,
     bearerToken: String? = null,
+    runtimeMetrics: McpRuntimeMetrics? = null,
 ) {
     if (bearerToken != null) {
         require(bearerToken.length in 32..128 && bearerToken.none { it.isWhitespace() || it.isISOControl() }) {
@@ -130,11 +139,13 @@ internal fun Application.configureMcpHttpEndpoint(
         context.response.header(HttpHeaders.CacheControl, "no-store")
 
         if (context.request.path() == MCP_PATH) {
+            runtimeMetrics?.onRequest()
             val hosts = context.request.headers.getAll(HttpHeaders.Host).orEmpty()
             val origins = context.request.headers.getAll(HttpHeaders.Origin).orEmpty()
             if (hosts.size != 1 || !isLoopbackHostHeader(hosts.single(), port) ||
                 origins.size > 1 || (origins.size == 1 && !isLoopbackOrigin(origins.single()))
             ) {
+                runtimeMetrics?.onHostOriginRejected()
                 context.respondText("Forbidden", status = HttpStatusCode.Forbidden)
                 finish()
             }
@@ -149,6 +160,7 @@ internal fun Application.configureMcpHttpEndpoint(
         }
 
         validateRequestMetadata(context)?.let { rejection ->
+            runtimeMetrics?.onMetadataRejected()
             context.respondText(rejection.message, status = rejection.status)
             finish()
             return@intercept
@@ -156,23 +168,30 @@ internal fun Application.configureMcpHttpEndpoint(
 
         if (activeCalls.incrementAndGet() > MCP_MAX_CONCURRENT_HTTP_CALLS) {
             activeCalls.decrementAndGet()
+            runtimeMetrics?.onOverloadRejected()
             context.response.header(HttpHeaders.RetryAfter, "1")
             context.respondText("MCP endpoint is busy", status = HttpStatusCode.TooManyRequests)
             finish()
             return@intercept
         }
+        runtimeMetrics?.onCallStarted()
         try {
             proceed()
         } finally {
             activeCalls.decrementAndGet()
+            runtimeMetrics?.onCallFinished()
         }
     }
 
-    val sessions = BoundedMcpSessionRegistry(MCP_MAX_SESSIONS, MCP_SESSION_IDLE_MILLIS)
+    val sessions = BoundedMcpSessionRegistry(MCP_MAX_SESSIONS, MCP_SESSION_IDLE_MILLIS, runtimeMetrics)
     monitor.subscribe(ApplicationStopping) {
+        runtimeMetrics?.markStopping()
         runBlocking {
             withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { sessions.closeAll() }
         }
+    }
+    monitor.subscribe(ApplicationStopped) {
+        runtimeMetrics?.markStopped()
     }
     launch(CoroutineName("McpSessionIdleCleanup")) {
         while (isActive) {
@@ -193,6 +212,7 @@ internal fun Application.configureMcpHttpEndpoint(
                     context.request.httpMethod != HttpMethod.Options &&
                     bearerToken != null && !hasValidBearerToken(context, bearerToken)
                 ) {
+                    runtimeMetrics?.onAuthenticationRejected()
                     context.response.header(HttpHeaders.WWWAuthenticate, "Bearer")
                     context.respondText("Unauthorized", status = HttpStatusCode.Unauthorized)
                     finish()
@@ -201,10 +221,37 @@ internal fun Application.configureMcpHttpEndpoint(
 
             sse {
                 val lease = sessions.acquireExisting(call) ?: return@sse
+                val streamJob = currentCoroutineContext()[Job]
+                if (streamJob == null || !lease.registerStream(streamJob)) {
+                    lease.close()
+                    call.rejectMcp(
+                        HttpStatusCode.NotFound,
+                        RPCError.ErrorCode.CONNECTION_CLOSED,
+                        "Session not found",
+                    )
+                    return@sse
+                }
+
                 call.response.header(MCP_SESSION_ID_HEADER, lease.sessionId)
+                val sseSession = this
+                val heartbeatJob = launch(CoroutineName("McpSseHeartbeat")) {
+                    while (isActive) {
+                        delay(MCP_SSE_HEARTBEAT_MILLIS)
+                        try {
+                            sseSession.send(ServerSentEvent(comments = "mcp-keepalive"))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            streamJob.cancel(CancellationException("MCP SSE client disconnected"))
+                            return@launch
+                        }
+                    }
+                }
                 try {
-                    lease.transport.handleRequest(this, call)
+                    lease.transport.handleRequest(sseSession, call)
                 } finally {
+                    heartbeatJob.cancel()
+                    lease.unregisterStream(streamJob)
                     lease.close()
                 }
             }
@@ -229,6 +276,7 @@ internal fun Application.configureMcpHttpEndpoint(
                 )
                 val pending = sessions.reserve(transport)
                 if (pending == null) {
+                    runtimeMetrics?.onSessionCapacityRejected()
                     runCatching { transport.close() }
                     call.response.header(HttpHeaders.RetryAfter, "60")
                     call.rejectMcp(
@@ -374,6 +422,7 @@ private suspend fun ApplicationCall.rejectMcp(status: HttpStatusCode, code: Int,
 internal class BoundedMcpSessionRegistry(
     maxSessions: Int,
     private val idleMillis: Long,
+    private val runtimeMetrics: McpRuntimeMetrics? = null,
 ) {
     private val lock = Any()
     private val slots = Semaphore(maxSessions, true)
@@ -390,6 +439,7 @@ internal class BoundedMcpSessionRegistry(
                 return null
             }
             entries += entry
+            updateMetricsLocked()
         }
         return entry
     }
@@ -401,12 +451,18 @@ internal class BoundedMcpSessionRegistry(
             } else {
                 entry.activate(sessionId)
                 sessions[sessionId] = entry
+                updateMetricsLocked()
                 true
             }
         }
         if (!accepted) {
-            synchronized(lock) { entries.remove(entry) }
+            synchronized(lock) {
+                entries.remove(entry)
+                updateMetricsLocked()
+            }
             entry.releaseSlot()
+        } else {
+            runtimeMetrics?.onSessionInitialized()
         }
     }
 
@@ -439,13 +495,18 @@ internal class BoundedMcpSessionRegistry(
         synchronized(lock) {
             entry.sessionId()?.let { id -> sessions.remove(id, entry) }
             entries.remove(entry)
+            updateMetricsLocked()
         }
+        entry.cancelStreams()
         entry.releaseSlot()
     }
 
     fun abandon(entry: ManagedMcpSession) {
         if (!entry.isActive()) {
-            synchronized(lock) { entries.remove(entry) }
+            synchronized(lock) {
+                entries.remove(entry)
+                updateMetricsLocked()
+            }
             entry.releaseSlot()
         }
     }
@@ -458,8 +519,10 @@ internal class BoundedMcpSessionRegistry(
                 entry.sessionId()?.let { sessions.remove(it, entry) }
                 entries.remove(entry)
             }
+            updateMetricsLocked()
             stale
         }
+        runtimeMetrics?.onIdleEvicted(expired.size)
         expired.forEach { entry ->
             entry.releaseSlot()
             try {
@@ -479,12 +542,20 @@ internal class BoundedMcpSessionRegistry(
             val snapshot = entries.toList()
             sessions.clear()
             entries.clear()
+            updateMetricsLocked()
             snapshot
         }
         abandoned.forEach { entry ->
             entry.releaseSlot()
             runCatching { entry.closeTransport() }
         }
+    }
+
+    private fun updateMetricsLocked() {
+        runtimeMetrics?.updateSessions(
+            pending = (entries.size - sessions.size).coerceAtLeast(0),
+            active = sessions.size,
+        )
     }
 }
 
@@ -494,6 +565,8 @@ internal class ManagedMcpSession(
 ) {
     private val slotReleased = AtomicBoolean(false)
     private val transportClosed = AtomicBoolean(false)
+    private val streamJobs = HashSet<Job>()
+    private var streamRegistrationClosed = false
     private var activeSessionId: String? = null
     private var activeCalls = 0
     private var lastActivityNanos = System.nanoTime()
@@ -517,6 +590,26 @@ internal class ManagedMcpSession(
     }
 
     @Synchronized
+    fun registerStream(job: Job): Boolean {
+        if (streamRegistrationClosed) return false
+        streamJobs += job
+        return true
+    }
+
+    @Synchronized
+    fun unregisterStream(job: Job) {
+        streamJobs -= job
+    }
+
+    fun cancelStreams() {
+        val jobs = synchronized(this) {
+            streamRegistrationClosed = true
+            streamJobs.toList().also { streamJobs.clear() }
+        }
+        jobs.forEach { it.cancel(CancellationException("MCP session closed")) }
+    }
+
+    @Synchronized
     fun isIdle(nowNanos: Long, idleMillis: Long): Boolean =
         activeCalls == 0 && nowNanos - lastActivityNanos >= TimeUnit.MILLISECONDS.toNanos(idleMillis)
 
@@ -530,6 +623,7 @@ internal class ManagedMcpSession(
     }
 
     suspend fun closeTransport() {
+        cancelStreams()
         if (transportClosed.compareAndSet(false, true)) transport.close()
     }
 }
@@ -539,18 +633,33 @@ internal class ManagedMcpSessionLease(
     val sessionId: String,
 ) {
     val transport: StreamableHttpServerTransport get() = entry.transport
+    fun registerStream(job: Job): Boolean = entry.registerStream(job)
+    fun unregisterStream(job: Job) = entry.unregisterStream(job)
     fun close() = entry.release()
 }
 
-class KtorServerManager(private val api: MontoyaApi) : ServerManager {
+class KtorServerManager internal constructor(
+    private val api: MontoyaApi,
+    private val auditSink: McpAuditSink,
+) : ServerManager {
+
+    constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
 
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
+    @Volatile
+    private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
     private val toolServices = ToolServices(api)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
+        val metrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
+        val endpointPreview = ConfigValidation.normalizeLoopbackHost(config.host)
+            ?.takeIf { config.port in 1..65_535 }
+            ?.let { "http://${formatHostForUrl(it)}:${config.port}/mcp" }
+        metrics.markStarting(endpointPreview)
+        runtimeMetrics = metrics
         callback(ServerState.Starting)
 
         executor.submit {
@@ -569,7 +678,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                         )
                     )
                 )
-                newMcpServer.registerTools(api, config, toolServices)
+                newMcpServer.registerTools(api, config, toolServices, auditSink)
                 mcpServer = newMcpServer
 
                 val environment = applicationEnvironment()
@@ -584,10 +693,16 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                         connectionIdleTimeoutSeconds = CIO_IDLE_TIMEOUT_SECONDS
                     },
                 ) {
-                    configureMcpHttpEndpoint(newMcpServer, config.port, config.localBearerToken)
+                    configureMcpHttpEndpoint(
+                        newMcpServer,
+                        config.port,
+                        config.localBearerToken,
+                        metrics,
+                    )
                 }
                 server = newEngine
                 newEngine.start(wait = false)
+                metrics.markRunning()
 
                 api.logging().logToOutput(
                     "Started authenticated MCP Streamable HTTP server at http://${formatHostForUrl(bindHost)}:${config.port}/mcp"
@@ -596,26 +711,35 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
 
             } catch (e: Exception) {
                 runCatching { stopCurrentServer() }
-                api.logging().logToError("MCP server failed: ${safeExceptionSummary(e)}")
+                val summary = safeExceptionSummary(e)
+                metrics.markFailed(summary)
+                api.logging().logToError("MCP server failed: $summary")
                 callback(ServerState.Failed(e))
             }
         }
     }
 
     override fun stop(callback: (ServerState) -> Unit) {
+        val metrics = runtimeMetrics
+        metrics.markStopping()
         callback(ServerState.Stopping)
 
         executor.submit {
             try {
                 stopCurrentServer()
+                metrics.markStopped()
                 api.logging().logToOutput("Stopped MCP server")
                 callback(ServerState.Stopped)
             } catch (e: Exception) {
-                api.logging().logToError("MCP server stop failed: ${safeExceptionSummary(e)}")
+                val summary = safeExceptionSummary(e)
+                metrics.markFailed(summary)
+                api.logging().logToError("MCP server stop failed: $summary")
                 callback(ServerState.Failed(e))
             }
         }
     }
+
+    override fun diagnostics(): McpDiagnosticsSnapshot = runtimeMetrics.snapshot()
 
     private fun stopCurrentServer() {
         val currentEngine = server
@@ -626,6 +750,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
             val currentMcpServer = mcpServer
             mcpServer = null
             if (currentMcpServer != null) {
+                currentMcpServer.unbindToolRuntimePolicy()
                 runBlocking {
                     withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
                 }
@@ -634,9 +759,16 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
     }
 
     override fun shutdown() {
+        val metrics = runtimeMetrics
+        metrics.markStopping()
         runCatching {
             executor.submit { stopCurrentServer() }.get(10, TimeUnit.SECONDS)
-        }.onFailure { api.logging().logToError("MCP shutdown failed: ${safeExceptionSummary(it)}") }
+            metrics.markStopped()
+        }.onFailure {
+            val summary = safeExceptionSummary(it)
+            metrics.markFailed(summary)
+            api.logging().logToError("MCP shutdown failed: $summary")
+        }
 
         executor.shutdown()
         if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {

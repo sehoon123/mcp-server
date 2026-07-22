@@ -29,6 +29,7 @@ class McpServerIntegrationTest {
 
     init {
         every { persistedObject.getBoolean(any()) } returns true
+        every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
         every { persistedObject.getString("localBearerToken") } returns testBearerToken
         every { persistedObject.getInteger("port") } returns testPort
@@ -112,6 +113,13 @@ class McpServerIntegrationTest {
         assertEquals(401, send(null).statusCode())
         assertEquals(401, send("Bearer incorrect-token").statusCode())
         assertNotEquals(401, send("Bearer $testBearerToken").statusCode())
+
+        val diagnostics = serverManager.diagnostics()
+        assertEquals("running", diagnostics.state)
+        assertEquals("http://127.0.0.1:${testPort}/mcp", diagnostics.endpoint)
+        assertEquals(3, diagnostics.totalRequests)
+        assertEquals(2, diagnostics.authenticationRejections)
+        assertEquals(0, diagnostics.activeHttpCalls)
     }
 
     @Test
@@ -138,6 +146,8 @@ class McpServerIntegrationTest {
         assertEquals(403, send("http://localhost:0").statusCode())
         assertNotEquals(403, send("http://localhost:6274").statusCode())
         assertNotEquals(403, send("https://[::1]:6274").statusCode())
+        assertEquals(10, serverManager.diagnostics().totalRequests)
+        assertEquals(8, serverManager.diagnostics().hostOriginRejections)
     }
 
     @Test
@@ -200,6 +210,14 @@ class McpServerIntegrationTest {
         )
         assertTrue(deleted.statusCode() in setOf(200, 202), deleted.body())
         stream.body().close()
+
+        val cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (serverManager.diagnostics().activeHttpCalls != 0 && System.nanoTime() < cleanupDeadline) {
+            Thread.sleep(25)
+        }
+        val diagnostics = serverManager.diagnostics()
+        assertEquals(0, diagnostics.activeHttpCalls)
+        assertEquals(0, diagnostics.activeSessions)
     }
 
     @Test

@@ -64,6 +64,8 @@ object SensitiveActionSecurity {
         require((reviewContent?.length ?: 0) <= MAX_SENSITIVE_ACTION_CONTENT_CHARS) {
             "sensitive action review content is too large"
         }
-        return approvalHandler.requestApproval(action, summary, reviewContent, renderContentAsHttp, api)
+        val approved = approvalHandler.requestApproval(action, summary, reviewContent, renderContentAsHttp, api)
+        recordCurrentToolApproval("sensitive_action", if (approved) "user_allow" else "user_deny")
+        return approved
     }
 }

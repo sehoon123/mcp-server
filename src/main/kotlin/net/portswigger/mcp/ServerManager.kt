@@ -13,5 +13,6 @@ sealed class ServerState {
 interface ServerManager {
     fun start(config: McpConfig, callback: (ServerState) -> Unit)
     fun stop(callback: (ServerState) -> Unit)
+    fun diagnostics(): McpDiagnosticsSnapshot = unavailableMcpDiagnosticsSnapshot()
     fun shutdown()
 }

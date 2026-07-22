@@ -19,9 +19,15 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.serializer
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.asInputSchema
 import net.portswigger.mcp.schema.asOutputSchema
+import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.NoOpMcpAuditSink
+import net.portswigger.mcp.security.newToolAuditInvocation
 import net.portswigger.mcp.security.safeExceptionSummary
+import java.util.Collections
+import java.util.WeakHashMap
 import kotlin.experimental.ExperimentalTypeInference
 
 private const val MAX_CONCURRENT_TOOL_EXECUTIONS = 16
@@ -104,6 +110,64 @@ private val lowerToUpperBoundary = Regex("([a-z0-9])([A-Z])")
 private val acronymBoundary = Regex("([A-Z])([A-Z][a-z])")
 private val wordSeparator = Regex("[\\s-]+")
 
+private data class ToolRuntimePolicy(
+    val config: McpConfig,
+    val auditSink: McpAuditSink,
+)
+
+private val toolRuntimePolicies = Collections.synchronizedMap(WeakHashMap<Server, ToolRuntimePolicy>())
+
+internal fun Server.bindToolRuntimePolicy(config: McpConfig, auditSink: McpAuditSink) {
+    toolRuntimePolicies[this] = ToolRuntimePolicy(config, auditSink)
+}
+
+internal fun Server.unbindToolRuntimePolicy() {
+    toolRuntimePolicies.remove(this)
+}
+
+@PublishedApi
+internal suspend fun Server.executeRegisteredTool(
+    connection: ClientConnection,
+    request: CallToolRequest,
+    toolName: String,
+    annotations: ToolAnnotations?,
+    declaredArgumentKeys: Set<String> = emptySet(),
+    execute: suspend () -> CallToolResult,
+): CallToolResult {
+    val policy = toolRuntimePolicies[this]
+    val readOnly = annotations?.readOnlyHint == true
+    val invocation = newToolAuditInvocation(
+        sink = policy?.auditSink ?: NoOpMcpAuditSink,
+        sessionId = runCatching { connection.sessionId }.getOrDefault("unknown"),
+        tool = toolName,
+        readOnly = readOnly,
+        argumentKeys = request.params.arguments?.keys.orEmpty().filter(declaredArgumentKeys::contains),
+    )
+    return try {
+        if (policy?.config?.emergencyReadOnlyMode == true && !readOnly) {
+            invocation.complete("blocked_read_only")
+            CallToolResult(
+                content = listOf(TextContent("Error: MCP emergency read-only mode blocks this tool")),
+                isError = true,
+            )
+        } else {
+            val result = withContext(invocation) { execute() }
+            invocation.complete(if (result.isError == true) "error" else "completed")
+            result
+        }
+    } catch (e: CancellationException) {
+        invocation.complete("cancelled")
+        throw e
+    } catch (e: Exception) {
+        val summary = safeExceptionSummary(e)
+        invocation.complete("error", e)
+        CallToolResult(
+            content = listOf(TextContent("Error: $summary")),
+            isError = true,
+        )
+    }
+}
+
 @OptIn(InternalSerializationApi::class)
 inline fun <reified I : Any> Server.mcpTool(
     description: String,
@@ -114,8 +178,15 @@ inline fun <reified I : Any> Server.mcpTool(
     val serializer = I::class.serializer()
     val inputSchema = serializer.descriptor.asInputSchema()
 
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, request ->
-        try {
+    val toolServer = this
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
+        toolServer.executeRegisteredTool(
+            connection,
+            request,
+            toolName,
+            annotations,
+            inputSchema.properties?.keys.orEmpty(),
+        ) {
             val input = Json.decodeFromJsonElement(
                 serializer,
                 request.params.arguments ?: JsonObject(emptyMap())
@@ -123,13 +194,6 @@ inline fun <reified I : Any> Server.mcpTool(
             CallToolResult(
                 content = withContext(toolExecutionDispatcher) { execute(input) },
                 isError = false
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            CallToolResult(
-                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
-                isError = true
             )
         }
     }
@@ -253,11 +317,14 @@ inline fun Server.mcpTool(
     annotations: ToolAnnotations? = null,
     crossinline execute: suspend () -> List<ContentBlock>
 ) {
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, _ ->
-        CallToolResult(
-            content = withContext(toolExecutionDispatcher) { execute() },
-            isError = false
-        )
+    val toolServer = this
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
+        toolServer.executeRegisteredTool(connection, request, name, annotations) {
+            CallToolResult(
+                content = withContext(toolExecutionDispatcher) { execute() },
+                isError = false
+            )
+        }
     }
     addTool(
         name = name,
@@ -274,11 +341,14 @@ inline fun Server.mcpTool(
     annotations: ToolAnnotations? = null,
     crossinline execute: suspend () -> String
 ) {
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, _ ->
-        CallToolResult(
-            content = listOf(TextContent(withContext(toolExecutionDispatcher) { execute() })),
-            isError = false
-        )
+    val toolServer = this
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
+        toolServer.executeRegisteredTool(connection, request, name, annotations) {
+            CallToolResult(
+                content = listOf(TextContent(withContext(toolExecutionDispatcher) { execute() })),
+                isError = false
+            )
+        }
     }
     addTool(
         name = name,
@@ -335,8 +405,15 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
     val inputSchema = inputSerializer.descriptor.asInputSchema()
     val outputSchema = outputSerializer.descriptor.asOutputSchema()
 
+    val toolServer = this
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
-        try {
+        toolServer.executeRegisteredTool(
+            connection,
+            request,
+            toolName,
+            annotations,
+            inputSchema.properties?.keys.orEmpty(),
+        ) {
             val input = Json.decodeFromJsonElement(
                 inputSerializer,
                 request.params.arguments ?: JsonObject(emptyMap()),
@@ -348,13 +425,6 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
                 content = listOf(TextContent(response.text ?: structuredContent.toString())),
                 isError = false,
                 structuredContent = structuredContent,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            CallToolResult(
-                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
-                isError = true,
             )
         }
     }
@@ -381,8 +451,15 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
     val inputSchema = inputSerializer.descriptor.asInputSchema()
     val outputSchema = outputSerializer.descriptor.asOutputSchema()
 
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, request ->
-        try {
+    val toolServer = this
+    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
+        toolServer.executeRegisteredTool(
+            connection,
+            request,
+            toolName,
+            annotations,
+            inputSchema.properties?.keys.orEmpty(),
+        ) {
             val input = Json.decodeFromJsonElement(
                 inputSerializer,
                 request.params.arguments ?: JsonObject(emptyMap()),
@@ -393,13 +470,6 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
                 content = listOf(TextContent(structuredContent.toString())),
                 isError = false,
                 structuredContent = structuredContent,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            CallToolResult(
-                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
-                isError = true,
             )
         }
     }

@@ -7,6 +7,7 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
+import net.portswigger.mcp.security.PersistentMcpAuditLog
 import net.portswigger.mcp.security.safeExceptionSummary
 
 @Suppress("unused")
@@ -15,20 +16,33 @@ class ExtensionBase : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName("Burp MCP Server")
 
-        val config = McpConfig(api.persistence().extensionData(), api.logging())
-        val serverManager = KtorServerManager(api)
+        val extensionStorage = api.persistence().extensionData()
+        val config = McpConfig(extensionStorage, api.logging())
+        val auditLog = PersistentMcpAuditLog(extensionStorage, config, api.logging())
+        val serverManager = KtorServerManager(api, auditLog)
 
         val proxyJarManager = ProxyJarManager(api.logging())
-        runCatching { proxyJarManager.getProxyJar() }
+        val proxyVerified = runCatching { proxyJarManager.getProxyJar() }
             .onFailure {
                 api.logging().logToError("Failed to refresh the packaged MCP proxy: ${safeExceptionSummary(it)}")
             }
+            .isSuccess
+        val proxyProvenance = runCatching { proxyJarManager.packagedProvenance() }
+            .onFailure {
+                api.logging().logToError("Failed to read packaged MCP proxy provenance: ${safeExceptionSummary(it)}")
+            }
+            .getOrNull()
 
         val configUi = ConfigUi(
-            config = config, providers = listOf(
+            config = config,
+            providers = listOf(
                 ClaudeDesktopProvider(api.logging(), proxyJarManager),
                 ManualProxyInstallerProvider(api.logging(), proxyJarManager),
-            )
+            ),
+            diagnosticsProvider = serverManager::diagnostics,
+            auditLog = auditLog,
+            proxyProvenance = proxyProvenance,
+            proxyVerified = proxyVerified,
         )
 
         configUi.onEnabledToggled { enabled ->
@@ -50,6 +64,7 @@ class ExtensionBase : BurpExtension {
         api.extension().registerUnloadingHandler {
             serverManager.shutdown()
             configUi.cleanup()
+            auditLog.close()
             config.cleanup()
         }
 

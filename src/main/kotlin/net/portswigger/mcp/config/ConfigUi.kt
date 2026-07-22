@@ -4,7 +4,12 @@ import io.ktor.util.network.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.ServerState
+import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.providers.ProxyProvenance
+import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.Swing
 import net.portswigger.mcp.config.components.*
@@ -16,7 +21,22 @@ import javax.swing.*
 import javax.swing.Box.*
 import javax.swing.JOptionPane.ERROR_MESSAGE
 
-class ConfigUi(private val config: McpConfig, private val providers: List<Provider>) {
+class ConfigUi internal constructor(
+    private val config: McpConfig,
+    private val providers: List<Provider>,
+    private val diagnosticsProvider: () -> McpDiagnosticsSnapshot,
+    private val auditLog: McpAuditSink,
+    private val proxyProvenance: ProxyProvenance?,
+    private val proxyVerified: Boolean,
+) {
+    constructor(config: McpConfig, providers: List<Provider>) : this(
+        config = config,
+        providers = providers,
+        diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+        auditLog = NoOpMcpAuditSink,
+        proxyProvenance = null,
+        proxyVerified = false,
+    )
 
     private val panel = JPanel(BorderLayout())
     val component: JComponent get() = panel
@@ -49,6 +69,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     private lateinit var serverConfigurationPanel: ServerConfigurationPanel
     private lateinit var advancedOptionsPanel: AdvancedOptionsPanel
     private lateinit var autoApproveTargetsPanel: AutoApproveTargetsPanel
+    private lateinit var diagnosticsPanel: DiagnosticsPanel
     private lateinit var installationPanel: InstallationPanel
 
     private var toggleListener: ((Boolean) -> Unit)? = null
@@ -84,6 +105,14 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
 
         autoApproveTargetsPanel = AutoApproveTargetsPanel(config = config)
 
+        diagnosticsPanel = DiagnosticsPanel(
+            config = config,
+            diagnosticsProvider = diagnosticsProvider,
+            auditLog = auditLog,
+            proxyProvenance = proxyProvenance,
+            proxyVerified = proxyVerified,
+        )
+
         installationPanel = InstallationPanel(
             config = config, providers = providers, reinstallNotice = reinstallNotice, parentComponent = panel
         )
@@ -102,6 +131,9 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
 
         if (::autoApproveTargetsPanel.isInitialized) {
             autoApproveTargetsPanel.cleanup()
+        }
+        if (::diagnosticsPanel.isInitialized) {
+            diagnosticsPanel.cleanup()
         }
     }
 
@@ -210,6 +242,8 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
 
         rightPanelContent.add(createVerticalStrut(15))
         rightPanelContent.add(advancedOptionsPanel)
+        rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
+        rightPanelContent.add(diagnosticsPanel)
         rightPanelContent.add(createVerticalGlue())
         rightPanelContent.add(reinstallNotice)
         rightPanelContent.add(createVerticalStrut(10))

@@ -48,6 +48,7 @@ class ProxyEndToEndTest {
 
     init {
         every { persistedObject.getBoolean(any()) } returns true
+        every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns false
         every { persistedObject.getBoolean("requireRequestActionApproval") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
         every { persistedObject.getString("localBearerToken") } returns testBearerToken

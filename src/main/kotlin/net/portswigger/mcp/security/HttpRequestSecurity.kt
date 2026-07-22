@@ -55,16 +55,23 @@ object HttpRequestSecurity {
     suspend fun checkHttpRequestPermission(
         hostname: String, port: Int, config: McpConfig, requestContent: String? = null, api: MontoyaApi? = null
     ): Boolean {
-        if (!isValidRequestedTarget(hostname, port)) return false
+        if (!isValidRequestedTarget(hostname, port)) {
+            recordCurrentToolApproval("http_request", "target_reject")
+            return false
+        }
         if (!config.requireHttpRequestApproval) {
+            recordCurrentToolApproval("http_request", "policy_allow")
             return true
         }
 
         if (isAutoApproved(hostname, port, config)) {
+            recordCurrentToolApproval("http_request", "persisted_allow")
             return true
         }
 
-        return approvalHandler.requestApproval(hostname, port, config, requestContent, api)
+        val approved = approvalHandler.requestApproval(hostname, port, config, requestContent, api)
+        recordCurrentToolApproval("http_request", if (approved) "user_allow" else "user_deny")
+        return approved
     }
 
     /** Avoids materializing a potentially large request unless interactive approval is actually required. */
@@ -75,11 +82,21 @@ object HttpRequestSecurity {
         api: MontoyaApi? = null,
         requestContent: () -> String,
     ): Boolean {
-        if (!isValidRequestedTarget(hostname, port)) return false
-        if (!config.requireHttpRequestApproval || isAutoApproved(hostname, port, config)) {
+        if (!isValidRequestedTarget(hostname, port)) {
+            recordCurrentToolApproval("http_request", "target_reject")
+            return false
+        }
+        if (!config.requireHttpRequestApproval) {
+            recordCurrentToolApproval("http_request", "policy_allow")
             return true
         }
-        return approvalHandler.requestApproval(hostname, port, config, requestContent(), api)
+        if (isAutoApproved(hostname, port, config)) {
+            recordCurrentToolApproval("http_request", "persisted_allow")
+            return true
+        }
+        val approved = approvalHandler.requestApproval(hostname, port, config, requestContent(), api)
+        recordCurrentToolApproval("http_request", if (approved) "user_allow" else "user_deny")
+        return approved
     }
 
     private fun isValidRequestedTarget(hostname: String, port: Int): Boolean = runCatching {

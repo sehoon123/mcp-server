@@ -297,6 +297,35 @@ class McpConfigTest {
     }
 
     @Test
+    fun `new safety settings have secure defaults when absent`() {
+        every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns null
+        every { persistedObject.getBoolean("auditLoggingEnabled") } returns null
+        every { persistedObject.getInteger("auditRetentionEntries") } returns null
+
+        assertFalse(config.emergencyReadOnlyMode)
+        assertTrue(config.auditLoggingEnabled)
+        assertEquals(250, config.auditRetentionEntries)
+    }
+
+    @Test
+    fun `emergency read-only and audit settings persist with bounded retention`() {
+        config.emergencyReadOnlyMode = true
+        config.auditLoggingEnabled = true
+        config.auditRetentionEntries = 1
+
+        assertTrue(config.emergencyReadOnlyMode)
+        assertTrue(config.auditLoggingEnabled)
+        assertEquals(50, config.auditRetentionEntries)
+        verify { persistedObject.setBoolean("emergencyReadOnlyMode", true) }
+        verify { persistedObject.setBoolean("auditLoggingEnabled", true) }
+        verify { persistedObject.setInteger("auditRetentionEntries", 50) }
+
+        config.auditRetentionEntries = 10_000
+        assertEquals(1_000, config.auditRetentionEntries)
+        verify { persistedObject.setInteger("auditRetentionEntries", 1_000) }
+    }
+
+    @Test
     fun `configEditingTooling should persist correctly`() {
         assertFalse(config.configEditingTooling)
 

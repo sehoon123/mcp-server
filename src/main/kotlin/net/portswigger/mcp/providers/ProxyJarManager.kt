@@ -12,6 +12,12 @@ import java.util.HexFormat
 import kotlin.io.path.exists
 import kotlin.io.path.readText
 
+internal data class ProxyProvenance(
+    val version: String,
+    val commit: String,
+    val sha256: String,
+)
+
 class ProxyJarManager(
     private val logging: Logging,
     private val resourceProvider: (String) -> InputStream? = {
@@ -23,7 +29,10 @@ class ProxyJarManager(
     companion object {
         private const val PROXY_JAR_NAME = "mcp-proxy-all.jar"
         private const val PROXY_METADATA_NAME = "mcp-proxy-source.txt"
+        private const val MAX_PROXY_METADATA_CHARS = 128 * 1024
         private val SHA256_PATTERN = Regex("(?m)^SHA-256: ([a-f0-9]{64})$")
+        private val COMMIT_PATTERN = Regex("(?m)^Commit: ([a-f0-9]{40})$")
+        private val VERSION_PATTERN = Regex("(?m)^Version: ([0-9A-Za-z._-]{1,64})$")
 
         private fun defaultProxyDirectory(): Path {
             val os = System.getProperty("os.name").lowercase()
@@ -36,6 +45,18 @@ class ProxyJarManager(
                 else -> throw RuntimeException("Unsupported OS: $os")
             }
         }
+    }
+
+    internal fun packagedProvenance(): ProxyProvenance {
+        val metadata = readProxyMetadata()
+        return ProxyProvenance(
+            version = VERSION_PATTERN.find(metadata)?.groupValues?.get(1)
+                ?: throw RuntimeException("Could not find proxy version in $PROXY_METADATA_NAME"),
+            commit = COMMIT_PATTERN.find(metadata)?.groupValues?.get(1)
+                ?: throw RuntimeException("Could not find proxy source commit in $PROXY_METADATA_NAME"),
+            sha256 = SHA256_PATTERN.find(metadata)?.groupValues?.get(1)
+                ?: throw RuntimeException("Could not find proxy SHA-256 in $PROXY_METADATA_NAME"),
+        )
     }
 
     fun getProxyJar(): Path {
@@ -70,14 +91,27 @@ class ProxyJarManager(
     }
 
     private fun expectedProxyHash(): String {
-        val metadata = resourceProvider(PROXY_METADATA_NAME)
-            ?.bufferedReader()
-            ?.use { it.readText() }
-            ?: throw RuntimeException("Could not find $PROXY_METADATA_NAME in extension resources")
-
+        val metadata = readProxyMetadata()
         return SHA256_PATTERN.find(metadata)?.groupValues?.get(1)
             ?: throw RuntimeException("Could not find proxy SHA-256 in $PROXY_METADATA_NAME")
     }
+
+    private fun readProxyMetadata(): String = resourceProvider(PROXY_METADATA_NAME)
+        ?.bufferedReader()
+        ?.use { reader ->
+            val metadata = StringBuilder()
+            val buffer = CharArray(4 * 1024)
+            while (true) {
+                val read = reader.read(buffer)
+                if (read < 0) break
+                require(metadata.length + read <= MAX_PROXY_METADATA_CHARS) {
+                    "Packaged proxy metadata is too large"
+                }
+                metadata.append(buffer, 0, read)
+            }
+            metadata.toString()
+        }
+        ?: throw RuntimeException("Could not find $PROXY_METADATA_NAME in extension resources")
 
     private fun extractProxyJar(proxyJarPath: Path, versionFilePath: Path, expectedHash: String) {
         val tempFile = Files.createTempFile(proxyJarPath.parent, "temp-", ".jar")

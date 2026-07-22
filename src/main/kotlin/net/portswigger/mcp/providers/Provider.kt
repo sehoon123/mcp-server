@@ -201,7 +201,7 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
 
         val existingPaths = candidatePaths.filter { it.exists() }
         if (existingPaths.size > 1) {
-            logging.logToOutput("Warning: multiple Claude Desktop config directories found; using ${existingPaths.first()}: $existingPaths")
+            logging.logToOutput("Warning: multiple Claude Desktop config directories found; using the first supported location")
         }
         val basePath = existingPaths.firstOrNull() ?: return null
 

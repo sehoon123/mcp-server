@@ -74,6 +74,7 @@ class ToolsKtTest {
     init {
         val persistedObject = mockk<PersistedObject>().apply {
             every { getBoolean("enabled") } returns true
+            every { getBoolean("emergencyReadOnlyMode") } returns false
             every { getBoolean("configEditingTooling") } returns true
             every { getBoolean("requireHttpRequestApproval") } returns false
             every { getBoolean("requireRequestActionApproval") } returns false
@@ -1315,6 +1316,7 @@ class ToolsKtTest {
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
         assertEquals(36, tools.size)
+        assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
 
         val checkScope = tools.single { it.name == "check_scope" }
         assertEquals(setOf("projectId", "targets"), checkScope.inputSchema.required?.toSet())
@@ -1471,6 +1473,7 @@ class ToolsKtTest {
             assertTrue(start.inputSchema.properties?.get("mode").toString().contains("active"))
             assertTrue(start.inputSchema.properties?.get("targets").toString().contains("insertionPoints"))
             assertTrue(start.outputSchema?.properties?.get("actionState").toString().contains("uncertain"))
+            assertEquals(false, start.annotations?.readOnlyHint)
             assertEquals(true, start.annotations?.destructiveHint)
             assertEquals(true, start.annotations?.openWorldHint)
             assertEquals(false, start.annotations?.idempotentHint)
@@ -1481,6 +1484,7 @@ class ToolsKtTest {
             assertEquals(true, get.annotations?.readOnlyHint)
 
             val cancel = tools.single { it.name == "cancel_scanner_audit" }
+            assertEquals(false, cancel.annotations?.readOnlyHint)
             assertEquals(true, cancel.annotations?.destructiveHint)
             assertEquals(true, cancel.annotations?.idempotentHint)
             assertEquals(false, cancel.annotations?.openWorldHint)
@@ -1489,6 +1493,9 @@ class ToolsKtTest {
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))
             assertNotNull(issues.outputSchema?.properties?.get("nextCursor"))
+
+            val generator = tools.single { it.name == "generate_collaborator_payload" }
+            assertEquals(false, generator.annotations?.readOnlyHint)
 
             val interactions = tools.single { it.name == "get_collaborator_interactions" }
             assertNotNull(interactions.inputSchema.properties?.get("waitSeconds"))
@@ -1725,6 +1732,7 @@ class ToolsKtTest {
         every { version.edition() } returns BurpSuiteEdition.COMMUNITY_EDITION
         runBlocking {
             val tools = client.listTools()
+            assertTrue(tools.all { it.annotations?.readOnlyHint != null })
             assertFalse(tools.any { it.name == "get_scanner_issues" })
             assertFalse(tools.any { it.name == "generate_collaborator_payload" })
             assertFalse(tools.any { it.name == "get_collaborator_interactions" })
@@ -1749,6 +1757,7 @@ class ToolsKtTest {
             client.connectToServer("http://127.0.0.1:${testPort}/mcp")
 
             val tools = client.listTools()
+            assertTrue(tools.all { it.annotations?.readOnlyHint != null })
             assertTrue(tools.any { it.name == "get_scanner_issues" })
             assertTrue(tools.any { it.name == "generate_collaborator_payload" })
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })

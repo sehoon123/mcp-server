@@ -35,6 +35,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
 - Project and user configuration tools with credential filtering
+- Live redacted diagnostics, a bounded persistent audit trail, and an emergency read-only switch
 - URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
 
@@ -79,6 +80,8 @@ When updating the companion proxy, build and record it reproducibly with:
 
 `embedProxyJar` verifies the pinned source checksum and the copy inside the completed extension. Proxy and extension
 archives use normalized timestamps and stable entry ordering so identical inputs produce byte-identical JARs.
+`generateSbom` is a cacheable, configuration-cache-compatible task and verifies the proxy checksum again while creating
+the deterministic CycloneDX 1.6 document.
 
 Load the resulting JAR in Burp through **Extensions → Installed → Add → Java**.
 
@@ -92,9 +95,31 @@ Open the **MCP** tab in Burp:
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map and Collaborator items.
 - Enable configuration-editing tools only when they are required. Configuration changes and other global-state mutations still require explicit **Allow Once / Deny** approval.
+- Use **Diagnostics and Safety** to inspect listener/session/admission counters and verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail.
+- Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
 
 The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
 support a remote listener; do not weaken the bind or use an unauthenticated forwarding proxy.
+
+### Diagnostics, audit, and emergency read-only mode
+
+The diagnostics view reports only operational metadata: listener state and endpoint, the production protocol target,
+active/peak HTTP calls, pending/active sessions, request and rejection counters, idle evictions, last activity, a safe
+last-error summary, and the embedded proxy version/commit/SHA-256 verification state. **Copy redacted diagnostics**
+never includes the bearer token, message content, header values, client-provided identifiers, or local file paths.
+
+Persistent audit logging is enabled by default and retains 250 records; the UI allows 50–1,000, with a fixed 30-day
+maximum age. Records contain the timestamp, a one-way 12-hex session correlation, tool name, read-only classification,
+declared argument **field names only**, approval decisions, duration, outcome, and exception type when applicable. They never contain argument values,
+request/response bodies, header values, credentials, paths, or raw exception messages. Writes are asynchronously
+debounced and stored in Burp extension data with a 1 MiB document cap. **Copy recent redacted audit** exports at most
+100 complete JSONL records and 64 KiB of text. Disabling logging preserves existing records; **Clear audit...** deletes
+them after confirmation.
+
+Emergency read-only mode is a local safety interlock, not a replacement for Scope, approval, or authentication policy.
+Read and comparison tools continue to work and retain their normal data-access approvals. Request sending, routing,
+payload generation, Scope/config/editor/global-state changes, Scanner start/cancel, and every other non-read-only tool
+are rejected before tool input is executed.
 
 ## Unified HTTP search
 

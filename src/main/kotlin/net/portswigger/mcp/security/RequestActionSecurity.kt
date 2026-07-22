@@ -80,7 +80,12 @@ object RequestActionSecurity {
         config: McpConfig,
         api: MontoyaApi,
     ): Boolean {
-        if (!config.requireRequestActionApproval) return true
-        return approvalHandler.requestApproval(action, source, target, changes, requestContent, config, api)
+        if (!config.requireRequestActionApproval) {
+            recordCurrentToolApproval("request_routing", "policy_allow")
+            return true
+        }
+        val approved = approvalHandler.requestApproval(action, source, target, changes, requestContent, config, api)
+        recordCurrentToolApproval("request_routing", if (approved) "user_allow" else "user_deny")
+        return approved
     }
 }

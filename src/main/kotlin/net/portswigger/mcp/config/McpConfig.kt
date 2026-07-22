@@ -10,8 +10,13 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
+internal const val MIN_AUDIT_RETENTION_ENTRIES = 50
+internal const val MAX_AUDIT_RETENTION_ENTRIES = 1000
+internal const val DEFAULT_AUDIT_RETENTION_ENTRIES = 250
+
 private const val TARGET_SEPARATOR = "\n"
 private const val LOCAL_BEARER_TOKEN_KEY = "localBearerToken"
+private const val AUDIT_RETENTION_ENTRIES_KEY = "auditRetentionEntries"
 private val LOCAL_BEARER_TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43,128}")
 
 class McpConfig(private val storage: PersistedObject, private val logging: Logging) {
@@ -29,6 +34,17 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             if (previous != value) notifyRequestActionApprovalChanged()
         }
     var requireDataAccessApproval by storage.boolean(true)
+    var emergencyReadOnlyMode by storage.boolean(false)
+    var auditLoggingEnabled by storage.boolean(true)
+    var auditRetentionEntries: Int
+        get() = (storage.getInteger(AUDIT_RETENTION_ENTRIES_KEY) ?: DEFAULT_AUDIT_RETENTION_ENTRIES)
+            .coerceIn(MIN_AUDIT_RETENTION_ENTRIES, MAX_AUDIT_RETENTION_ENTRIES)
+        set(value) {
+            storage.setInteger(
+                AUDIT_RETENTION_ENTRIES_KEY,
+                value.coerceIn(MIN_AUDIT_RETENTION_ENTRIES, MAX_AUDIT_RETENTION_ENTRIES),
+            )
+        }
 
     private var _alwaysAllowHttpHistory by storage.boolean(false)
     var alwaysAllowHttpHistory: Boolean

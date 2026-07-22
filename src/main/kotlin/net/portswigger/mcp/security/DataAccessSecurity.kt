@@ -68,6 +68,7 @@ object DataAccessSecurity {
         accessType: DataAccessType, config: McpConfig
     ): Boolean {
         if (!config.requireDataAccessApproval) {
+            recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "policy_allow")
             return true
         }
 
@@ -81,9 +82,15 @@ object DataAccessSecurity {
         }
 
         if (isAlwaysAllowed) {
+            recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "persisted_allow")
             return true
         }
 
-        return approvalHandler.requestDataAccess(accessType, config)
+        val approved = approvalHandler.requestDataAccess(accessType, config)
+        recordCurrentToolApproval(
+            "data_access:${accessType.name.lowercase()}",
+            if (approved) "user_allow" else "user_deny",
+        )
+        return approved
     }
 }
