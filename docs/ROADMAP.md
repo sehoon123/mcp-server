@@ -45,9 +45,9 @@ Implemented for stable-ID and focused active actions:
 - Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
   restricted to random IDs created by this extension instance.
 
-Legacy raw Repeater/Intruder routing now uses the shared request-routing approval gate. Configuration imports, task
-engine state, Proxy Intercept, active-editor reads/writes, and configuration exports use explicit sensitive-action
-approval and accurate annotations.
+Unified raw Repeater/Intruder/Organizer routing uses the shared request-routing approval gate and executes one
+destination per call. Configuration imports, task engine state, Proxy Intercept, active-editor reads/writes, and
+configuration exports use explicit sensitive-action approval and accurate annotations.
 
 Implemented globally for v2.1.1:
 
@@ -64,7 +64,7 @@ Large histories should not be copied into every model response.
 
 Implemented foundation:
 
-- Optional compact summaries expose project-scoped HTTP, WebSocket, Organizer, and deterministic Scanner issue IDs.
+- Compact search summaries expose project-scoped HTTP, WebSocket, Organizer, and deterministic Scanner issue IDs.
 - One project-scoped `get_http_message` tool resolves Proxy, Site Map, or Organizer references and supports explicit message-part selection and byte-exact base64 reads.
 - Unified HTTP search covers Proxy history, Site Map, and Organizer with structured filters and compact references.
 - Search cursors are signed, project-bound, query-bound, and preserve append-only snapshot sizes while detecting cleared
@@ -84,17 +84,18 @@ Implemented foundation:
   after execution, including cancellation and uncertain completion paths.
 - `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
-- The v3 catalog consolidates same-policy transforms, configuration access, global controls, stable-reference routing,
-  cross-source HTTP detail reads, and plain/regex history lists into 31 Professional tools (24 on Community). Each
-  invocation retains one operation or destination, and fixed value-free audit classifications preserve operation context.
-- v3.1 adds `send_raw_http_request` and `route_raw_http_request` with protocol-nested inputs, structured execution state,
-  bounded timeout/output, redirect denial, destination-specific approval/audit, and no automatic retry of uncertain
-  outcomes. Seven older protocol/source-specific names remain for one migration release, temporarily yielding 33
-  Professional tools and 26 Community tools.
-- `search_http_messages` now supports the same bounded conservative regex language as compatibility lists while keeping
-  its signed cursor, 10,000-record, and 32 MiB budgets. Regex always uses the raw path rather than warm metadata hints.
-- Individual WebSocket and Scanner issue reads accept an optional compatibility `projectId`, bind omitted calls to the
-  current project, and discard looked-up results after a project transition.
+- The v4 catalog consolidates same-policy transforms, configuration access, global controls, stable-reference routing,
+  raw protocol/destination operations, and cross-source HTTP discovery into 26 Professional tools (19 on Community).
+  Deprecated v3 aliases are not registered. Each invocation retains one operation or destination, and fixed value-free
+  audit classifications preserve operation context.
+- `send_raw_http_request` and `route_raw_http_request` use protocol-nested inputs, structured execution state, bounded
+  timeout/output, redirect denial, destination-specific approval/audit, and no automatic retry of uncertain outcomes.
+- `search_http_messages` supports the bounded conservative regex language while keeping its signed cursor,
+  10,000-record, and 32 MiB budgets. Regex always uses the raw path rather than warm metadata hints.
+- `search_websocket_messages` replaces the offset-based WebSocket list with project/query-bound signed snapshot cursors,
+  50-result and 10,000-record limits, a 32 MiB regex payload budget, and append/stale boundary semantics.
+- Individual WebSocket and Scanner issue reads require `projectId` and discard looked-up results after a project
+  transition or bounded content materialization race.
 - Eligible newest-first metadata-only Proxy and Organizer searches reuse only recent, already-warm, same-size,
   anchor-validated index entries as advisory hints. Every predicted mismatch is rechecked on the current source field and numeric ID. Stale, reordered,
   unindexed, Site Map, text, regex, and oldest-first records fall back to the raw matcher without changing scan, cursor,
@@ -102,9 +103,6 @@ Implemented foundation:
 
 Remaining work:
 
-- In v4, remove the seven deprecated raw/list names, replace offset-based `get_proxy_websocket_history` with signed-cursor
-  `search_websocket_messages`, and require `projectId` on individual WebSocket/Scanner issue reads. This yields the final
-  26 Professional / 19 Community catalog without advertising aliases.
 - Validate raw HTTP/2 routing against an actual supported Burp runtime; HTTP/2-to-Intruder remains rejected until then.
 - Validate metadata-index and unified-search performance with an actual large Burp history. Synthetic differential,
   accessor-count, and JFR allocation probes remain regression evidence rather than Burp product latency claims.
