@@ -5,12 +5,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.portswigger.mcp.McpDiagnosticsSnapshot
+import net.portswigger.mcp.McpServerStartupException
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
 import net.portswigger.mcp.providers.ProxyProvenance
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
+import net.portswigger.mcp.security.safeSingleLine
 import net.portswigger.mcp.Swing
 import net.portswigger.mcp.config.components.*
 import net.portswigger.mcp.providers.Provider
@@ -39,6 +41,7 @@ class ConfigUi internal constructor(
     )
 
     private val panel = JPanel(BorderLayout())
+    private val extensionVersion = runCatching { diagnosticsProvider().serverVersion }.getOrDefault("unknown")
     val component: JComponent get() = panel
 
     private val listenerHandles = mutableListOf<ListenerHandle>()
@@ -180,6 +183,9 @@ class ConfigUi internal constructor(
 
                     val friendlyMessage = when (state.exception) {
                         is UnresolvedAddressException -> "Unable to resolve address"
+                        is McpServerStartupException -> safeSingleLine(
+                            state.exception.message ?: "MCP server startup failed"
+                        )
                         else -> safeExceptionSummary(state.exception)
                     }
 
@@ -205,6 +211,12 @@ class ConfigUi internal constructor(
             add(createVerticalStrut(Design.Spacing.MD))
             add(JLabel("Burp MCP Server exposes Burp tooling to AI clients.").apply {
                 font = Design.Typography.bodyLarge
+                foreground = Design.Colors.onSurfaceVariant
+                alignmentX = CENTER_ALIGNMENT
+            })
+            add(createVerticalStrut(Design.Spacing.SM))
+            add(JLabel(formatMcpVersionLabel(extensionVersion)).apply {
+                font = Design.Typography.labelMedium
                 foreground = Design.Colors.onSurfaceVariant
                 alignmentX = CENTER_ALIGNMENT
             })
@@ -254,3 +266,6 @@ class ConfigUi internal constructor(
         panel.add(columnsPanel, BorderLayout.CENTER)
     }
 }
+
+internal fun formatMcpVersionLabel(version: String): String =
+    "Extension version: ${safeSingleLine(version, 64).ifBlank { "unknown" }}"

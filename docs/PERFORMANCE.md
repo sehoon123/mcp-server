@@ -10,6 +10,8 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Deep pagination serialized every skipped record | 18,010 serializations for a 10-item page at offset 18,000 | Apply offset/count before mapping and serialization |
 | P0 | Approval waits used `runBlocking` inside request handlers | A four-thread probe completed 20 waits in 1,038 ms instead of 209 ms | Make tool callbacks suspend and execute blocking Burp work on a bounded IO dispatcher |
 | P0 | Graceful Streamable HTTP client close retained server sessions | 20 connect/close cycles retained 20 sessions; explicit DELETE retained 0 | Terminate the proxy's HTTP session and close the MCP server during lifecycle transitions |
+| P0 | Ephemeral native clients could exhaust all 32 sessions after disconnecting their optional SSE streams without DELETE | Repeated mcporter commands eventually returned `MCP session capacity is full` | Prefer one keep-alive client session and displace only the least-recently-used inactive disconnected-stream session under capacity pressure |
+| P0 | CIO wrapped an occupied listener in `JobCancellationException` | A real occupied-port regression reached `BindException` only after two cancellation causes | Recognize the bounded cause chain, report the numeric endpoint conflict, and verify retry after cleanup |
 | P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | A live JS SDK close left the server socket in `CLOSE_WAIT` and the active-call counter nonzero | Track the handler job, cancel it on session close, and emit a comment-only heartbeat to detect a dead peer |
 | P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
 | P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
@@ -91,8 +93,24 @@ idle sessions are evicted after 15 minutes by a 60-second sweep. Explicit DELETE
 rejection, idle eviction, and application shutdown all close a transport exactly once. Shutdown waits at most two
 seconds for aggregate session cleanup, so a stalled SDK close cannot indefinitely block listener restart.
 
-Native third-party clients that omit DELETE therefore consume a slot only until idle eviction. Activity refreshes the
-session timestamp, and a capacity-rejected new transport is closed immediately.
+Native third-party clients that omit DELETE therefore consume a slot until normal idle eviction unless capacity is
+needed first. Under capacity pressure, the registry may displace only the least-recently-used inactive session that
+previously registered an optional GET event stream and whose stream has disconnected. It never pressure-evicts a
+session with an active call, an open event stream, or no observed stream. The displaced transport is closed with a
+bounded cleanup before the replacement initializes; if no eligible session exists, the new transport is rejected and
+closed immediately. A real-CIO regression uses a short test heartbeat to close two optional streams, initializes a
+replacement at the configured limit, verifies the oldest session returns 404, and verifies the newer session remains
+usable. Against the real CIO fixture, 40 sequential mcporter `ephemeral` discovery processes (spaced 500 ms so closed
+peers reached the production heartbeat) and 100 rapid `keep-alive` daemon discoveries both completed without a
+capacity rejection. Keep-alive remains the recommended mode because a burst faster than disconnect detection can still
+consume the fixed admission budget temporarily.
+
+CIO reports an occupied startup connector through cancellation wrappers whose bounded cause chain ends in
+`BindException`. Startup now recognizes that specific root cause and reports only the numeric local endpoint and that
+it is already in use; no credential, path, or raw coroutine diagnostic is retained. Closing the MCP server may also
+cancel its own transport jobs. Explicit stop treats that as successful only when the bounded cause chain contains no
+non-cancellation failure. Regression tests release the occupied socket, retry the same manager, and exercise a complete
+start/stop/start cycle against a real listener.
 
 ## Embedded proxy extraction
 
@@ -143,14 +161,16 @@ following admission limits are exceeded:
 | Session idle age | 15 minutes |
 | Session sweep interval | 60 seconds |
 | Optional GET SSE heartbeat | 15 seconds |
+| Capacity-pressure policy | Oldest inactive session with a disconnected observed SSE stream only |
 | CIO connection idle timeout | 180 seconds |
 | Session cleanup wait during stop | 2 seconds |
 
 Duplicate `Mcp-Session-Id`, ambiguous framing (`Content-Length` plus `Transfer-Encoding`), duplicate or malformed
 `Content-Length`, and oversized chunked bodies fail before dispatch. The optional GET event stream emits only an SSE
 comment every 15 seconds, allowing a closed peer to release its concurrent HTTP slot without creating an MCP message;
-DELETE, eviction, and server shutdown also cancel its registered handler immediately. Disconnect still does not delete
-the stateful session, which remains subject to the separate 32-session and idle-lifetime bounds described above.
+DELETE, eviction, and server shutdown also cancel its registered handler immediately. Disconnect still does not itself
+delete the stateful session. The session remains subject to the separate 32-session and idle-lifetime bounds, but it is
+a lower-priority capacity candidate after its observed stream has disconnected.
 
 The 180-second CIO value is an idle connection limit, not a total tool-execution deadline. A separate receive-pipeline
 wall-clock timeout was not added because Ktor can pre-buffer the body before that interceptor; the byte cap remains

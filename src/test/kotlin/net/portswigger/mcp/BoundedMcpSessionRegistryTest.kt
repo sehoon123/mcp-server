@@ -20,8 +20,8 @@ class BoundedMcpSessionRegistryTest {
         val secondTransport = transport()
         val thirdTransport = transport()
         val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
-        val first = assertNotNull(registry.reserve(firstTransport))
-        val pending = assertNotNull(registry.reserve(secondTransport))
+        val first = assertNotNull(registry.reserve(firstTransport)).pending
+        val pending = assertNotNull(registry.reserve(secondTransport)).pending
         assertNull(registry.reserve(thirdTransport))
         registry.activate(first, "session-one")
 
@@ -40,7 +40,7 @@ class BoundedMcpSessionRegistryTest {
     fun `registry updates pending active initialized and eviction diagnostics`() = runBlocking {
         val metrics = McpRuntimeMetrics("test", maxHttpCalls = 64, maxSessions = 1)
         val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 0, runtimeMetrics = metrics)
-        val pending = assertNotNull(registry.reserve(transport()))
+        val pending = assertNotNull(registry.reserve(transport())).pending
         assertEquals(1, metrics.snapshot().pendingSessions)
 
         registry.activate(pending, "diagnostic-session")
@@ -58,7 +58,7 @@ class BoundedMcpSessionRegistryTest {
         val staleTransport = transport()
         val replacementTransport = transport()
         val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 0)
-        val stale = assertNotNull(registry.reserve(staleTransport))
+        val stale = assertNotNull(registry.reserve(staleTransport)).pending
         registry.activate(stale, "stale-session")
 
         registry.evictIdle()
@@ -72,7 +72,7 @@ class BoundedMcpSessionRegistryTest {
     @Test
     fun `session removal cancels registered SSE handlers and rejects late registration`() {
         val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
-        val entry = assertNotNull(registry.reserve(transport()))
+        val entry = assertNotNull(registry.reserve(transport())).pending
         registry.activate(entry, "stream-session")
         val streamJob = Job()
 
@@ -81,6 +81,44 @@ class BoundedMcpSessionRegistryTest {
 
         assertTrue(streamJob.isCancelled)
         assertFalse(entry.registerStream(Job()))
+    }
+
+    @Test
+    fun `capacity pressure displaces only the least recently used disconnected stream session`() = runBlocking {
+        val firstTransport = transport()
+        val secondTransport = transport()
+        val replacementTransport = transport()
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
+        val first = assertNotNull(registry.reserve(firstTransport)).pending
+        registry.activate(first, "first-session")
+        val firstStream = Job()
+        assertTrue(first.registerStream(firstStream))
+        first.unregisterStream(firstStream)
+
+        val second = assertNotNull(registry.reserve(secondTransport)).pending
+        registry.activate(second, "second-session")
+        val openSecondStream = Job()
+        assertTrue(second.registerStream(openSecondStream))
+
+        val replacement = assertNotNull(registry.reserve(replacementTransport))
+
+        assertEquals(first, replacement.displaced)
+        assertNotNull(replacement.pending)
+        replacement.displaced?.closeTransport()
+        coVerify(exactly = 1) { firstTransport.close() }
+        coVerify(exactly = 0) { secondTransport.close() }
+        assertFalse(openSecondStream.isCancelled)
+        registry.closeAll()
+    }
+
+    @Test
+    fun `capacity pressure preserves sessions that never registered an event stream`() = runBlocking {
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val active = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(active, "post-only-session")
+
+        assertNull(registry.reserve(transport()))
+        registry.closeAll()
     }
 
     private fun transport(): StreamableHttpServerTransport =

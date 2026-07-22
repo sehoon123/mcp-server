@@ -30,7 +30,7 @@
 	<li>Export and modify project and user configuration through level-selecting JSON tools</li>
 	<li>Control proxy intercept and task execution through one bounded global-control tool, plus explicit editor tools</li>
 	<li>Built-in operation-selecting URL/Base64 transformation and random string generation</li>
-	<li>Authenticated numeric-loopback Streamable HTTP endpoint with bounded sessions and an embedded stdio compatibility proxy</li>
+	<li>Authenticated numeric-loopback Streamable HTTP endpoint with bounded sessions, pressure-safe cleanup of inactive disconnected streams, and an embedded stdio compatibility proxy</li>
 	<li>Redacted live diagnostics, bounded persistent tool audit records, and an emergency read-only interlock</li>
 	<li>Automatic Claude Desktop installation with packaged stdio proxy server</li>
 	<li>Configurable target, stable-ID action, and project-data approval system, including Site Map and Collaborator access</li>
@@ -39,7 +39,8 @@
 
 <h2>Usage</h2>
 <ol>
-	<li>Navigate to the "MCP" tab and enable the MCP server.</li>
+	<li>Navigate to the "MCP" tab, confirm the displayed extension version, and enable the MCP server. An occupied local
+		port is reported as an endpoint conflict rather than an internal coroutine cancellation.</li>
 	<li>Configure security settings including auto-approve targets and configuration editing permissions. Copy the local
 		bearer token under Advanced Options for native HTTP clients. Use Diagnostics and Safety to inspect redacted runtime
 		state, manage audit retention, or block non-read-only tool calls immediately.</li>
