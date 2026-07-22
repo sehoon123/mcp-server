@@ -115,11 +115,22 @@ Remaining work:
 
 ### 4. Standardize structured results and errors
 
-- Define output schemas for every tool instead of embedding JSON inside text blocks.
-- Return machine-readable error codes for approval denial, target rejection, timeout, unavailable Burp features, and
-  malformed HTTP.
-- Include safe retry guidance and whether an operation might already have executed.
-- Bound all outputs and reject oversized input before allocating large buffers.
+Implemented for v4.1:
+
+- Every Professional and Community tool advertises an output schema and returns MCP `structuredContent`; the seven
+  formerly text-only configuration, global-control, active-editor, transform, and random-data tools retain bounded
+  legacy text for compatibility.
+- Those migrated tools share machine-readable status and retry enums for validation, approval denial, disabled or
+  unavailable UI state, output limits, Burp failures, and success.
+- Configuration, control, and editor mutations report `not_started`, `completed`, or `uncertain`; uncertain failures
+  carry `do_not_retry` guidance because the side effect may already exist.
+- Utility, configuration, and editor fields and error summaries have explicit output bounds. Invalid oversized input is
+  rejected before the operation or side effect begins.
+
+Remaining work:
+
+- Extend common retry metadata to older structured result families where it adds information beyond their existing
+  status, execution-state, and error fields without breaking stable schemas.
 - Expand recursive credential filtering and test common API-key, cookie, certificate, and authorization formats.
 
 ### 5. Make the embedded proxy reproducible

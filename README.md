@@ -28,7 +28,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 26 tools on Professional and 19 on Community, with deprecated v3 aliases removed
+- v4 compact catalog: 26 tools on Professional and 19 on Community, with an output schema and structured content on every tool
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
@@ -89,6 +89,23 @@ post-delivery failures as `execution_uncertain`. Unified routing preserves desti
 classification; HTTP/2-to-Intruder is rejected until verified against a supported Burp runtime. Safe-regex HTTP and
 WebSocket searches use 10,000-record/32 MiB budgets and conservative regex validation. HTTP regex search deliberately
 bypasses metadata-index hints.
+
+### v4.1 structured results
+
+Version 4.1 keeps the 26/19 tool names and inputs stable while completing output-schema coverage. Every advertised tool
+now returns MCP `structuredContent`. The seven previously text-only configuration, global-control, active-editor,
+transform, and random-data tools preserve their bounded legacy text block for clients that still consume it, and add:
+
+- a machine-readable `status` code;
+- explicit `retry` guidance such as `after_correction`, `after_user_action`, or `do_not_retry`;
+- typed bounded output fields instead of requiring clients to parse JSON embedded in text; and
+- `executionState` on mutations, where `uncertain` means the side effect may already exist and must not be retried
+  automatically.
+
+Expected validation, approval, disabled-feature, availability, output-limit, and Burp errors are represented in the
+structured result. Correction-required validation, output-limit, and Burp failures also set MCP `isError=true`; ordinary
+approval, disabled, and unavailable outcomes remain non-protocol structured outcomes. Malformed MCP arguments that
+cannot be deserialized still use the protocol-level tool error path.
 
 ## Build and install
 

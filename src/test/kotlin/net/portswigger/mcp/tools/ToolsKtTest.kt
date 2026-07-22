@@ -35,6 +35,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.mockk.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
@@ -333,6 +335,10 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("test+string+with+spaces")
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_applicable", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+                assertEquals("test+string+with+spaces", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
+                assertEquals(23, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
             }
             
             verify(exactly = 1) { urlUtils.encode(any<String>()) }
@@ -432,14 +438,48 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("1a2b3c1a2b")
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("1a2b3c1a2b", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
+                assertEquals(10, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
             }
             
             verify(exactly = 1) { randomUtils.randomString(any<Int>(), any<String>()) }
+        }
+
+        @Test
+        fun `utility validation errors retain structured status and retry guidance`() = runBlocking {
+            val result = client.callTool(
+                "transform_data",
+                mapOf(
+                    "operation" to "url_encode",
+                    "content" to "x".repeat(262_145),
+                ),
+            )
+
+            assertEquals(true, result?.isError)
+            assertEquals("invalid_argument", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("after_correction", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            assertEquals("url_encode", result?.structuredContent?.get("operation")?.jsonPrimitive?.content)
+            assertNull(result?.structuredContent?.get("content"))
         }
     }
     
     @Nested
     inner class ConfigurationToolsTests {
+        @Test
+        fun `configuration export rejects oversized content with a structured limit status`() = runBlocking {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.exportProjectOptionsAsJson() } returns "x".repeat(1_048_577)
+
+            val result = client.callTool("get_burp_options", mapOf("level" to "project"))
+
+            assertEquals(true, result?.isError)
+            assertEquals("limit_exceeded", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            assertNull(result?.structuredContent?.get("configuration"))
+        }
+
         @Test
         fun `set task execution engine state should work properly`() {
             val taskExecutionEngine = mockk<TaskExecutionEngine>()
@@ -459,6 +499,9 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("Task execution engine is now running")
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals("not_applicable", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
             }
             
             verify(exactly = 1) { taskExecutionEngine.state = TaskExecutionEngine.TaskExecutionEngineState.RUNNING }
@@ -479,7 +522,61 @@ class ToolsKtTest {
             
             verify(exactly = 1) { taskExecutionEngine.state = TaskExecutionEngine.TaskExecutionEngineState.PAUSED }
         }
+
+        @Test
+        fun `control mutation failure reports uncertain state and forbids automatic retry`() = runBlocking {
+            val taskExecutionEngine = mockk<TaskExecutionEngine>()
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.taskExecutionEngine() } returns taskExecutionEngine
+            every { taskExecutionEngine.state = any() } throws IllegalStateException("write failed")
+
+            val result = client.callTool(
+                "set_burp_control_state",
+                mapOf("control" to "task_execution_engine", "enabled" to true),
+            )
+
+            assertEquals(true, result?.isError)
+            assertEquals("burp_error", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            assertTrue(result.expectTextContent().contains("do not retry automatically"))
+            verify(exactly = 1) { taskExecutionEngine.state = TaskExecutionEngine.TaskExecutionEngineState.RUNNING }
+        }
         
+        @Test
+        fun `control approval denial is structured and never starts the mutation`() = runBlocking {
+            val taskExecutionEngine = mockk<TaskExecutionEngine>(relaxed = true)
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.taskExecutionEngine() } returns taskExecutionEngine
+            val previous = SensitiveActionSecurity.approvalHandler
+            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    summary: String,
+                    reviewContent: String?,
+                    renderContentAsHttp: Boolean,
+                    api: MontoyaApi,
+                ) = false
+            }
+
+            try {
+                val result = client.callTool(
+                    "set_burp_control_state",
+                    mapOf("control" to "task_execution_engine", "enabled" to true),
+                )
+
+                assertEquals(false, result?.isError)
+                assertEquals("access_denied", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+                verify(exactly = 0) { taskExecutionEngine.state = any() }
+            } finally {
+                SensitiveActionSecurity.approvalHandler = previous
+            }
+        }
+
         @Test
         fun `set proxy intercept state should work properly`() {
             val proxy = mockk<Proxy>()
@@ -537,6 +634,12 @@ class ToolsKtTest {
                 val userRead = client.callTool("get_burp_options", mapOf("level" to "user"))
                 projectRead.expectTextContent("{\"project_options\":{}}")
                 userRead.expectTextContent("{\"user_options\":{}}")
+                assertEquals("ok", projectRead?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals(
+                    "{\"project_options\":{}}",
+                    projectRead?.structuredContent?.get("configuration")?.jsonPrimitive?.content,
+                )
+                assertEquals(false, projectRead?.structuredContent?.get("credentialsFiltered")?.jsonPrimitive?.boolean)
 
                 val projectResult = client.callTool(
                     "set_burp_options", mapOf("level" to "project", "json" to sensitiveJson)
@@ -548,6 +651,9 @@ class ToolsKtTest {
                 delay(100)
                 projectResult.expectTextContent("Project configuration has been applied")
                 userResult.expectTextContent("User configuration has been applied")
+                assertEquals("ok", projectResult?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("completed", projectResult?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals("not_applicable", projectResult?.structuredContent?.get("retry")?.jsonPrimitive?.content)
 
                 val tools = client.listTools()
                 val readTool = tools.single { it.name == "get_burp_options" }
@@ -575,6 +681,9 @@ class ToolsKtTest {
 
                 delay(100)
                 result.expectTextContent("User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'")
+                assertEquals("disabled", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
             }
 
             verify(exactly = 0) { burpSuite.importProjectOptionsFromJson(any()) }
@@ -594,6 +703,8 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("<No active editor>")
+                assertEquals("not_available", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
             }
         }
         
@@ -612,6 +723,10 @@ class ToolsKtTest {
                 val text = result.expectTextContent()
                 assertTrue(text.contains("\"text\":\"Editor content\""))
                 assertTrue(text.contains("\"truncated\":false"))
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("Editor content", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
+                assertEquals(14, result?.structuredContent?.get("totalChars")?.jsonPrimitive?.int)
+                assertEquals(false, result?.structuredContent?.get("truncated")?.jsonPrimitive?.boolean)
             }
         }
         
@@ -650,6 +765,8 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("<Current editor is not editable>")
+                assertEquals("not_editable", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             }
         }
         
@@ -671,6 +788,9 @@ class ToolsKtTest {
                 
                 delay(100)
                 result.expectTextContent("Editor text has been set")
+                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals(11, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
             }
             
             verify(exactly = 1) { textArea.text = "New content" }
@@ -1124,9 +1244,22 @@ class ToolsKtTest {
             ).isEmpty()
         )
 
+        assertTrue(tools.all { it.outputSchema != null }, "Every v4.1 tool must advertise an output schema")
+
         val transform = tools.single { it.name == "transform_data" }
         assertEquals(setOf("operation", "content"), transform.inputSchema.required?.toSet())
         assertTrue(transform.inputSchema.properties?.get("operation").toString().contains("base64_decode"))
+        assertNotNull(transform.outputSchema?.properties?.get("status"))
+        assertNotNull(transform.outputSchema?.properties?.get("retry"))
+        assertTrue(transform.outputSchema?.properties?.get("content").toString().contains("\"maxLength\":1048576"))
+
+        val optionsMutation = tools.single { it.name == "set_burp_options" }
+        assertTrue(optionsMutation.outputSchema?.properties?.get("executionState").toString().contains("uncertain"))
+        assertTrue(optionsMutation.outputSchema?.properties?.get("retry").toString().contains("do_not_retry"))
+
+        val editorRead = tools.single { it.name == "get_active_editor_contents" }
+        assertNotNull(editorRead.outputSchema?.properties?.get("content"))
+        assertNotNull(editorRead.outputSchema?.properties?.get("truncated"))
 
         val attackSurface = tools.single { it.name == "summarize_http_attack_surface" }
         assertEquals(setOf("projectId"), attackSurface.inputSchema.required?.toSet())
@@ -1321,6 +1454,7 @@ class ToolsKtTest {
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
             assertEquals(26, tools.size)
+            assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
@@ -1673,6 +1807,7 @@ class ToolsKtTest {
 
             val tools = client.listTools()
             assertTrue(tools.all { it.annotations?.readOnlyHint != null })
+            assertTrue(tools.all { it.outputSchema != null })
             assertTrue(tools.any { it.name == "get_scanner_issues" })
             assertTrue(tools.any { it.name == "generate_collaborator_payload" })
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })

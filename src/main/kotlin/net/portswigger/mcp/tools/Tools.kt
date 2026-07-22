@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -272,105 +273,402 @@ internal fun Server.registerTools(
         rawHttpActionService.route(this)
     }
 
-    mcpTool<TransformData>(
-        "URL-encodes, URL-decodes, Base64-encodes, or Base64-decodes bounded content according to operation.",
-        LOCAL_TRANSFORM_TOOL_ANNOTATIONS,
-    ) {
-        require(content.length <= MAX_UTILITY_INPUT_CHARS) { "content is too large" }
-        when (operation) {
-            DataTransformOperation.URL_ENCODE -> api.utilities().urlUtils().encode(content)
-            DataTransformOperation.URL_DECODE -> api.utilities().urlUtils().decode(content).also {
-                require(it.length <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
-            }
-            DataTransformOperation.BASE64_ENCODE -> api.utilities().base64Utils().encodeToString(content)
-            DataTransformOperation.BASE64_DECODE -> api.utilities().base64Utils().decode(content).also {
-                require(it.length() <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
-            }.toString()
-        }
-    }
-
-    mcpTool<GenerateRandomString>(
-        "Generates a bounded random string from a non-empty character set.",
-        LOCAL_TRANSFORM_TOOL_ANNOTATIONS,
-    ) {
-        require(length in 0..MAX_RANDOM_STRING_CHARS) { "length must be between 0 and $MAX_RANDOM_STRING_CHARS" }
-        require(characterSet.length in 1..MAX_RANDOM_CHARACTER_SET_CHARS && characterSet.none(Char::isISOControl)) {
-            "characterSet is invalid"
-        }
-        api.utilities().randomUtils().randomString(length, characterSet)
-    }
-
-    mcpTool<GetBurpOptions>(
-        "Outputs bounded current project- or user-level Burp configuration after explicit approval.",
-        READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        val approved = when (level) {
-            BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
-                "read project configuration",
-                "Export project-level Burp configuration to the MCP client",
-                api = api,
-                auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_READ,
+    mcpStructuredToolWithContext<TransformData, TransformDataResult>(
+        description = "URL-encodes, URL-decodes, Base64-encodes, or Base64-decodes bounded content according to operation. Returns a typed status, retry guidance, and bounded transformed content.",
+        annotations = LOCAL_TRANSFORM_TOOL_ANNOTATIONS,
+    ) { input ->
+        if (input.content.length > MAX_UTILITY_INPUT_CHARS) {
+            val error = "content is too large"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                TransformDataResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    input.operation,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
             )
-            BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
-                "read user configuration",
-                "Export user-level Burp configuration to the MCP client",
-                api = api,
-                auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_READ,
+        }
+        val transformed = try {
+            when (input.operation) {
+                DataTransformOperation.URL_ENCODE -> api.utilities().urlUtils().encode(input.content)
+                DataTransformOperation.URL_DECODE -> api.utilities().urlUtils().decode(input.content)
+                DataTransformOperation.BASE64_ENCODE -> api.utilities().base64Utils().encodeToString(input.content)
+                DataTransformOperation.BASE64_DECODE -> api.utilities().base64Utils().decode(input.content).toString()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: IllegalArgumentException) {
+            val error = "content is invalid for the selected operation"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                TransformDataResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    input.operation,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not transform the content", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                TransformDataResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.operation,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val operationLimit = when (input.operation) {
+            DataTransformOperation.URL_DECODE, DataTransformOperation.BASE64_DECODE -> MAX_UTILITY_INPUT_CHARS
+            else -> MAX_UTILITY_OUTPUT_CHARS
+        }
+        if (transformed.length > operationLimit) {
+            val error = "transformed content exceeds the output limit"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                TransformDataResult(
+                    StandardToolStatus.LIMIT_EXCEEDED,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    input.operation,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        StructuredToolResponse(
+            TransformDataResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                input.operation,
+                content = transformed,
+                contentChars = transformed.length,
+            ),
+            text = transformed,
+        )
+    }
+
+    mcpStructuredToolWithContext<GenerateRandomString, GenerateRandomStringResult>(
+        description = "Generates a bounded random string from a non-empty character set and returns typed status and retry guidance.",
+        annotations = LOCAL_TRANSFORM_TOOL_ANNOTATIONS,
+    ) { input ->
+        if (input.length !in 0..MAX_RANDOM_STRING_CHARS) {
+            val error = "length must be between 0 and $MAX_RANDOM_STRING_CHARS"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GenerateRandomStringResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (input.characterSet.length !in 1..MAX_RANDOM_CHARACTER_SET_CHARS ||
+            input.characterSet.any(Char::isISOControl)
+        ) {
+            val error = "characterSet is invalid"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GenerateRandomStringResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val generated = try {
+            api.utilities().randomUtils().randomString(input.length, input.characterSet)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not generate random data", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GenerateRandomStringResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (generated.length > MAX_RANDOM_STRING_CHARS) {
+            val error = "generated content exceeds the output limit"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GenerateRandomStringResult(
+                    StandardToolStatus.LIMIT_EXCEEDED,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        StructuredToolResponse(
+            GenerateRandomStringResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                content = generated,
+                contentChars = generated.length,
+            ),
+            text = generated,
+        )
+    }
+
+    mcpStructuredToolWithContext<GetBurpOptions, GetBurpOptionsResult>(
+        description = "Outputs bounded current project- or user-level Burp configuration after explicit approval. Returns typed approval, limit, and Burp-error states.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val deniedMessage =
+            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration access denied by Burp Suite"
+        val approved = try {
+            when (input.level) {
+                BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
+                    "read project configuration",
+                    "Export project-level Burp configuration to the MCP client",
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_READ,
+                )
+                BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
+                    "read user configuration",
+                    "Export user-level Burp configuration to the MCP client",
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_READ,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not request configuration approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
             )
         }
         if (!approved) {
-            return@mcpTool "${if (level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration access denied by Burp Suite"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.ACCESS_DENIED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    input.level,
+                    error = deniedMessage,
+                ),
+                text = deniedMessage,
+            )
         }
-        val json = when (level) {
-            BurpOptionsLevel.PROJECT -> api.burpSuite().exportProjectOptionsAsJson()
-            BurpOptionsLevel.USER -> api.burpSuite().exportUserOptionsAsJson()
+        val exported = try {
+            when (input.level) {
+                BurpOptionsLevel.PROJECT -> api.burpSuite().exportProjectOptionsAsJson()
+                BurpOptionsLevel.USER -> api.burpSuite().exportUserOptionsAsJson()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not export configuration", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         }
-        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "configuration exceeds the output limit" }
-        if (config.filterConfigCredentials) filterConfigCredentials(json) else json
+        if (exported.length > MAX_CONFIGURATION_JSON_CHARS) {
+            val error = "configuration exceeds the output limit"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.LIMIT_EXCEEDED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val credentialsFiltered = config.filterConfigCredentials
+        val configuration = try {
+            if (credentialsFiltered) filterConfigCredentials(exported) else exported
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not filter exported configuration", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (configuration.length > MAX_CONFIGURATION_JSON_CHARS) {
+            val error = "filtered configuration exceeds the output limit"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.LIMIT_EXCEEDED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        StructuredToolResponse(
+            GetBurpOptionsResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                input.level,
+                configuration = configuration,
+                configurationChars = configuration.length,
+                credentialsFiltered = credentialsFiltered,
+            ),
+            text = configuration,
+        )
     }
 
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    mcpTool<SetBurpOptions>(
-        "Imports bounded project- or user-level configuration JSON after explicit approval. Project JSON must contain top-level 'project_options'; user JSON must contain top-level 'user_options'.",
-        PROJECT_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "json is too large" }
-        if (!config.configEditingTooling) return@mcpTool toolingDisabledMessage
-        val approved = when (level) {
-            BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
-                "change project configuration",
-                "Merge supplied JSON into Burp project configuration",
-                json,
-                api = api,
-                auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
+    mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
+        description = "Imports bounded project- or user-level configuration JSON after explicit approval. Project JSON must contain top-level 'project_options'; user JSON must contain top-level 'user_options'. Returns typed execution state; uncertain means the configuration may be partially applied and must not be retried automatically.",
+        annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
+    ) { input ->
+        if (input.json.length > MAX_CONFIGURATION_JSON_CHARS) {
+            val error = "json is too large"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
             )
-            BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
-                "change user configuration",
-                "Merge supplied JSON into Burp user configuration",
-                json,
-                api = api,
-                auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_WRITE,
+        }
+        if (!config.configEditingTooling) {
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.DISABLED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    toolingDisabledMessage,
+                ),
+                text = toolingDisabledMessage,
+            )
+        }
+        val deniedMessage =
+            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration change denied by Burp Suite"
+        val approved = try {
+            when (input.level) {
+                BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
+                    "change project configuration",
+                    "Merge supplied JSON into Burp project configuration",
+                    input.json,
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
+                )
+                BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
+                    "change user configuration",
+                    "Merge supplied JSON into Burp user configuration",
+                    input.json,
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_WRITE,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not request configuration-change approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
             )
         }
         if (!approved) {
-            return@mcpTool "${if (level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration change denied by Burp Suite"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.ACCESS_DENIED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    deniedMessage,
+                ),
+                text = deniedMessage,
+            )
         }
-        when (level) {
-            BurpOptionsLevel.PROJECT -> {
-                api.logging().logToOutput("Applying project-level configuration through MCP")
-                services.httpMetadataIndex.withMutation {
-                    api.burpSuite().importProjectOptionsFromJson(json)
+        val successMessage =
+            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration has been applied"
+        try {
+            when (input.level) {
+                BurpOptionsLevel.PROJECT -> {
+                    api.logging().logToOutput("Applying project-level configuration through MCP")
+                    services.httpMetadataIndex.withMutation {
+                        api.burpSuite().importProjectOptionsFromJson(input.json)
+                    }
                 }
-                "Project configuration has been applied"
+                BurpOptionsLevel.USER -> {
+                    api.logging().logToOutput("Applying user-level configuration through MCP")
+                    api.burpSuite().importUserOptionsFromJson(input.json)
+                }
             }
-            BurpOptionsLevel.USER -> {
-                api.logging().logToOutput("Applying user-level configuration through MCP")
-                api.burpSuite().importUserOptionsFromJson(json)
-                "User configuration has been applied"
-            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException(
+                "Configuration may have been partially applied; do not retry automatically",
+                e,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         }
+        StructuredToolResponse(
+            SetBurpOptionsResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                StandardExecutionState.COMPLETED,
+                input.level,
+            ),
+            text = successMessage,
+        )
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
@@ -623,73 +921,333 @@ internal fun Server.registerTools(
         result.copy(projectId = expectedProjectId)
     }
 
-    mcpTool<SetBurpControlState>(
-        "Changes exactly one Burp global control: the task execution engine or Proxy Intercept state.",
-        PROJECT_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        when (control) {
-            BurpControl.TASK_EXECUTION_ENGINE -> {
-                val approved = SensitiveActionSecurity.checkPermission(
+    mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(
+        description = "Changes exactly one Burp global control: the task execution engine or Proxy Intercept state. Returns typed execution state; uncertain means the change may have occurred and must not be retried automatically.",
+        annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
+    ) { input ->
+        val deniedMessage = when (input.control) {
+            BurpControl.TASK_EXECUTION_ENGINE -> "Task execution engine change denied by Burp Suite"
+            BurpControl.PROXY_INTERCEPT -> "Proxy Intercept change denied by Burp Suite"
+        }
+        val approved = try {
+            when (input.control) {
+                BurpControl.TASK_EXECUTION_ENGINE -> SensitiveActionSecurity.checkPermission(
                     "change task execution engine state",
-                    "Set Burp task execution engine to ${if (enabled) "running" else "paused"}",
+                    "Set Burp task execution engine to ${if (input.enabled) "running" else "paused"}",
                     api = api,
                     auditOperation = SensitiveActionAuditOperation.TASK_EXECUTION_ENGINE,
                 )
-                if (!approved) return@mcpTool "Task execution engine change denied by Burp Suite"
-                api.burpSuite().taskExecutionEngine().state = if (enabled) RUNNING else PAUSED
-                "Task execution engine is now ${if (enabled) "running" else "paused"}"
-            }
-            BurpControl.PROXY_INTERCEPT -> {
-                val approved = SensitiveActionSecurity.checkPermission(
+                BurpControl.PROXY_INTERCEPT -> SensitiveActionSecurity.checkPermission(
                     "change Proxy Intercept state",
-                    "Set Burp Proxy Intercept to ${if (enabled) "enabled" else "disabled"}",
+                    "Set Burp Proxy Intercept to ${if (input.enabled) "enabled" else "disabled"}",
                     api = api,
                     auditOperation = SensitiveActionAuditOperation.PROXY_INTERCEPT,
                 )
-                if (!approved) return@mcpTool "Proxy Intercept change denied by Burp Suite"
-                if (enabled) api.proxy().enableIntercept() else api.proxy().disableIntercept()
-                "Intercept has been ${if (enabled) "enabled" else "disabled"}"
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not request control-change approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpControlStateResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.control,
+                    input.enabled,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         }
+        if (!approved) {
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpControlStateResult(
+                    StandardToolStatus.ACCESS_DENIED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.control,
+                    input.enabled,
+                    deniedMessage,
+                ),
+                text = deniedMessage,
+            )
+        }
+        val successMessage = when (input.control) {
+            BurpControl.TASK_EXECUTION_ENGINE ->
+                "Task execution engine is now ${if (input.enabled) "running" else "paused"}"
+            BurpControl.PROXY_INTERCEPT ->
+                "Intercept has been ${if (input.enabled) "enabled" else "disabled"}"
+        }
+        try {
+            when (input.control) {
+                BurpControl.TASK_EXECUTION_ENGINE -> {
+                    api.burpSuite().taskExecutionEngine().state = if (input.enabled) RUNNING else PAUSED
+                }
+                BurpControl.PROXY_INTERCEPT -> {
+                    if (input.enabled) api.proxy().enableIntercept() else api.proxy().disableIntercept()
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException(
+                "Burp control state may have changed; do not retry automatically",
+                e,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpControlStateResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.control,
+                    input.enabled,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        StructuredToolResponse(
+            SetBurpControlStateResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                StandardExecutionState.COMPLETED,
+                input.control,
+                input.enabled,
+            ),
+            text = successMessage,
+        )
     }
 
-    mcpTool(
-        "get_active_editor_contents",
-        "Returns a bounded preview of the active editor after explicit approval.",
-        READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        val approved = SensitiveActionSecurity.checkPermission(
-            "read active editor contents",
-            "Return up to $MAX_EDITOR_PREVIEW_CHARS characters from the active message editor",
-            api = api,
-        )
-        if (!approved) return@mcpTool "Active editor access denied by Burp Suite"
-        val value = getActiveEditor(api)?.text ?: return@mcpTool "<No active editor>"
-        Json.encodeToString(
+    mcpStructuredToolWithContext<GetActiveEditorContents, GetActiveEditorContentsResult>(
+        description = "Returns a bounded preview of the active editor after explicit approval with typed availability, approval, and retry state.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { _ ->
+        val deniedMessage = "Active editor access denied by Burp Suite"
+        val approved = try {
+            SensitiveActionSecurity.checkPermission(
+                "read active editor contents",
+                "Return up to $MAX_EDITOR_PREVIEW_CHARS characters from the active message editor",
+                api = api,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not request active-editor approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!approved) {
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.ACCESS_DENIED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    error = deniedMessage,
+                ),
+                text = deniedMessage,
+            )
+        }
+        val value = try {
+            getActiveEditor(api)?.text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not read the active editor", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (value == null) {
+            val message = "<No active editor>"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.NOT_AVAILABLE,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    error = message,
+                ),
+                text = message,
+            )
+        }
+        val preview = value.take(MAX_EDITOR_PREVIEW_CHARS)
+        val legacyText = Json.encodeToString(
             ActiveEditorPreview(
-                text = value.take(MAX_EDITOR_PREVIEW_CHARS),
+                text = preview,
                 totalChars = value.length,
                 truncated = value.length > MAX_EDITOR_PREVIEW_CHARS,
             )
         )
+        StructuredToolResponse(
+            GetActiveEditorContentsResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                content = preview,
+                totalChars = value.length,
+                truncated = value.length > MAX_EDITOR_PREVIEW_CHARS,
+            ),
+            text = legacyText,
+        )
     }
 
-    mcpTool<SetActiveEditorContents>(
-        "Sets bounded active-editor text after explicit approval.",
-        PROJECT_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        require(text.length <= MAX_EDITOR_CONTENT_CHARS) { "text is too large" }
-        val editor = getActiveEditor(api) ?: return@mcpTool "<No active editor>"
-        if (!editor.isEditable) return@mcpTool "<Current editor is not editable>"
-        val approved = SensitiveActionSecurity.checkPermission(
-            "change active editor contents",
-            "Replace editable message text with ${text.length} characters",
-            text,
-            api = api,
+    mcpStructuredToolWithContext<SetActiveEditorContents, SetActiveEditorContentsResult>(
+        description = "Sets bounded active-editor text after explicit approval. Returns typed execution state; uncertain means the edit may have occurred and must not be retried automatically.",
+        annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
+    ) { input ->
+        if (input.text.length > MAX_EDITOR_CONTENT_CHARS) {
+            val error = "text is too large"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.INVALID_ARGUMENT,
+                    ToolRetryGuidance.AFTER_CORRECTION,
+                    StandardExecutionState.NOT_STARTED,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val editor = try {
+            getActiveEditor(api)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not resolve the active editor", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (editor == null) {
+            val message = "<No active editor>"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.NOT_AVAILABLE,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    message,
+                ),
+                text = message,
+            )
+        }
+        val editable = try {
+            editor.isEditable
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not inspect the active editor", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!editable) {
+            val message = "<Current editor is not editable>"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.NOT_EDITABLE,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    message,
+                ),
+                text = message,
+            )
+        }
+        val deniedMessage = "Active editor change denied by Burp Suite"
+        val approved = try {
+            SensitiveActionSecurity.checkPermission(
+                "change active editor contents",
+                "Replace editable message text with ${input.text.length} characters",
+                input.text,
+                api = api,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not request active-editor change approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!approved) {
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.ACCESS_DENIED,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    deniedMessage,
+                ),
+                text = deniedMessage,
+            )
+        }
+        try {
+            editor.text = input.text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException(
+                "Active editor text may have changed; do not retry automatically",
+                e,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        StructuredToolResponse(
+            SetActiveEditorContentsResult(
+                StandardToolStatus.OK,
+                ToolRetryGuidance.NOT_APPLICABLE,
+                StandardExecutionState.COMPLETED,
+                input.text.length,
+            ),
+            text = "Editor text has been set",
         )
-        if (!approved) return@mcpTool "Active editor change denied by Burp Suite"
-        editor.text = text
-        "Editor text has been set"
     }
 }
 
@@ -835,6 +1393,9 @@ data class SetBurpControlState(
     val control: BurpControl,
     val enabled: Boolean,
 )
+
+@Serializable
+class GetActiveEditorContents
 
 @Serializable
 data class SetActiveEditorContents(
