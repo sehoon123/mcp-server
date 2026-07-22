@@ -16,6 +16,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
 | P1 | Build metadata and post-build `jar uf` mutation made extension bytes change on every build | Identical sources produced artifacts with different timestamps and manifest values | Package the proxy through Gradle's reproducible archive pipeline and verify embedded provenance |
 | P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
+| P1 | Repeated attack-surface discovery re-read source metadata and encouraged model-side aggregation | Montoya exposes source lists but no project-wide metadata index | Retain at most 5,000 body-free records per source, validate bounded anchors, discard on project changes, and build exact top summaries without per-key detail maps |
 | P1 | Content-search accounting ran before cheaper metadata filters | Host/method/status mismatches still queried message sizes and consumed the 32 MiB budget | Compile membership filters once and apply all metadata predicates before content sizing or scanning |
 | P1 | Stable-ID reads constructed complete Proxy/WebSocket/Organizer snapshots | A one-record lookup called the unfiltered list API and then searched locally | Use Montoya's filtered lookup overloads and return at most matching records |
 | P1 | Derived request actions could materialize and repeatedly parse a request | Exact replay needs a size check, but text is needed only for interactive approval; individual parameter edits repeatedly rebuild immutable requests | Compute size from header/body lengths without a full byte array, lazily render request text, batch parameter mutations, and resolve semantic Intruder insertion points once |
@@ -178,6 +179,50 @@ mismatch performs no body-size query and consumes none of the 32 MiB content bud
 compiled to hash sets once per call rather than searched linearly for every candidate. Regression tests verify zero
 `bodyOffset`, body scan, note, fingerprint, and serialization calls for the relevant rejected records.
 
+## Body-free HTTP metadata index
+
+`summarize_http_attack_surface` uses an extension-lifetime index rather than retaining an MCP-session snapshot. Each
+requested Proxy, Site Map, or Organizer cache stores only the newest 5,000 metadata slots: source/index and bounded
+stable source ID where available, a one-way metadata fingerprint, scheme, host, port, method, a query-free path capped
+at 512 characters, status, MIME classification, Proxy timestamp, response presence, and scope classification. It retains
+no message body, header or note values, complete URL, or Montoya object. The three-source worst-case entry count is therefore
+15,000, independent of Burp history size; omitted and unavailable counts are explicit.
+
+A refresh still requests the selected Montoya source list, because the current API has no native metadata cursor. For a
+warm same-size source, up to 16 evenly distributed metadata-only anchors are re-read. Valid append-only growth reuses
+retained slots and extracts only new entries while dropping old slots above the cap. A size decrease, sampled-anchor
+change, project change, explicit Scope/project-option mutation, or 30-second maximum reuse age forces a rebuild. A
+project transition clears all source entries before mismatch or current-project output is returned. This is conservative
+cache freshness, not a claim that Montoya provides a complete same-size mutation event stream.
+
+A synthetic 100,000-record list regression verifies that a cold source build dereferences no more than the 5,000
+retained records plus 16 anchors; it does not treat that synthetic test as a Burp latency or allocation benchmark.
+
+A separate one-off Java 21 probe used lightweight dynamic Montoya-interface fixtures, a 100,000-record Proxy list, the
+5,000-record retained range, three warm-up rounds, and twelve measured rounds. Its aggregation case deliberately used
+5,000 distinct services and path prefixes, which is a bounded allocation stress case rather than a typical project.
+Both comparison runs used the same JFR allocation-profiling configuration:
+
+| JFR probe path | Before median | Current median | Weighted allocation samples on relevant stacks |
+|---|---:|---:|---:|
+| Cold 5,000-record index rebuild | 26.298 ms | 14.827 ms | 105.86 MiB → 41.45 MiB |
+| Warm 5,000-key attack-surface aggregate | 11.937 ms | 5.001 ms | 60.93 MiB → 9.40 MiB |
+
+Weighted JFR samples are estimates, not exact retained-heap measurements, and include allocation noise from the dynamic
+interface fixture. Across the complete probe, allocation-sample events fell from 1,389 to 668 and young collections
+from four to two. The index reuses one closeable SHA-256 instance,
+uses typed fingerprint framing and shared normalized MIME names, and avoids copying already-safe query-free paths. The
+aggregate first computes exact key counts and then allocates detailed counters only for the at most 100 returned
+services and 200 returned paths. Allocation-free ASCII classifiers replace per-segment regex matchers, and path-prefix
+construction scans only the requested one to four segments. These figures are local regression evidence, not Burp
+Suite latency claims; an actual large-history Burp JFR/soak run remains required.
+
+The attack-surface tool defaults to in-scope Proxy metadata, strips query strings, normalizes likely numeric, UUID, hex,
+and long token path segments, and bounds service/path/global method, status, MIME, and file-extension count lists.
+Individual detail and action tools do not trust aggregate cache entries: their existing resolvers fetch the current Burp object and validate the project and stable or
+opaque Site Map identity immediately before use. Integrating eligible metadata-only `search_http_messages` predicates
+with this index remains separate work and must preserve the existing 10,000-record scan and signed-cursor semantics.
+
 ## Stable-ID lookup and action hot paths
 
 Proxy HTTP, Proxy WebSocket, and Organizer get-by-ID paths use Montoya's filtered overloads. Montoya may still inspect
@@ -243,8 +288,9 @@ constrained regex policy. Remaining performance work is deliberately narrower:
 
 1. Migrate legacy source-specific list tools to signed cursors where compatibility permits.
 2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
-3. Add a body-free, project-bounded metadata index, discard it on project changes, and re-resolve plus fingerprint-check
-   every selected record before use; add event hooks only where Montoya lifecycle events make freshness provable.
+3. Use the body-free index for eligible metadata-only search predicates while preserving signed cursor behavior, and add
+   lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be resolved
+   and identity-checked against the current source.
 4. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
 
 ## Regression checks
@@ -254,6 +300,8 @@ Performance changes should preserve the following:
 - Only selected page items invoke serialization.
 - Unified search never exceeds its result, metadata-scan, content-scan, cursor, URL, or note bounds.
 - Metadata-rejected search records never consume content budget or invoke body scans.
+- The metadata index retains no bodies, headers, notes, complete URLs, or Montoya objects; source/project/output bounds and
+  cache freshness state remain explicit.
 - Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
 - Derived request actions render full request text only when an interactive approval needs it.
 - Signed search and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.

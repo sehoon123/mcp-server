@@ -282,6 +282,7 @@ internal fun Server.registerTools(
 ) {
     bindToolRuntimePolicy(config, auditSink)
     val httpMessageSearchService = HttpMessageSearchService(api, config)
+    val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
     val scopeToolService = ScopeToolService(api, config)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
@@ -516,6 +517,7 @@ internal fun Server.registerTools(
         )
         if (!approved) return@mcpTool "Project configuration change denied by Burp Suite"
         api.logging().logToOutput("Applying project-level configuration through MCP")
+        services.httpMetadataIndex.invalidate()
         api.burpSuite().importProjectOptionsFromJson(json)
         "Project configuration has been applied"
     }
@@ -628,6 +630,13 @@ internal fun Server.registerTools(
         httpMessageSearchService.search(this)
     }
 
+    mcpStructuredTool<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
+        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records, strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) {
+        httpAttackSurfaceService.summarize(this)
+    }
+
     mcpStructuredTool<CheckScope, CheckScopeResult>(
         description = "Checks whether up to 32 explicit URLs or project-scoped HTTP message references are currently in Burp Target scope. This tool never changes scope. Each target must contain exactly one of url or ref.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
@@ -639,7 +648,11 @@ internal fun Server.registerTools(
         description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before an always-required Burp approval. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
     ) {
-        scopeToolService.update(this)
+        scopeToolService.update(this).also { result ->
+            if (result.changedCount > 0 || result.executionState == ProjectMutationExecutionState.UNCERTAIN) {
+                services.httpMetadataIndex.invalidate()
+            }
+        }
     }
 
     mcpStructuredTool<CompareHttpMessages, CompareHttpMessagesResult>(

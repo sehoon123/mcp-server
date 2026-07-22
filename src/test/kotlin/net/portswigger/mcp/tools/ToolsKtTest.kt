@@ -1060,6 +1060,15 @@ class ToolsKtTest {
                 assertEquals("project-integration", result?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
                 assertTrue(result?.structuredContent?.get("items").toString().contains("\"id\":\"81\""))
 
+                val attackSurface = client.callTool(
+                    "summarize_http_attack_surface",
+                    mapOf("projectId" to "project-integration", "pathDepth" to 1),
+                )
+                assertEquals(false, attackSurface?.isError)
+                assertEquals("ok", attackSurface?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals(1, attackSurface?.structuredContent?.get("matchedRecords")?.jsonPrimitive?.content?.toInt())
+                assertTrue(attackSurface?.structuredContent?.get("pathPrefixes").toString().contains("/search"))
+
                 val wrongProject = client.callTool(
                     "get_http_message_by_id",
                     mapOf("id" to 81, "projectId" to "another-project"),
@@ -1315,8 +1324,19 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(36, tools.size)
+        assertEquals(37, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
+
+        val attackSurface = tools.single { it.name == "summarize_http_attack_surface" }
+        assertEquals(setOf("projectId"), attackSurface.inputSchema.required?.toSet())
+        assertTrue(attackSurface.inputSchema.properties?.get("sources").toString().contains("\"maxItems\":3"))
+        assertTrue(attackSurface.inputSchema.properties?.get("pathDepth").toString().contains("\"maximum\":4"))
+        assertNotNull(attackSurface.outputSchema?.properties?.get("services"))
+        assertNotNull(attackSurface.outputSchema?.properties?.get("pathPrefixes"))
+        assertNotNull(attackSurface.outputSchema?.properties?.get("extensions"))
+        assertNotNull(attackSurface.outputSchema?.properties?.get("availableInScopeRecords"))
+        assertEquals(true, attackSurface.annotations?.readOnlyHint)
+        assertEquals(false, attackSurface.annotations?.destructiveHint)
 
         val checkScope = tools.single { it.name == "check_scope" }
         assertEquals(setOf("projectId", "targets"), checkScope.inputSchema.required?.toSet())
@@ -1466,7 +1486,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(43, tools.size)
+            assertEquals(44, tools.size)
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())

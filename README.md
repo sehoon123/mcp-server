@@ -29,6 +29,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Automatic Claude Desktop configuration through the embedded stdio proxy
 - HTTP/1.1 and HTTP/2 request tools with target approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
+- Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
 - Explicit Target scope checks/updates and bounded HTTP message comparison from stable references
@@ -145,6 +146,24 @@ Search work is bounded per call to 10,000 metadata records. Literal content sear
 counts, cursor sizes, and detail reads are also bounded. Successful requests issued through `send_http1_request` or
 `send_http2_request` are added to Burp's Site Map on a best-effort basis without changing the already-completed request
 result if local recording fails.
+
+## Body-free attack-surface summary
+
+Use `summarize_http_attack_surface` with the current `projectId` to aggregate services, methods, status classes, MIME
+types, file extensions, response presence, and normalized path prefixes without returning complete messages. It defaults
+to the newest bounded Proxy metadata currently classified as in scope. Select `site_map` or `organizer` explicitly when those approved
+stores are needed; `pathDepth`, `serviceLimit`, and `pathLimit` are bounded.
+
+The extension-lifetime index keeps at most 5,000 newest records per selected source. Every result reports the source's
+total size, indexed range, unavailable and omitted records, output truncation, and whether the cache was reused,
+incrementally updated, or rebuilt. Query strings are discarded, likely numeric/UUID/token path segments are normalized,
+and retained records contain no body, header or note values, complete URL, or Montoya object. A project-ID change drops
+all old entries before another summary can be returned. Bounded metadata anchors are checked on reuse, entries are
+rebuilt after at most 30 seconds, and Scope/project-option mutations performed through MCP invalidate the cache.
+
+Counts represent records in each selected source; the same exchange appearing in multiple stores is not deduplicated.
+This aggregate is a discovery view, not an action authority. Continue to use the stable-reference tools for details or
+mutations; they resolve the current Burp record and verify its project/identity immediately before use.
 
 ## Stable-ID request actions
 

@@ -76,14 +76,20 @@ Implemented foundation:
   legacy offset/count text behavior for existing callers.
 - Stable references can be compared through bounded hashes, header variants, first-difference excerpts, and Burp-native
   response-variation attributes.
+- An extension-lifetime, project-bounded HTTP metadata index retains at most 5,000 newest records per source and no
+  bodies, header/note values, complete URLs, or Montoya objects. Bounded anchors, a 30-second maximum reuse age, explicit
+  invalidation, and project-transition clearing make freshness/truncation visible.
+- `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
+  path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
 
 Remaining work:
 
 - Migrate the remaining legacy source-specific list tools from offset pagination to the signed cursor model. Summary mode
   is now the default for Proxy/WebSocket/Organizer lists; selected previews and pages are bounded and silent mid-JSON
   5,000-character truncation has been removed.
-- Add a project-bounded metadata index for frequent discovery/ID lookups without retaining bodies or Montoya objects;
-  discard it on project changes and re-resolve plus fingerprint-check every selected source record.
+- Use the metadata index for eligible structured-search filters without changing the existing 10,000-record scan,
+  signed-cursor, or content-budget behavior. Re-resolve and identity-check every selected source record before details or
+  actions, and add lifecycle hooks only where Montoya events make freshness provable.
 
 ### 4. Standardize structured results and errors
 
@@ -194,8 +200,9 @@ Remaining work:
 | 4 | Focused audit and Scanner task lifecycle | Implemented for passive evidence and explicit active insertion points; crawl remains deferred | High |
 | 5 | Structured comparison and Intruder insertion points | Implemented with bounded diff/variation output and semantic selectors | Medium–high |
 | 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
-| 7 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
-| 8 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
+| 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds; structured-search integration remains | Medium |
+| 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
+| 9 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
 
 ## Design constraints
 
