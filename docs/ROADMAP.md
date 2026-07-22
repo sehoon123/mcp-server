@@ -24,6 +24,12 @@ Implemented for the local production mode:
 - Validate Host and browser Origin independently, retain SDK DNS-rebinding protection, and apply restrictive response headers.
 - Expose token copy/rotation controls and authenticated client examples without logging secrets.
 - Bound request metadata/body, concurrent calls, session admission, idle lifetime, and shutdown cleanup.
+- Translate Ktor coroutine wrappers around listener bind failures into a bounded `host:port is already in use` error,
+  treat cancellation-only transport closure as successful shutdown, and show the loaded extension version prominently.
+- Cover occupied-port recovery and start/stop/start reuse with real CIO listener regression tests.
+- Preserve the 32-session and 15-minute bounds while reclaiming only inactive disconnected-stream sessions under
+  capacity pressure; keep active calls, open streams, and POST-only sessions protected from early displacement.
+- Document mcporter's `/mcp`, direct-header, and keep-alive configuration so separate CLI commands reuse one session.
 
 A remote listener remains intentionally unsupported. Any future remote-access mode requires a separately reviewed
 authentication, authorization, TLS, and destination design rather than relaxing these controls.
@@ -130,10 +136,14 @@ Implemented release controls:
 - Deterministic CycloneDX 1.6 SBOM generation covers the extension runtime and the pinned proxy runtime metadata.
 - The SBOM task is configuration-cache compatible and verifies the proxy artifact against its recorded SHA-256.
 - Releases include the SBOM, dependency vulnerability review, third-party notices, license, and `SHA256SUMS`.
+- Matching annotated source tags are published for releases and resolve to the same commit as the release target.
+- A manual-only `workflow_dispatch` verifies native HTTP and embedded-stdio clients, runs two clean no-build-cache
+  packages, compares JAR/SBOM bytes, generates checksums and provenance attestations, and creates or updates a draft.
+  It never publishes a release; live Burp validation and an annotated tag remain explicit release gates.
 
 Remaining work:
 
-- Publish matching source tags and evaluate GitHub artifact attestations or signed checksums.
+- Evaluate signed checksums in addition to GitHub artifact attestations while retaining manual, draft-first publication.
 
 ## Priority 1 — use more of MCP
 
