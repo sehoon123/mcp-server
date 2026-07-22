@@ -1,0 +1,282 @@
+name: Build draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: SemVer release tag (for example v4.0.1)
+        required: true
+        type: string
+      target_ref:
+        description: Branch, tag, or commit to build
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: draft-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  client-matrix:
+    name: Client matrix (${{ matrix.client }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client: native-streamable-http
+            tests: >-
+              --tests net.portswigger.mcp.McpServerIntegrationTest
+              --tests net.portswigger.mcp.McpHttpSessionStressTest
+              --tests net.portswigger.mcp.KtorServerManagerLifecycleTest
+          - client: embedded-stdio-proxy
+            tests: --tests net.portswigger.mcp.ProxyEndToEndTest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_ref }}
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          validate-wrappers: true
+
+      - name: Run client integration tests
+        run: ./gradlew test ${{ matrix.tests }}
+
+  package:
+    name: Reproducible package and draft
+    needs: client-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          validate-wrappers: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Validate release identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          version=$(grep -E '^version=' gradle.properties | cut -d= -f2-)
+          screen_version=$(grep -E '^ScreenVersion:' BappManifest.bmf | cut -d: -f2- | xargs)
+          [[ "$RELEASE_TAG" == "v$version" ]]
+          [[ "$screen_version" == "$version" ]]
+          commit=$(git rev-parse HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+          remote_tags=$(git ls-remote origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          if [[ -n "$remote_tags" ]]; then
+            resolved=$(printf '%s\n' "$remote_tags" | awk '$2 ~ /\^\{\}$/ {print $1; found=1} END {if (!found) print first} NR==1 {first=$1}')
+            [[ "$resolved" == "$commit" ]]
+          fi
+
+      - name: Validate helper scripts
+        run: bash -n scripts/update-proxy.sh
+
+      - name: First clean test and package
+        run: ./gradlew clean test embedProxyJar generateSbom --no-build-cache
+
+      - name: Preserve first build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/libs/burp-mcp-all.jar "$RUNNER_TEMP/burp-mcp-first.jar"
+          cp build/reports/compliance/bom.cdx.json "$RUNNER_TEMP/bom-first.cdx.json"
+          cp -a build/reports/tests "$RUNNER_TEMP/test-reports"
+
+      - name: Run official MCP conformance checks
+        shell: bash
+        run: |
+          set -uo pipefail
+          server_log="$RUNNER_TEMP/mcp-conformance-server.log"
+          MCP_CONFORMANCE_PORT=19877 ./gradlew runConformanceServer --no-daemon >"$server_log" 2>&1 &
+          server_pid=$!
+          # shellcheck disable=SC2317
+          cleanup() {
+            pkill -TERM -P "$server_pid" 2>/dev/null || true
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            code=$(curl --silent --show-error --max-time 1 --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:19877/mcp \
+              --header 'Content-Type: application/json' \
+              --header 'Accept: application/json, text/event-stream' \
+              --data-binary '{}' 2>/dev/null || true)
+            if [[ "$code" != "000" ]]; then ready=true; break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then cat "$server_log"; exit 1; fi
+
+          status=0
+          for scenario in server-initialize ping tools-list dns-rebinding-protection server-sse-multiple-streams; do
+            npx --yes @modelcontextprotocol/conformance@0.1.11 server \
+              --url http://127.0.0.1:19877/mcp --scenario "$scenario" --verbose || status=1
+          done
+          npx --yes @modelcontextprotocol/conformance@0.2.0-alpha.9 server \
+            --url http://127.0.0.1:19877/mcp --scenario server-stateless \
+            --expected-failures .github/conformance-expected-failures.yml --verbose || status=1
+          if [[ "$status" -ne 0 ]]; then cat "$server_log"; fi
+          exit "$status"
+
+      - name: Second clean package and compare bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew clean embedProxyJar generateSbom --no-build-cache
+          cmp "$RUNNER_TEMP/burp-mcp-first.jar" build/libs/burp-mcp-all.jar
+          cmp "$RUNNER_TEMP/bom-first.cdx.json" build/reports/compliance/bom.cdx.json
+
+      - name: Stage and validate release assets
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/release-assets"
+          mkdir -p "$stage"
+          cp build/libs/burp-mcp-all.jar "$stage/burp-mcp-all.jar"
+          cp build/reports/compliance/bom.cdx.json "$stage/bom.cdx.json"
+          cp LICENSE "$stage/LICENSE"
+          cp THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
+          cp docs/VULNERABILITY_REPORT.md "$stage/VULNERABILITY_REPORT.md"
+
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6" and
+            ((.components | map(."bom-ref") | unique | length) == (.components | length))' \
+            "$stage/bom.cdx.json" >/dev/null
+
+          JAR_PATH="$stage/burp-mcp-all.jar" python3 - <<'PY'
+          import os
+          from collections import Counter
+          from zipfile import ZipFile
+
+          with ZipFile(os.environ["JAR_PATH"]) as archive:
+              entries = archive.infolist()
+              names = [entry.filename for entry in entries]
+              duplicates = [name for name, count in Counter(names).items() if count > 1]
+              prohibited = (
+                  "io/netty/",
+                  "com/fasterxml/jackson/",
+                  "org/apache/logging/log4j/",
+                  "org/codehaus/plexus/",
+              )
+              signatures = tuple((".SF", ".RSA", ".DSA", ".EC"))
+              assert not duplicates, duplicates
+              assert not [name for name in names if name.startswith(prohibited)]
+              assert not [name for name in names if name.upper().startswith("META-INF/") and name.upper().endswith(signatures)]
+              assert len({entry.date_time for entry in entries}) == 1
+          PY
+
+          (
+            cd "$stage"
+            sha256sum \
+              burp-mcp-all.jar \
+              bom.cdx.json \
+              LICENSE \
+              THIRD_PARTY_NOTICES.md \
+              VULNERABILITY_REPORT.md > SHA256SUMS
+          )
+
+          previous_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            printf '# Burp MCP %s\n\n' "${RELEASE_TAG#v}"
+            printf "Reproducible draft built from commit \`%s\`.\n\n" "$SOURCE_COMMIT"
+            printf '## Changes\n\n'
+            if [[ -n "$previous_tag" ]]; then
+              git log --first-parent --pretty='- %s' "$previous_tag..HEAD"
+            else
+              git log -n 20 --first-parent --pretty='- %s'
+            fi
+            printf '\n## Verification\n\n'
+            printf -- '- Full tests and native HTTP/embedded stdio client matrix\n'
+            printf -- '- Official stateful MCP conformance scenarios\n'
+            printf -- '- Checked-in stateless expected-failure baseline\n'
+            printf -- '- Two clean no-build-cache JAR/SBOM builds compared byte-for-byte\n'
+            printf -- '- CycloneDX 1.6, archive-family, duplicate, signature, and timestamp checks\n\n'
+            printf 'This workflow creates a draft only. Verify the assets in Burp and push a matching annotated tag before publication.\n'
+          } > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release-assets/burp-mcp-all.jar
+            ${{ runner.temp }}/release-assets/bom.cdx.json
+            ${{ runner.temp }}/release-assets/LICENSE
+            ${{ runner.temp }}/release-assets/THIRD_PARTY_NOTICES.md
+            ${{ runner.temp }}/release-assets/VULNERABILITY_REPORT.md
+            ${{ runner.temp }}/release-assets/SHA256SUMS
+
+      - name: Upload validated workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ inputs.tag }}
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update draft release
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/release-assets"
+          if release=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish 2>/dev/null); then
+            [[ $(jq -r '.isDraft' <<<"$release") == true ]]
+            gh release edit "$RELEASE_TAG" \
+              --draft=true \
+              --target "$SOURCE_COMMIT" \
+              --title "$RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --target "$SOURCE_COMMIT" \
+              --title "$RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$RELEASE_TAG" "$stage"/* --clobber
+
+          gh api "repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" \
+            --jq '{tag_name,draft,prerelease,target_commitish,assets:[.assets[].name]}'
