@@ -195,8 +195,8 @@ remain authoritative.
 `search_websocket_messages` copies one Montoya WebSocket history list per call and advances a raw source index inside an
 HMAC-signed project/query/snapshot cursor. It applies connection ID, direction, and listener-port predicates before
 payload length or pattern access. Each page returns at most 50 summaries and scans at most 10,000 raw records. Safe-regex
-calls account at most 32 MiB of payload bytes; individually oversized records are skipped without invoking the regex
-matcher, and an aggregate-budget stop leaves the cursor at the uninspected record.
+calls account original plus edited payload lengths against the 32 MiB budget; individually oversized records are
+skipped without invoking the regex matcher, and an aggregate-budget stop leaves the cursor at the uninspected record.
 
 The cursor stores only bounded query metadata, the original source size, next index, and one-way first/last boundary
 anchors. Appended messages remain outside the original size. Source shrinkage or boundary replacement/reordering fails
