@@ -213,8 +213,8 @@ The older protocol- and destination-specific names were removed in v4.
 
 Use `search_websocket_messages` with the current `projectId` to search Proxy WebSocket history by connection ID,
 direction, listener port, or one conservatively safe payload regex. Pages contain at most 50 compact summaries and scan
-at most 10,000 raw records. Regex calls inspect at most 32 MiB of payload data, skip individually oversized records, and
-default to case-sensitive matching.
+at most 10,000 raw records. Regex calls account original and edited variants against a 32 MiB payload budget, skip
+individually oversized records, and default to case-sensitive matching.
 
 The signed cursor binds the project, query, order, original source size, raw source index, and source-boundary anchors.
 Appended messages are excluded from an existing snapshot; a shrunken or boundary-reordered history returns

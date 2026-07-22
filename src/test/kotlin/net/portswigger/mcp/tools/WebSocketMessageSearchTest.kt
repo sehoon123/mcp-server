@@ -197,7 +197,7 @@ class WebSocketMessageSearchTest {
 
     @Test
     fun `safe regex uses bounded payload accounting and skips individually oversized records`() = runBlocking {
-        val oversized = message(1, payloadBytes = 9)
+        val oversized = message(1, payloadBytes = 1, editedPayloadBytes = 9)
         val selected = message(2, payloadBytes = 3)
         every { selected.contains(any<Pattern>()) } answers {
             firstArg<Pattern>().matcher("token-42").find()
@@ -316,9 +316,11 @@ class WebSocketMessageSearchTest {
         direction: Direction = Direction.SERVER_TO_CLIENT,
         listenerPort: Int = 8080,
         payloadBytes: Int = 2,
+        editedPayloadBytes: Int? = null,
     ): ProxyWebSocketMessage {
         val item = mockk<ProxyWebSocketMessage>()
         val payload = mockk<MontoyaByteArray>()
+        val editedPayload = editedPayloadBytes?.let { mockk<MontoyaByteArray>() }
         val annotations = mockk<Annotations>()
         every { item.id() } returns id
         every { item.webSocketId() } returns webSocketId
@@ -326,9 +328,11 @@ class WebSocketMessageSearchTest {
         every { item.direction() } returns direction
         every { item.listenerPort() } returns listenerPort
         every { item.payload() } returns payload
+        every { item.editedPayload() } returns editedPayload
         every { item.annotations() } returns annotations
         every { item.contains(any<Pattern>()) } returns false
         every { payload.length() } returns payloadBytes
+        if (editedPayload != null) every { editedPayload.length() } returns requireNotNull(editedPayloadBytes)
         every { annotations.notes() } returns null
         return item
     }

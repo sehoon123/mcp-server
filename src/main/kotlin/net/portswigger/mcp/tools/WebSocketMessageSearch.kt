@@ -260,7 +260,7 @@ internal class WebSocketMessageSearchService(
                     continue
                 }
                 if (regex != null) {
-                    val payloadBytes = item.payload()?.length()?.toLong()?.coerceAtLeast(0) ?: 0L
+                    val payloadBytes = item.searchablePayloadByteLength()
                     if (payloadBytes > maxContentBytes) {
                         oversizedContentSkipped++
                         itemIndex = advance(itemIndex, query.newestFirst)
@@ -423,6 +423,7 @@ private fun ProxyWebSocketMessage.cursorAnchor(): String {
         direction().name,
         listenerPort().toString(),
         (payload()?.length() ?: -1).toString(),
+        (editedPayload()?.length() ?: -1).toString(),
     ).forEach { value ->
         val bytes = value.toByteArray(StandardCharsets.UTF_8)
         digest.update((bytes.size ushr 24).toByte())
@@ -433,6 +434,10 @@ private fun ProxyWebSocketMessage.cursorAnchor(): String {
     }
     return HexFormat.of().formatHex(digest.digest(), 0, 16)
 }
+
+private fun ProxyWebSocketMessage.searchablePayloadByteLength(): Long =
+    (payload()?.length() ?: 0).coerceAtLeast(0).toLong() +
+        (editedPayload()?.length() ?: 0).coerceAtLeast(0).toLong()
 
 private fun inSnapshot(index: Int, size: Int): Boolean = index in 0 until size
 private fun advance(index: Int, newestFirst: Boolean): Int = if (newestFirst) index - 1 else index + 1
