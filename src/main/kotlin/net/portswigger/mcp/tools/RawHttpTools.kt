@@ -318,7 +318,7 @@ private fun prepare(
             "protocol=http_2 requires only the http2 object"
         }
     }
-    validateLegacyTarget(targetHostname, targetPort)
+    validateRawTarget(targetHostname, targetPort)
     val service = HttpService.httpService(targetHostname, targetPort, usesHttps)
     val request: HttpRequest
     val review: String
@@ -333,7 +333,7 @@ private fun prepare(
         }
         RawHttpProtocol.HTTP_2 -> {
             require(http2 != null && http1 == null) { "protocol=http_2 requires only the http2 object" }
-            validateLegacyHttp2Input(http2.pseudoHeaders, http2.headers, http2.requestBody)
+            validateRawHttp2Input(http2.pseudoHeaders, http2.headers, http2.requestBody)
             val headerList = buildHttp2HeaderList(http2.pseudoHeaders, http2.headers)
             review = buildString {
                 headerList.forEach { appendLine("${it.name()}: ${it.value()}") }

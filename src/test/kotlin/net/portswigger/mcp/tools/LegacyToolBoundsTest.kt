@@ -8,12 +8,12 @@ import kotlin.test.assertTrue
 
 class LegacyToolBoundsTest {
     @Test
-    fun `safe legacy regex accepts one bounded wildcard and rejects backtracking constructs`() {
-        assertEquals("host.*path", validateLegacyRegex("host.*path").pattern())
-        assertThrows<IllegalArgumentException> { validateLegacyRegex("(a+)+$") }
-        assertThrows<IllegalArgumentException> { validateLegacyRegex("a.*b.*c") }
-        assertThrows<IllegalArgumentException> { validateLegacyRegex("(a)\\1") }
-        assertThrows<IllegalArgumentException> { validateLegacyRegex("(?=secret)") }
+    fun `safe regex accepts one bounded wildcard and rejects backtracking constructs`() {
+        assertEquals("host.*path", validateSafeRegex("host.*path").pattern())
+        assertThrows<IllegalArgumentException> { validateSafeRegex("(a+)+$") }
+        assertThrows<IllegalArgumentException> { validateSafeRegex("a.*b.*c") }
+        assertThrows<IllegalArgumentException> { validateSafeRegex("(a)\\1") }
+        assertThrows<IllegalArgumentException> { validateSafeRegex("(?=secret)") }
     }
 
     @Test
