@@ -22,7 +22,7 @@ internal fun safeExceptionSummary(error: Throwable): String {
         .trim()
         .take(MAX_SAFE_EXCEPTION_CHARS)
     val type = error::class.simpleName ?: "Exception"
-    return if (message.isEmpty()) type else "$type: $message"
+    return (if (message.isEmpty()) type else "$type: $message").take(MAX_SAFE_EXCEPTION_CHARS)
 }
 
 internal fun safeSingleLine(value: String, limit: Int = MAX_SAFE_EXCEPTION_CHARS): String = value

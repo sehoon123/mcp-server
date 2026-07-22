@@ -10,7 +10,8 @@ class SafeLoggingTest {
         val secret = "abcdefghijklmnopqrstuvwxyz0123456789"
         val result = safeExceptionSummary(
             IllegalStateException(
-                "Authorization: Bearer $secret token=$secret at /home/alice/private/config.json\r\nfor C:\\Users\\alice\\secret.txt"
+                "Authorization: Bearer $secret token=$secret at /home/alice/private/config.json\r\nfor " +
+                    "C:\\Users\\alice\\secret.txt; ${"x".repeat(1_000)}"
             )
         )
 

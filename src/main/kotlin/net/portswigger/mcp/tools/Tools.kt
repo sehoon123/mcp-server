@@ -4,15 +4,8 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.PAUSED
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.RUNNING
 import burp.api.montoya.core.BurpSuiteEdition
-import burp.api.montoya.http.HttpMode
-import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse
-import burp.api.montoya.http.message.requests.HttpRequest
-import burp.api.montoya.http.message.responses.HttpResponse
-import burp.api.montoya.organizer.OrganizerItem
-import burp.api.montoya.proxy.ProxyHttpRequestResponse
-import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.SerialName
@@ -23,11 +16,8 @@ import net.portswigger.mcp.config.TargetValidation
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
-import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
-import net.portswigger.mcp.security.RequestActionSecurity
-import net.portswigger.mcp.security.RequestRoutingAuditOperation
 import net.portswigger.mcp.security.SensitiveActionAuditOperation
 import net.portswigger.mcp.security.SensitiveActionSecurity
 import net.portswigger.mcp.security.filterConfigCredentials
@@ -47,77 +37,50 @@ private suspend fun checkDataAccessOrDeny(
     return true
 }
 
-private const val MAX_LEGACY_RAW_REQUEST_CHARS = 2 * 1024 * 1024
-private const val MAX_LEGACY_HTTP2_BODY_CHARS = 1024 * 1024
-private const val MAX_LEGACY_HTTP_HEADERS = 128
-private const val MAX_LEGACY_HEADER_NAME_CHARS = 256
-private const val MAX_LEGACY_HEADER_VALUE_CHARS = 16 * 1024
-private const val MAX_LEGACY_RESPONSE_PREVIEW_BYTES = 256 * 1024
+private const val MAX_RAW_REQUEST_CHARS = 2 * 1024 * 1024
+private const val MAX_RAW_HTTP2_BODY_CHARS = 1024 * 1024
+private const val MAX_RAW_HTTP_HEADERS = 128
+private const val MAX_RAW_HEADER_NAME_CHARS = 256
+private const val MAX_RAW_HEADER_VALUE_CHARS = 16 * 1024
 private const val MAX_UTILITY_INPUT_CHARS = 256 * 1024
 private const val MAX_RANDOM_STRING_CHARS = 64 * 1024
 private const val MAX_RANDOM_CHARACTER_SET_CHARS = 256
 private const val MAX_CONFIGURATION_JSON_CHARS = 1024 * 1024
 private const val MAX_EDITOR_CONTENT_CHARS = 1024 * 1024
 private const val MAX_EDITOR_PREVIEW_CHARS = 32 * 1024
-private const val DEFAULT_LEGACY_PREVIEW_BYTES = 8 * 1024
-private const val MAX_LEGACY_PREVIEW_BYTES = 32 * 1024
-private const val MAX_LEGACY_REGEX_CHARS = 512
+private const val MAX_SAFE_REGEX_CHARS = 512
+private val SCANNER_ISSUE_ID_REGEX = Regex("^issue_[0-9a-f]{32}$")
 
-internal fun validateLegacyTarget(hostname: String, port: Int) {
+internal fun validateRawTarget(hostname: String, port: Int) {
     require(TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null) {
         "targetHostname or targetPort is invalid"
     }
 }
 
-internal fun validateLegacyHttp2Input(
+internal fun validateRawHttp2Input(
     pseudoHeaders: Map<String, String>,
     headers: Map<String, String>,
     body: String,
 ) {
-    require(body.length <= MAX_LEGACY_HTTP2_BODY_CHARS) { "requestBody is too large" }
-    require(pseudoHeaders.size + headers.size <= MAX_LEGACY_HTTP_HEADERS) { "too many HTTP headers" }
+    require(body.length <= MAX_RAW_HTTP2_BODY_CHARS) { "requestBody is too large" }
+    require(pseudoHeaders.size + headers.size <= MAX_RAW_HTTP_HEADERS) { "too many HTTP headers" }
     val allHeaders = pseudoHeaders.asSequence() + headers.asSequence()
     val totalChars = body.length.toLong() + allHeaders.sumOf { (name, value) -> name.length.toLong() + value.length + 4 }
-    require(totalChars <= MAX_LEGACY_RAW_REQUEST_CHARS) { "combined HTTP/2 request content is too large" }
+    require(totalChars <= MAX_RAW_REQUEST_CHARS) { "combined HTTP/2 request content is too large" }
     (pseudoHeaders.asSequence() + headers.asSequence()).forEach { (name, value) ->
-        require(name.length in 1..MAX_LEGACY_HEADER_NAME_CHARS && name.none(Char::isISOControl)) {
+        require(name.length in 1..MAX_RAW_HEADER_NAME_CHARS && name.none(Char::isISOControl)) {
             "HTTP header name is invalid"
         }
-        require(value.length <= MAX_LEGACY_HEADER_VALUE_CHARS && value.none { it == '\u0000' }) {
+        require(value.length <= MAX_RAW_HEADER_VALUE_CHARS && value.none { it == '\u0000' }) {
             "HTTP header value is invalid"
         }
     }
 }
 
-private fun HttpResponse?.boundedLegacyResponse(): String {
-    val bytes = this?.toByteArray() ?: return "<no response>"
-    val total = bytes.length()
-    val returned = minOf(total, MAX_LEGACY_RESPONSE_PREVIEW_BYTES)
-    val text = if (returned == 0) "" else bytes.subArray(0, returned).toString()
-    return if (returned == total) text else buildString(text.length + 128) {
-        append(text)
-        append("\n\n[responseTruncated=true returnedBytes=")
-        append(returned)
-        append(" totalBytes=")
-        append(total)
-        append(" nextOffsetBytes=")
-        append(returned)
-        append(']')
-    }
-}
-
-private fun normalizeLegacyPreviewLimit(limit: Int?): Int {
-    val normalized = limit ?: DEFAULT_LEGACY_PREVIEW_BYTES
-    require(normalized in 1..MAX_LEGACY_PREVIEW_BYTES) {
-        "contentLimit must be between 1 and $MAX_LEGACY_PREVIEW_BYTES bytes"
-    }
-    return normalized
-}
-
 /** Conservatively rejects Java-regex constructs that can create unbounded backtracking. */
-internal fun validateLegacyRegex(regex: String, caseSensitive: Boolean = true): Pattern {
-    require(regex.isNotEmpty() && regex.length <= MAX_LEGACY_REGEX_CHARS) {
-        "regex must contain 1 to $MAX_LEGACY_REGEX_CHARS characters"
+internal fun validateSafeRegex(regex: String, caseSensitive: Boolean = true): Pattern {
+    require(regex.isNotEmpty() && regex.length <= MAX_SAFE_REGEX_CHARS) {
+        "regex must contain 1 to $MAX_SAFE_REGEX_CHARS characters"
     }
     require(regex.none(Char::isISOControl)) { "regex must not contain control characters" }
     require(!Regex("\\\\[1-9]").containsMatchIn(regex)) { "regex backreferences are not supported" }
@@ -291,6 +254,7 @@ internal fun Server.registerTools(
     val httpMessageActionService = HttpMessageActionService(api, config)
     val rawHttpActionService = RawHttpActionService(api, config)
     val httpMessageReadService = HttpMessageReadService(api, config)
+    val webSocketMessageSearchService = WebSocketMessageSearchService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
@@ -306,150 +270,6 @@ internal fun Server.registerTools(
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         rawHttpActionService.route(this)
-    }
-
-    mcpTool<SendHttp1Request>(
-        "Deprecated compatibility alias for v3: issues an HTTP/1.1 request. Migrate to send_raw_http_request before v4.",
-        HTTP_REQUEST_ACTION_ANNOTATIONS,
-    ) {
-        validateLegacyTarget(targetHostname, targetPort)
-        require(content.length <= MAX_LEGACY_RAW_REQUEST_CHARS) { "content is too large" }
-        val fixedContent = normalizeHttpContent(content)
-        val allowed = HttpRequestSecurity.checkHttpRequestPermission(
-            targetHostname,
-            targetPort,
-            config,
-            fixedContent,
-            api,
-        )
-        if (!allowed) {
-            api.logging().logToOutput("MCP HTTP request denied: $targetHostname:$targetPort")
-            return@mcpTool "Send HTTP request denied by Burp Suite"
-        }
-
-        api.logging().logToOutput("MCP HTTP/1.1 request: $targetHostname:$targetPort")
-
-        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        val response = api.http().sendRequest(request)
-        recordHttpResponseInSiteMap(api, response)
-
-        response?.response().boundedLegacyResponse()
-    }
-
-    mcpTool<SendHttp2Request>(
-        "Deprecated compatibility alias for v3: issues an HTTP/2 request. Migrate to send_raw_http_request before v4.",
-        HTTP_REQUEST_ACTION_ANNOTATIONS,
-    ) {
-        validateLegacyTarget(targetHostname, targetPort)
-        validateLegacyHttp2Input(pseudoHeaders, headers, requestBody)
-        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
-        val http2RequestDisplay = buildString {
-            headerList.forEach { header -> appendLine("${header.name()}: ${header.value()}") }
-            if (requestBody.isNotBlank()) {
-                appendLine()
-                append(requestBody)
-            }
-        }
-
-        val allowed = HttpRequestSecurity.checkHttpRequestPermission(
-            targetHostname,
-            targetPort,
-            config,
-            http2RequestDisplay,
-            api
-        )
-        if (!allowed) {
-            api.logging().logToOutput("MCP HTTP request denied: $targetHostname:$targetPort")
-            return@mcpTool "Send HTTP request denied by Burp Suite"
-        }
-
-        api.logging().logToOutput("MCP HTTP/2 request: $targetHostname:$targetPort")
-
-        val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
-        val response = api.http().sendRequest(request, HttpMode.HTTP_2)
-        recordHttpResponseInSiteMap(api, response)
-
-        response?.response().boundedLegacyResponse()
-    }
-
-    mcpTool<CreateRepeaterTab>(
-        "Deprecated compatibility alias for v3: creates a raw HTTP/1.1 Repeater tab. Migrate to route_raw_http_request before v4.",
-        REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        validateLegacyTarget(targetHostname, targetPort)
-        require(content.length <= MAX_LEGACY_RAW_REQUEST_CHARS) { "content is too large" }
-        require(tabName == null || tabName.length <= 128) { "tabName is too long" }
-        val fixedContent = normalizeHttpContent(content)
-        val target = TargetValidation.formatTarget(targetHostname, targetPort)
-        val approved = RequestActionSecurity.checkPermission(
-            "create a Repeater tab",
-            "raw MCP request",
-            target,
-            "no structured patch",
-            fixedContent,
-            config,
-            api,
-            RequestRoutingAuditOperation.REPEATER,
-        )
-        if (!approved) return@mcpTool "Repeater routing denied by Burp Suite"
-        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        if (tabName == null) api.repeater().sendToRepeater(request)
-        else api.repeater().sendToRepeater(request, tabName)
-        "Created Repeater tab"
-    }
-
-    mcpTool<CreateRepeaterTabHttp2>(
-        "Deprecated compatibility alias for v3: creates a raw HTTP/2 Repeater tab. Migrate to route_raw_http_request before v4.",
-        REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        validateLegacyTarget(targetHostname, targetPort)
-        validateLegacyHttp2Input(pseudoHeaders, headers, requestBody)
-        require(tabName == null || tabName.length <= 128) { "tabName is too long" }
-        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
-        val review = buildString {
-            headerList.forEach { appendLine("${it.name()}: ${it.value()}") }
-            if (requestBody.isNotEmpty()) append("\n$requestBody")
-        }
-        val approved = RequestActionSecurity.checkPermission(
-            "create a Repeater tab",
-            "raw MCP request",
-            TargetValidation.formatTarget(targetHostname, targetPort),
-            "no structured patch",
-            review,
-            config,
-            api,
-            RequestRoutingAuditOperation.REPEATER,
-        )
-        if (!approved) return@mcpTool "Repeater routing denied by Burp Suite"
-        val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
-        if (tabName == null) api.repeater().sendToRepeater(request)
-        else api.repeater().sendToRepeater(request, tabName)
-        "Created Repeater tab"
-    }
-
-    mcpTool<SendToIntruder>(
-        "Deprecated compatibility alias for v3: creates an HTTP/1.1 Intruder tab without starting an attack. Migrate to route_raw_http_request before v4.",
-        REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        validateLegacyTarget(targetHostname, targetPort)
-        require(content.length <= MAX_LEGACY_RAW_REQUEST_CHARS) { "content is too large" }
-        require(tabName == null || tabName.length <= 128) { "tabName is too long" }
-        val fixedContent = normalizeHttpContent(content)
-        val approved = RequestActionSecurity.checkPermission(
-            "create an Intruder tab",
-            "raw MCP request",
-            TargetValidation.formatTarget(targetHostname, targetPort),
-            "no insertion points and no attack start",
-            fixedContent,
-            config,
-            api,
-            RequestRoutingAuditOperation.INTRUDER,
-        )
-        if (!approved) return@mcpTool "Intruder routing denied by Burp Suite"
-        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        if (tabName == null) api.intruder().sendToIntruder(request)
-        else api.intruder().sendToIntruder(request, tabName)
-        "Created Intruder tab"
     }
 
     mcpTool<TransformData>(
@@ -564,15 +384,21 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredTool<GetScannerIssueById, ScannerIssueReadResult>(
-            description = "Reads one Scanner issue by its stable issue ID. Pass projectId when it is available to reject cross-project IDs. Select metadata, detail, remediation, evidence_request, or evidence_response. Evidence content is byte-paginated and can be returned as text or base64.",
+            description = "Reads one Scanner issue by its stable issue ID and required projectId, rechecking the project after lookup and bounded content materialization. Select metadata, detail, remediation, evidence_request, or evidence_response. Evidence content is byte-paginated and can be returned as text or base64.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
+            require(id.matches(SCANNER_ISSUE_ID_REGEX)) {
+                "id must be a stable Scanner issue ID returned by Burp MCP"
+            }
+            require(projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)) {
+                "projectId is invalid"
+            }
             val normalizedField = normalizeScannerIssueField(field)
             val normalizedOffset = normalizeHistoryOffset(offset)
             val normalizedLimit = normalizeHistoryLimit(limit)
             val normalizedEncoding = normalizeHistoryEncoding(encoding)
             val expectedProjectId = api.project().id()
-            if (projectId != null && projectId != expectedProjectId) {
+            if (projectId != expectedProjectId) {
                 return@mcpStructuredTool ScannerIssueReadResult(
                     status = HistoryReadStatus.PROJECT_MISMATCH,
                     id = id,
@@ -724,93 +550,26 @@ internal fun Server.registerTools(
         httpMessageActionService.route(this)
     }
 
-    mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
-        "Deprecated for removal in v4: use search_http_messages with sources=[proxy] and optional regex, then get_http_message for detail. This compatibility tool retains bounded offset pagination.",
-        mapper = {
-            if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPart(
-                    normalizeHttpPart(part ?: "request"),
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
+    mcpStructuredTool<SearchWebsocketMessages, SearchWebsocketMessagesResult>(
+        description = "Searches project-bound Proxy WebSocket history with signed snapshot cursors. Filters include connection ID, direction, listener port, and one conservatively safe payload regex. Results are bounded to 50 summaries, 10,000 scanned records, and 32 MiB of regex-inspected payload data. Continue with only projectId, cursor set to the returned nextCursor, and optional limit.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("HTTP history access denied by Burp Suite")
-        }
-
-        val records = regex?.let { pattern ->
-            val compiled = validateLegacyRegex(pattern)
-            api.proxy().history { it.contains(compiled) }
-        } ?: api.proxy().history()
-        PaginatedSource.Items(records.asSequence())
-    }
-
-    mcpPaginatedSequenceTool<GetOrganizerItems, OrganizerItem>(
-        "Deprecated for removal in v4: use search_http_messages with sources=[organizer] and optional regex, then get_http_message for detail. This compatibility tool retains bounded offset pagination.",
-        mapper = {
-            if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPart(
-                    normalizeHttpPart(part ?: "request"),
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
-    ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("Organizer access denied by Burp Suite")
-        }
-
-        val records = regex?.let { pattern ->
-            val compiled = validateLegacyRegex(pattern)
-            api.organizer().items { it.contains(compiled) }
-        } ?: api.organizer().items()
-        PaginatedSource.Items(records.asSequence())
-    }
-
-    mcpPaginatedSequenceTool<GetProxyWebsocketHistory, ProxyWebSocketMessage>(
-        "Displays bounded WebSocket history summaries, optionally matching a conservatively safe regex. Set summariesOnly=false for one byte-limited payload preview; use get_websocket_message_by_id for further pagination.",
-        mapper = {
-            if (summariesOnly != false) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPayload(
-                    edited == true,
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
-    ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("WebSocket history access denied by Burp Suite")
-        }
-
-        val records = regex?.let { pattern ->
-            val compiled = validateLegacyRegex(pattern)
-            api.proxy().webSocketHistory { it.contains(compiled) }
-        } ?: api.proxy().webSocketHistory()
-        PaginatedSource.Items(records.asSequence())
+        webSocketMessageSearchService.search(this)
     }
 
     mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(
-        description = "Reads one proxy WebSocket payload by its stable Burp ID. Pass projectId when it is available to reject cross-project IDs. Content is byte-paginated and can be returned as text or base64.",
+        description = "Reads one Proxy WebSocket payload by its stable Burp ID and required projectId. The project is rechecked after lookup and bounded content materialization. Content is byte-paginated and can be returned as text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
+        require(id >= 0) { "id must be non-negative" }
+        require(projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)) {
+            "projectId is invalid"
+        }
         val normalizedOffset = normalizeHistoryOffset(offset)
         val normalizedLimit = normalizeHistoryLimit(limit)
         val normalizedEncoding = normalizeHistoryEncoding(encoding)
         val expectedProjectId = api.project().id()
-        if (projectId != null && projectId != expectedProjectId) {
+        if (projectId != expectedProjectId) {
             return@mcpStructuredTool WebSocketMessageReadResult(
                 status = HistoryReadStatus.PROJECT_MISMATCH,
                 id = id,
@@ -1015,84 +774,6 @@ fun getActiveEditor(api: MontoyaApi): JTextArea? {
     }
 }
 
-interface HttpServiceParams {
-    val targetHostname: String
-    val targetPort: Int
-    val usesHttps: Boolean
-
-    fun toMontoyaService(): HttpService = HttpService.httpService(targetHostname, targetPort, usesHttps)
-}
-
-@Serializable
-data class SendHttp1Request(
-    @JsonSchemaMetadata(description = "Raw HTTP/1.1 request.", minLength = 1, maxLength = 2097152)
-    val content: String,
-    @JsonSchemaMetadata(description = "Exact DNS or IP destination host.", minLength = 1, maxLength = 253)
-    override val targetHostname: String,
-    @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
-    override val targetPort: Int,
-    @JsonSchemaMetadata(description = "Use TLS for the destination.")
-    override val usesHttps: Boolean
-) : HttpServiceParams
-
-@Serializable
-data class SendHttp2Request(
-    @JsonSchemaMetadata(description = "HTTP/2 pseudo-headers without or with leading colons.", maxProperties = 8)
-    val pseudoHeaders: Map<String, String>,
-    @JsonSchemaMetadata(description = "HTTP/2 regular headers; combined header count is at most 128.", maxProperties = 128)
-    val headers: Map<String, String>,
-    @JsonSchemaMetadata(description = "HTTP/2 request body.", maxLength = 1048576)
-    val requestBody: String,
-    @JsonSchemaMetadata(description = "Exact DNS or IP destination host.", minLength = 1, maxLength = 253)
-    override val targetHostname: String,
-    @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
-    override val targetPort: Int,
-    override val usesHttps: Boolean
-) : HttpServiceParams
-
-@Serializable
-data class CreateRepeaterTab(
-    @JsonSchemaMetadata(description = "Optional Repeater tab caption.", maxLength = 128)
-    val tabName: String? = null,
-    @JsonSchemaMetadata(description = "Raw HTTP/1.1 request.", minLength = 1, maxLength = 2097152)
-    val content: String,
-    @JsonSchemaMetadata(description = "Exact DNS or IP destination host.", minLength = 1, maxLength = 253)
-    override val targetHostname: String,
-    @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
-    override val targetPort: Int,
-    override val usesHttps: Boolean
-) : HttpServiceParams
-
-@Serializable
-data class CreateRepeaterTabHttp2(
-    @JsonSchemaMetadata(description = "Optional Repeater tab caption.", maxLength = 128)
-    val tabName: String? = null,
-    @JsonSchemaMetadata(description = "HTTP/2 pseudo-headers.", maxProperties = 8)
-    val pseudoHeaders: Map<String, String>,
-    @JsonSchemaMetadata(description = "Regular headers; combined header count is at most 128.", maxProperties = 128)
-    val headers: Map<String, String>,
-    @JsonSchemaMetadata(description = "HTTP/2 request body.", maxLength = 1048576)
-    val requestBody: String,
-    @JsonSchemaMetadata(description = "Exact DNS or IP destination host.", minLength = 1, maxLength = 253)
-    override val targetHostname: String,
-    @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
-    override val targetPort: Int,
-    override val usesHttps: Boolean
-) : HttpServiceParams
-
-@Serializable
-data class SendToIntruder(
-    @JsonSchemaMetadata(description = "Optional Intruder tab caption.", maxLength = 128)
-    val tabName: String? = null,
-    @JsonSchemaMetadata(description = "Raw HTTP request.", minLength = 1, maxLength = 2097152)
-    val content: String,
-    @JsonSchemaMetadata(description = "Exact DNS or IP destination host.", minLength = 1, maxLength = 253)
-    override val targetHostname: String,
-    @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
-    override val targetPort: Int,
-    override val usesHttps: Boolean
-) : HttpServiceParams
-
 @Serializable
 enum class DataTransformOperation {
     @SerialName("url_encode")
@@ -1169,63 +850,9 @@ private data class ActiveEditorPreview(
 )
 
 @Serializable
-data class GetProxyHttpHistory(
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "History offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Optional selected message part when summariesOnly=false.", enumValues = ["request", "request_headers", "request_body", "response", "response_headers", "response_body"])
-    val part: String? = null,
-    @JsonSchemaMetadata(description = "Maximum selected-part bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
-    @JsonSchemaMetadata(description = "Optional conservatively safe history regex.", minLength = 1, maxLength = 512)
-    val regex: String? = null,
-) : Paginated
-
-@Serializable
-data class GetOrganizerItems(
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "Organizer offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Optional selected message part when summariesOnly=false.", enumValues = ["request", "request_headers", "request_body", "response", "response_headers", "response_body"])
-    val part: String? = null,
-    @JsonSchemaMetadata(description = "Maximum selected-part bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
-    @JsonSchemaMetadata(description = "Optional conservatively safe Organizer regex.", minLength = 1, maxLength = 512)
-    val regex: String? = null,
-) : Paginated
-
-@Serializable
-data class GetProxyWebsocketHistory(
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "History offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Select the edited payload variant.", defaultJson = "false")
-    val edited: Boolean? = null,
-    @JsonSchemaMetadata(description = "Maximum payload bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Payload encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
-    @JsonSchemaMetadata(description = "Optional conservatively safe WebSocket regex.", minLength = 1, maxLength = 512)
-    val regex: String? = null,
-) : Paginated
-
-@Serializable
 data class GetWebsocketMessageById(
     @JsonSchemaMetadata(description = "Stable WebSocket history ID.", minimum = 0) val id: Int,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String? = null,
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(description = "Read the edited payload variant.", defaultJson = "false") val edited: Boolean? = null,
     @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,
     @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
@@ -1235,7 +862,7 @@ data class GetWebsocketMessageById(
 @Serializable
 data class GetScannerIssueById(
     @JsonSchemaMetadata(description = "Stable Scanner issue ID.", pattern = "^issue_[0-9a-f]{32}$", maxLength = 128) val id: String,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String? = null,
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(enumValues = ["metadata", "detail", "remediation", "evidence_request", "evidence_response"], defaultJson = "\"metadata\"") val field: String? = null,
     @JsonSchemaMetadata(minimum = 0) val evidenceIndex: Int? = null,
     @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,

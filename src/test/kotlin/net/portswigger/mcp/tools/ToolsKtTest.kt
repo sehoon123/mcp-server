@@ -9,9 +9,10 @@ import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
+import burp.api.montoya.http.RedirectionMode
+import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
-import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.organizer.Organizer
 import burp.api.montoya.organizer.OrganizerItem
@@ -34,8 +35,6 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.mockk.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
@@ -67,7 +66,6 @@ class ToolsKtTest {
     private var serverStarted = false
     private val config: McpConfig
     private val mockHeaders = mutableListOf<HttpHeader>()
-    private val capturedRequest = slot<HttpRequest>()
     private lateinit var originalRequestActionHandler: RequestActionApprovalHandler
     private lateinit var originalSensitiveActionHandler: SensitiveActionApprovalHandler
 
@@ -104,6 +102,7 @@ class ToolsKtTest {
         mockkStatic(HttpHeader::class)
         mockkStatic(burp.api.montoya.http.HttpService::class)
         mockkStatic(HttpRequest::class)
+        mockkStatic(RequestOptions::class)
     }
 
     private fun CallToolResult?.expectTextContent(
@@ -138,10 +137,6 @@ class ToolsKtTest {
         every { bytes.subArray(any(), any()) } answers {
             montoyaBytes(raw.copyOfRange(firstArg(), secondArg()))
         }
-    }
-
-    private fun boundedHttpResponse(text: String): HttpResponse = mockk<HttpResponse>().also { response ->
-        every { response.toByteArray() } returns montoyaBytes(text.toByteArray(Charsets.ISO_8859_1))
     }
 
     private fun stubProxyHistorySummary(item: ProxyHttpRequestResponse, index: Int) {
@@ -246,309 +241,74 @@ class ToolsKtTest {
     }
 
     @Nested
-    inner class HttpToolsTests {
+    inner class RawHttpToolsTests {
         @Test
-        fun `http1 line endings should be normalized`() {
-            val httpService = mockk<Http>()
-            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
-            val siteMap = mockk<SiteMap>(relaxed = true)
-            val contentSlot = slot<String>()
-
-            every { HttpRequest.httpRequest(any(), capture(contentSlot)) } answers {
-                val content = secondArg<String>()
-                mockk<HttpRequest>().also {
-                    every { it.toString() } returns content
-                }
-            }
-            every { api.http() } returns httpService
-            every { api.siteMap() } returns siteMap
-            every { httpResponse.response() } returns boundedHttpResponse(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
-            )
-            every { httpService.sendRequest(capture(capturedRequest)) } returns httpResponse
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http1_request", mapOf(
-                        "content" to "GET /foo HTTP/1.1\nHost: example.com\n\n",
-                        "targetHostname" to "example.com",
-                        "targetPort" to 80,
-                        "usesHttps" to false
-                    )
-                )
-
-                delay(100)
-                val text = result.expectTextContent()
-                assertFalse(text.contains("Error"), 
-                    "Expected success response but got error: $text")
-            }
-
-            verify(exactly = 1) { httpService.sendRequest(any<HttpRequest>()) }
-            verify(exactly = 1) { siteMap.add(httpResponse) }
-            assertEquals("GET /foo HTTP/1.1\r\nHost: example.com\r\n\r\n", capturedRequest.captured.toString(), "Request body should match")
-        }
-
-        @Test
-        fun `http1 request should handle no response`() {
-            val httpService = mockk<Http>()
-            val contentSlot = slot<String>()
-
-            every { HttpRequest.httpRequest(any(), capture(contentSlot)) } answers {
-                val content = secondArg<String>()
-                mockk<HttpRequest>().also {
-                    every { it.toString() } returns content
-                }
-            }
-            every { api.http() } returns httpService
-            every { httpService.sendRequest(any()) } returns null
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http1_request", mapOf(
-                        "content" to "GET /foo HTTP/1.1\r\nHost: example.com\r\n\r\n",
-                        "targetHostname" to "example.com",
-                        "targetPort" to 80,
-                        "usesHttps" to false
-                    )
-                )
-
-                delay(100)
-                result.expectTextContent("<no response>")
-            }
-        }
-
-        @Test
-        fun `Site Map recording failure does not make a completed HTTP request retryable`() {
+        fun `unified raw HTTP1 send normalizes input and returns structured state`() = runBlocking {
             val http = mockk<Http>()
-            val response = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
-            val siteMap = mockk<SiteMap>()
-            val apiLogging = mockk<Logging>(relaxed = true)
-
-            every { HttpRequest.httpRequest(any(), any<String>()) } returns mockk()
-            every { api.http() } returns http
-            every { api.siteMap() } returns siteMap
-            every { api.logging() } returns apiLogging
-            every { http.sendRequest(any()) } returns response
-            every { response.response() } returns boundedHttpResponse("HTTP/1.1 204 No Content")
-            every { siteMap.add(response) } throws IllegalStateException("local Site Map failure")
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http1_request",
-                    mapOf(
-                        "content" to "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
-                        "targetHostname" to "example.com",
-                        "targetPort" to 443,
-                        "usesHttps" to true,
-                    ),
-                )
-
-                result.expectTextContent("HTTP/1.1 204 No Content")
-            }
-
-            verify(exactly = 1) { http.sendRequest(any()) }
-            verify(exactly = 1) { siteMap.add(response) }
-            verify(exactly = 1) {
-                apiLogging.logToError(match<String> { "could not be added to Site Map" in it })
-            }
-        }
-
-        @Test
-        fun `http2 request should be formatted properly`() {
-            val httpService = mockk<Http>()
-            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
-            val httpRequest = mockk<HttpRequest>()
-            val requestSlot = slot<HttpRequest>()
-            val headersSlot = slot<List<HttpHeader>>()
-            val bodySlot = slot<String>()
-
-            every { HttpRequest.http2Request(any(), capture(headersSlot), capture(bodySlot)) } returns httpRequest
-            every { httpResponse.response() } returns boundedHttpResponse(
-                "HTTP/2 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
-            )
-            every { api.http() } returns httpService
-            every { httpService.sendRequest(capture(requestSlot), HttpMode.HTTP_2) } returns httpResponse
-
-            val pseudoHeaders = mapOf(
-                "authority" to "example.com", "scheme" to "https", "method" to "GET", ":path" to "/test"
-            )
-            val headers = mapOf(
-                "User-Agent" to "Test Agent", "Accept" to "*/*"
-            )
-            val requestBody = "Test body"
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http2_request", mapOf(
-                        "pseudoHeaders" to Json.encodeToJsonElement(pseudoHeaders),
-                        "headers" to Json.encodeToJsonElement(headers),
-                        "requestBody" to requestBody,
-                        "targetHostname" to "example.com",
-                        "targetPort" to 443,
-                        "usesHttps" to true
-                    )
-                )
-
-                delay(100)
-                val text = result.expectTextContent()
-                assertFalse(text.contains("Error"), 
-                    "Expected success response but got error: $text")
-            }
-
-            verify(exactly = 1) { HttpRequest.http2Request(any(), any(), any<String>()) }
-            
-            assertEquals("Test body", bodySlot.captured, "Request body should match")
-            
-            val pseudoHeaderList = headersSlot.captured.filter { it.name().startsWith(":") }
-            val normalHeaderList = headersSlot.captured.filter { !it.name().startsWith(":") }
-            
-            assertTrue(pseudoHeaderList.any { it.name() == ":scheme" && it.value() == "https" })
-            assertTrue(pseudoHeaderList.any { it.name() == ":method" && it.value() == "GET" })
-            assertTrue(pseudoHeaderList.any { it.name() == ":path" && it.value() == "/test" })
-            assertTrue(pseudoHeaderList.any { it.name() == ":authority" && it.value() == "example.com" })
-            
-            assertTrue(normalHeaderList.any { it.name() == "user-agent" && it.value() == "Test Agent" })
-            assertTrue(normalHeaderList.any { it.name() == "accept" && it.value() == "*/*" })
-        }
-        
-        @Test
-        fun `http2 request should handle null response`() {
-            val httpService = mockk<Http>()
-            val httpRequest = mockk<HttpRequest>()
-
-            every { HttpRequest.http2Request(any(), any(), any<String>()) } returns httpRequest
-            every { api.http() } returns httpService
-            every { httpService.sendRequest(any(), HttpMode.HTTP_2) } returns null
-
-            val pseudoHeaders = mapOf("method" to "GET", "path" to "/test")
-            val headers = mapOf("User-Agent" to "Test Agent")
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http2_request", mapOf(
-                        "pseudoHeaders" to Json.encodeToJsonElement(pseudoHeaders),
-                        "headers" to Json.encodeToJsonElement(headers),
-                        "requestBody" to "",
-                        "targetHostname" to "example.com",
-                        "targetPort" to 443,
-                        "usesHttps" to true
-                    )
-                )
-
-                delay(100)
-                result.expectTextContent("<no response>")
-            }
-        }
-        
-        @Test
-        fun `http2 pseudo headers should be ordered correctly`() {
-            val httpService = mockk<Http>()
-            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
-            val httpRequest = mockk<HttpRequest>()
-            val headersSlot = slot<List<HttpHeader>>()
-
-            every { HttpRequest.http2Request(any(), capture(headersSlot), any<String>()) } returns httpRequest
-            every { httpResponse.toString() } returns "HTTP/2 200 OK"
-            every { api.http() } returns httpService
-            every { httpService.sendRequest(any(), HttpMode.HTTP_2) } returns httpResponse
-
-            val pseudoHeaders = mapOf(
-                "path" to "/test",
-                ":authority" to "example.com", 
-                "method" to "GET",
-                "scheme" to "https"
-            )
-
-            runBlocking {
-                val result = client.callTool(
-                    "send_http2_request", mapOf(
-                        "pseudoHeaders" to Json.encodeToJsonElement(pseudoHeaders),
-                        "headers" to Json.encodeToJsonElement(emptyMap<String, String>()),
-                        "requestBody" to "",
-                        "targetHostname" to "example.com",
-                        "targetPort" to 443,
-                        "usesHttps" to true
-                    )
-                )
-                
-                delay(100)
-                assertNotNull(result)
-            }
-            
-            val pseudoHeaderNames = headersSlot.captured
-                .filter { it.name().startsWith(":") }
-                .map { it.name() }
-            
-            val expectedOrder = listOf(":scheme", ":method", ":path", ":authority")
-            for (i in 0 until minOf(expectedOrder.size, pseudoHeaderNames.size)) {
-                assertEquals(expectedOrder[i], pseudoHeaderNames[i],
-                    "Pseudo headers should follow the order: scheme, method, path, authority")
-            }
-        }
-
-        @Test
-        fun `raw routing tools use no-name Montoya overload when tab name is absent`() {
-            val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
-            val intruder = mockk<burp.api.montoya.intruder.Intruder>(relaxed = true)
             val request = mockk<HttpRequest>()
-            every { HttpRequest.httpRequest(any(), any<String>()) } returns request
-            every { api.repeater() } returns repeater
-            every { api.intruder() } returns intruder
-            val arguments: Map<String, Any> = mapOf(
-                "content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
-                "targetHostname" to "example.test",
-                "targetPort" to 443,
-                "usesHttps" to true,
+            val body = montoyaBytes(byteArrayOf())
+            val options = mockk<RequestOptions>()
+            val content = slot<String>()
+            every { HttpRequest.httpRequest(any(), capture(content)) } returns request
+            every { request.bodyOffset() } returns 48
+            every { request.body() } returns body
+            every { RequestOptions.requestOptions() } returns options
+            every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+            every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+            every { options.withResponseTimeout(30_000) } returns options
+            every { api.http() } returns http
+            every { http.sendRequest(request, options) } returns null
+
+            val result = client.callTool(
+                "send_raw_http_request",
+                mapOf(
+                    "protocol" to "http_1",
+                    "http1" to mapOf("content" to "GET / HTTP/1.1\nHost: example.test\n\n"),
+                    "targetHostname" to "example.test",
+                    "targetPort" to 443,
+                    "usesHttps" to true,
+                ),
             )
 
-            runBlocking {
-                assertNotNull(client.callTool("create_repeater_tab", arguments))
-                assertNotNull(client.callTool("send_to_intruder", arguments))
-            }
-
-            verify(exactly = 1) { repeater.sendToRepeater(request) }
-            verify(exactly = 1) { intruder.sendToIntruder(request) }
+            assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", content.captured)
+            verify(exactly = 1) { options.withRedirectionMode(RedirectionMode.NEVER) }
+            verify(exactly = 1) { http.sendRequest(request, options) }
         }
 
         @Test
-        fun `create repeater tab http2 should build http2 request`() {
+        fun `unified raw HTTP2 routing creates exactly one approved Repeater tab`() = runBlocking {
             val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
-            val httpRequest = mockk<HttpRequest>()
-            val headersSlot = slot<List<HttpHeader>>()
-            val bodySlot = slot<String>()
-
-            every { HttpRequest.http2Request(any(), capture(headersSlot), capture(bodySlot)) } returns httpRequest
+            val request = mockk<HttpRequest>()
+            val body = montoyaBytes(byteArrayOf())
+            val headers = slot<List<HttpHeader>>()
+            every { HttpRequest.http2Request(any(), capture(headers), "payload") } returns request
+            every { request.bodyOffset() } returns 64
+            every { request.body() } returns body
             every { api.repeater() } returns repeater
 
-            val pseudoHeaders = mapOf(
-                "method" to "POST", "path" to "/api/x", "authority" to "example.com", "scheme" to "https"
+            val result = client.callTool(
+                "route_raw_http_request",
+                mapOf(
+                    "destination" to "repeater",
+                    "protocol" to "http_2",
+                    "http2" to mapOf(
+                        "pseudoHeaders" to mapOf("method" to "POST", "path" to "/api"),
+                        "headers" to mapOf("Content-Type" to "text/plain"),
+                        "requestBody" to "payload",
+                    ),
+                    "targetHostname" to "example.test",
+                    "targetPort" to 443,
+                    "usesHttps" to true,
+                    "tabName" to "v4",
+                ),
             )
-            val headers = mapOf("Content-Type" to "application/json")
-            val requestBody = "{\"k\":\"v\"}"
 
-            runBlocking {
-                val result = client.callTool(
-                    "create_repeater_tab_http2", mapOf(
-                        "tabName" to "h2-tab",
-                        "pseudoHeaders" to Json.encodeToJsonElement(pseudoHeaders),
-                        "headers" to Json.encodeToJsonElement(headers),
-                        "requestBody" to requestBody,
-                        "targetHostname" to "example.com",
-                        "targetPort" to 443,
-                        "usesHttps" to true
-                    )
-                )
-
-                delay(100)
-                assertNotNull(result)
-            }
-
-            verify(exactly = 1) { repeater.sendToRepeater(httpRequest, "h2-tab") }
-            assertEquals("{\"k\":\"v\"}", bodySlot.captured, "Request body should be passed through unchanged")
-
-            val pseudoHeaderNames = headersSlot.captured.filter { it.name().startsWith(":") }.map { it.name() }
-            assertEquals(listOf(":scheme", ":method", ":path", ":authority"), pseudoHeaderNames)
-            assertTrue(headersSlot.captured.any { it.name() == "content-type" && it.value() == "application/json" })
+            assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals(listOf(":method", ":path"), headers.captured.take(2).map { it.name() })
+            verify(exactly = 1) { repeater.sendToRepeater(request, "v4") }
         }
     }
 
@@ -918,152 +678,6 @@ class ToolsKtTest {
     }
     
     @Nested
-    inner class PaginatedToolsTests {
-        @Test
-        fun `deep pagination serializes only the selected history items`() {
-            val proxy = mockk<Proxy>()
-            val proxyHistory = List(100) { mockk<ProxyHttpRequestResponse>() }
-
-            every { api.proxy() } returns proxy
-            every { proxy.history() } returns proxyHistory
-
-            proxyHistory.forEachIndexed { index, item -> stubProxyHistorySummary(item, index) }
-
-            runBlocking {
-                val result = client.callTool(
-                    "get_proxy_http_history", mapOf("count" to 1, "offset" to 99)
-                )
-                assertTrue(result.expectTextContent().contains("/item99"))
-            }
-
-            proxyHistory.dropLast(1).forEach { skipped ->
-                verify(exactly = 0) { skipped.id() }
-            }
-            verify(exactly = 1) { proxyHistory.last().id() }
-        }
-
-        @Test
-        fun `optional regex keeps Proxy history filtering in the consolidated tool`() {
-            val proxy = mockk<Proxy>()
-            val matching = mockk<ProxyHttpRequestResponse>()
-            val skipped = mockk<ProxyHttpRequestResponse>()
-            stubProxyHistorySummary(matching, 7)
-            every { matching.contains(any<java.util.regex.Pattern>()) } returns true
-            every { skipped.contains(any<java.util.regex.Pattern>()) } returns false
-            every { api.proxy() } returns proxy
-            every { proxy.history(any()) } answers {
-                val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
-                listOf(matching, skipped).filter(filter::matches)
-            }
-
-            runBlocking {
-                val result = client.callTool(
-                    "get_proxy_http_history",
-                    mapOf("count" to 1, "offset" to 0, "regex" to "example\\.test"),
-                )
-                assertTrue(result.expectTextContent().contains("\"id\":7"))
-            }
-
-            verify(exactly = 1) { proxy.history(any()) }
-            verify(exactly = 0) { proxy.history() }
-            verify(exactly = 0) { skipped.id() }
-        }
-
-        @Test
-        fun `summary mode exposes stable HTTP IDs without serializing full messages`() {
-            val proxy = mockk<Proxy>()
-            val item = mockk<ProxyHttpRequestResponse>()
-            val request = mockk<HttpRequest>()
-            val body = mockk<MontoyaByteArray>()
-            val service = mockk<burp.api.montoya.http.HttpService>()
-            val annotations = mockk<Annotations>()
-
-            every { api.proxy() } returns proxy
-            every { proxy.history() } returns listOf(item)
-            every { item.id() } returns 41
-            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
-            every { item.request() } returns request
-            every { item.response() } returns null
-            every { item.httpService() } returns service
-            every { item.listenerPort() } returns 8080
-            every { item.edited() } returns false
-            every { item.annotations() } returns annotations
-            every { request.method() } returns "GET"
-            every { request.url() } returns "https://example.test/path"
-            every { request.body() } returns body
-            every { body.length() } returns 0
-            every { service.host() } returns "example.test"
-            every { service.port() } returns 443
-            every { service.secure() } returns true
-            every { annotations.notes() } returns null
-
-            runBlocking {
-                val result = client.callTool(
-                    "get_proxy_http_history",
-                    mapOf("count" to 1, "offset" to 0, "summariesOnly" to true),
-                )
-                val text = result.expectTextContent()
-                assertTrue(text.contains("\"id\":41"))
-                assertTrue(text.contains("\"url\":\"https://example.test/path\""))
-                assertFalse(text.contains("\"request\":"))
-            }
-
-            verify(exactly = 0) { request.toByteArray() }
-        }
-
-        @Test
-        fun `get proxy history should paginate properly`() {
-            val proxy = mockk<Proxy>()
-            val proxyHistory = listOf(
-                mockk<ProxyHttpRequestResponse>(),
-                mockk<ProxyHttpRequestResponse>(),
-                mockk<ProxyHttpRequestResponse>()
-            )
-            
-            every { api.proxy() } returns proxy
-            every { proxy.history() } returns proxyHistory
-            
-            proxyHistory.forEachIndexed { index, item -> stubProxyHistorySummary(item, index + 1) }
-            
-            runBlocking {
-                val result1 = client.callTool(
-                    "get_proxy_http_history", mapOf(
-                        "count" to 2,
-                        "offset" to 0
-                    )
-                )
-                
-                delay(100)
-                val text1 = result1.expectTextContent()
-                assertTrue(text1.contains("/item1"))
-                assertTrue(text1.contains("/item2"))
-                assertFalse(text1.contains("/item3"))
-                
-                val result2 = client.callTool(
-                    "get_proxy_http_history", mapOf(
-                        "count" to 2,
-                        "offset" to 2
-                    )
-                )
-                
-                delay(100)
-                val text2 = result2.expectTextContent()
-                assertTrue(text2.contains("/item3"))
-                
-                val result3 = client.callTool(
-                    "get_proxy_http_history", mapOf(
-                        "count" to 2,
-                        "offset" to 3
-                    )
-                )
-                
-                delay(100)
-                assertEquals("Reached end of items", result3.expectTextContent())
-            }
-        }
-    }
-
-    @Nested
     inner class HttpMessageSearchToolsTests {
         @Test
         fun `unified HTTP search returns structured compact results and precise schemas`() {
@@ -1382,7 +996,13 @@ class ToolsKtTest {
             runBlocking {
                 val result = client.callTool(
                     "get_websocket_message_by_id",
-                    mapOf("id" to 17, "offset" to 1, "limit" to 3, "encoding" to "base64"),
+                    mapOf(
+                        "id" to 17,
+                        "projectId" to "project-default",
+                        "offset" to 1,
+                        "limit" to 3,
+                        "encoding" to "base64",
+                    ),
                 )
                 assertNotNull(result?.structuredContent)
                 val structured = result!!.structuredContent!!
@@ -1390,7 +1010,10 @@ class ToolsKtTest {
                 assertEquals("project-default", structured["projectId"]?.jsonPrimitive?.content)
                 assertTrue(structured["content"].toString().contains("\"data\":\"AgME\""))
 
-                val missing = client.callTool("get_websocket_message_by_id", mapOf("id" to 999))
+                val missing = client.callTool(
+                    "get_websocket_message_by_id",
+                    mapOf("id" to 999, "projectId" to "project-default"),
+                )
                 assertEquals("not_found", missing?.structuredContent?.get("status")?.jsonPrimitive?.content)
 
                 val wrongProject = client.callTool(
@@ -1401,6 +1024,11 @@ class ToolsKtTest {
                     "project_mismatch",
                     wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
                 )
+                val invalidId = client.callTool(
+                    "get_websocket_message_by_id",
+                    mapOf("id" to -1, "projectId" to "project-default"),
+                )
+                assertEquals(true, invalidId?.isError)
             }
 
             verify(exactly = 2) { proxy.webSocketHistory(any()) }
@@ -1435,22 +1063,32 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(26, tools.size)
+        assertEquals(19, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
-        assertTrue(
-            toolNames.containsAll(
-                setOf(
-                    "transform_data",
-                    "get_burp_options",
-                    "set_burp_options",
-                    "set_burp_control_state",
-                    "get_http_message",
-                    "route_http_message_from_id",
-                    "send_raw_http_request",
-                    "route_raw_http_request",
-                )
-            )
+        assertEquals(
+            setOf(
+                "send_raw_http_request",
+                "route_raw_http_request",
+                "transform_data",
+                "generate_random_string",
+                "get_burp_options",
+                "set_burp_options",
+                "search_http_messages",
+                "summarize_http_attack_surface",
+                "check_scope",
+                "update_scope",
+                "compare_http_messages",
+                "get_http_message",
+                "send_http_request_from_id",
+                "route_http_message_from_id",
+                "search_websocket_messages",
+                "get_websocket_message_by_id",
+                "set_burp_control_state",
+                "get_active_editor_contents",
+                "set_active_editor_contents",
+            ),
+            toolNames,
         )
         assertTrue(
             toolNames.intersect(
@@ -1474,6 +1112,14 @@ class ToolsKtTest {
                     "get_proxy_http_history_regex",
                     "get_organizer_items_regex",
                     "get_proxy_websocket_history_regex",
+                    "send_http1_request",
+                    "send_http2_request",
+                    "create_repeater_tab",
+                    "create_repeater_tab_http2",
+                    "send_to_intruder",
+                    "get_proxy_http_history",
+                    "get_organizer_items",
+                    "get_proxy_websocket_history",
                 )
             ).isEmpty()
         )
@@ -1555,11 +1201,17 @@ class ToolsKtTest {
         val search = tools.single { it.name == "search_http_messages" }
         assertTrue(search.inputSchema.properties?.get("regex").toString().contains("\"maxLength\":512"))
 
-        val legacyHistory = tools.single { it.name == "get_proxy_http_history" }
-        assertEquals(true, legacyHistory.annotations?.readOnlyHint)
-        assertTrue(legacyHistory.inputSchema.properties?.get("count").toString().contains("\"maximum\":50"))
-        assertNotNull(legacyHistory.inputSchema.properties?.get("part"))
-        assertNotNull(legacyHistory.inputSchema.properties?.get("regex"))
+        val websocketSearch = tools.single { it.name == "search_websocket_messages" }
+        assertEquals(setOf("projectId"), websocketSearch.inputSchema.required?.toSet())
+        assertTrue(websocketSearch.inputSchema.properties?.get("regex").toString().contains("\"maxLength\":512"))
+        assertTrue(websocketSearch.inputSchema.properties?.get("limit").toString().contains("\"maximum\":50"))
+        assertNotNull(websocketSearch.outputSchema?.properties?.get("nextCursor"))
+        assertNotNull(websocketSearch.outputSchema?.properties?.get("scannedContentBytes"))
+        assertEquals(true, websocketSearch.annotations?.readOnlyHint)
+        assertEquals(false, websocketSearch.annotations?.destructiveHint)
+
+        val websocketDetail = tools.single { it.name == "get_websocket_message_by_id" }
+        assertEquals(setOf("id", "projectId"), websocketDetail.inputSchema.required?.toSet())
 
         val project = mockk<burp.api.montoya.project.Project>()
         val scope = mockk<burp.api.montoya.scope.Scope>()
@@ -1668,7 +1320,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(33, tools.size)
+            assertEquals(26, tools.size)
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
@@ -1695,6 +1347,9 @@ class ToolsKtTest {
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))
             assertNotNull(issues.outputSchema?.properties?.get("nextCursor"))
+
+            val issueDetail = tools.single { it.name == "get_scanner_issue_by_id" }
+            assertEquals(setOf("id", "projectId"), issueDetail.inputSchema.required?.toSet())
 
             val generator = tools.single { it.name == "generate_collaborator_payload" }
             assertEquals(false, generator.annotations?.readOnlyHint)
@@ -1742,7 +1397,10 @@ class ToolsKtTest {
             val id = issue.stableHistoryId()
 
             runBlocking {
-                val result = client.callTool("get_scanner_issue_by_id", mapOf("id" to id))
+                val result = client.callTool(
+                    "get_scanner_issue_by_id",
+                    mapOf("id" to id, "projectId" to collaboratorProjectId),
+                )
                 assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertEquals(id, result?.structuredContent?.get("id")?.jsonPrimitive?.content)
                 assertEquals(
@@ -1757,8 +1415,50 @@ class ToolsKtTest {
                     "project_mismatch",
                     wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
                 )
+                val invalidId = client.callTool(
+                    "get_scanner_issue_by_id",
+                    mapOf("id" to "not-a-stable-id", "projectId" to collaboratorProjectId),
+                )
+                assertEquals(true, invalidId?.isError)
             }
             verify(exactly = 1) { siteMap.issues() }
+        }
+
+        @Test
+        fun `Scanner issue lookup discards bounded content after a project transition`() = runBlocking {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val siteMap = mockk<SiteMap>()
+            val issue = mockk<AuditIssue>()
+            val service = mockk<burp.api.montoya.http.HttpService>()
+            val definition = mockk<AuditIssueDefinition>()
+            every { api.project() } returns project
+            every { project.id() } returnsMany listOf("project-before", "project-before", "project-after")
+            every { api.siteMap() } returns siteMap
+            every { siteMap.issues() } returns listOf(issue)
+            every { issue.definition() } returns definition
+            every { definition.typeIndex() } returns 321
+            every { issue.name() } returns "Transition issue"
+            every { issue.baseUrl() } returns "https://example.test/race"
+            every { issue.httpService() } returns service
+            every { service.host() } returns "example.test"
+            every { service.port() } returns 443
+            every { service.secure() } returns true
+            every { issue.severity() } returns AuditIssueSeverity.MEDIUM
+            every { issue.confidence() } returns AuditIssueConfidence.FIRM
+            every { issue.detail() } returns "sensitive detail"
+            every { issue.remediation() } returns null
+            every { issue.requestResponses() } returns emptyList()
+            val id = issue.stableHistoryId()
+
+            val result = client.callTool(
+                "get_scanner_issue_by_id",
+                mapOf("id" to id, "projectId" to "project-before", "field" to "detail"),
+            )
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("project-after", result?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+            assertEquals(null, result?.structuredContent?.get("content"))
+            verify(atLeast = 1) { issue.detail() }
         }
 
         @Test
@@ -1931,7 +1631,7 @@ class ToolsKtTest {
 
     @Test
     fun `tool name conversion should work properly`() {
-        assertEquals("send_http1_request", "SendHttp1Request".toLowerSnakeCase())
+        assertEquals("send_raw_http_request", "SendRawHttpRequest".toLowerSnakeCase())
         assertEquals("test_case_conversion", "TestCaseConversion".toLowerSnakeCase())
         assertEquals("multiple_upper_case_letters", "MultipleUpperCaseLetters".toLowerSnakeCase())
     }

@@ -794,7 +794,7 @@ private class CompiledHttpSearchQuery(val query: NormalizedHttpSearchQuery) {
     val statusCodes = query.statusCodes?.toHashSet()
     val mimeTypes = query.mimeTypes?.toHashSet()
     val indexedMimeTypes = query.mimeTypes?.mapTo(HashSet()) { it.lowercase() }
-    val regex = query.regex?.let { validateLegacyRegex(it, query.caseSensitive) }
+    val regex = query.regex?.let { validateSafeRegex(it, query.caseSensitive) }
 }
 
 private enum class MetadataRejectionReason {
@@ -994,7 +994,7 @@ private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery
     }
     val regex = input.regex?.also {
         require(it.length <= MAX_HTTP_SEARCH_TEXT_CHARS) { "regex is too long" }
-        validateLegacyRegex(it, input.caseSensitive ?: true)
+        validateSafeRegex(it, input.caseSensitive ?: true)
     }
 
     return NormalizedHttpSearchQuery(
