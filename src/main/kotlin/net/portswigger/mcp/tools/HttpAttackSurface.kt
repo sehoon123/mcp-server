@@ -23,6 +23,7 @@ private const val MAX_ATTACK_SURFACE_SERVICE_COUNTS = 16
 private const val MAX_ATTACK_SURFACE_PATH_COUNTS = 8
 private const val MAX_ATTACK_SURFACE_SEGMENT_CHARS = 128
 private const val MAX_ATTACK_SURFACE_PREFIX_CHARS = 512
+private const val MAX_ATTACK_SURFACE_SNAPSHOT_ATTEMPTS = 2
 
 @Serializable
 data class SummarizeHttpAttackSurface(
@@ -145,11 +146,19 @@ internal class HttpAttackSurfaceService(
     private val api: MontoyaApi,
     private val config: McpConfig,
     private val index: HttpMetadataIndex,
+    private val beforeSnapshotValidation: suspend (attempt: Int) -> Unit = {},
 ) {
     suspend fun summarize(input: SummarizeHttpAttackSurface): HttpAttackSurfaceResult {
         val normalized = normalize(input) ?: return invalidResult(input)
         val currentProjectId = try {
             index.observeCurrentProject()
+        } catch (_: HttpMetadataIndexChangingException) {
+            return emptyResult(
+                status = HttpAttackSurfaceStatus.BURP_ERROR,
+                projectId = input.projectId,
+                normalized = normalized,
+                error = "HTTP metadata is changing; retry after the project update completes",
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -199,27 +208,71 @@ internal class HttpAttackSurfaceService(
             }
         }
 
-        val snapshot = try {
-            index.snapshot(input.projectId, normalized.sources)
-        } catch (e: HttpMetadataProjectMismatchException) {
-            return emptyResult(
-                status = HttpAttackSurfaceStatus.PROJECT_MISMATCH,
-                projectId = e.currentProjectId,
-                normalized = normalized,
-                error = "Burp project changed before the HTTP metadata summary was returned",
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return emptyResult(
-                status = HttpAttackSurfaceStatus.BURP_ERROR,
-                projectId = input.projectId,
-                normalized = normalized,
-                error = "Burp could not refresh the HTTP metadata index: ${safeExceptionSummary(e)}",
-            )
+        for (attempt in 0 until MAX_ATTACK_SURFACE_SNAPSHOT_ATTEMPTS) {
+            val snapshot = try {
+                index.snapshot(input.projectId, normalized.sources)
+            } catch (e: HttpMetadataProjectMismatchException) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.PROJECT_MISMATCH,
+                    projectId = e.currentProjectId,
+                    normalized = normalized,
+                    error = "Burp project changed before the HTTP metadata summary was returned",
+                )
+            } catch (_: HttpMetadataIndexChangingException) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = input.projectId,
+                    normalized = normalized,
+                    error = "HTTP metadata is changing; retry after the project update completes",
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = input.projectId,
+                    normalized = normalized,
+                    error = "Burp could not refresh the HTTP metadata index: ${safeExceptionSummary(e)}",
+                )
+            }
+
+            val result = aggregate(snapshot, normalized)
+            val snapshotIsCurrent = try {
+                beforeSnapshotValidation(attempt)
+                index.isSnapshotCurrent(snapshot)
+            } catch (e: HttpMetadataProjectMismatchException) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.PROJECT_MISMATCH,
+                    projectId = e.currentProjectId,
+                    normalized = normalized,
+                    error = "Burp project changed before the HTTP metadata summary was returned",
+                )
+            } catch (_: HttpMetadataIndexChangingException) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = input.projectId,
+                    normalized = normalized,
+                    error = "HTTP metadata is changing; retry after the project update completes",
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = input.projectId,
+                    normalized = normalized,
+                    error = "Burp could not verify the HTTP metadata snapshot: ${safeExceptionSummary(e)}",
+                )
+            }
+            if (snapshotIsCurrent) return result
         }
 
-        return aggregate(snapshot, normalized)
+        return emptyResult(
+            status = HttpAttackSurfaceStatus.BURP_ERROR,
+            projectId = input.projectId,
+            normalized = normalized,
+            error = "HTTP metadata changed repeatedly while the summary was being prepared; retry the read",
+        )
     }
 
     private suspend fun aggregate(

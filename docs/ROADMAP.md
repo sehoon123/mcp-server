@@ -79,6 +79,9 @@ Implemented foundation:
 - An extension-lifetime, project-bounded HTTP metadata index retains at most 5,000 newest records per source and no
   bodies, header/note values, complete URLs, or Montoya objects. Bounded anchors, a 30-second maximum reuse age, explicit
   invalidation, and project-transition clearing make freshness/truncation visible.
+- Snapshot generations and a final project/generation check prevent an aggregate from crossing an observed invalidation;
+  one bounded rebuild is allowed. MCP Scope and project-option mutations block snapshots and invalidate both before and
+  after execution, including cancellation and uncertain completion paths.
 - `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
 

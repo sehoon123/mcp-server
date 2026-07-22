@@ -219,6 +219,13 @@ Suite latency claims; an actual large-history Burp JFR/soak run remains required
 
 The attack-surface tool defaults to in-scope Proxy metadata, strips query strings, normalizes likely numeric, UUID, hex,
 and long token path segments, and bounds service/path/global method, status, MIME, and file-extension count lists.
+Each snapshot captures a monotonic invalidation generation. The tool rechecks both that generation and the current
+project after aggregation, performs at most one bounded rebuild if an explicit invalidation won the race, and fails
+closed if state keeps changing. MCP Scope and project-option mutations mark the index unavailable and invalidate it
+both before and after the mutation; non-cancellable cleanup releases that barrier even if the tool call is cancelled.
+External Burp UI changes remain subject to the documented anchors and 30-second reuse limit because Montoya exposes no
+corresponding lifecycle event.
+
 Individual detail and action tools do not trust aggregate cache entries: their existing resolvers fetch the current Burp object and validate the project and stable or
 opaque Site Map identity immediately before use. Integrating eligible metadata-only `search_http_messages` predicates
 with this index remains separate work and must preserve the existing 10,000-record scan and signed-cursor semantics.
@@ -302,6 +309,8 @@ Performance changes should preserve the following:
 - Metadata-rejected search records never consume content budget or invoke body scans.
 - The metadata index retains no bodies, headers, notes, complete URLs, or Montoya objects; source/project/output bounds and
   cache freshness state remain explicit.
+- Attack-surface results revalidate project and generation after aggregation, retry at most once after invalidation, and
+  cannot build or return a snapshot during an MCP Scope or project-option mutation.
 - Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
 - Derived request actions render full request text only when an interactive approval needs it.
 - Signed search and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.

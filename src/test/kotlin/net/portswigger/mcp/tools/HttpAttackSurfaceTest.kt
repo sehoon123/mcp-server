@@ -199,6 +199,68 @@ class HttpAttackSurfaceTest {
     }
 
     @Test
+    fun `project switch after aggregation is rejected by the final snapshot check`() = runBlocking {
+        history += proxyItem(1, "GET", "/old-project", 200, MimeType.JSON, true).item
+        var projectReads = 0
+        every { project.id() } answers {
+            projectReads++
+            if (projectReads <= 3) projectId else "other-project"
+        }
+
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+
+        assertEquals(HttpAttackSurfaceStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.sources.isEmpty())
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
+    fun `one invalidation between aggregation and return rebuilds once`() = runBlocking {
+        history += proxyItem(1, "GET", "/stable", 200, MimeType.JSON, true).item
+        var invalidations = 0
+        service = HttpAttackSurfaceService(api, config, index) { attempt ->
+            if (attempt == 0) {
+                invalidations++
+                index.invalidate()
+            }
+        }
+
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+
+        assertEquals(HttpAttackSurfaceStatus.OK, result.status)
+        assertEquals(1, invalidations)
+        assertEquals(MetadataIndexRefresh.REBUILT, result.sources.single().refresh)
+        verify(exactly = 2) { proxy.history() }
+    }
+
+    @Test
+    fun `repeated invalidation fails closed after one bounded rebuild`() = runBlocking {
+        history += proxyItem(1, "GET", "/changing", 200, MimeType.JSON, true).item
+        service = HttpAttackSurfaceService(api, config, index) {
+            index.invalidate()
+        }
+
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+
+        assertEquals(HttpAttackSurfaceStatus.BURP_ERROR, result.status)
+        assertTrue(result.error.orEmpty().contains("changed repeatedly"))
+        assertTrue(result.sources.isEmpty())
+        verify(exactly = 2) { proxy.history() }
+    }
+
+    @Test
+    fun `active project mutation rejects summary before source approval or access`() = runBlocking {
+        val result = index.withMutation {
+            service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+        }
+
+        assertEquals(HttpAttackSurfaceStatus.BURP_ERROR, result.status)
+        assertTrue(result.error.orEmpty().contains("retry after the project update"))
+        verify(exactly = 0) { api.proxy() }
+    }
+
+    @Test
     fun `invalid duplicate sources are rejected before project or history access`() = runBlocking {
         val result = service.summarize(
             SummarizeHttpAttackSurface(

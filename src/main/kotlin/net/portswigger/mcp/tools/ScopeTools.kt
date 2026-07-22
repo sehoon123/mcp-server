@@ -130,6 +130,7 @@ data class UpdateScopeResult(
 internal class ScopeToolService(
     private val api: MontoyaApi,
     config: McpConfig,
+    private val metadataIndex: HttpMetadataIndex,
 ) {
     private val resolver = HttpMessageResolver(api, config)
 
@@ -298,6 +299,18 @@ internal class ScopeToolService(
             )
         }
 
+        return metadataIndex.withMutation {
+            applyApprovedUpdate(input, prepared, desired, before, indexesToChange)
+        }
+    }
+
+    private suspend fun applyApprovedUpdate(
+        input: UpdateScope,
+        prepared: PreparedScopeTargets.Found,
+        desired: Boolean,
+        before: List<Boolean>,
+        indexesToChange: List<Int>,
+    ): UpdateScopeResult {
         currentCoroutineContext().ensureActive()
         val after = before.toMutableList()
         val changed = BooleanArray(prepared.targets.size)

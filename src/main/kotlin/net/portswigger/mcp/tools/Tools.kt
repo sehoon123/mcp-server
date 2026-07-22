@@ -284,7 +284,7 @@ internal fun Server.registerTools(
     val httpMessageSearchService = HttpMessageSearchService(api, config)
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
-    val scopeToolService = ScopeToolService(api, config)
+    val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
     mcpTool<SendHttp1Request>(
@@ -517,8 +517,9 @@ internal fun Server.registerTools(
         )
         if (!approved) return@mcpTool "Project configuration change denied by Burp Suite"
         api.logging().logToOutput("Applying project-level configuration through MCP")
-        services.httpMetadataIndex.invalidate()
-        api.burpSuite().importProjectOptionsFromJson(json)
+        services.httpMetadataIndex.withMutation {
+            api.burpSuite().importProjectOptionsFromJson(json)
+        }
         "Project configuration has been applied"
     }
 
@@ -648,11 +649,7 @@ internal fun Server.registerTools(
         description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before an always-required Burp approval. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
     ) {
-        scopeToolService.update(this).also { result ->
-            if (result.changedCount > 0 || result.executionState == ProjectMutationExecutionState.UNCERTAIN) {
-                services.httpMetadataIndex.invalidate()
-            }
-        }
+        scopeToolService.update(this)
     }
 
     mcpStructuredTool<CompareHttpMessages, CompareHttpMessagesResult>(

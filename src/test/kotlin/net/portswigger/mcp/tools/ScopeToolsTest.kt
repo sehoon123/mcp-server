@@ -17,6 +17,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -26,6 +27,7 @@ class ScopeToolsTest {
     private val scope = mockk<Scope>()
     private val proxy = mockk<Proxy>()
     private val logging = mockk<Logging>(relaxed = true)
+    private lateinit var metadataIndex: HttpMetadataIndex
     private lateinit var service: ScopeToolService
     private lateinit var originalApprovalHandler: SensitiveActionApprovalHandler
 
@@ -39,8 +41,11 @@ class ScopeToolsTest {
         every { project.id() } returns "project-123"
         every { api.scope() } returns scope
         every { api.proxy() } returns proxy
+        every { proxy.history() } returns emptyList()
         every { api.logging() } returns logging
-        service = ScopeToolService(api, McpConfig(storage, logging))
+        val config = McpConfig(storage, logging)
+        metadataIndex = HttpMetadataIndex(api)
+        service = ScopeToolService(api, config, metadataIndex)
     }
 
     @AfterEach
@@ -101,6 +106,7 @@ class ScopeToolsTest {
     @Test
     fun `scope update denial performs no mutation`() = runBlocking {
         every { scope.isInScope("https://example.test/") } returns false
+        metadataIndex.snapshot("project-123", listOf(HttpMessageSource.PROXY))
         SensitiveActionSecurity.approvalHandler = approvalHandler(false)
 
         val result = service.update(
@@ -116,13 +122,23 @@ class ScopeToolsTest {
         assertEquals(0, result.changedCount)
         verify(exactly = 0) { scope.includeInScope(any()) }
         verify(exactly = 0) { scope.excludeFromScope(any()) }
+        assertEquals(
+            MetadataIndexRefresh.REUSED,
+            metadataIndex.snapshot("project-123", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
     }
 
     @Test
     fun `scope update applies and verifies each normalized URL after one approval`() = runBlocking {
         val url = "https://example.test/path"
         every { scope.isInScope(url) } returnsMany listOf(false, false, true)
-        every { scope.includeInScope(url) } just runs
+        every { scope.includeInScope(url) } answers {
+            runBlocking {
+                assertFailsWith<HttpMetadataIndexChangingException> {
+                    metadataIndex.observeCurrentProject()
+                }
+            }
+        }
         var review = ""
         SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
             override suspend fun requestApproval(
@@ -152,6 +168,11 @@ class ScopeToolsTest {
         assertTrue(result.targets.single().changed == true)
         assertEquals("include $url", review)
         verify(exactly = 1) { scope.includeInScope(url) }
+        assertEquals("project-123", metadataIndex.observeCurrentProject())
+        assertEquals(
+            MetadataIndexRefresh.REBUILT,
+            metadataIndex.snapshot("project-123", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
     }
 
     @Test

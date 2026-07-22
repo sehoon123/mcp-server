@@ -9,11 +9,13 @@ import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.organizer.OrganizerItem
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.security.MessageDigest
@@ -79,10 +81,12 @@ internal data class HttpMetadataSourceSnapshot(
 
 internal data class HttpMetadataIndexSnapshot(
     val projectId: String,
+    val generation: Long,
     val sources: List<HttpMetadataSourceSnapshot>,
 )
 
 internal class HttpMetadataProjectMismatchException(val currentProjectId: String) : Exception()
+internal class HttpMetadataIndexChangingException : Exception()
 
 /**
  * Lazily caches bounded metadata for the current project only.
@@ -104,6 +108,8 @@ internal class HttpMetadataIndex(
     private val entries = mutableMapOf<HttpMessageSource, CachedMetadataSource>()
     private val maxReuseNanos = TimeUnit.MILLISECONDS.toNanos(reuseMillis)
     private var observedProjectId: String? = null
+    private var generation = 0L
+    private var activeMutations = 0
     private var closed = false
 
     init {
@@ -113,6 +119,7 @@ internal class HttpMetadataIndex(
 
     suspend fun observeCurrentProject(): String = lock.withLock {
         check(!closed) { "HTTP metadata index is closed" }
+        ensureNoMutationLocked()
         api.project().id().also(::observeProjectLocked)
     }
 
@@ -123,6 +130,7 @@ internal class HttpMetadataIndex(
         val coroutineContext = currentCoroutineContext()
         return lock.withLock {
             check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
             val currentProjectId = api.project().id()
             observeProjectLocked(currentProjectId)
             if (currentProjectId != expectedProjectId) {
@@ -140,29 +148,85 @@ internal class HttpMetadataIndex(
                     throw HttpMetadataProjectMismatchException(projectAfterSource)
                 }
             }
-            HttpMetadataIndexSnapshot(expectedProjectId, snapshots)
+            HttpMetadataIndexSnapshot(expectedProjectId, generation, snapshots)
+        }
+    }
+
+    /**
+     * Rechecks the project and invalidation generation at the response linearization point.
+     *
+     * A false result means the caller may rebuild once. Project changes and an active project/Scope mutation fail
+     * closed with their dedicated exceptions instead of allowing an old snapshot to be returned.
+     */
+    suspend fun isSnapshotCurrent(snapshot: HttpMetadataIndexSnapshot): Boolean = lock.withLock {
+        check(!closed) { "HTTP metadata index is closed" }
+        ensureNoMutationLocked()
+        val currentProjectId = api.project().id()
+        observeProjectLocked(currentProjectId)
+        if (currentProjectId != snapshot.projectId) {
+            throw HttpMetadataProjectMismatchException(currentProjectId)
+        }
+        snapshot.generation == generation
+    }
+
+    /** Prevents snapshots from being built or returned while an MCP project/Scope mutation is executing. */
+    suspend fun <T> withMutation(block: suspend () -> T): T {
+        beginMutation()
+        return try {
+            block()
+        } finally {
+            withContext(NonCancellable) {
+                endMutation()
+            }
         }
     }
 
     suspend fun invalidate() {
         lock.withLock {
-            entries.clear()
+            if (!closed) invalidateLocked()
         }
     }
 
     override fun close() = runBlocking {
         lock.withLock {
-            closed = true
-            observedProjectId = null
-            entries.clear()
+            if (!closed) {
+                closed = true
+                observedProjectId = null
+                invalidateLocked()
+            }
         }
+    }
+
+    private suspend fun beginMutation() {
+        lock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            activeMutations++
+            invalidateLocked()
+        }
+    }
+
+    private suspend fun endMutation() {
+        lock.withLock {
+            check(activeMutations > 0) { "HTTP metadata mutation tracking is unbalanced" }
+            activeMutations--
+            invalidateLocked()
+        }
+    }
+
+    private fun ensureNoMutationLocked() {
+        if (activeMutations > 0) throw HttpMetadataIndexChangingException()
     }
 
     private fun observeProjectLocked(currentProjectId: String) {
         if (observedProjectId != currentProjectId) {
-            entries.clear()
             observedProjectId = currentProjectId
+            invalidateLocked()
         }
+    }
+
+    private fun invalidateLocked() {
+        entries.clear()
+        generation++
     }
 
     private fun refreshSourceLocked(

@@ -15,6 +15,7 @@ import burp.api.montoya.sitemap.SiteMap
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -173,6 +174,75 @@ class HttpMetadataIndexTest {
         val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
 
         assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)
+    }
+
+    @Test
+    fun `snapshot generation detects invalidation before a response is returned`() = runBlocking {
+        history += proxyItem(1, "/one").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val snapshot = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertTrue(index.isSnapshotCurrent(snapshot))
+        index.invalidate()
+
+        assertFalse(index.isSnapshotCurrent(snapshot))
+        assertEquals(
+            MetadataIndexRefresh.REBUILT,
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
+    }
+
+    @Test
+    fun `snapshot validation rejects a project switch after aggregation started`() = runBlocking {
+        history += proxyItem(1, "/old-project").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val snapshot = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        projectId = "project-two"
+        val mismatch = assertFailsWith<HttpMetadataProjectMismatchException> {
+            index.isSnapshotCurrent(snapshot)
+        }
+
+        assertEquals("project-two", mismatch.currentProjectId)
+    }
+
+    @Test
+    fun `mutation barrier blocks snapshots and invalidates on exceptional completion`() = runBlocking {
+        history += proxyItem(1, "/before").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertFailsWith<IllegalStateException> {
+            index.withMutation {
+                assertFailsWith<HttpMetadataIndexChangingException> { index.observeCurrentProject() }
+                assertFailsWith<HttpMetadataIndexChangingException> {
+                    index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+                }
+                history[0] = proxyItem(2, "/after").item
+                throw IllegalStateException("simulated mutation failure")
+            }
+        }
+
+        val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+        assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)
+        assertEquals("/after", refreshed.availableRecords.single().path)
+    }
+
+    @Test
+    fun `mutation barrier cleanup is non-cancellable`() = runBlocking {
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+
+        assertFailsWith<CancellationException> {
+            index.withMutation {
+                throw CancellationException("simulated cancellation")
+            }
+        }
+
+        assertEquals("project-one", index.observeCurrentProject())
+        assertEquals(
+            MetadataIndexRefresh.REBUILT,
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
     }
 
     @Test
