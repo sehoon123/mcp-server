@@ -212,6 +212,9 @@ tasks {
 val generateSbom by tasks.registering {
     group = "documentation"
     description = "Generates a deterministic CycloneDX JSON SBOM for the shaded extension and embedded proxy."
+    notCompatibleWithConfigurationCache(
+        "SBOM generation resolves Maven component metadata and artifact hashes during task execution"
+    )
     dependsOn("embedProxyJar")
     val outputFile = layout.buildDirectory.file("reports/compliance/bom.cdx.json")
     val extensionJar = tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar")
