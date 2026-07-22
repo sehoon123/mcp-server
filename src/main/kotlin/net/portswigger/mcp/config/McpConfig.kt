@@ -2,12 +2,17 @@ package net.portswigger.mcp.config
 
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.lang.ref.WeakReference
+import java.security.SecureRandom
+import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 private const val TARGET_SEPARATOR = "\n"
+private const val LOCAL_BEARER_TOKEN_KEY = "localBearerToken"
+private val LOCAL_BEARER_TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43,128}")
 
 class McpConfig(private val storage: PersistedObject, private val logging: Logging) {
 
@@ -87,6 +92,32 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
 
     var filterConfigCredentials by storage.boolean(true)
 
+    @Volatile
+    private var cachedLocalBearerToken: String? = null
+
+    /** Per-installation credential used only by the loopback MCP HTTP endpoint. */
+    val localBearerToken: String
+        get() = cachedLocalBearerToken ?: loadOrCreateLocalBearerToken()
+
+    @Synchronized
+    private fun loadOrCreateLocalBearerToken(): String {
+        cachedLocalBearerToken?.let { return it }
+        val persisted = storage.getString(LOCAL_BEARER_TOKEN_KEY)
+        val token = persisted?.takeIf(LOCAL_BEARER_TOKEN_PATTERN::matches) ?: generateLocalBearerToken().also {
+            storage.setString(LOCAL_BEARER_TOKEN_KEY, it)
+        }
+        cachedLocalBearerToken = token
+        return token
+    }
+
+    @Synchronized
+    fun rotateLocalBearerToken(): String {
+        val token = generateLocalBearerToken()
+        storage.setString(LOCAL_BEARER_TOKEN_KEY, token)
+        cachedLocalBearerToken = token
+        return token
+    }
+
     private var _autoApproveTargets by storage.stringList("")
     @Volatile
     private var cachedTargetsRaw: String? = null
@@ -99,36 +130,34 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
     var autoApproveTargets: String
         get() = _autoApproveTargets
         set(value) {
-            if (_autoApproveTargets != value) {
-                _autoApproveTargets = value
-                cacheTargets(value)
+            val normalized = normalizeTargetList(value).joinToString(TARGET_SEPARATOR)
+            if (_autoApproveTargets != normalized) {
+                _autoApproveTargets = normalized
+                cacheTargets(normalized)
                 notifyTargetsChanged()
             }
         }
 
     init {
-        val current = getAutoApproveTargetsList()
-        val valid = current.filter { TargetValidation.isValidTarget(it) }
-        if (valid.size != current.size) {
-            val normalized = valid.joinToString(TARGET_SEPARATOR)
+        val normalized = normalizeTargetList(_autoApproveTargets).joinToString(TARGET_SEPARATOR)
+        if (normalized != _autoApproveTargets) {
             _autoApproveTargets = normalized
-            cacheTargets(normalized)
         }
+        cacheTargets(normalized)
     }
 
     fun addAutoApproveTarget(target: String): Boolean {
-        val trimmed = target.trim()
-        if (!TargetValidation.isValidTarget(trimmed)) return false
+        val normalized = TargetValidation.normalizeTarget(target.trim()) ?: return false
         val currentTargets = getAutoApproveTargetsList()
-        if (currentTargets.contains(trimmed)) return false
-        val newTargets = currentTargets + trimmed
-        autoApproveTargets = newTargets.joinToString(TARGET_SEPARATOR)
+        if (currentTargets.contains(normalized)) return false
+        autoApproveTargets = (currentTargets + normalized).joinToString(TARGET_SEPARATOR)
         return true
     }
 
     fun removeAutoApproveTarget(target: String): Boolean {
+        val normalized = TargetValidation.normalizeTarget(target.trim()) ?: return false
         val currentTargets = getAutoApproveTargetsList()
-        val newTargets = currentTargets.filter { it != target.trim() }
+        val newTargets = currentTargets.filter { it != normalized }
         if (newTargets.size != currentTargets.size) {
             autoApproveTargets = newTargets.joinToString(TARGET_SEPARATOR)
             return true
@@ -145,11 +174,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
     @Synchronized
     private fun cacheTargets(raw: String): List<String> {
         if (raw == cachedTargetsRaw) return cachedTargets
-        val parsed = if (raw.isBlank()) {
-            emptyList()
-        } else {
-            raw.split(TARGET_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
-        }
+        val parsed = normalizeTargetList(raw)
         cachedTargets = parsed
         cachedTargetsRaw = raw
         return parsed
@@ -176,7 +201,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             try {
                 listener()
             } catch (e: Exception) {
-                logging.logToError("Targets change listener failed: ${e.message}")
+                logging.logToError("Targets change listener failed: ${safeExceptionSummary(e)}")
             }
         }
     }
@@ -198,7 +223,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             try {
                 listener()
             } catch (e: Exception) {
-                logging.logToError("Data access change listener failed: ${e.message}")
+                logging.logToError("Data access change listener failed: ${safeExceptionSummary(e)}")
             }
         }
     }
@@ -216,7 +241,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             try {
                 listener()
             } catch (e: Exception) {
-                logging.logToError("Request action approval listener failed: ${e.message}")
+                logging.logToError("Request action approval listener failed: ${safeExceptionSummary(e)}")
             }
         }
     }
@@ -258,4 +283,17 @@ class ListenerRegistration(listener: () -> Unit) {
 
 fun interface ListenerHandle {
     fun remove()
+}
+
+private fun generateLocalBearerToken(): String {
+    val bytes = ByteArray(32)
+    SecureRandom().nextBytes(bytes)
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+}
+
+private fun normalizeTargetList(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    return raw.split(TARGET_SEPARATOR)
+        .mapNotNull { TargetValidation.normalizeTarget(it.trim()) }
+        .distinct()
 }

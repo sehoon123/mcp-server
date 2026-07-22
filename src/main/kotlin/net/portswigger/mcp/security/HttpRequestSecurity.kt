@@ -1,10 +1,9 @@
 package net.portswigger.mcp.security
 
 import burp.api.montoya.MontoyaApi
-import kotlinx.coroutines.suspendCancellableCoroutine
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
-import javax.swing.SwingUtilities
+import net.portswigger.mcp.config.TargetValidation
 
 interface UserApprovalHandler {
     suspend fun requestApproval(
@@ -16,94 +15,47 @@ class SwingUserApprovalHandler : UserApprovalHandler {
     override suspend fun requestApproval(
         hostname: String, port: Int, config: McpConfig, requestContent: String?, api: MontoyaApi?
     ): Boolean {
-        return suspendCancellableCoroutine { continuation ->
-            SwingUtilities.invokeLater ui@{
-                if (!continuation.isActive) return@ui
-
-                val message = buildString {
-                    appendLine("An MCP client is requesting to send an HTTP request to:")
-                    appendLine()
-                    appendLine("Target: $hostname:$port")
-                    appendLine()
-                }
-
-                val options = arrayOf(
-                    "Allow Once", "Always Allow Host", "Always Allow Host:Port", "Deny"
-                )
-
-                val burpFrame = findBurpFrame()
-
-                val result = Dialogs.showOptionDialog(
-                    burpFrame, message, options, requestContent, api
-                )
-                if (!continuation.isActive) return@ui
-
-                val approved = when (result) {
-                    0 -> true
-                    1 -> {
-                        config.addAutoApproveTarget(hostname)
-                        true
-                    }
-                    2 -> {
-                        config.addAutoApproveTarget("$hostname:$port")
-                        true
-                    }
-                    else -> false
-                }
-                if (continuation.isActive) continuation.resume(approved) { _, _, _ -> }
+        val message = buildString {
+            appendLine("An MCP client is requesting to send an HTTP request to:")
+            appendLine()
+            appendLine("Target: ${TargetValidation.formatTarget(hostname, port)}")
+            appendLine()
+        }
+        val result = SwingApprovalGate.showOption {
+            Dialogs.showOptionDialog(
+                findBurpFrame(),
+                message,
+                arrayOf("Allow Once", "Always Allow Host", "Always Allow Host:Port", "Deny"),
+                requestContent,
+                api,
+            )
+        }
+        return when (result) {
+            0 -> true
+            1 -> {
+                config.addAutoApproveTarget(hostname)
+                true
             }
+            2 -> {
+                config.addAutoApproveTarget(TargetValidation.formatTarget(hostname, port))
+                true
+            }
+            else -> false
         }
     }
 }
 
 object HttpRequestSecurity {
 
-    private val hostLabelPattern = Regex("^[a-zA-Z0-9-]+$")
-
     var approvalHandler: UserApprovalHandler = SwingUserApprovalHandler()
 
-    private fun isAutoApproved(hostname: String, port: Int, config: McpConfig): Boolean {
-        val target = "$hostname:$port"
-        val hostOnly = hostname
-        val targets = config.getAutoApproveTargetsList()
-
-        return targets.any { approved ->
-            when {
-                approved.equals(target, ignoreCase = true) -> true
-
-                approved.equals(hostOnly, ignoreCase = true) -> true
-
-                approved.startsWith("*.") -> {
-                    val domain = approved.substring(2)
-                    isValidWildcardMatch(hostname, domain)
-                }
-
-                else -> false
-            }
-        }
-    }
-
-    private fun isValidWildcardMatch(hostname: String, domain: String): Boolean {
-        if (domain.isEmpty() || domain.contains("*")) return false
-
-        if (hostname.length <= domain.length) return false
-
-        val expectedSuffix = ".$domain"
-        if (!hostname.endsWith(expectedSuffix, ignoreCase = true)) return false
-
-        val subdomain = hostname.substring(0, hostname.length - expectedSuffix.length)
-
-        if (subdomain.isEmpty()) return false
-
-        return subdomain.split(".").all { label ->
-            label.isNotEmpty() && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-") &&
-                label.matches(hostLabelPattern)
-        }
-    }
+    private fun isAutoApproved(hostname: String, port: Int, config: McpConfig): Boolean =
+        config.getAutoApproveTargetsList().any { TargetValidation.isApproved(it, hostname, port) }
 
     suspend fun checkHttpRequestPermission(
         hostname: String, port: Int, config: McpConfig, requestContent: String? = null, api: MontoyaApi? = null
     ): Boolean {
+        if (!isValidRequestedTarget(hostname, port)) return false
         if (!config.requireHttpRequestApproval) {
             return true
         }
@@ -123,9 +75,14 @@ object HttpRequestSecurity {
         api: MontoyaApi? = null,
         requestContent: () -> String,
     ): Boolean {
+        if (!isValidRequestedTarget(hostname, port)) return false
         if (!config.requireHttpRequestApproval || isAutoApproved(hostname, port, config)) {
             return true
         }
         return approvalHandler.requestApproval(hostname, port, config, requestContent(), api)
     }
+
+    private fun isValidRequestedTarget(hostname: String, port: Int): Boolean = runCatching {
+        TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null
+    }.getOrDefault(false)
 }

@@ -10,22 +10,23 @@ scoped, auditable, and safe to invoke from an LLM.
 - Native HTTP clients connect directly
 - Stdio-only clients use the proxy embedded in `burp-mcp-all.jar`
 - The proxy relays JSON-RPC methods and parameters supported by the pinned SDK, restores sessions after Burp restarts, and never retries ambiguous arbitrary requests
-- Loopback Host/Origin validation is enabled by default
+- Numeric-loopback binding, constant-time per-installation bearer authentication, and Host/Origin validation are mandatory
+- Request body/header/URI/concurrency and stateful session count/idle lifetime are bounded
 
 ## Priority 0 — security and correctness
 
 ### 1. Make binding policy explicit
 
-The UI currently exposes a bind host, but safe remote access needs more than listening on another interface.
+Implemented for the local production mode:
 
-Proposed behavior:
+- Accept only `127.0.0.1` or `::1` as bind values; hostname, wildcard, and remote binds fail closed.
+- Require a random per-installation bearer token and compare credentials in constant time.
+- Validate Host and browser Origin independently, retain SDK DNS-rebinding protection, and apply restrictive response headers.
+- Expose token copy/rotation controls and authenticated client examples without logging secrets.
+- Bound request metadata/body, concurrent calls, session admission, idle lifetime, and shutdown cleanup.
 
-- Keep loopback-only mode as the default and clearly label it.
-- Refuse non-loopback binding unless an authenticated mode is enabled.
-- Add bearer-token support with constant-time comparison and secret storage through Burp persistence.
-- Add an explicit Host/Origin allowlist rather than disabling DNS-rebinding protection.
-- Require TLS through a trusted reverse proxy or a configured certificate for remote connections.
-- Display the effective endpoint and a prominent warning in the UI.
+A remote listener remains intentionally unsupported. Any future remote-access mode requires a separately reviewed
+authentication, authorization, TLS, and destination design rather than relaxing these controls.
 
 ### 2. Add tool safety metadata and a durable audit log
 
@@ -44,8 +45,10 @@ Implemented for stable-ID and focused active actions:
 - Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
   restricted to random IDs created by this extension instance.
 
-Still required globally: apply the same policy to legacy mutating tools and write a durable, redacted audit format with
-client/session correlation and retention controls.
+Legacy raw Repeater/Intruder routing now uses the shared request-routing approval gate. Configuration imports, task
+engine state, Proxy Intercept, active-editor reads/writes, and configuration exports use explicit sensitive-action
+approval and accurate annotations. Still required globally: write a durable, redacted audit format with client/session
+correlation and retention controls.
 - Record timestamp, client/session, tool, normalized arguments, approval decision, duration, and result status.
 - Redact credentials and message bodies according to policy before writing audit records.
 - Add an emergency "read-only session" switch.
@@ -71,8 +74,9 @@ Implemented foundation:
 
 Remaining work:
 
-- Make summary mode the default after a compatibility window and remove silent legacy 5,000-character truncation.
-- Migrate the legacy source-specific list tools from offset pagination to the signed cursor model.
+- Migrate the remaining legacy source-specific list tools from offset pagination to the signed cursor model. Summary mode
+  is now the default for Proxy/WebSocket/Organizer lists; selected previews and pages are bounded and silent mid-JSON
+  5,000-character truncation has been removed.
 - Add event-backed indexes for frequent ID lookups without retaining unbounded message objects.
 
 ### 4. Standardize structured results and errors

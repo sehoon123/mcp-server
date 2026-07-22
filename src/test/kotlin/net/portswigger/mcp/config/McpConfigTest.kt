@@ -274,6 +274,29 @@ class McpConfigTest {
     }
 
     @Test
+    fun `auto approve targets are canonicalized deduplicated and invalid entries are dropped`() {
+        config.autoApproveTargets = "EXAMPLE.COM.\nexample.com\n256.0.0.1\n*.*.com"
+
+        assertEquals("example.com", config.autoApproveTargets)
+        assertEquals(listOf("example.com"), config.getAutoApproveTargetsList())
+    }
+
+    @Test
+    fun `local bearer token is generated once persisted and redaction-safe`() {
+        val first = config.localBearerToken
+        val second = config.localBearerToken
+
+        assertEquals(first, second)
+        assertTrue(first.matches(Regex("[A-Za-z0-9_-]{43}")))
+        verify(exactly = 1) { persistedObject.setString("localBearerToken", first) }
+
+        val rotated = config.rotateLocalBearerToken()
+        assertNotEquals(first, rotated)
+        assertEquals(rotated, config.localBearerToken)
+        verify { persistedObject.setString("localBearerToken", rotated) }
+    }
+
+    @Test
     fun `configEditingTooling should persist correctly`() {
         assertFalse(config.configEditingTooling)
 

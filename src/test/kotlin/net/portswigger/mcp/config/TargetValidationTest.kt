@@ -35,10 +35,6 @@ class TargetValidationTest {
         assertTrue(isValidTarget("2001:db8::1"))
         assertTrue(isValidTarget("[::1]:8080"))
 
-        // Edge cases with permissive validation
-        assertTrue(isValidTarget("256.0.0.1")) // Invalid IPv4 but allowed
-        assertTrue(isValidTarget("test@example.com")) // Special chars allowed
-        assertTrue(isValidTarget("*.*.com")) // Multiple wildcards allowed
     }
 
     @Test
@@ -46,6 +42,15 @@ class TargetValidationTest {
         // Empty/blank input
         assertFalse(isValidTarget(""))
         assertFalse(isValidTarget("   "))
+
+        // Ambiguous, injected, or malformed hosts
+        assertFalse(isValidTarget("256.0.0.1"))
+        assertFalse(isValidTarget("01.2.3.4"))
+        assertFalse(isValidTarget("test@example.com"))
+        assertFalse(isValidTarget("*.*.com"))
+        assertFalse(isValidTarget("*.localhost"))
+        assertFalse(isValidTarget("*.example.com:443"))
+        assertFalse(isValidTarget("https://example.com"))
 
         // Invalid ports
         assertFalse(isValidTarget("example.com:"))
@@ -75,5 +80,14 @@ class TargetValidationTest {
         assertFalse(isValidTarget("a".repeat(256)))
     }
 
-
+    @Test
+    fun `targets are canonicalized and wildcard matching is one label only`() {
+        assertTrue(TargetValidation.normalizeTarget("EXAMPLE.COM.") == "example.com")
+        assertTrue(TargetValidation.normalizeTarget("[::1]:443")?.endsWith(":443") == true)
+        assertTrue(TargetValidation.isApproved("example.com:443", "EXAMPLE.COM", 443))
+        assertFalse(TargetValidation.isApproved("example.com:443", "example.com", 80))
+        assertTrue(TargetValidation.isApproved("*.example.com", "api.example.com", 443))
+        assertFalse(TargetValidation.isApproved("*.example.com", "deep.api.example.com", 443))
+        assertFalse(TargetValidation.isApproved("*.example.com", "example.com", 443))
+    }
 }

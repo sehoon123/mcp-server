@@ -1,7 +1,7 @@
 package net.portswigger.mcp
 
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
+import io.ktor.server.cio.CIO
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
@@ -48,7 +48,7 @@ fun main() {
             CallToolResult(content = listOf(TextContent("ok")))
         }
     }
-    val engine = embeddedServer(Netty, host = "127.0.0.1", port = port) {
+    val engine = embeddedServer(CIO, host = "127.0.0.1", port = port) {
         configureMcpHttpEndpoint(mcpServer, port)
     }
 

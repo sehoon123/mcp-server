@@ -1,13 +1,11 @@
 package net.portswigger.mcp.security
 
 import burp.api.montoya.MontoyaApi
-import kotlinx.coroutines.suspendCancellableCoroutine
 import net.portswigger.mcp.config.Dialogs
-import javax.swing.SwingUtilities
 
 private const val MAX_SENSITIVE_ACTION_LABEL_CHARS = 128
 private const val MAX_SENSITIVE_ACTION_SUMMARY_CHARS = 4_096
-private const val MAX_SENSITIVE_ACTION_CONTENT_CHARS = 1024 * 1024
+private const val MAX_SENSITIVE_ACTION_CONTENT_CHARS = 2 * 1024 * 1024
 
 interface SensitiveActionApprovalHandler {
     suspend fun requestApproval(
@@ -26,26 +24,23 @@ class SwingSensitiveActionApprovalHandler : SensitiveActionApprovalHandler {
         reviewContent: String?,
         renderContentAsHttp: Boolean,
         api: MontoyaApi,
-    ): Boolean = suspendCancellableCoroutine { continuation ->
-        SwingUtilities.invokeLater ui@{
-            if (!continuation.isActive) return@ui
-
-            val message = buildString {
-                appendLine("An MCP client is requesting to $action.")
-                appendLine()
-                appendLine(summary)
-                appendLine()
-                append("This operation always requires explicit approval and is not covered by request-routing Always Allow.")
-            }
-            val result = Dialogs.showOptionDialog(
+    ): Boolean {
+        val message = buildString {
+            appendLine("An MCP client is requesting to $action.")
+            appendLine()
+            appendLine(summary)
+            appendLine()
+            append("This operation always requires explicit approval and is not covered by request-routing Always Allow.")
+        }
+        return SwingApprovalGate.showOption {
+            Dialogs.showOptionDialog(
                 parent = findBurpFrame(),
                 message = message,
                 options = arrayOf("Allow Once", "Deny"),
                 requestContent = reviewContent,
                 api = if (renderContentAsHttp) api else null,
             )
-            if (continuation.isActive) continuation.resume(result == 0) { _, _, _ -> }
-        }
+        } == 0
     }
 }
 

@@ -1,7 +1,10 @@
 package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.McpConfig
 import java.awt.Dimension
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
@@ -11,6 +14,7 @@ import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
 class AdvancedOptionsPanel(
+    private val config: McpConfig,
     private val hostField: JTextField,
     private val portField: JTextField,
     private val reinstallNotice: WarningLabel
@@ -46,6 +50,50 @@ class AdvancedOptionsPanel(
             "Server host:" to hostField, "Server port:" to portField
         )
         add(formPanel)
+        add(createVerticalStrut(Design.Spacing.SM))
+        add(JLabel("The server accepts only numeric loopback binds and requires a per-installation bearer token.").apply {
+            font = Design.Typography.bodyMedium
+            foreground = Design.Colors.onSurfaceVariant
+            alignmentX = LEFT_ALIGNMENT
+        })
+        add(createVerticalStrut(Design.Spacing.SM))
+        add(JButton("Copy local bearer token").apply {
+            alignmentX = LEFT_ALIGNMENT
+            addActionListener {
+                copyTokenToClipboard(config.localBearerToken).onSuccess {
+                    text = "Bearer token copied (treat clipboard as sensitive)"
+                }.onFailure {
+                    text = "Could not access the system clipboard"
+                }
+            }
+        })
+        add(createVerticalStrut(Design.Spacing.SM))
+        add(JButton("Rotate local bearer token...").apply {
+            alignmentX = LEFT_ALIGNMENT
+            addActionListener {
+                val confirmed = JOptionPane.showConfirmDialog(
+                    this@AdvancedOptionsPanel,
+                    "Existing native and stdio client credentials will stop working. " +
+                        "After rotation, restart the MCP server and reinstall or update every client.",
+                    "Rotate local bearer token",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE,
+                )
+                if (confirmed == JOptionPane.OK_OPTION) {
+                    val token = config.rotateLocalBearerToken()
+                    reinstallNotice.isVisible = true
+                    copyTokenToClipboard(token).onSuccess {
+                        text = "Token rotated and copied; restart server and update clients"
+                    }.onFailure {
+                        text = "Token rotated; restart server and update clients"
+                    }
+                }
+            }
+        })
+    }
+
+    private fun copyTokenToClipboard(token: String): Result<Unit> = runCatching {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(token), null)
     }
 
     private fun setupFieldTracking() {

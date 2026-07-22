@@ -52,7 +52,7 @@ class SensitiveActionSecurityTest {
         val api = mockk<MontoyaApi>()
 
         assertFailsWith<IllegalArgumentException> {
-            SensitiveActionSecurity.checkPermission("x", "summary", "a".repeat(1024 * 1024 + 1), api = api)
+            SensitiveActionSecurity.checkPermission("x", "summary", "a".repeat(2 * 1024 * 1024 + 1), api = api)
         }
         coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
     }

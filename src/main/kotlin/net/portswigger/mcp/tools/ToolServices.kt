@@ -4,10 +4,18 @@ import burp.api.montoya.MontoyaApi
 
 /** Extension-lifetime state that must survive MCP HTTP server restarts. */
 internal class ToolServices(private val api: MontoyaApi) {
-    val collaborator: CollaboratorToolService by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    private val collaboratorDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         CollaboratorToolService(api)
     }
-    val scannerAudits: ScannerAuditService by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    private val scannerAuditsDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         ScannerAuditService(api)
+    }
+
+    val collaborator: CollaboratorToolService get() = collaboratorDelegate.value
+    val scannerAudits: ScannerAuditService get() = scannerAuditsDelegate.value
+
+    fun close() {
+        if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.close()
+        if (collaboratorDelegate.isInitialized()) collaboratorDelegate.value.close()
     }
 }

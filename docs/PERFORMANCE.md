@@ -10,8 +10,8 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Deep pagination serialized every skipped record | 18,010 serializations for a 10-item page at offset 18,000 | Apply offset/count before mapping and serialization |
 | P0 | Approval waits used `runBlocking` inside request handlers | A four-thread probe completed 20 waits in 1,038 ms instead of 209 ms | Make tool callbacks suspend and execute blocking Burp work on a bounded IO dispatcher |
 | P0 | Graceful Streamable HTTP client close retained server sessions | 20 connect/close cycles retained 20 sessions; explicit DELETE retained 0 | Terminate the proxy's HTTP session and close the MCP server during lifecycle transitions |
-| P1 | Extension startup read and allocated the complete 14.7 MB proxy JAR even when unchanged | `mcp-proxy-all.jar` is 14,725,972 bytes | Read the embedded checksum metadata first and stream the JAR only when extraction is required |
-| P1 | Result-size limits are applied after full message conversion and JSON serialization | Large request/response bodies are converted before the 5,000-character cut | Address with bounded structured output in the feature phase |
+| P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
+| P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
 | P1 | Build metadata and post-build `jar uf` mutation made extension bytes change on every build | Identical sources produced artifacts with different timestamps and manifest values | Package the proxy through Gradle's reproducible archive pipeline and verify embedded provenance |
 | P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
@@ -21,7 +21,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Scanner, comparison, issue filtering, and Collaborator workflows could expose unbounded data or model-side polling | Native lists and task details can grow with a project | Cap references, targets, inspected bytes, issue scans/results, interaction scans/details, concurrent waits, and retained Scanner task handles |
 | P1 | Raw HTTP prelude normalization made up to five full intermediate strings | A request passed through chained global `replace` calls | Normalize escapes and line endings in one bounded pass; preserve body bytes verbatim |
 | P1 | Auto-approved targets were split and trimmed on every outbound request | Approval checks reparsed an unchanged persisted string | Cache the parsed immutable target list until its raw setting changes |
-| P2 | Legacy user-supplied Java regexes scan complete Burp histories and have no time budget | A pathological pattern can monopolize CPU | Migrate clients to bounded literal search and add a constrained regex policy |
+| P2 | Legacy user-supplied Java regexes could scan complete Burp histories without a time budget | A pathological pattern could monopolize CPU | Prefer bounded literal search and enforce a 512-character conservative regex grammar |
 
 ## Pagination probe
 
@@ -83,9 +83,13 @@ Each retained server session also owns notification bookkeeping. The packaged pr
 with a short timeout during graceful shutdown, and `KtorServerManager` explicitly closes the MCP `Server` whenever it
 stops or replaces the Ktor engine.
 
-Native third-party clients that never issue DELETE can still leave sessions until the Burp MCP server restarts. A
-server-side idle-session policy requires either an SDK enhancement or a custom transport manager and is intentionally
-not introduced as part of this behavior-preserving pass.
+The server additionally wraps SDK transports in a bounded registry. At most 32 pending or active sessions can exist;
+idle sessions are evicted after 15 minutes by a 60-second sweep. Explicit DELETE, initialization failure, capacity
+rejection, idle eviction, and application shutdown all close a transport exactly once. Shutdown waits at most two
+seconds for aggregate session cleanup, so a stalled SDK close cannot indefinitely block listener restart.
+
+Native third-party clients that omit DELETE therefore consume a slot only until idle eviction. Activity refreshes the
+session timestamp, and a capacity-rejected new transport is closed immediately.
 
 ## Embedded proxy extraction
 
@@ -97,9 +101,10 @@ sha256(resourceBytes)
 ```
 
 This allocated at least the complete 14.7 MB nested JAR, even when the already-extracted version was current. The
-packaged `mcp-proxy-source.txt` already contains the trusted SHA-256. Startup now reads that small metadata first and
-returns immediately when the version marker matches. When an update is required, a `DigestInputStream` verifies the
-JAR while copying it to disk, avoiding the full in-memory byte array.
+packaged `mcp-proxy-source.txt` contains the trusted SHA-256. Startup reads that small metadata first and
+stream-verifies the existing extracted JAR even when its version marker matches, so marker-only tampering cannot bypass
+validation. Only a missing or mismatched file causes the nested resource to be streamed to an atomic replacement;
+neither path allocates the complete JAR in memory.
 
 ## Proxy request backpressure and retry safety
 
@@ -108,12 +113,40 @@ message into a new coroutine. A disconnected Burp instance or slow approval coul
 number of suspended relays. The proxy now separates lifecycle, normal request, and control traffic into bounded
 channels. Sixteen request workers consume a 64-request queue. Once that admission budget is full, another request is
 rejected with an immediate not-forwarded JSON-RPC error instead of allocating another coroutine or delaying
-initialized/cancellation/response traffic.
+initialized/cancellation/response traffic. A `notifications/cancelled` message also cancels a matching queued or active
+forwarding coroutine before being relayed upstream; cancellation cannot strand the sole worker behind an inline HTTP
+response, and unknown cancellation IDs do not allocate retained state.
 
 The retry decision is also split by delivery phase. Connection establishment can retry transient availability
 failures because the current message has not been sent. After send, only a definitive missing-session 404, a refused
 TCP connection, or an initialization-only transient failure is retried. Arbitrary and custom requests are not retried
 after parser, transport, or server failures whose delivery status is ambiguous.
+
+## Authenticated and bounded HTTP endpoint
+
+The production listener binds only to numeric loopback (`127.0.0.1` or `::1`) and exposes one `/mcp` endpoint. Every
+production request requires the per-installation bearer token; strict Host and Origin checks are independent browser
+hardening rather than an authentication substitute. The endpoint rejects requests before MCP decoding when any of the
+following admission limits are exceeded:
+
+| Resource | Limit |
+|---|---:|
+| Request body | 2 MiB |
+| Request URI | 8,192 characters |
+| Header fields | 64 |
+| Aggregate header names and values | 32 KiB UTF-8 |
+| Concurrent HTTP calls | 64 |
+| Pending plus active sessions | 32 |
+| Session idle age | 15 minutes |
+| Session sweep interval | 60 seconds |
+| CIO connection idle timeout | 180 seconds |
+| Session cleanup wait during stop | 2 seconds |
+
+Duplicate `Mcp-Session-Id`, ambiguous framing (`Content-Length` plus `Transfer-Encoding`), duplicate or malformed
+`Content-Length`, and oversized chunked bodies fail before dispatch. The 180-second CIO value is an idle connection
+limit, not a total tool-execution deadline. A separate receive-pipeline wall-clock timeout was not added because Ktor
+can pre-buffer the body before that interceptor; the byte cap remains authoritative and slow chunks are covered by the
+engine idle policy.
 
 ## Bounded unified HTTP search
 
@@ -186,17 +219,13 @@ build and a forced rerun from identical inputs must produce byte-identical proxy
 
 ## Deferred changes that affect behavior or APIs
 
-The first feature phase added compact stable-ID summaries and bounded field reads. New detail tools avoid converting
-complete HTTP/WebSocket messages, return MCP structured content, and expose explicit byte-slice metadata. The
-following work remains:
+The feature phase added compact stable-ID summaries, bounded field reads, complete-record legacy pagination, and a
+constrained regex policy. Remaining performance work is deliberately narrower:
 
-1. Cap or validate legacy pagination `count` and `offset` to prevent unbounded output requests.
-2. Migrate legacy source-specific list tools to the signed cursor model.
-3. Make compact summaries the default after a compatibility window and replace post-serialization 5,000-character truncation with a streaming/capped encoder.
-4. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
-5. Add a constrained regex mode; new unified search intentionally supports bounded literal matching only.
-6. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove that cached entries are still live.
-7. Add idle session expiry for native clients that do not terminate Streamable HTTP sessions.
+1. Migrate legacy source-specific list tools to signed cursors where compatibility permits.
+2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
+3. Add event-backed, project-bounded ID indexes where Montoya lifecycle events can prove cached entries are still live.
+4. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
 
 ## Regression checks
 
@@ -213,10 +242,11 @@ Performance changes should preserve the following:
 - Scanner get/cancel accepts only extension-owned task IDs; at most eight active and 32 retained handles are tracked.
 - Collaborator waits, result counts, scan windows, per-field details, and total detail bytes remain bounded.
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
-- Server stop/restart closes all SDK sessions.
+- Server stop/restart closes pending and active SDK transports exactly once and waits no more than two seconds.
+- HTTP body, URI, header, call, session, idle, and shutdown limits remain enforced before or around SDK dispatch.
 - Proxy graceful shutdown sends DELETE when a session exists, but never blocks shutdown for more than two seconds.
 - Proxy request concurrency and pending queues remain bounded under bursts; rejected requests are never forwarded.
 - Ambiguous post-send failures never retry arbitrary or custom requests.
 - Existing proxy extraction is skipped without reading the nested JAR.
 - Repeated builds from identical inputs produce byte-identical proxy and extension JARs.
-- Tool output remains byte-for-byte compatible for valid existing requests.
+- Bounded list output contains only complete records and reports truncation explicitly rather than emitting invalid JSON.

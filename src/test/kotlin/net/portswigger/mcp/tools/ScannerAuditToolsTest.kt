@@ -208,6 +208,24 @@ class ScannerAuditToolsTest {
     }
 
     @Test
+    fun `observing a project switch cancels and forgets active extension-owned audits`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.delete() } just runs
+
+        val started = service.start(passiveInput(1), config)
+        every { project.id() } returns "second-project"
+        val result = service.get(GetScannerAudit("second-project", started.taskId!!), config)
+
+        assertEquals(ScannerAuditToolStatus.NOT_FOUND, result.status)
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
     fun `active audit requires explicit semantic insertion points`() = runBlocking {
         val item = proxyItem(1, response = null)
         every { proxy.history(any()) } returns listOf(item)
@@ -321,6 +339,32 @@ class ScannerAuditToolsTest {
         assertEquals(ScannerAuditToolStatus.OK, result.status)
         assertTrue(result.issuesAccessDenied)
         assertTrue(result.issues.isEmpty())
+        verify(exactly = 0) { audit.issues() }
+    }
+
+    @Test
+    fun `issue limit zero returns task status without prompting for issue access`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        val dataApproval = mockk<DataAccessApprovalHandler>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.statusMessage() } returns "Running"
+        every { audit.insertionPointCount() } returns 0
+        every { audit.requestCount() } returns 1
+        every { audit.errorCount() } returns 0
+        config = config(requireDataApproval = false)
+        DataAccessSecurity.approvalHandler = dataApproval
+
+        val started = service.start(passiveInput(1), config)
+        val result = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
+
+        assertEquals(ScannerAuditToolStatus.OK, result.status)
+        assertTrue(result.issues.isEmpty())
+        assertEquals(false, result.issuesAccessDenied)
+        coVerify(exactly = 0) { dataApproval.requestDataAccess(any(), any()) }
         verify(exactly = 0) { audit.issues() }
     }
 

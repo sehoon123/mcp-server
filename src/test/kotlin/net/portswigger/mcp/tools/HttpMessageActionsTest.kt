@@ -501,7 +501,7 @@ class HttpMessageActionsTest {
             val options = mockk<RequestOptions>()
             every { RequestOptions.requestOptions() } returns options
             every { options.withHttpMode(HttpMode.HTTP_1) } returns options
-            every { options.withRedirectionMode(RedirectionMode.SAME_HOST) } returns options
+            every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
             every { options.withResponseTimeout(2500) } returns options
 
             val http = mockk<Http>()
@@ -525,7 +525,7 @@ class HttpMessageActionsTest {
                 SendHttpRequestFromId(
                     projectId = "project-123",
                     ref = HttpMessageReference(HttpMessageSource.PROXY, "10"),
-                    redirection = HttpRedirectionPolicy.SAME_HOST,
+                    redirection = HttpRedirectionPolicy.NEVER,
                     responseTimeoutMs = 2500,
                     responseBodyLimit = 8,
                 )
@@ -544,6 +544,26 @@ class HttpMessageActionsTest {
         } finally {
             unmockkStatic(RequestOptions::class)
         }
+    }
+
+    @Test
+    fun `HTTP replay rejects automatic redirects before resolution or network access`() = runBlocking {
+        val http = mockk<Http>(relaxed = true)
+        every { api.http() } returns http
+
+        val result = service.send(
+            SendHttpRequestFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "10"),
+                redirection = HttpRedirectionPolicy.ALWAYS,
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertTrue(result.error.orEmpty().contains("redirected destinations"))
+        verify(exactly = 0) { http.sendRequest(any<HttpRequest>(), any<RequestOptions>()) }
+        verify(exactly = 0) { proxy.history(any()) }
     }
 
     @Test

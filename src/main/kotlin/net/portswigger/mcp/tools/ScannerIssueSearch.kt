@@ -10,9 +10,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -33,16 +35,27 @@ private const val SCANNER_CURSOR_HMAC = "HmacSHA256"
 
 @Serializable
 data class GetScannerIssues(
+    @JsonSchemaMetadata(description = "Maximum issues returned.", minimum = 1, maximum = 50, defaultJson = "25")
     override val count: Int = DEFAULT_SCANNER_ISSUE_LIMIT,
+    @JsonSchemaMetadata(description = "Legacy-mode offset; cursor mode requires zero.", minimum = 0, defaultJson = "0")
     override val offset: Int = 0,
+    @JsonSchemaMetadata(description = "Return compact issue summaries.", defaultJson = "false")
     val summariesOnly: Boolean? = null,
+    @JsonSchemaMetadata(description = "Use snapshot-bound signed cursor pagination.", defaultJson = "false")
     val cursorMode: Boolean? = null,
+    @JsonSchemaMetadata(description = "Opaque signed continuation cursor.", maxLength = 16384)
     val cursor: String? = null,
+    @JsonSchemaMetadata(description = "Severity filters.", minItems = 1, maxItems = 8)
     val severities: List<ScannerIssueSeverityFilter>? = null,
+    @JsonSchemaMetadata(description = "Confidence filters.", minItems = 1, maxItems = 8)
     val confidences: List<ScannerIssueConfidenceFilter>? = null,
+    @JsonSchemaMetadata(description = "Exact canonical issue host.", minLength = 1, maxLength = 253)
     val host: String? = null,
+    @JsonSchemaMetadata(description = "Issue-name substring filter.", minLength = 1, maxLength = 256)
     val nameContains: String? = null,
+    @JsonSchemaMetadata(description = "Use case-sensitive name matching.", defaultJson = "false")
     val caseSensitive: Boolean? = null,
+    @JsonSchemaMetadata(description = "Return newest issues first.", defaultJson = "true")
     val newestFirst: Boolean? = null,
 ) : Paginated
 
@@ -598,5 +611,4 @@ private fun scannerIssuePageError(
     error = error.take(512),
 )
 
-private fun safeScannerSearchException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeScannerSearchException(error: Exception): String = safeExceptionSummary(error)

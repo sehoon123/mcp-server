@@ -83,13 +83,22 @@ jobs:
               --scenario "$scenario" \
               --verbose || status=1
           done
+
+          # Draft SEP-2575 is intentionally unsupported by the production SDK. Keep a stale-sensitive
+          # expected-failure baseline so an SDK upgrade cannot silently change that status.
+          npx --yes @modelcontextprotocol/conformance@0.2.0-alpha.9 server \
+            --url http://127.0.0.1:19877/mcp \
+            --scenario server-stateless \
+            --expected-failures .github/conformance-expected-failures.yml \
+            --verbose || status=1
+
           if [[ "$status" -ne 0 ]]; then
             cat "$server_log"
           fi
           exit "$status"
 
-      - name: Build extension JAR
-        run: ./gradlew embedProxyJar
+      - name: Build extension JAR and SBOM
+        run: ./gradlew embedProxyJar generateSbom
 
       - name: Verify reproducible extension JAR
         shell: bash
@@ -110,7 +119,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: burp-mcp-extension
-          path: build/libs/burp-mcp-*.jar
+          path: |
+            build/libs/burp-mcp-*.jar
+            build/reports/compliance/bom.cdx.json
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            docs/VULNERABILITY_REPORT.md
           retention-days: 30
 
   dependency-submission:

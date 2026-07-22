@@ -2,6 +2,7 @@
 # Build System
 kotlin = "2.3.21"
 ktor = "3.4.3"
+shadow = "9.6.0"
 
 # Runtime Dependencies
 kotlinx-serialization = "1.11.0"
@@ -10,6 +11,7 @@ burp-montoya = "2025.10"
 
 # Test Dependencies
 mockk = "1.14.6"
+byte-buddy = "1.17.6"
 
 [libraries]
 # Kotlin
@@ -18,7 +20,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 
 # Ktor Server
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
-ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
 ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 ktor-server-sse = { module = "io.ktor:ktor-server-sse", version.ref = "ktor" }
@@ -33,13 +35,14 @@ burp-montoya-api = { module = "net.portswigger.burp.extensions:montoya-api", ver
 # Test Dependencies
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+byte-buddy-agent = { module = "net.bytebuddy:byte-buddy-agent", version.ref = "byte-buddy" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 
 [bundles]
 ktor-server = [
     "ktor-server-core",
-    "ktor-server-netty", 
+    "ktor-server-cio",
     "ktor-server-content-negotiation",
     "ktor-server-cors",
     "ktor-server-sse",
@@ -59,4 +62,4 @@ test-framework = [
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

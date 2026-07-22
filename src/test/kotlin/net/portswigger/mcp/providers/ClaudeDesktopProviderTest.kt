@@ -4,6 +4,7 @@ import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
@@ -64,9 +65,10 @@ class ClaudeDesktopProviderTest {
     }
 
     @Test
-    fun `proxy endpoint converts wildcard bind addresses into connectable loopback addresses`() {
-        assertEquals("http://127.0.0.1:9876/mcp", streamableHttpEndpoint("0.0.0.0", 9876))
-        assertEquals("http://[::1]:9876/mcp", streamableHttpEndpoint("::", 9876))
+    fun `proxy endpoint rejects remotely reachable bind addresses`() {
+        assertThrows<IllegalArgumentException> { streamableHttpEndpoint("0.0.0.0", 9876) }
+        assertThrows<IllegalArgumentException> { streamableHttpEndpoint("::", 9876) }
+        assertThrows<IllegalArgumentException> { streamableHttpEndpoint("localhost", 9876) }
     }
 
     @Test

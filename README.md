@@ -44,7 +44,9 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 Download [`burp-mcp-all.jar`](https://github.com/sehoon123/mcp-server/releases/latest/download/burp-mcp-all.jar)
 and its [`SHA256SUMS`](https://github.com/sehoon123/mcp-server/releases/latest/download/SHA256SUMS) file from the
-latest release. Install the JAR through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR.
+latest release. Releases also include a CycloneDX SBOM, [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the
+[`LICENSE`](LICENSE), and the point-in-time [`vulnerability report`](docs/VULNERABILITY_REPORT.md). Install the JAR
+through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR.
 
 On systems with `sha256sum`, verify the download before installation:
 
@@ -59,13 +61,14 @@ Building requires JDK 21 or newer:
 ```bash
 git clone https://github.com/sehoon123/mcp-server.git
 cd mcp-server
-./gradlew embedProxyJar
+./gradlew embedProxyJar generateSbom
 ```
 
 The resulting extension is:
 
 ```text
 build/libs/burp-mcp-all.jar
+build/reports/compliance/bom.cdx.json
 ```
 
 When updating the companion proxy, build and record it reproducibly with:
@@ -85,11 +88,13 @@ Open the **MCP** tab in Burp:
 
 - Enable or stop the MCP server.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
+- Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
+- Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map and Collaborator items.
-- Enable configuration-editing tools only when they are required.
+- Enable configuration-editing tools only when they are required. Configuration changes and other global-state mutations still require explicit **Allow Once / Deny** approval.
 
-The default loopback binding is recommended. Do not expose the endpoint to another network until authentication and
-TLS are configured in front of it.
+The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
+support a remote listener; do not weaken the bind or use an unauthenticated forwarding proxy.
 
 ## Unified HTTP search
 
@@ -146,8 +151,9 @@ remains bound to its original host, port, and TLS mode.
 
 Source and resulting requests are capped at 2 MiB; replacement bodies at 1 MiB; header and parameter mutations at 64
 each. `send_to_intruder_from_id` can additionally resolve up to 32 semantic parameter, header-value, or whole-body
-insertion points; clients cannot supply raw byte offsets. HTTP replay defaults to the source protocol, never follows
-redirects unless requested, uses a 30-second response timeout, and returns at most an 8 KiB body preview by default
+insertion points; clients cannot supply raw byte offsets. HTTP replay defaults to the source protocol, rejects every
+automatic redirect mode because redirected destinations cannot be reviewed separately, uses a 30-second response timeout,
+and returns at most an 8 KiB body preview by default
 (64 KiB maximum). Responses are recorded in Site Map on a best-effort basis. When the recorded item can be located,
 `recordedRef` contains the exact opaque Site Map reference for follow-up reads or focused audits. Unmodified Organizer
 actions preserve a source response when the Montoya source supports it; patched requests never attach a now-mismatched
@@ -190,8 +196,8 @@ Scanner UI first.
 
 ## Collaborator polling
 
-On Burp Professional, `generate_collaborator_payload` returns both a payload and its interaction ID; optional
-`customData` follows Burp's 1–16 ASCII-alphanumeric limit. Pass that ID as
+On Burp Professional, `generate_collaborator_payload` requires the current `projectId` and returns both a payload and
+its interaction ID; optional `customData` follows Burp's 1–16 ASCII-alphanumeric limit. Pass the same `projectId` and that ID as
 `payloadId` to `get_collaborator_interactions`. The read tool supports an ISO-8601 `since` filter, Burp's
 interaction-ID filter, `waitSeconds` from 0 to 120, up to 50 results, newest/oldest ordering, and text or base64 detail
 slices. At most four waits run concurrently. Polling emits MCP progress when the client supplies a progress token and
@@ -200,8 +206,12 @@ Collaborator interaction reads use their own **Always allow** data-access option
 
 ## Stable history access
 
-Set `summariesOnly` to `true` on the existing paginated Proxy, WebSocket, Organizer, or Scanner tools to return compact
-metadata instead of complete messages. Summaries expose Burp's project-scoped numeric IDs; Scanner issue IDs are
+The existing paginated Proxy, WebSocket, and Organizer tools now return compact stable-ID summaries by default. Set
+`summariesOnly=false` only with one selected `part`, `contentLimit` (8 KiB default, 32 KiB maximum), and `encoding` for a
+bounded preview. Pages contain at most 50 records and 128 Ki characters; explicit truncation metadata replaces invalid
+mid-JSON string cutting. Legacy regex variants accept at most 512 characters and conservatively reject backreferences,
+lookarounds, quantified groups, and multiple unbounded quantifiers. Summaries expose Burp's project-scoped numeric IDs;
+Scanner issue IDs are
 deterministic `issue_<hash>` values derived from issue identity fields.
 
 Use the corresponding read tool to fetch only the required record and field:
@@ -231,7 +241,8 @@ signed project/query/snapshot cursor that is invalidated on MCP server restart.
 
 1. Install only `burp-mcp-all.jar` as a Java extension in Burp.
 2. Open Burp's **MCP** tab and make sure **Enabled** is on.
-3. Keep Burp running while the MCP client is in use.
+3. Under **Advanced Options**, copy the local bearer token and configure the client as shown below.
+4. Keep Burp running while the MCP client is in use.
 
 Native Streamable HTTP clients connect directly to:
 
@@ -239,9 +250,16 @@ Native Streamable HTTP clients connect directly to:
 http://127.0.0.1:9876/mcp
 ```
 
-The `/mcp` suffix is required. The endpoint is intentionally loopback-only by default and has no bearer-token or TLS
-layer, so do not expose it on a LAN or the internet. Ordinary calls return JSON; the same endpoint can optionally use
-an event stream for server-initiated requests.
+The `/mcp` suffix is required. Every production request must include:
+
+```http
+Authorization: Bearer <token copied from Burp Advanced Options>
+```
+
+The endpoint accepts only numeric loopback binds and has no TLS because traffic never leaves the local host. Bearer
+authentication is still mandatory and browser `Origin`/`Host` checks are defense in depth, not an authentication
+replacement. Ordinary calls return JSON; the same endpoint can optionally use an event stream for server-initiated
+requests. Never commit the token to a repository.
 
 The following examples are alternatives. Configure only the clients you actually use.
 
@@ -252,7 +270,10 @@ Claude Code supports Streamable HTTP directly, so it does not need the embedded 
 Add Burp for the current user:
 
 ```shell
-claude mcp add --transport http burp --scope user http://127.0.0.1:9876/mcp
+export BURP_MCP_BEARER_TOKEN='<token copied from Burp>'
+claude mcp add --transport http burp --scope user \
+  --header "Authorization: Bearer $BURP_MCP_BEARER_TOKEN" \
+  http://127.0.0.1:9876/mcp
 claude mcp list
 ```
 
@@ -263,13 +284,16 @@ For a project-shared configuration, use `--scope project`. Claude creates `.mcp.
   "mcpServers": {
     "burp": {
       "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
+      "url": "http://127.0.0.1:9876/mcp",
+      "headers": {
+        "Authorization": "Bearer ${BURP_MCP_BEARER_TOKEN}"
+      }
     }
   }
 }
 ```
 
-Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
+Claude Code expands `BURP_MCP_BEARER_TOKEN` from its environment. Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
 project containing `.mcp.json`, review and approve the server when Claude asks whether to trust it.
 
 ### Claude Desktop and other stdio-only clients
@@ -289,8 +313,13 @@ The generated configuration is equivalent to:
         "-jar",
         "<path to the automatically extracted mcp-proxy-all.jar>",
         "--mcp-url",
-        "http://127.0.0.1:9876/mcp"
-      ]
+        "http://127.0.0.1:9876/mcp",
+        "--bearer-token-env",
+        "BURP_MCP_BEARER_TOKEN"
+      ],
+      "env": {
+        "BURP_MCP_BEARER_TOKEN": "<token installed by Burp>"
+      }
     }
   }
 }
@@ -307,23 +336,33 @@ A typical Windows installation resolves those placeholders to paths like:
         "-jar",
         "C:\\Users\\<user>\\AppData\\Roaming\\BurpSuite\\mcp-proxy\\mcp-proxy-all.jar",
         "--mcp-url",
-        "http://127.0.0.1:9876/mcp"
-      ]
+        "http://127.0.0.1:9876/mcp",
+        "--bearer-token-env",
+        "BURP_MCP_BEARER_TOKEN"
+      ],
+      "env": {
+        "BURP_MCP_BEARER_TOKEN": "<token installed by Burp>"
+      }
     }
   }
 }
 ```
 
-The actual Burp installation path can differ, so prefer the installer-generated values. Restart Claude Desktop after
-installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as migration aliases, but
-the proxy still uses Streamable HTTP at `/mcp`.
+The actual Burp installation path can differ, so prefer the installer-generated values. The installer validates the
+packaged proxy checksum, backs up the existing client configuration as `*.burp-mcp.bak`, and replaces configuration and
+proxy files atomically with owner-only POSIX permissions where supported. Claude Desktop requires its environment value
+in local configuration, so that file and its backup contain the token in plaintext; do not share either file. Restart
+Claude Desktop after installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as
+migration aliases, but the proxy still uses authenticated Streamable HTTP at `/mcp`.
 
 ### mcporter
 
 Register the native HTTP endpoint in the user-level mcporter configuration:
 
 ```shell
-mcporter config add burp http://127.0.0.1:9876/mcp --scope home
+export BURP_MCP_BEARER_TOKEN='<token copied from Burp>'
+mcporter config add burp http://127.0.0.1:9876/mcp --scope home \
+  --header "Authorization=Bearer $BURP_MCP_BEARER_TOKEN"
 mcporter list burp --schema
 ```
 
@@ -333,13 +372,16 @@ For a repository-local configuration, use `--scope project`. The equivalent `con
 {
   "mcpServers": {
     "burp": {
-      "baseUrl": "http://127.0.0.1:9876/mcp"
+      "baseUrl": "http://127.0.0.1:9876/mcp",
+      "headers": {
+        "Authorization": "Bearer <token copied from Burp>"
+      }
     }
   }
 }
 ```
 
-Example tool call:
+Restrict permissions on `mcporter.json` because this static form contains the token. Example tool call:
 
 ```shell
 mcporter call burp.search_http_messages \
@@ -356,10 +398,21 @@ Palette for a user-level configuration:
 
 ```json
 {
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "burp-mcp-token",
+      "description": "Burp MCP local bearer token",
+      "password": true
+    }
+  ],
   "servers": {
     "burp": {
       "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
+      "url": "http://127.0.0.1:9876/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:burp-mcp-token}"
+      }
     }
   }
 }
@@ -375,13 +428,16 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for a global con
 {
   "mcpServers": {
     "burp": {
-      "url": "http://127.0.0.1:9876/mcp"
+      "url": "http://127.0.0.1:9876/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:BURP_MCP_BEARER_TOKEN}"
+      }
     }
   }
 }
 ```
 
-Cursor recognizes this URL as a Streamable HTTP server.
+Set `BURP_MCP_BEARER_TOKEN` in the environment that launches Cursor. Cursor recognizes this URL as a Streamable HTTP server.
 
 ### OpenAI Codex
 
@@ -391,13 +447,27 @@ Codex CLI and the Codex IDE extension share `~/.codex/config.toml`. Trusted proj
 ```toml
 [mcp_servers.burp]
 url = "http://127.0.0.1:9876/mcp"
+bearer_token_env_var = "BURP_MCP_BEARER_TOKEN"
 enabled = true
 ```
 
-Restart or reconnect Codex after saving the file.
+Set `BURP_MCP_BEARER_TOKEN` in the environment that launches Codex, then restart or reconnect Codex.
+
+### Rotate or replace the token
+
+1. Stop using MCP clients, then choose **Rotate local bearer token...** under Burp **MCP → Advanced Options**.
+2. Stop and start the Burp MCP server so the listener begins requiring the new token.
+3. Run **Install to Claude Desktop** again for the stdio configuration. For native clients, replace the environment,
+   secret input, or header value shown above.
+4. Restart or reconnect every client. Delete obsolete installer backups after confirming the new configuration works.
+
+Rotation immediately invalidates the persisted credential, but an already-running listener retains its startup token
+until restarted. A `401 Unauthorized` after rotation almost always means one side still has the old value.
 
 ### Connection troubleshooting
 
+- A `401` means the bearer header is missing, malformed, or stale. Copy the current token, restart the Burp listener,
+  and update or reinstall the client.
 - A `404` usually means the client was pointed at `/` or an obsolete SSE path; use `/mcp`.
 - `Server not initialized` from a hand-written HTTP request means the endpoint is reachable but the request did not
   perform the MCP initialization handshake.
@@ -420,7 +490,9 @@ Tools are defined in `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt`. Param
 tool names and JSON schemas are derived from those types. Implement `Paginated` for potentially large result sets.
 
 CI also runs the official MCP conformance scenarios for initialization, ping, tool discovery, DNS-rebinding
-protection, and concurrent Streamable HTTP POST requests.
+protection, and multiple Streamable HTTP SSE streams. Integration tests negotiate `2025-03-26`, `2025-06-18`, and
+`2025-11-25`; the draft SEP-2575 stateless scenario has a stale-sensitive expected-failure baseline until the pinned
+production SDK supports that lifecycle.
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the runtime analysis and measurements, and
 [docs/ROADMAP.md](docs/ROADMAP.md) for proposed security, protocol, and tool improvements.

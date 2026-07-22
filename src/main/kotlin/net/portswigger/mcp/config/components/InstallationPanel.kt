@@ -9,6 +9,7 @@ import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.Provider
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.awt.FlowLayout
 import javax.swing.*
 import javax.swing.Box.createVerticalStrut
@@ -113,7 +114,7 @@ class InstallationPanel(
                 CoroutineScope(Dispatchers.Swing).launch {
                     Dialogs.showMessageDialog(
                         parentComponent,
-                        "Failed to install for ${provider.name}: ${e.message ?: e.javaClass.simpleName}",
+                        "Failed to install for ${provider.name}: ${safeExceptionSummary(e)}",
                         ERROR_MESSAGE
                     )
                 }

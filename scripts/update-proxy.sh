@@ -9,7 +9,7 @@ if [[ ! -x "$proxy_dir/gradlew" || ! -d "$proxy_dir/.git" ]]; then
   exit 2
 fi
 
-"$proxy_dir/gradlew" -p "$proxy_dir" clean test shadowJar --no-parallel
+"$proxy_dir/gradlew" -p "$proxy_dir" clean test shadowJar writeRuntimeComponents --no-parallel
 
 artifact="$proxy_dir/build/libs/mcp-proxy-all.jar"
 destination="$server_dir/libs/mcp-proxy-all.jar"
@@ -31,9 +31,13 @@ Source: $source_url
 Commit: $commit
 Branch: $branch
 Version: $version
-Build: ./gradlew clean test shadowJar
+Build: ./gradlew clean test shadowJar writeRuntimeComponents
 Artifact: build/libs/mcp-proxy-all.jar
 SHA-256: $checksum
 EOF
+
+while IFS= read -r component; do
+  [[ -n "$component" ]] && printf 'Runtime component: %s\n' "$component" >> "$server_dir/libs/mcp-proxy-source.txt"
+done < "$proxy_dir/build/reports/runtime-components.txt"
 
 printf 'Updated %s\nSHA-256: %s\n' "$destination" "$checksum"

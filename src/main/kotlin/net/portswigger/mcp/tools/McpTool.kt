@@ -21,11 +21,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.serializer
 import net.portswigger.mcp.schema.asInputSchema
 import net.portswigger.mcp.schema.asOutputSchema
+import net.portswigger.mcp.security.safeExceptionSummary
 import kotlin.experimental.ExperimentalTypeInference
 
 private const val MAX_CONCURRENT_TOOL_EXECUTIONS = 16
 private const val MAX_PROGRESS_MESSAGE_CHARS = 256
 
+@PublishedApi
 internal val READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint = true,
     destructiveHint = false,
@@ -82,6 +84,20 @@ internal val COLLABORATOR_GENERATE_TOOL_ANNOTATIONS = ToolAnnotations(
     openWorldHint = true,
 )
 
+internal val PROJECT_MUTATION_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = false,
+    destructiveHint = true,
+    idempotentHint = true,
+    openWorldHint = false,
+)
+
+internal val LOCAL_TRANSFORM_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint = true,
+    destructiveHint = false,
+    idempotentHint = true,
+    openWorldHint = false,
+)
+
 @PublishedApi
 internal val toolExecutionDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_TOOL_EXECUTIONS)
 private val lowerToUpperBoundary = Regex("([a-z0-9])([A-Z])")
@@ -91,11 +107,12 @@ private val wordSeparator = Regex("[\\s-]+")
 @OptIn(InternalSerializationApi::class)
 inline fun <reified I : Any> Server.mcpTool(
     description: String,
+    annotations: ToolAnnotations? = null,
     crossinline execute: suspend I.() -> List<ContentBlock>
 ) {
     val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
     val serializer = I::class.serializer()
-    val inputSchema = I::class.asInputSchema()
+    val inputSchema = serializer.descriptor.asInputSchema()
 
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, request ->
         try {
@@ -111,13 +128,19 @@ inline fun <reified I : Any> Server.mcpTool(
             throw e
         } catch (e: Exception) {
             CallToolResult(
-                content = listOf(TextContent("Error: ${e.message}")),
+                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
                 isError = true
             )
         }
     }
 
-    addTool(name = toolName, description = description, inputSchema = inputSchema, handler = handler)
+    addTool(
+        name = toolName,
+        description = description,
+        inputSchema = inputSchema,
+        toolAnnotations = annotations,
+        handler = handler,
+    )
 }
 
 @OptIn(ExperimentalTypeInference::class)
@@ -125,9 +148,10 @@ inline fun <reified I : Any> Server.mcpTool(
 @JvmName("mcpToolString")
 inline fun <reified I : Any> Server.mcpTool(
     description: String,
+    annotations: ToolAnnotations? = null,
     crossinline execute: suspend I.() -> String
 ) {
-    mcpTool<I>(description, execute = {
+    mcpTool<I>(description, annotations, execute = {
         listOf(TextContent(execute(this)))
     })
 }
@@ -137,9 +161,10 @@ inline fun <reified I : Any> Server.mcpTool(
 @JvmName("mcpToolUnit")
 inline fun <reified I : Any> Server.mcpTool(
     description: String,
+    annotations: ToolAnnotations? = null,
     crossinline execute: suspend I.() -> Unit
 ) {
-    mcpTool<I>(description, execute = {
+    mcpTool<I>(description, annotations, execute = {
         execute(this)
 
         listOf(TextContent("Executed tool"))
@@ -151,8 +176,8 @@ inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedTool(
     noinline mapper: (J) -> CharSequence = { it.toString() },
     crossinline execute: suspend I.() -> List<J>
 ) {
-    mcpTool<I>(description, execute = {
-
+    mcpTool<I>(description, READ_ONLY_TOOL_ANNOTATIONS, execute = {
+        requireBoundedPage()
         val items = execute(this)
 
         when {
@@ -163,8 +188,9 @@ inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedTool(
             else -> {
                 val upperLimit = (offset + count).coerceAtMost(items.size)
 
-                items.subList(offset, upperLimit)
-                    .joinToString(separator = "\n\n", transform = mapper)
+                boundedLegacyPage(
+                    items.subList(offset, upperLimit).asSequence().map { mapper(it) }.iterator()
+                )
             }
         }
     })
@@ -181,7 +207,8 @@ internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequence
     noinline mapper: I.(J) -> CharSequence = { it.toString() },
     crossinline execute: suspend I.() -> PaginatedSource<J>
 ) {
-    mcpTool<I>(description, execute = {
+    mcpTool<I>(description, READ_ONLY_TOOL_ANNOTATIONS, execute = {
+        requireBoundedPage()
         val input = this
         when (val source = execute(input)) {
             is PaginatedSource.Message -> {
@@ -194,14 +221,8 @@ internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequence
                 if (!iterator.hasNext()) {
                     listOf(TextContent("Reached end of items"))
                 } else {
-                    val output = buildString {
-                        append(mapper(input, iterator.next()))
-                        while (iterator.hasNext()) {
-                            append("\n\n")
-                            append(mapper(input, iterator.next()))
-                        }
-                    }
-                    listOf(TextContent(output))
+                    val mapped = iterator.asSequence().map { mapper(input, it) }.iterator()
+                    listOf(TextContent(boundedLegacyPage(mapped)))
                 }
             }
         }
@@ -212,19 +233,13 @@ inline fun <reified I : Paginated> Server.mcpPaginatedTool(
     description: String,
     crossinline execute: suspend I.() -> Sequence<String>
 ) {
-    mcpTool<I>(description, execute = {
+    mcpTool<I>(description, READ_ONLY_TOOL_ANNOTATIONS, execute = {
+        requireBoundedPage()
         val iterator = execute(this).drop(offset).take(count).iterator()
         if (!iterator.hasNext()) {
             listOf(TextContent("Reached end of items"))
         } else {
-            val output = buildString {
-                append(iterator.next())
-                while (iterator.hasNext()) {
-                    append("\n\n")
-                    append(iterator.next())
-                }
-            }
-            listOf(TextContent(output))
+            listOf(TextContent(boundedLegacyPage(iterator)))
         }
     })
 }
@@ -235,6 +250,7 @@ inline fun <reified I : Paginated> Server.mcpPaginatedTool(
 inline fun Server.mcpTool(
     name: String,
     description: String,
+    annotations: ToolAnnotations? = null,
     crossinline execute: suspend () -> List<ContentBlock>
 ) {
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, _ ->
@@ -243,12 +259,19 @@ inline fun Server.mcpTool(
             isError = false
         )
     }
-    addTool(name = name, description = description, inputSchema = ToolSchema(), handler = handler)
+    addTool(
+        name = name,
+        description = description,
+        inputSchema = ToolSchema(),
+        toolAnnotations = annotations,
+        handler = handler,
+    )
 }
 
 inline fun Server.mcpTool(
     name: String,
     description: String,
+    annotations: ToolAnnotations? = null,
     crossinline execute: suspend () -> String
 ) {
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { _, _ ->
@@ -257,7 +280,13 @@ inline fun Server.mcpTool(
             isError = false
         )
     }
-    addTool(name = name, description = description, inputSchema = ToolSchema(), handler = handler)
+    addTool(
+        name = name,
+        description = description,
+        inputSchema = ToolSchema(),
+        toolAnnotations = annotations,
+        handler = handler,
+    )
 }
 
 data class StructuredToolResponse<O : Any>(
@@ -324,7 +353,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
             throw e
         } catch (e: Exception) {
             CallToolResult(
-                content = listOf(TextContent("Error: ${e.message}")),
+                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
                 isError = true,
             )
         }
@@ -369,7 +398,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
             throw e
         } catch (e: Exception) {
             CallToolResult(
-                content = listOf(TextContent("Error: ${e.message}")),
+                content = listOf(TextContent("Error: ${safeExceptionSummary(e)}")),
                 isError = true,
             )
         }
@@ -396,4 +425,38 @@ fun String.toLowerSnakeCase(): String {
 interface Paginated {
     val count: Int
     val offset: Int
+}
+
+@PublishedApi
+internal const val MAX_LEGACY_PAGE_COUNT = 50
+
+@PublishedApi
+internal const val MAX_LEGACY_PAGE_CHARS = 128 * 1024
+
+@PublishedApi
+internal fun Paginated.requireBoundedPage() {
+    require(count in 1..MAX_LEGACY_PAGE_COUNT) { "count must be between 1 and $MAX_LEGACY_PAGE_COUNT" }
+    require(offset in 0..1_000_000) { "offset must be between 0 and 1000000" }
+}
+
+@PublishedApi
+internal fun boundedLegacyPage(iterator: Iterator<CharSequence>): String = buildString {
+    var omitted = 0
+    while (iterator.hasNext()) {
+        val item = iterator.next().toString()
+        val separatorChars = if (isEmpty()) 0 else 2
+        if (length + separatorChars + item.length > MAX_LEGACY_PAGE_CHARS) {
+            omitted++
+            while (iterator.hasNext()) {
+                iterator.next()
+                omitted++
+            }
+            if (isNotEmpty()) append("\n\n")
+            append("{\"pageTruncated\":true,\"omittedItems\":$omitted,")
+            append("\"hint\":\"use a stable-ID read tool with byte pagination\"}")
+            break
+        }
+        if (isNotEmpty()) append("\n\n")
+        append(item)
+    }
 }

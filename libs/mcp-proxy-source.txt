@@ -1,7 +1,46 @@
 Source: https://github.com/sehoon123/mcp-proxy.git
-Commit: de8b770ba48c5709056f2cb713bc2886d155e4c1
-Branch: perf/runtime-optimization
-Version: 2.0.0
-Build: ./gradlew clean test shadowJar
+Commit: f46c402adc54ee45aff9a0ffea371708d2b6b004
+Branch: main
+Version: 2.1.0
+Build: ./gradlew clean test shadowJar writeRuntimeComponents
 Artifact: build/libs/mcp-proxy-all.jar
-SHA-256: 533cd24cbb39b9855234b8d14c4d19a2293b70711282222c7f905927851ba244
+SHA-256: ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82
+Runtime component: com.typesafe:config:1.4.5 4a4b0affb22a9572409d3a6bde99ce3f2045c551cadc1ca7fe09690892c526c3
+Runtime component: io.github.oshai:kotlin-logging-jvm:8.0.4 0bbac3f9dac5067b40d02fe461a053782bc8d3ef5162a923581b369adef7e02d
+Runtime component: io.ktor:ktor-client-cio-jvm:3.4.3 46906daeff1dc1bfa1d63acf832c0760b84dd156c597879a63a907260229fe98
+Runtime component: io.ktor:ktor-client-core-jvm:3.4.3 f39261e894dfc392c73a7c9e4cd9f3a6f20539a75249d8b9c4c249b800fdf8f0
+Runtime component: io.ktor:ktor-events-jvm:3.4.3 0f04a1b8380131a14e9705bf1dcbc9df232f1241533fc5b8d1abd830747ddca4
+Runtime component: io.ktor:ktor-http-cio-jvm:3.4.3 f049584126b6f4da2e93d7d43336296312e2a88d5d5263f1d1d24f1b8d66ff3a
+Runtime component: io.ktor:ktor-http-jvm:3.4.3 b3134c2c6c49bcc9747a424278d0723edba24a253b36450eabcc7fa562e2ada9
+Runtime component: io.ktor:ktor-io-jvm:3.4.3 45da46292e1c2b0580c487eba767d7dbcb50460df2d6e8937f43e875d92b44df
+Runtime component: io.ktor:ktor-network-jvm:3.4.3 a6ba3e2ad6bb38a23b08f08edc32e3a60040ad952c6c3a9e08872d5d96dd8b45
+Runtime component: io.ktor:ktor-network-tls-jvm:3.4.3 84c83adc5042ed2287dfbc7f8452414f7cfcace0e9d07acabf947e364dd31735
+Runtime component: io.ktor:ktor-serialization-jvm:3.4.3 587dfba946272f65b4125fd0a68242c42d84de39ffc2b82e37babf37e42d6919
+Runtime component: io.ktor:ktor-serialization-kotlinx-json-jvm:3.4.3 328a27284e4cdc0d1554216b7e4acf859fe3b0cfd421cc2075c43c13e3c76127
+Runtime component: io.ktor:ktor-serialization-kotlinx-jvm:3.4.3 a1f16b2dc7781294db5f4ccaa8ce97af943051b5f3c06edf61bafb7ed18a9b31
+Runtime component: io.ktor:ktor-server-content-negotiation-jvm:3.4.3 a04b88e2572efc2e7ef396d9de4a43cf075e06dea25e193b992e12478b421c1c
+Runtime component: io.ktor:ktor-server-core-jvm:3.4.3 3710307268e14f17aa91ced4bde286102d845f76d759a67e7170a377843915ae
+Runtime component: io.ktor:ktor-server-sse-jvm:3.4.3 9242d84b1921a7acdbf243d9d18c217205667b03dcfdc8a4357961f3c9688814
+Runtime component: io.ktor:ktor-server-websockets-jvm:3.4.3 9cc570f3eaf14d7472cdc349cfc732a1941a04bf41f905d82bc609e7e0057e4d
+Runtime component: io.ktor:ktor-sse-jvm:3.4.3 a906b26ec53389016c92e9e24ae9d79976e3e58267713d0cb9a8f26a3f3f6907
+Runtime component: io.ktor:ktor-utils-jvm:3.4.3 e48b9ce51870f410c7ab5c040c8e6d02694827ebfdfc5a2b84f086ad049bb561
+Runtime component: io.ktor:ktor-websocket-serialization-jvm:3.4.3 d999a7b90b3d9ad2ef0d117c4ace62b10bd7ac1345cd1c6a7680a43fffbe0ed0
+Runtime component: io.ktor:ktor-websockets-jvm:3.4.3 ed2fbfb81d3029cf05a62ac7b6d45b38a873a02f8ee60b04ae65346ed5299ee4
+Runtime component: io.modelcontextprotocol:kotlin-sdk-client-jvm:0.14.0 d411b6b88bf37164666b30a667c630e41f59e18a62267e1587f9589f0d4ff09c
+Runtime component: io.modelcontextprotocol:kotlin-sdk-core-jvm:0.14.0 f43ddb3dfa780ce3b31bdbe73adcfc222b5b794f514721c4f8fe18c3c18bf74b
+Runtime component: io.modelcontextprotocol:kotlin-sdk-jvm:0.14.0 88c25c0136e9be9539a906c2dc25d1ba7b2bedae0c8c3f7421ca3fb8090192dc
+Runtime component: io.modelcontextprotocol:kotlin-sdk-server-jvm:0.14.0 559c47869375f8838ff11db3640bf305a91985713ee36e2956b71c771f2eb20d
+Runtime component: org.fusesource.jansi:jansi:2.4.2 0b7b8b003a90ea491579b62f5118828e45112914c65589b00faa49d6ec785839
+Runtime component: org.jetbrains.kotlin:kotlin-reflect:2.3.0 714df4be819545ff4de1f36aa2183e0dea94b4c8cdf7ca29e9c89919baf36362
+Runtime component: org.jetbrains.kotlin:kotlin-stdlib:2.3.21 6f64eac736db9434dd6925b4a518b9d1d17177652320c37916cf9ba3ce7d7d7a
+Runtime component: org.jetbrains.kotlinx:kotlinx-collections-immutable-jvm:0.5.0 9481ed3b87e282ffb95d7e2a033702afa3af476e3b89137294aeccebb27c76f7
+Runtime component: org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.11.0 d1d75aa01dffbb4d1c520e67e4c4e7f5f6174718e7cb4632412503f2f0e604fa
+Runtime component: org.jetbrains.kotlinx:kotlinx-coroutines-slf4j:1.11.0 1043471e7d5f99680df3a056cf766276e0fe339e48030dea503fc1c94c33743e
+Runtime component: org.jetbrains.kotlinx:kotlinx-io-bytestring-jvm:0.9.1 8589de0b7c476bfdd02a24641685f609ade72f5e595cf2909c168acdba7e6ba4
+Runtime component: org.jetbrains.kotlinx:kotlinx-io-core-jvm:0.9.1 765d8851d8ca694706931331b92386844800867e041b720f1f193dbda874d370
+Runtime component: org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.11.0 f4a801c647d4351327cd9e1ac4113e2be9ea37a64ab0abae269c25a52e28f35d
+Runtime component: org.jetbrains.kotlinx:kotlinx-serialization-json-io-jvm:1.11.0 bbf3005522426ac4ba2acd6dc38f47ea5a3274ee82b932b8841835c7eaddab74
+Runtime component: org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0 563a25b4eb5c9128ae9c2479f3d1a5c44dcd176112b91cf03682e906eba5c935
+Runtime component: org.jetbrains:annotations:23.0.0 7b0f19724082cbfcbc66e5abea2b9bc92cf08a1ea11e191933ed43801eb3cd05
+Runtime component: org.slf4j:slf4j-api:2.0.17 7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832
+Runtime component: org.slf4j:slf4j-simple:2.0.17 ddfea59ac074c6d3e24ac2c38622d2d963895e17f70b38ed4bdae4d780be6964

@@ -11,6 +11,7 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.organizer.Organizer
 import burp.api.montoya.organizer.OrganizerItem
@@ -40,8 +41,10 @@ import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
-import net.portswigger.mcp.schema.HttpRequestResponse
-import net.portswigger.mcp.schema.toSerializableForm
+import net.portswigger.mcp.security.RequestActionApprovalHandler
+import net.portswigger.mcp.security.RequestActionSecurity
+import net.portswigger.mcp.security.SensitiveActionApprovalHandler
+import net.portswigger.mcp.security.SensitiveActionSecurity
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -54,8 +57,10 @@ import java.util.Optional
 import javax.swing.JTextArea
 
 class ToolsKtTest {
-    
-    private val client = TestStreamableHttpMcpClient()
+    private val testBearerToken = "0123456789012345678901234567890123456789012"
+    private val client = TestStreamableHttpMcpClient(
+        mapOf("Authorization" to "Bearer $testBearerToken")
+    )
     private val api = mockk<MontoyaApi>(relaxed = true)
     private val serverManager = KtorServerManager(api)
     private val testPort = findAvailablePort()
@@ -63,6 +68,8 @@ class ToolsKtTest {
     private val config: McpConfig
     private val mockHeaders = mutableListOf<HttpHeader>()
     private val capturedRequest = slot<HttpRequest>()
+    private lateinit var originalRequestActionHandler: RequestActionApprovalHandler
+    private lateinit var originalSensitiveActionHandler: SensitiveActionApprovalHandler
 
     init {
         val persistedObject = mockk<PersistedObject>().apply {
@@ -78,6 +85,7 @@ class ToolsKtTest {
             every { getBoolean("_alwaysAllowScannerIssues") } returns false
             every { getBoolean("_alwaysAllowCollaboratorInteractions") } returns false
             every { getString("host") } returns "127.0.0.1"
+            every { getString("localBearerToken") } returns testBearerToken
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
             every { setBoolean(any(), any()) } returns Unit
@@ -121,6 +129,41 @@ class ToolsKtTest {
         return text!!
     }
 
+    private fun montoyaBytes(raw: ByteArray): MontoyaByteArray = mockk<MontoyaByteArray>().also { bytes ->
+        every { bytes.length() } returns raw.size
+        every { bytes.toString() } returns raw.toString(Charsets.ISO_8859_1)
+        every { bytes.getBytes() } returns raw
+        every { bytes.subArray(any(), any()) } answers {
+            montoyaBytes(raw.copyOfRange(firstArg(), secondArg()))
+        }
+    }
+
+    private fun boundedHttpResponse(text: String): HttpResponse = mockk<HttpResponse>().also { response ->
+        every { response.toByteArray() } returns montoyaBytes(text.toByteArray(Charsets.ISO_8859_1))
+    }
+
+    private fun stubProxyHistorySummary(item: ProxyHttpRequestResponse, index: Int) {
+        val request = mockk<HttpRequest>()
+        val body = montoyaBytes(byteArrayOf())
+        val service = mockk<burp.api.montoya.http.HttpService>()
+        val annotations = mockk<Annotations>()
+        every { item.id() } returns index
+        every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+        every { item.request() } returns request
+        every { item.response() } returns null
+        every { item.httpService() } returns service
+        every { item.listenerPort() } returns 8080
+        every { item.edited() } returns false
+        every { item.annotations() } returns annotations
+        every { request.method() } returns "GET"
+        every { request.url() } returns "https://example.test/item$index"
+        every { request.body() } returns body
+        every { service.host() } returns "example.test"
+        every { service.port() } returns 443
+        every { service.secure() } returns true
+        every { annotations.notes() } returns null
+    }
+
     private fun setupHttpHeaderMocks() {
         every { HttpHeader.httpHeader(any<String>(), any<String>()) } answers {
             val name = firstArg<String>()
@@ -146,6 +189,28 @@ class ToolsKtTest {
     
     @BeforeEach
     fun setup() {
+        originalRequestActionHandler = RequestActionSecurity.approvalHandler
+        originalSensitiveActionHandler = SensitiveActionSecurity.approvalHandler
+        RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String,
+                source: String,
+                target: String,
+                changes: String,
+                requestContent: String,
+                config: McpConfig,
+                api: MontoyaApi,
+            ) = true
+        }
+        SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String,
+                summary: String,
+                reviewContent: String?,
+                renderContentAsHttp: Boolean,
+                api: MontoyaApi,
+            ) = true
+        }
         setupHttpHeaderMocks()
 
         serverManager.start(config) { state ->
@@ -169,6 +234,8 @@ class ToolsKtTest {
 
     @AfterEach
     fun tearDown() {
+        RequestActionSecurity.approvalHandler = originalRequestActionHandler
+        SensitiveActionSecurity.approvalHandler = originalSensitiveActionHandler
         runBlocking { if (client.isConnected()) client.close() }
         serverManager.shutdown()
     }
@@ -190,7 +257,9 @@ class ToolsKtTest {
             }
             every { api.http() } returns httpService
             every { api.siteMap() } returns siteMap
-            every { httpResponse.toString() } returns "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
+            every { httpResponse.response() } returns boundedHttpResponse(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
+            )
             every { httpService.sendRequest(capture(capturedRequest)) } returns httpResponse
 
             runBlocking {
@@ -255,7 +324,7 @@ class ToolsKtTest {
             every { api.siteMap() } returns siteMap
             every { api.logging() } returns apiLogging
             every { http.sendRequest(any()) } returns response
-            every { response.toString() } returns "HTTP/1.1 204 No Content"
+            every { response.response() } returns boundedHttpResponse("HTTP/1.1 204 No Content")
             every { siteMap.add(response) } throws IllegalStateException("local Site Map failure")
 
             runBlocking {
@@ -289,7 +358,9 @@ class ToolsKtTest {
             val bodySlot = slot<String>()
 
             every { HttpRequest.http2Request(any(), capture(headersSlot), capture(bodySlot)) } returns httpRequest
-            every { httpResponse.toString() } returns "HTTP/2 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
+            every { httpResponse.response() } returns boundedHttpResponse(
+                "HTTP/2 200 OK\r\nContent-Type: text/plain\r\n\r\nResponse body"
+            )
             every { api.http() } returns httpService
             every { httpService.sendRequest(capture(requestSlot), HttpMode.HTTP_2) } returns httpResponse
 
@@ -556,6 +627,7 @@ class ToolsKtTest {
             every { api.utilities() } returns utilities
             every { utilities.base64Utils() } returns base64Utils
             every { base64Utils.decode(any<String>()) } returns burpByteArray
+            every { burpByteArray.length() } returns 11
             every { burpByteArray.toString() } returns "test string"
             
             runBlocking {
@@ -755,7 +827,9 @@ class ToolsKtTest {
                 val result = client.callTool("get_active_editor_contents", emptyMap())
                 
                 delay(100)
-                result.expectTextContent("Editor content")
+                val text = result.expectTextContent()
+                assertTrue(text.contains("\"text\":\"Editor content\""))
+                assertTrue(text.contains("\"truncated\":false"))
             }
         }
         
@@ -831,26 +905,19 @@ class ToolsKtTest {
             every { api.proxy() } returns proxy
             every { proxy.history() } returns proxyHistory
 
-            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
-            proxyHistory.forEachIndexed { index, item ->
-                every { item.toSerializableForm() } returns HttpRequestResponse(
-                    request = "GET /item$index HTTP/1.1",
-                    response = "HTTP/1.1 200 OK",
-                    notes = null
-                )
-            }
+            proxyHistory.forEachIndexed { index, item -> stubProxyHistorySummary(item, index) }
 
             runBlocking {
                 val result = client.callTool(
                     "get_proxy_http_history", mapOf("count" to 1, "offset" to 99)
                 )
-                assertTrue(result.expectTextContent().contains("GET /item99"))
+                assertTrue(result.expectTextContent().contains("/item99"))
             }
 
             proxyHistory.dropLast(1).forEach { skipped ->
-                verify(exactly = 0) { skipped.toSerializableForm() }
+                verify(exactly = 0) { skipped.id() }
             }
-            verify(exactly = 1) { proxyHistory.last().toSerializableForm() }
+            verify(exactly = 1) { proxyHistory.last().id() }
         }
 
         @Test
@@ -892,7 +959,7 @@ class ToolsKtTest {
                 assertFalse(text.contains("\"request\":"))
             }
 
-            verify(exactly = 0) { item.toSerializableForm() }
+            verify(exactly = 0) { request.toByteArray() }
         }
 
         @Test
@@ -907,23 +974,7 @@ class ToolsKtTest {
             every { api.proxy() } returns proxy
             every { proxy.history() } returns proxyHistory
             
-            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
-            
-            every { proxyHistory[0].toSerializableForm() } returns HttpRequestResponse(
-                request = "GET /item1 HTTP/1.1",
-                response = "HTTP/1.1 200 OK",
-                notes = "Item 1 notes"
-            )
-            every { proxyHistory[1].toSerializableForm() } returns HttpRequestResponse(
-                request = "GET /item2 HTTP/1.1",
-                response = "HTTP/1.1 200 OK",
-                notes = "Item 2 notes"
-            )
-            every { proxyHistory[2].toSerializableForm() } returns HttpRequestResponse(
-                request = "GET /item3 HTTP/1.1",
-                response = "HTTP/1.1 200 OK",
-                notes = "Item 3 notes"
-            )
+            proxyHistory.forEachIndexed { index, item -> stubProxyHistorySummary(item, index + 1) }
             
             runBlocking {
                 val result1 = client.callTool(
@@ -935,9 +986,9 @@ class ToolsKtTest {
                 
                 delay(100)
                 val text1 = result1.expectTextContent()
-                assertTrue(text1.contains("GET /item1"))
-                assertTrue(text1.contains("GET /item2"))
-                assertFalse(text1.contains("GET /item3"))
+                assertTrue(text1.contains("/item1"))
+                assertTrue(text1.contains("/item2"))
+                assertFalse(text1.contains("/item3"))
                 
                 val result2 = client.callTool(
                     "get_proxy_http_history", mapOf(
@@ -948,7 +999,7 @@ class ToolsKtTest {
                 
                 delay(100)
                 val text2 = result2.expectTextContent()
-                assertTrue(text2.contains("GET /item3"))
+                assertTrue(text2.contains("/item3"))
                 
                 val result3 = client.callTool(
                     "get_proxy_http_history", mapOf(
@@ -1270,6 +1321,8 @@ class ToolsKtTest {
         assertNotNull(checkScope.outputSchema?.properties?.get("targets"))
         assertEquals(true, checkScope.annotations?.readOnlyHint)
         assertEquals(true, checkScope.annotations?.idempotentHint)
+        assertTrue(checkScope.inputSchema.properties?.get("targets").toString().contains("\"maxItems\":32"))
+        assertTrue(checkScope.inputSchema.properties?.get("targets").toString().contains("\"additionalProperties\":false"))
 
         val updateScope = tools.single { it.name == "update_scope" }
         assertTrue(updateScope.inputSchema.properties?.get("operation").toString().contains("include"))
@@ -1295,6 +1348,14 @@ class ToolsKtTest {
 
         val replay = tools.single { it.name == "send_http_request_from_id" }
         assertNotNull(replay.outputSchema?.properties?.get("recordedRef"))
+        val redirectSchema = replay.inputSchema.properties?.get("redirection").toString()
+        assertTrue(redirectSchema.contains("\"enum\":[\"never\"]"))
+        assertTrue(redirectSchema.contains("\"default\":\"never\""))
+
+        val legacyHistory = tools.single { it.name == "get_proxy_http_history" }
+        assertEquals(true, legacyHistory.annotations?.readOnlyHint)
+        assertTrue(legacyHistory.inputSchema.properties?.get("count").toString().contains("\"maximum\":50"))
+        assertNotNull(legacyHistory.inputSchema.properties?.get("part"))
 
         val project = mockk<burp.api.montoya.project.Project>()
         val scope = mockk<burp.api.montoya.scope.Scope>()
@@ -1327,6 +1388,7 @@ class ToolsKtTest {
         private val collaborator = mockk<Collaborator>()
         private val collaboratorClient = mockk<CollaboratorClient>()
         private val collaboratorServer = mockk<CollaboratorServer>()
+        private val collaboratorProjectId = "project-collaborator"
 
         @BeforeEach
         fun setupCollaborator() {
@@ -1343,6 +1405,9 @@ class ToolsKtTest {
             every { burpSuite.importProjectOptionsFromJson(any()) } just runs
             every { burpSuite.importUserOptionsFromJson(any()) } just runs
 
+            val project = mockk<burp.api.montoya.project.Project>()
+            every { api.project() } returns project
+            every { project.id() } returns collaboratorProjectId
             every { api.collaborator() } returns collaborator
             every { collaborator.createClient() } returns collaboratorClient
             every { collaboratorClient.server() } returns collaboratorServer
@@ -1484,7 +1549,10 @@ class ToolsKtTest {
             every { collaboratorClient.generatePayload() } returns payload
 
             runBlocking {
-                val result = client.callTool("generate_collaborator_payload", emptyMap())
+                val result = client.callTool(
+                    "generate_collaborator_payload",
+                    mapOf("projectId" to collaboratorProjectId),
+                )
                 delay(100)
                 result.expectTextContent(
                     "Payload: abc123.burpcollaborator.net\n" +
@@ -1508,7 +1576,8 @@ class ToolsKtTest {
             runBlocking {
                 val result = client.callTool(
                     "generate_collaborator_payload", mapOf(
-                        "customData" to "mydata"
+                        "projectId" to collaboratorProjectId,
+                        "customData" to "mydata",
                     )
                 )
                 delay(100)
@@ -1531,7 +1600,10 @@ class ToolsKtTest {
             every { collaboratorClient.getAllInteractions() } returns listOf(interaction)
 
             runBlocking {
-                val result = client.callTool("get_collaborator_interactions", emptyMap())
+                val result = client.callTool(
+                    "get_collaborator_interactions",
+                    mapOf("projectId" to collaboratorProjectId),
+                )
                 delay(100)
                 val text = result.expectTextContent()
                 assertTrue(text.contains("\"id\":\"int-001\""))
@@ -1561,7 +1633,10 @@ class ToolsKtTest {
             every { collaboratorClient.getAllInteractions() } returns listOf(interaction)
 
             runBlocking {
-                val result = client.callTool("get_collaborator_interactions", emptyMap())
+                val result = client.callTool(
+                    "get_collaborator_interactions",
+                    mapOf("projectId" to collaboratorProjectId),
+                )
                 delay(100)
                 val text = result.expectTextContent()
                 assertTrue(text.contains("\"type\":\"HTTP\""))
@@ -1583,7 +1658,10 @@ class ToolsKtTest {
             every { collaboratorClient.getAllInteractions() } returns listOf(interaction)
 
             runBlocking {
-                val result = client.callTool("get_collaborator_interactions", emptyMap())
+                val result = client.callTool(
+                    "get_collaborator_interactions",
+                    mapOf("projectId" to collaboratorProjectId),
+                )
                 delay(100)
                 val text = result.expectTextContent()
                 assertTrue(text.contains("\"type\":\"SMTP\""))
@@ -1603,7 +1681,8 @@ class ToolsKtTest {
             runBlocking {
                 val result = client.callTool(
                     "get_collaborator_interactions", mapOf(
-                        "payloadId" to "abc123"
+                        "projectId" to collaboratorProjectId,
+                        "payloadId" to "abc123",
                     )
                 )
                 delay(100)
@@ -1618,7 +1697,10 @@ class ToolsKtTest {
             every { collaboratorClient.getAllInteractions() } returns emptyList()
 
             runBlocking {
-                val result = client.callTool("get_collaborator_interactions", emptyMap())
+                val result = client.callTool(
+                    "get_collaborator_interactions",
+                    mapOf("projectId" to collaboratorProjectId),
+                )
                 delay(100)
                 result.expectTextContent("No interactions detected")
             }

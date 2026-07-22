@@ -42,17 +42,26 @@ class ProxyJarManager(
         val proxyJarPath = getBurpProxyJarPath()
         val versionFilePath = proxyJarPath.resolveSibling("$PROXY_JAR_NAME.version")
 
+        requireNoSymlinkComponents(proxyJarPath.parent)
         if (!proxyJarPath.parent.exists()) {
             try {
                 Files.createDirectories(proxyJarPath.parent)
             } catch (e: IOException) {
-                throw RuntimeException("Failed to create directory: ${proxyJarPath.parent}", e)
+                throw RuntimeException("Failed to create MCP proxy directory", e)
             }
         }
+        requireNoSymlinkComponents(proxyJarPath.parent)
 
+        require(!Files.isSymbolicLink(proxyJarPath) && !Files.isSymbolicLink(versionFilePath)) {
+            "Refusing to use a symlinked MCP proxy artifact"
+        }
         val expectedHash = expectedProxyHash()
-        val currentHash = if (versionFilePath.exists()) versionFilePath.readText().trim() else null
-        if (proxyJarPath.exists() && currentHash == expectedHash) {
+        val currentHash = if (versionFilePath.exists() && Files.size(versionFilePath) <= 128) {
+            versionFilePath.readText().trim()
+        } else {
+            null
+        }
+        if (proxyJarPath.exists() && currentHash == expectedHash && sha256(proxyJarPath) == expectedHash) {
             return proxyJarPath
         }
 
@@ -88,18 +97,28 @@ class ProxyJarManager(
                 "Packaged proxy checksum mismatch: expected $expectedHash, got $actualHash"
             }
 
-            Files.move(tempFile, proxyJarPath, StandardCopyOption.REPLACE_EXISTING)
-            Files.writeString(versionFilePath, expectedHash)
+            forceFile(tempFile)
+            setOwnerOnlyPermissions(tempFile)
+            atomicReplace(tempFile, proxyJarPath)
+            setOwnerOnlyPermissions(proxyJarPath)
+            atomicWritePrivate(versionFilePath, expectedHash.toByteArray(), createBackup = false)
 
-            if (!System.getProperty("os.name").lowercase().contains("win")) {
-                proxyJarPath.toFile().setExecutable(true)
-            }
-
-            logging.logToOutput("Extracted proxy jar to: $proxyJarPath")
+            logging.logToOutput("Verified and atomically extracted the packaged MCP proxy")
         } catch (e: Exception) {
             Files.deleteIfExists(tempFile)
-            throw RuntimeException("Failed to extract proxy jar to: $proxyJarPath", e)
+            throw RuntimeException("Failed to verify or extract the packaged MCP proxy", e)
         }
+    }
+
+    private fun sha256(path: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            DigestInputStream(input, digest).use { digestInput ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (digestInput.read(buffer) >= 0) Unit
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest())
     }
 
     private fun getBurpProxyJarPath(): Path = proxyDirectory.resolve(PROXY_JAR_NAME)

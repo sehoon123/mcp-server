@@ -8,8 +8,14 @@ import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import javax.swing.*
 import javax.swing.border.EmptyBorder
+import java.util.concurrent.atomic.AtomicReference
 
 object Dialogs {
+    private val activeOptionDialog = AtomicReference<JDialog?>()
+
+    internal fun dismissActiveOptionDialog() {
+        activeOptionDialog.get()?.dispose()
+    }
 
     private fun wrapText(text: String, maxWidth: Int = 50): String {
         if (text.length <= maxWidth) return text
@@ -480,11 +486,18 @@ object Dialogs {
             )
         }
 
-        dialog.isVisible = true
+        activeOptionDialog.set(dialog)
+        try {
+            dialog.isVisible = true
+        } finally {
+            activeOptionDialog.compareAndSet(dialog, null)
+        }
 
-        SwingUtilities.invokeLater {
-            dialog.isAlwaysOnTop = false
-            dialog.toFront()
+        if (dialog.isDisplayable) {
+            SwingUtilities.invokeLater {
+                dialog.isAlwaysOnTop = false
+                dialog.toFront()
+            }
         }
 
         return result

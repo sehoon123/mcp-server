@@ -7,6 +7,7 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
+import net.portswigger.mcp.security.safeExceptionSummary
 
 @Suppress("unused")
 class ExtensionBase : BurpExtension {
@@ -19,7 +20,9 @@ class ExtensionBase : BurpExtension {
 
         val proxyJarManager = ProxyJarManager(api.logging())
         runCatching { proxyJarManager.getProxyJar() }
-            .onFailure { api.logging().logToError("Failed to refresh the packaged MCP proxy: ${it.message}") }
+            .onFailure {
+                api.logging().logToError("Failed to refresh the packaged MCP proxy: ${safeExceptionSummary(it)}")
+            }
 
         val configUi = ConfigUi(
             config = config, providers = listOf(

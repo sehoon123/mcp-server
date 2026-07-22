@@ -18,8 +18,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.RequestActionSecurity
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
@@ -43,35 +45,49 @@ private val HTTP_TOKEN_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 @Serializable
 data class SendHttpRequestFromId(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
     val ref: HttpMessageReference,
+    @JsonSchemaMetadata(description = "Bounded immutable request mutations.")
     val patch: HttpRequestPatch? = null,
+    @JsonSchemaMetadata(description = "HTTP protocol mode.", defaultJson = "\"original\"")
     val httpMode: HttpReplayMode? = null,
+    @JsonSchemaMetadata(description = "Only never is accepted so every destination remains reviewable.", enumValues = ["never"], defaultJson = "\"never\"")
     val redirection: HttpRedirectionPolicy? = null,
+    @JsonSchemaMetadata(description = "Response timeout in milliseconds.", minimum = 100, maximum = 120000, defaultJson = "30000")
     val responseTimeoutMs: Int? = null,
+    @JsonSchemaMetadata(description = "Maximum response body bytes returned.", minimum = 0, maximum = 65536, defaultJson = "8192")
     val responseBodyLimit: Int? = null,
+    @JsonSchemaMetadata(description = "Response body encoding.", pattern = "^(text|base64)$", defaultJson = "\"text\"")
     val responseBodyEncoding: String? = null,
 )
 
 @Serializable
 data class CreateRepeaterTabFromId(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
+    @JsonSchemaMetadata(description = "Optional Repeater tab caption.", maxLength = 128)
     val tabName: String? = null,
 )
 
 @Serializable
 data class SendToIntruderFromId(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
+    @JsonSchemaMetadata(description = "Optional Intruder tab caption.", maxLength = 128)
     val tabName: String? = null,
+    @JsonSchemaMetadata(description = "Semantic Intruder insertion points.", minItems = 1, maxItems = 32)
     val insertionPoints: List<HttpInsertionPointSelector>? = null,
 )
 
 @Serializable
 data class SendToOrganizerFromId(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
@@ -79,14 +95,23 @@ data class SendToOrganizerFromId(
 
 @Serializable
 data class HttpRequestPatch(
+    @JsonSchemaMetadata(description = "Replacement HTTP method token.", minLength = 1, maxLength = 32)
     val method: String? = null,
+    @JsonSchemaMetadata(description = "Replacement origin-form request target.", minLength = 1, maxLength = 8192)
     val path: String? = null,
+    @JsonSchemaMetadata(description = "Header names to remove.", maxItems = 64)
     val removeHeaders: List<String>? = null,
+    @JsonSchemaMetadata(description = "Headers to replace.", maxItems = 64)
     val setHeaders: List<HttpHeaderMutation>? = null,
+    @JsonSchemaMetadata(description = "Headers to append.", maxItems = 64)
     val addHeaders: List<HttpHeaderMutation>? = null,
+    @JsonSchemaMetadata(description = "Parameters to remove.", maxItems = 64)
     val removeParameters: List<HttpParameterKey>? = null,
+    @JsonSchemaMetadata(description = "Parameters to replace.", maxItems = 64)
     val setParameters: List<HttpParameterMutation>? = null,
+    @JsonSchemaMetadata(description = "Parameters to append.", maxItems = 64)
     val addParameters: List<HttpParameterMutation>? = null,
+    @JsonSchemaMetadata(description = "Replacement request body, limited to 1 MiB decoded.")
     val body: HttpBodyPatch? = null,
 )
 
@@ -267,6 +292,14 @@ internal class HttpMessageActionService(
     private val resolver = HttpMessageResolver(api, config)
 
     suspend fun send(input: SendHttpRequestFromId): HttpMessageActionResult {
+        if (input.redirection != null && input.redirection != HttpRedirectionPolicy.NEVER) {
+            return invalidArgument(
+                input.projectId,
+                input.ref,
+                HttpMessageActionDestination.HTTP,
+                "automatic redirects are disabled because redirected destinations cannot be reviewed and approved",
+            )
+        }
         val timeout = input.responseTimeoutMs ?: DEFAULT_ACTION_TIMEOUT_MS
         if (timeout !in MIN_ACTION_TIMEOUT_MS..MAX_ACTION_TIMEOUT_MS) {
             return invalidArgument(
@@ -975,8 +1008,7 @@ private fun uncertain(
     error = safeException(error),
 )
 
-private fun safeException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeException(error: Exception): String = safeExceptionSummary(error)
 
 private fun HttpService.toActionTarget() = HttpActionTarget(
     host().take(MAX_HTTP_SEARCH_HOST_CHARS),

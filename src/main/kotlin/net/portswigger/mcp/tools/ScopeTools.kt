@@ -7,7 +7,9 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.SensitiveActionSecurity
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.net.IDN
 import java.net.URI
 
@@ -17,13 +19,17 @@ private const val MAX_SCOPE_URL_CHARS = 2_048
 
 @Serializable
 data class ScopeTarget(
+    @JsonSchemaMetadata(description = "Absolute HTTP(S) URL; supply exactly one of url or ref.", minLength = 1, maxLength = 2048)
     val url: String? = null,
+    @JsonSchemaMetadata(description = "Stable message reference; supply exactly one of url or ref.")
     val ref: HttpMessageReference? = null,
 )
 
 @Serializable
 data class CheckScope(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "URLs or stable references to check.", minItems = 1, maxItems = 32)
     val targets: List<ScopeTarget>,
 )
 
@@ -38,8 +44,11 @@ enum class ScopeUpdateOperation {
 
 @Serializable
 data class UpdateScope(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Scope mutation to approve and apply.")
     val operation: ScopeUpdateOperation,
+    @JsonSchemaMetadata(description = "URLs or stable references to mutate.", minItems = 1, maxItems = 16)
     val targets: List<ScopeTarget>,
 )
 
@@ -654,5 +663,4 @@ private fun updateFailure(
     error = error.take(512),
 )
 
-private fun safeScopeException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeScopeException(error: Exception): String = safeExceptionSummary(error)

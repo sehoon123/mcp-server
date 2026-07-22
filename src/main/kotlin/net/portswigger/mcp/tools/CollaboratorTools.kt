@@ -18,8 +18,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.format.DateTimeParseException
@@ -43,6 +45,7 @@ private const val COLLABORATOR_POLL_INTERVAL_MS = 1_000L
 @Serializable
 data class GenerateCollaboratorPayloadResult(
     val status: CollaboratorToolStatus,
+    val projectId: String? = null,
     val payload: String? = null,
     val payloadId: String? = null,
     val server: String? = null,
@@ -51,12 +54,21 @@ data class GenerateCollaboratorPayloadResult(
 
 @Serializable
 data class GetCollaboratorInteractions(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    val projectId: String,
+    @JsonSchemaMetadata(description = "Optional generated payload ID filter.", minLength = 1, maxLength = 256)
     val payloadId: String? = null,
+    @JsonSchemaMetadata(description = "Inclusive ISO-8601 interaction timestamp filter.", minLength = 1, maxLength = 64)
     val since: String? = null,
+    @JsonSchemaMetadata(description = "Bounded long-poll duration in seconds.", minimum = 0, maximum = 120, defaultJson = "0")
     val waitSeconds: Int? = null,
+    @JsonSchemaMetadata(description = "Maximum interactions returned.", minimum = 1, maximum = 50, defaultJson = "20")
     val maxResults: Int? = null,
+    @JsonSchemaMetadata(description = "Maximum detail bytes per interaction; zero omits details.", minimum = 0, maximum = 16384, defaultJson = "4096")
     val detailLimitBytes: Int? = null,
+    @JsonSchemaMetadata(description = "Encoding for bounded detail fields.", defaultJson = "\"text\"")
     val detailEncoding: CollaboratorDetailEncoding? = null,
+    @JsonSchemaMetadata(description = "Return newest interactions first.", defaultJson = "true")
     val newestFirst: Boolean? = null,
 )
 
@@ -79,6 +91,9 @@ enum class CollaboratorToolStatus {
 
     @SerialName("invalid_argument")
     INVALID_ARGUMENT,
+
+    @SerialName("project_mismatch")
+    PROJECT_MISMATCH,
 
     @SerialName("burp_error")
     BURP_ERROR,
@@ -120,6 +135,7 @@ data class CollaboratorInteractionResult(
 @Serializable
 data class GetCollaboratorInteractionsResult(
     val status: CollaboratorToolStatus,
+    val projectId: String? = null,
     val interactions: List<CollaboratorInteractionResult>,
     val returned: Int,
     val matched: Int,
@@ -141,38 +157,63 @@ internal class CollaboratorToolService(
     init {
         require(pollIntervalMs in 1..COLLABORATOR_POLL_INTERVAL_MS) { "pollIntervalMs is out of range" }
     }
-    private val client: CollaboratorClient by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        api.collaborator().createClient()
-    }
+    @Volatile
+    private var projectClient: ProjectCollaboratorClient? = null
     private val clientMutex = Mutex()
     private val waitAdmission = Semaphore(MAX_CONCURRENT_COLLABORATOR_WAITS)
 
     suspend fun generate(input: GenerateCollaboratorPayload): StructuredToolResponse<GenerateCollaboratorPayloadResult> {
         val customData = input.customData
+        if (!validCollaboratorProjectId(input.projectId)) {
+            return StructuredToolResponse(
+                GenerateCollaboratorPayloadResult(
+                    status = CollaboratorToolStatus.INVALID_ARGUMENT,
+                    projectId = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                    error = "projectId is empty, too long, or contains control characters",
+                )
+            )
+        }
         if (customData != null &&
             (customData.length !in 1..MAX_COLLABORATOR_CUSTOM_DATA_CHARS ||
                 customData.any { !it.isAsciiLetterOrDigit() })
         ) {
             val result = GenerateCollaboratorPayloadResult(
                 status = CollaboratorToolStatus.INVALID_ARGUMENT,
+                projectId = input.projectId,
                 error = "customData must contain 1 to $MAX_COLLABORATOR_CUSTOM_DATA_CHARS ASCII alphanumeric characters",
             )
             return StructuredToolResponse(result)
         }
 
         return try {
-            val payload = clientMutex.withLock {
-                if (customData == null) client.generatePayload() else client.generatePayload(customData)
+            val generated = clientMutex.withLock {
+                verifyCurrentProject(input.projectId)
+                val client = clientForProject(input.projectId)
+                val payload = if (customData == null) client.generatePayload() else client.generatePayload(customData)
+                GeneratedCollaboratorPayload(
+                    payload = payload.toString().take(2_048),
+                    payloadId = payload.id().toString().take(MAX_COLLABORATOR_PAYLOAD_ID_CHARS),
+                    server = client.server().address().take(MAX_HTTP_SEARCH_HOST_CHARS),
+                )
             }
             val result = GenerateCollaboratorPayloadResult(
                 status = CollaboratorToolStatus.OK,
-                payload = payload.toString().take(2_048),
-                payloadId = payload.id().toString().take(MAX_COLLABORATOR_PAYLOAD_ID_CHARS),
-                server = client.server().address().take(MAX_HTTP_SEARCH_HOST_CHARS),
+                projectId = input.projectId,
+                payload = generated.payload,
+                payloadId = generated.payloadId,
+                server = generated.server,
             )
             StructuredToolResponse(
                 output = result,
                 text = "Payload: ${result.payload}\nPayload ID: ${result.payloadId}\nCollaborator server: ${result.server}",
+            )
+        } catch (e: CollaboratorProjectMismatchException) {
+            StructuredToolResponse(
+                GenerateCollaboratorPayloadResult(
+                    status = CollaboratorToolStatus.PROJECT_MISMATCH,
+                    projectId = e.currentProjectId,
+                    error = "Burp project changed before Collaborator payload generation",
+                )
             )
         } catch (e: CancellationException) {
             throw e
@@ -180,6 +221,7 @@ internal class CollaboratorToolService(
             StructuredToolResponse(
                 GenerateCollaboratorPayloadResult(
                     status = CollaboratorToolStatus.BURP_ERROR,
+                    projectId = input.projectId,
                     error = "Burp could not generate a Collaborator payload: ${safeCollaboratorException(e)}",
                 )
             )
@@ -192,9 +234,39 @@ internal class CollaboratorToolService(
         reportProgress: suspend (Double, Double?, String?) -> Unit,
     ): StructuredToolResponse<GetCollaboratorInteractionsResult> {
         val normalized = try {
+            require(validCollaboratorProjectId(input.projectId)) {
+                "projectId is empty, too long, or contains control characters"
+            }
             normalizeInteractionInput(input)
         } catch (e: IllegalArgumentException) {
-            return StructuredToolResponse(interactionError(CollaboratorToolStatus.INVALID_ARGUMENT, e.message.orEmpty()))
+            return StructuredToolResponse(
+                interactionError(
+                    CollaboratorToolStatus.INVALID_ARGUMENT,
+                    e.message.orEmpty(),
+                    projectId = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                )
+            )
+        }
+        try {
+            verifyCurrentProject(input.projectId)
+        } catch (e: CollaboratorProjectMismatchException) {
+            return StructuredToolResponse(
+                interactionError(
+                    CollaboratorToolStatus.PROJECT_MISMATCH,
+                    "Collaborator interactions belong to a different Burp project",
+                    projectId = e.currentProjectId,
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return StructuredToolResponse(
+                interactionError(
+                    CollaboratorToolStatus.BURP_ERROR,
+                    "Burp could not read the current project: ${safeCollaboratorException(e)}",
+                    projectId = input.projectId,
+                )
+            )
         }
 
         val allowed = try {
@@ -206,6 +278,7 @@ internal class CollaboratorToolService(
                 interactionError(
                     CollaboratorToolStatus.BURP_ERROR,
                     "Burp could not check Collaborator data access: ${safeCollaboratorException(e)}",
+                    projectId = input.projectId,
                 )
             )
         }
@@ -215,6 +288,7 @@ internal class CollaboratorToolService(
                 interactionError(
                     CollaboratorToolStatus.ACCESS_DENIED,
                     "Collaborator interaction access denied by Burp Suite",
+                    projectId = input.projectId,
                 )
             )
         }
@@ -234,7 +308,16 @@ internal class CollaboratorToolService(
                     "Polling Burp Collaborator (attempt ${poll + 1})",
                 )
                 val interactions = try {
-                    fetchInteractions(normalized.payloadId)
+                    fetchInteractions(input.projectId, normalized.payloadId)
+                } catch (e: CollaboratorProjectMismatchException) {
+                    return@withPermit StructuredToolResponse(
+                        interactionError(
+                            CollaboratorToolStatus.PROJECT_MISMATCH,
+                            "Burp project changed while polling Collaborator interactions",
+                            waitedMillis(started),
+                            e.currentProjectId,
+                        )
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -243,6 +326,7 @@ internal class CollaboratorToolService(
                             CollaboratorToolStatus.BURP_ERROR,
                             "Burp could not poll Collaborator interactions: ${safeCollaboratorException(e)}",
                             waitedMillis(started),
+                            input.projectId,
                         )
                     )
                 }
@@ -256,6 +340,7 @@ internal class CollaboratorToolService(
                             CollaboratorToolStatus.BURP_ERROR,
                             "Burp returned invalid Collaborator interaction metadata: ${safeCollaboratorException(e)}",
                             waitedMillis(started),
+                            input.projectId,
                         )
                     )
                 }
@@ -287,6 +372,19 @@ internal class CollaboratorToolService(
                         CollaboratorToolStatus.BURP_ERROR,
                         "Burp returned an invalid Collaborator interaction: ${safeCollaboratorException(e)}",
                         waitedMillis(started),
+                        input.projectId,
+                    )
+                )
+            }
+            try {
+                verifyCurrentProject(input.projectId)
+            } catch (e: CollaboratorProjectMismatchException) {
+                return@withPermit StructuredToolResponse(
+                    interactionError(
+                        CollaboratorToolStatus.PROJECT_MISMATCH,
+                        "Burp project changed before Collaborator results were returned",
+                        waitedMillis(started),
+                        e.currentProjectId,
                     )
                 )
             }
@@ -298,6 +396,7 @@ internal class CollaboratorToolService(
             )
             val result = GetCollaboratorInteractionsResult(
                 status = CollaboratorToolStatus.OK,
+                projectId = input.projectId,
                 interactions = outputItems,
                 returned = outputItems.size,
                 matched = finalSelection.matched,
@@ -319,14 +418,36 @@ internal class CollaboratorToolService(
         }
     }
 
-    private suspend fun fetchInteractions(payloadId: String?): List<Interaction> = clientMutex.withLock {
-        if (payloadId == null) {
-            client.getAllInteractions()
-        } else {
-            client.getInteractions(InteractionFilter.interactionIdFilter(payloadId))
+    private suspend fun fetchInteractions(projectId: String, payloadId: String?): List<Interaction> =
+        clientMutex.withLock {
+            verifyCurrentProject(projectId)
+            val client = clientForProject(projectId)
+            if (payloadId == null) {
+                client.getAllInteractions()
+            } else {
+                client.getInteractions(InteractionFilter.interactionIdFilter(payloadId))
+            }
         }
+
+    private fun clientForProject(projectId: String): CollaboratorClient {
+        projectClient?.takeIf { it.projectId == projectId }?.let { return it.client }
+        return api.collaborator().createClient().also { projectClient = ProjectCollaboratorClient(projectId, it) }
+    }
+
+    private fun verifyCurrentProject(expected: String) {
+        val current = api.project().id()
+        if (current != expected) throw CollaboratorProjectMismatchException(current)
+    }
+
+    /** Wait operations are request-scoped; the Montoya Collaborator client exposes no close operation. */
+    fun close() {
+        projectClient = null
     }
 }
+
+private data class ProjectCollaboratorClient(val projectId: String, val client: CollaboratorClient)
+private data class GeneratedCollaboratorPayload(val payload: String, val payloadId: String, val server: String)
+private class CollaboratorProjectMismatchException(val currentProjectId: String) : Exception()
 
 private data class NormalizedCollaboratorInput(
     val payloadId: String?,
@@ -577,8 +698,10 @@ private fun interactionError(
     status: CollaboratorToolStatus,
     error: String,
     waitedMillis: Long = 0,
+    projectId: String? = null,
 ) = GetCollaboratorInteractionsResult(
     status = status,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     interactions = emptyList(),
     returned = 0,
     matched = 0,
@@ -593,10 +716,12 @@ private fun interactionError(
     error = error.take(512),
 )
 
+private fun validCollaboratorProjectId(projectId: String): Boolean =
+    projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)
+
 private fun Char.isAsciiLetterOrDigit(): Boolean = this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
 
 private fun waitedMillis(startedNanos: Long): Long =
     ((System.nanoTime() - startedNanos).coerceAtLeast(0) / 1_000_000L)
 
-private fun safeCollaboratorException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeCollaboratorException(error: Exception): String = safeExceptionSummary(error)

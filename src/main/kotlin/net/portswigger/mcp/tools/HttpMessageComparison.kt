@@ -10,6 +10,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
@@ -30,12 +32,19 @@ private const val MAX_NATIVE_VARIATION_TOTAL_BYTES = 4 * 1024 * 1024
 
 @Serializable
 data class CompareHttpMessages(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Two to eight stable HTTP message references.", minItems = 2, maxItems = 8)
     val refs: List<HttpMessageReference>,
+    @JsonSchemaMetadata(description = "Message part to compare.", defaultJson = "\"response\"")
     val part: HttpComparisonPart? = null,
+    @JsonSchemaMetadata(description = "Maximum bytes inspected per message.", minimum = 1, maximum = 1048576, defaultJson = "262144")
     val limitBytesPerMessage: Int? = null,
+    @JsonSchemaMetadata(description = "Encoding for bounded difference excerpts.", defaultJson = "\"text\"")
     val excerptEncoding: HttpComparisonEncoding? = null,
+    @JsonSchemaMetadata(description = "Case-insensitive header names omitted from header comparison.", maxItems = 32)
     val ignoreHeaders: List<String>? = null,
+    @JsonSchemaMetadata(description = "Run Burp response variation analysis for response parts.", defaultJson = "true")
     val includeResponseVariations: Boolean? = null,
 )
 
@@ -625,5 +634,4 @@ private fun comparisonError(
     error = error.take(512),
 )
 
-private fun safeComparisonException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeComparisonException(error: Exception): String = safeExceptionSummary(error)

@@ -294,7 +294,7 @@ class HttpRequestSecurityTest {
     }
 
     @Test
-    fun `comma-laden hostname from approval dialog must not poison auto-approve list`() {
+    fun `comma-laden hostname is rejected before approval and cannot poison auto-approve list`() {
         val poisoned = "example.com,127.0.0.1,*.attacker.com,169.254.169.254"
 
         coEvery {
@@ -308,7 +308,7 @@ class HttpRequestSecurityTest {
         coEvery { mockApprovalHandler.requestApproval("evil.attacker.com", 443, config, any(), any()) } returns false
 
         runBlocking {
-            assertTrue(HttpRequestSecurity.checkHttpRequestPermission(poisoned, 443, config))
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission(poisoned, 443, config))
             assertEquals(emptyList<String>(), config.getAutoApproveTargetsList())
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("127.0.0.1", 8123, config))
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("169.254.169.254", 80, config))
@@ -337,29 +337,22 @@ class HttpRequestSecurityTest {
             )
 
             assertTrue(HttpRequestSecurity.checkHttpRequestPermission("api.example.org", 80, config))
-            assertTrue(HttpRequestSecurity.checkHttpRequestPermission("v1.api.example.org", 80, config))
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("v1.api.example.org", 80, config))
 
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("test.example.net", 80, config))
         }
     }
 
     @Test
-    fun `broad wildcards should work correctly`() {
-        config.addAutoApproveTarget("*.com")
+    fun `top-level broad wildcards are rejected`() {
+        assertFalse(config.addAutoApproveTarget("*.com"))
 
         coEvery { mockApprovalHandler.requestApproval(any(), any(), config, any()) } returns false
 
         runBlocking {
-            assertTrue(HttpRequestSecurity.checkHttpRequestPermission("anything.com", 80, config))
-            assertTrue(HttpRequestSecurity.checkHttpRequestPermission("test.com", 443, config))
-            assertTrue(
-                HttpRequestSecurity.checkHttpRequestPermission(
-                    "maliciousexample.com", 80, config
-                )
-            )
-
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("anything.com", 80, config))
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("test.com", 443, config))
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("com", 80, config))
-            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("test.org", 80, config))
         }
     }
 
@@ -376,7 +369,7 @@ class HttpRequestSecurityTest {
         runBlocking {
             assertTrue(HttpRequestSecurity.checkHttpRequestPermission("valid.com", 80, config))
 
-            assertTrue(HttpRequestSecurity.checkHttpRequestPermission("256.0.0.1", 80, config)) // Exact match works
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("256.0.0.1", 80, config))
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("other.com", 80, config))
 
             assertFalse(HttpRequestSecurity.checkHttpRequestPermission("test.example.com", 80, config))

@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import java.nio.charset.StandardCharsets
@@ -65,19 +66,33 @@ enum class HttpSearchLocation {
 
 @Serializable
 data class SearchHttpMessages(
+    @JsonSchemaMetadata(description = "History sources to search.", minItems = 1, maxItems = 3)
     val sources: List<HttpMessageSource>? = null,
+    @JsonSchemaMetadata(description = "Exact canonical host filter.", minLength = 1, maxLength = 253)
     val host: String? = null,
+    @JsonSchemaMetadata(description = "Case-sensitive URL path substring.", minLength = 1, maxLength = 2048)
     val pathContains: String? = null,
+    @JsonSchemaMetadata(description = "HTTP methods to include.", minItems = 1, maxItems = 32)
     val methods: List<String>? = null,
+    @JsonSchemaMetadata(description = "HTTP response status codes to include.", minItems = 1, maxItems = 32)
     val statusCodes: List<Int>? = null,
+    @JsonSchemaMetadata(description = "MIME types to include.", minItems = 1, maxItems = 32)
     val mimeTypes: List<String>? = null,
+    @JsonSchemaMetadata(description = "Restrict results to Burp Scope.", defaultJson = "false")
     val inScopeOnly: Boolean? = null,
+    @JsonSchemaMetadata(description = "Filter by response presence when supplied.")
     val hasResponse: Boolean? = null,
+    @JsonSchemaMetadata(description = "Bounded request or response text to search for.", maxLength = 512)
     val text: String? = null,
+    @JsonSchemaMetadata(description = "Message part searched by text.", defaultJson = "\"both\"")
     val searchIn: HttpSearchLocation? = null,
+    @JsonSchemaMetadata(description = "Use case-sensitive text matching.", defaultJson = "false")
     val caseSensitive: Boolean? = null,
+    @JsonSchemaMetadata(description = "Return newest matches first.", defaultJson = "true")
     val newestFirst: Boolean? = null,
+    @JsonSchemaMetadata(description = "Maximum results in this page.", minimum = 1, maximum = 50, defaultJson = "25")
     val limit: Int? = null,
+    @JsonSchemaMetadata(description = "Opaque signed continuation cursor.", maxLength = 32768)
     val cursor: String? = null,
 )
 
@@ -104,7 +119,9 @@ enum class HttpMessageSearchStatus {
 
 @Serializable
 data class HttpMessageReference(
+    @JsonSchemaMetadata(description = "Burp history source.")
     val source: HttpMessageSource,
+    @JsonSchemaMetadata(description = "Stable source-specific message ID.", minLength = 1, maxLength = 128)
     val id: String,
 )
 

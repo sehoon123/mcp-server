@@ -5,6 +5,7 @@ import burp.api.montoya.collaborator.*
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.project.Project
 import io.mockk.*
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,8 @@ class CollaboratorToolsTest {
     private val collaborator = mockk<Collaborator>()
     private val client = mockk<CollaboratorClient>()
     private val logging = mockk<Logging>(relaxed = true)
+    private val project = mockk<Project>()
+    private val projectId = "collaborator-project"
     private lateinit var originalDataHandler: DataAccessApprovalHandler
 
     @BeforeEach
@@ -37,6 +40,8 @@ class CollaboratorToolsTest {
         every { api.collaborator() } returns collaborator
         every { collaborator.createClient() } returns client
         every { api.logging() } returns logging
+        every { api.project() } returns project
+        every { project.id() } returns projectId
     }
 
     @AfterEach
@@ -48,11 +53,45 @@ class CollaboratorToolsTest {
     fun `custom payload data enforces Burp ASCII alphanumeric limit before client creation`() = runBlocking {
         val service = CollaboratorToolService(api, pollIntervalMs = 1)
 
-        val result = service.generate(GenerateCollaboratorPayload(customData = "not-valid-data"))
+        val result = service.generate(GenerateCollaboratorPayload(projectId = projectId, customData = "not-valid-data"))
 
         assertEquals(CollaboratorToolStatus.INVALID_ARGUMENT, result.output.status)
         assertTrue(result.output.error.orEmpty().contains("16 ASCII alphanumeric"))
         verify(exactly = 0) { collaborator.createClient() }
+    }
+
+    @Test
+    fun `project mismatch is rejected before Collaborator client creation`() = runBlocking {
+        every { project.id() } returns "other-project"
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.interactions(
+            GetCollaboratorInteractions(projectId),
+            config(false),
+        ) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.PROJECT_MISMATCH, result.output.status)
+        assertEquals("other-project", result.output.projectId)
+        verify(exactly = 0) { collaborator.createClient() }
+    }
+
+    @Test
+    fun `switching projects rotates the extension-owned Collaborator client`() = runBlocking {
+        val secondClient = mockk<CollaboratorClient>()
+        every { collaborator.createClient() } returnsMany listOf(client, secondClient)
+        every { client.getAllInteractions() } returns emptyList()
+        every { secondClient.getAllInteractions() } returns emptyList()
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val first = service.interactions(GetCollaboratorInteractions(projectId), config(false)) { _, _, _ -> }
+        every { project.id() } returns "second-project"
+        val second = service.interactions(GetCollaboratorInteractions("second-project"), config(false)) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.OK, first.output.status)
+        assertEquals(CollaboratorToolStatus.OK, second.output.status)
+        verify(exactly = 1) { client.getAllInteractions() }
+        verify(exactly = 1) { secondClient.getAllInteractions() }
+        verify(exactly = 2) { collaborator.createClient() }
     }
 
     @Test
@@ -63,7 +102,7 @@ class CollaboratorToolsTest {
         val service = CollaboratorToolService(api, pollIntervalMs = 1)
 
         val result = service.interactions(
-            GetCollaboratorInteractions(waitSeconds = 2, since = "2025-01-01T00:00:00Z"),
+            GetCollaboratorInteractions(projectId = projectId, waitSeconds = 2, since = "2025-01-01T00:00:00Z"),
             config(false),
         ) { _, _, message -> progress += message.orEmpty() }
 
@@ -84,7 +123,7 @@ class CollaboratorToolsTest {
         val service = CollaboratorToolService(api, pollIntervalMs = 1)
 
         val result = service.interactions(
-            GetCollaboratorInteractions(maxResults = 1, detailLimitBytes = 8, newestFirst = true),
+            GetCollaboratorInteractions(projectId = projectId, maxResults = 1, detailLimitBytes = 8, newestFirst = true),
             config(false),
         ) { _, _, _ -> }
 
@@ -112,6 +151,7 @@ class CollaboratorToolsTest {
 
         val result = service.interactions(
             GetCollaboratorInteractions(
+                projectId = projectId,
                 detailLimitBytes = 5,
                 detailEncoding = CollaboratorDetailEncoding.BASE64,
             ),
@@ -130,7 +170,7 @@ class CollaboratorToolsTest {
         val service = CollaboratorToolService(api, pollIntervalMs = 1)
 
         val result = service.interactions(
-            GetCollaboratorInteractions(waitSeconds = 121),
+            GetCollaboratorInteractions(projectId = projectId, waitSeconds = 121),
             config(false),
         ) { _, _, _ -> }
 
@@ -145,7 +185,7 @@ class CollaboratorToolsTest {
         }
         val service = CollaboratorToolService(api, pollIntervalMs = 1)
 
-        val result = service.interactions(GetCollaboratorInteractions(), config(true)) { _, _, _ -> }
+        val result = service.interactions(GetCollaboratorInteractions(projectId), config(true)) { _, _, _ -> }
 
         assertEquals(CollaboratorToolStatus.ACCESS_DENIED, result.output.status)
         assertTrue(result.output.interactions.isEmpty())
@@ -159,7 +199,7 @@ class CollaboratorToolsTest {
 
         assertFailsWith<TimeoutCancellationException> {
             withTimeout(30) {
-                service.interactions(GetCollaboratorInteractions(waitSeconds = 120), config(false)) { _, _, _ -> }
+                service.interactions(GetCollaboratorInteractions(projectId = projectId, waitSeconds = 120), config(false)) { _, _, _ -> }
             }
         }
         verify(exactly = 1) { client.getAllInteractions() }

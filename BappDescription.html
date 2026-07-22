@@ -18,7 +18,7 @@
 <ul>
 	<li>Send HTTP/1.1 and HTTP/2 requests directly from AI clients with security controls</li>
 	<li>Search compact HTTP metadata across Proxy history, Site Map, and Organizer using signed snapshot cursors</li>
-	<li>Access and filter proxy history (HTTP and WebSocket) with regex support</li>
+	<li>Access bounded Proxy history (HTTP and WebSocket) with stable summaries and conservatively safe regex filters</li>
 	<li>Use project-scoped history IDs, compact summaries, and bounded structured message reads</li>
 	<li>Replay, patch, and route existing requests by ID without model-side raw HTTP reconstruction</li>
 	<li>Check or explicitly update Target scope and compare bounded HTTP messages by stable reference</li>
@@ -28,7 +28,7 @@
 	<li>Export and modify project and user configuration via JSON</li>
 	<li>Control proxy intercept, task execution engine, and message editor contents</li>
 	<li>Built-in encoding utilities (URL, Base64) and random string generation</li>
-	<li>Single Streamable HTTP endpoint with an embedded stdio compatibility proxy</li>
+	<li>Authenticated numeric-loopback Streamable HTTP endpoint with bounded sessions and an embedded stdio compatibility proxy</li>
 	<li>Automatic Claude Desktop installation with packaged stdio proxy server</li>
 	<li>Configurable target, stable-ID action, and project-data approval system, including Site Map and Collaborator access</li>
 	<li>Interact with Organizer entries</li>
@@ -37,10 +37,12 @@
 <h2>Usage</h2>
 <ol>
 	<li>Navigate to the "MCP" tab and enable the MCP server.</li>
-	<li>Configure security settings including auto-approve targets and configuration editing permissions.</li>
+	<li>Configure security settings including auto-approve targets and configuration editing permissions. Copy the local
+		bearer token under Advanced Options for native HTTP clients.</li>
 	<li>Use the installer button to automatically configure Claude Desktop, or manually configure your MCP client to
-		connect to <code class="InlineCode">http://127.0.0.1:9876/mcp</code>. Stdio-only clients use the proxy already
-		packaged inside the extension JAR; the proxy also connects to this Streamable HTTP endpoint.</li>
+		connect to <code class="InlineCode">http://127.0.0.1:9876/mcp</code> with an
+		<code class="InlineCode">Authorization: Bearer ...</code> header. Stdio-only clients use the authenticated proxy
+		already packaged inside the extension JAR.</li>
 	<li>Interact with Burp through your AI client using the available MCP tools.</li>
 </ol>
 

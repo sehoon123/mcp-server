@@ -2,17 +2,38 @@ package net.portswigger.mcp.schema
 
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialInfo
 import kotlinx.serialization.descriptors.PolymorphicKind
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.SerialKind
 import kotlinx.serialization.descriptors.StructureKind
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.reflect.KClass
 import kotlin.reflect.full.memberProperties
+
+@OptIn(ExperimentalSerializationApi::class)
+@SerialInfo
+@Target(AnnotationTarget.PROPERTY)
+annotation class JsonSchemaMetadata(
+    val description: String = "",
+    val minLength: Int = -1,
+    val maxLength: Int = -1,
+    val pattern: String = "",
+    val enumValues: Array<String> = [],
+    val minimum: Long = Long.MIN_VALUE,
+    val maximum: Long = Long.MIN_VALUE,
+    val minItems: Int = -1,
+    val maxItems: Int = -1,
+    val minProperties: Int = -1,
+    val maxProperties: Int = -1,
+    /** A JSON literal, for example `20`, `false`, or `\"utf8\"`. */
+    val defaultJson: String = "",
+)
 
 fun getJsonSchemaForProperty(kType: kotlin.reflect.KType): JsonElement {
     return when (kType.classifier) {
@@ -64,7 +85,7 @@ private fun SerialDescriptor.asToolSchema(schemaRole: String): ToolSchema {
     }
     val properties = buildMap {
         for (index in 0 until elementsCount) {
-            put(getElementName(index), getElementDescriptor(index).asJsonSchema())
+            put(getElementName(index), elementSchema(index))
         }
     }
     val required = buildList {
@@ -103,7 +124,7 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
         StructureKind.CLASS, StructureKind.OBJECT -> {
             val properties = buildMap {
                 for (index in 0 until elementsCount) {
-                    put(getElementName(index), getElementDescriptor(index).asJsonSchema())
+                    put(getElementName(index), elementSchema(index))
                 }
             }
             val required = buildList {
@@ -118,6 +139,7 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
                     if (required.isNotEmpty()) {
                         put("required", JsonArray(required.map(::JsonPrimitive)))
                     }
+                    put("additionalProperties", JsonPrimitive(false))
                 }
             )
         }
@@ -125,6 +147,34 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
         else -> error("Unsupported serialization kind $descriptorKind for $serialName")
     }
     return if (isNullable) schema.withNullType() else schema
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+private fun SerialDescriptor.elementSchema(index: Int): JsonElement =
+    getElementDescriptor(index).asJsonSchema().withMetadata(
+        getElementAnnotations(index).filterIsInstance<JsonSchemaMetadata>().singleOrNull()
+    )
+
+private fun JsonElement.withMetadata(metadata: JsonSchemaMetadata?): JsonElement {
+    if (metadata == null) return this
+    val schema = this as? JsonObject ?: return this
+    return JsonObject(buildMap {
+        putAll(schema)
+        if (metadata.description.isNotBlank()) put("description", JsonPrimitive(metadata.description.take(512)))
+        if (metadata.minLength >= 0) put("minLength", JsonPrimitive(metadata.minLength))
+        if (metadata.maxLength >= 0) put("maxLength", JsonPrimitive(metadata.maxLength))
+        if (metadata.pattern.isNotEmpty()) put("pattern", JsonPrimitive(metadata.pattern.take(512)))
+        if (metadata.enumValues.isNotEmpty()) {
+            put("enum", JsonArray(metadata.enumValues.distinct().map(::JsonPrimitive)))
+        }
+        if (metadata.minimum != Long.MIN_VALUE) put("minimum", JsonPrimitive(metadata.minimum))
+        if (metadata.maximum != Long.MIN_VALUE) put("maximum", JsonPrimitive(metadata.maximum))
+        if (metadata.minItems >= 0) put("minItems", JsonPrimitive(metadata.minItems))
+        if (metadata.maxItems >= 0) put("maxItems", JsonPrimitive(metadata.maxItems))
+        if (metadata.minProperties >= 0) put("minProperties", JsonPrimitive(metadata.minProperties))
+        if (metadata.maxProperties >= 0) put("maxProperties", JsonPrimitive(metadata.maxProperties))
+        if (metadata.defaultJson.isNotEmpty()) put("default", Json.parseToJsonElement(metadata.defaultJson))
+    })
 }
 
 private fun typedSchema(type: String) = JsonObject(mapOf("type" to JsonPrimitive(type)))

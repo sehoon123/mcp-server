@@ -36,6 +36,7 @@ import kotlin.time.Duration.Companion.milliseconds
 @Timeout(30, unit = TimeUnit.SECONDS)
 class ProxyEndToEndTest {
     private val logger = LoggerFactory.getLogger(ProxyEndToEndTest::class.java)
+    private val testBearerToken = "0123456789012345678901234567890123456789012"
 
     private val api = mockk<MontoyaApi>(relaxed = true)
     private val serverManager = KtorServerManager(api)
@@ -49,6 +50,7 @@ class ProxyEndToEndTest {
         every { persistedObject.getBoolean(any()) } returns true
         every { persistedObject.getBoolean("requireRequestActionApproval") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
+        every { persistedObject.getString("localBearerToken") } returns testBearerToken
         every { persistedObject.getInteger("port") } returns testPort
         every { persistedObject.setBoolean(any(), any()) } returns Unit
         every { persistedObject.setString(any(), any()) } returns Unit
@@ -97,8 +99,12 @@ class ProxyEndToEndTest {
             "-jar",
             jarFile.absolutePath,
             "--mcp-url",
-            "http://127.0.0.1:$testPort/mcp"
-        ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+            "http://127.0.0.1:$testPort/mcp",
+            "--bearer-token-env",
+            "BURP_MCP_BEARER_TOKEN"
+        ).apply {
+            environment()["BURP_MCP_BEARER_TOKEN"] = testBearerToken
+        }.redirectError(ProcessBuilder.Redirect.INHERIT).start()
 
         client = TestStdioMcpClient()
         connectClientWithRetry()

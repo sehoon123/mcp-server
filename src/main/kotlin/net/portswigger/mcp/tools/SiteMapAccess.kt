@@ -5,6 +5,7 @@ import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse as MontoyaHttpRequestResponse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.HexFormat
@@ -17,12 +18,15 @@ private val SITE_MAP_ID_PATTERN = Regex("^sitemap_([0-9]+)_([0-9a-f]{32})$")
 
 @Serializable
 data class GetSitemapMessageById(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Stable Site Map ID.", pattern = "^sitemap_[0-9]+_[0-9a-f]{32}$", maxLength = 128)
     val id: String,
+    @JsonSchemaMetadata(enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body"], defaultJson = "\"metadata\"")
     val part: String? = null,
-    val offset: Int? = null,
-    val limit: Int? = null,
-    val encoding: String? = null,
+    @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,
+    @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
+    @JsonSchemaMetadata(enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,
 )
 
 @Serializable

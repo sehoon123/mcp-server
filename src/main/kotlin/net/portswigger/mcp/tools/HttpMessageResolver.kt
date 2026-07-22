@@ -10,6 +10,7 @@ import kotlinx.coroutines.ensureActive
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
+import net.portswigger.mcp.security.safeExceptionSummary
 
 internal const val MAX_HTTP_REFERENCE_PROJECT_ID_CHARS = 256
 internal const val MAX_HTTP_REFERENCE_ID_CHARS = 128
@@ -291,5 +292,4 @@ private fun failure(
     error = error.take(512),
 )
 
-private fun safeResolverException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeResolverException(error: Exception): String = safeExceptionSummary(error)

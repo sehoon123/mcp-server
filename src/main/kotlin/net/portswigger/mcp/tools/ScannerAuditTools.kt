@@ -13,13 +13,16 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.SensitiveActionSecurity
+import net.portswigger.mcp.security.safeExceptionSummary
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_ACTIVE_SCANNER_AUDITS = 8
 private const val MAX_RETAINED_SCANNER_AUDITS = 32
@@ -36,27 +39,37 @@ private val SCANNER_TASK_ID_PATTERN = Regex("scanner_audit_[0-9a-f]{32}")
 
 @Serializable
 data class ScannerAuditTarget(
+    @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
     val ref: HttpMessageReference,
+    @JsonSchemaMetadata(description = "Required semantic insertion points for active audit; omitted for passive audit. Up to 64 are allowed across all targets.", minItems = 1, maxItems = 32)
     val insertionPoints: List<HttpInsertionPointSelector>? = null,
 )
 
 @Serializable
 data class StartScannerAuditFromIds(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Passive or focused active audit mode.")
     val mode: ScannerAuditMode,
+    @JsonSchemaMetadata(description = "Existing in-scope messages; active allows 4 and passive allows 16.", minItems = 1, maxItems = 16)
     val targets: List<ScannerAuditTarget>,
 )
 
 @Serializable
 data class GetScannerAudit(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Extension-owned Scanner task ID.", maxLength = 128, pattern = "^scanner_audit_[0-9a-f]{32}$")
     val taskId: String,
+    @JsonSchemaMetadata(description = "Maximum issue summaries; zero skips issue access.", minimum = 0, maximum = 50, defaultJson = "25")
     val issueLimit: Int? = null,
 )
 
 @Serializable
 data class CancelScannerAudit(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Extension-owned Scanner task ID.", maxLength = 128, pattern = "^scanner_audit_[0-9a-f]{32}$")
     val taskId: String,
 )
 
@@ -182,6 +195,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
     private val records = ConcurrentHashMap<String, ScannerAuditRecord>()
     private val startMutex = Mutex()
     private val random = SecureRandom()
+    private val observedProjectId = AtomicReference<String?>()
 
     suspend fun start(input: StartScannerAuditFromIds, config: McpConfig): ScannerAuditResult {
         val targetLimit = when (input.mode) {
@@ -433,6 +447,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                     "Burp could not recheck the project before Scanner start: ${safeScannerAuditException(e)}",
                 )
             }
+            observeProject(currentProjectId)
             if (currentProjectId != input.projectId) {
                 return@withLock scannerAuditError(
                     ScannerAuditToolStatus.PROJECT_MISMATCH,
@@ -581,7 +596,9 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         record.lastRequestCount = requestCount
         record.lastErrorCount = errorCount
 
-        var issuesAllowed = try {
+        var issuesAllowed = if (issueLimit == 0) {
+            false
+        } else try {
             DataAccessSecurity.checkDataAccessPermission(DataAccessType.SCANNER_ISSUES, config)
         } catch (e: CancellationException) {
             throw e
@@ -589,7 +606,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             errors += "issue access check failed: ${safeScannerAuditException(e)}"
             false
         }
-        val issuePermissionDenied = !issuesAllowed
+        val issuePermissionDenied = issueLimit > 0 && !issuesAllowed
         val projectBeforeIssues = try {
             api.project().id()
         } catch (e: Exception) {
@@ -700,6 +717,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 error = "Burp could not recheck the project before Scanner cancellation: ${safeScannerAuditException(e)}",
             )
         }
+        observeProject(currentProjectId)
         if (currentProjectId != record.projectId) {
             return scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
@@ -753,6 +771,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 error = "Burp could not read the current project: ${safeScannerAuditException(e)}",
             )
         }
+        observeProject(currentProjectId)
         if (currentProjectId != projectId) {
             return scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
@@ -762,6 +781,16 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             )
         }
         return null
+    }
+
+    private fun observeProject(currentProjectId: String) {
+        val previous = observedProjectId.getAndSet(currentProjectId)
+        if (previous == null || previous == currentProjectId) return
+
+        records.values.filter { it.projectId != currentProjectId }.forEach { record ->
+            records.remove(record.taskId, record)
+            if (!record.lastState.isTerminal()) runCatching { record.audit.delete() }
+        }
     }
 
     private fun refreshAndTrimRecords() {
@@ -785,6 +814,15 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             val bytes = ByteArray(16).also(random::nextBytes)
             val id = "scanner_audit_${HexFormat.of().formatHex(bytes)}"
             if (!records.containsKey(id)) return id
+        }
+    }
+
+    /** Cancels extension-owned work during extension unload and releases all retained handles. */
+    fun close() {
+        val owned = records.values.toList()
+        records.clear()
+        owned.filterNot { it.lastState.isTerminal() }.forEach { record ->
+            runCatching { record.audit.delete() }
         }
     }
 
@@ -981,7 +1019,6 @@ private fun scannerAuditError(
 private fun validProjectId(value: String): Boolean =
     value.isNotEmpty() && value.length <= MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && value.none(Char::isISOControl)
 
-private fun safeScannerAuditException(error: Exception): String =
-    "${error::class.simpleName ?: "Exception"}: ${error.message.orEmpty()}".take(512)
+private fun safeScannerAuditException(error: Exception): String = safeExceptionSummary(error)
 
 private fun Throwable.asException(): Exception = this as? Exception ?: RuntimeException(message, this)

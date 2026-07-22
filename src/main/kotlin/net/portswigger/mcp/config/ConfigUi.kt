@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.portswigger.mcp.ServerState
+import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.Swing
 import net.portswigger.mcp.config.components.*
 import net.portswigger.mcp.providers.Provider
@@ -75,7 +76,10 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         )
 
         advancedOptionsPanel = AdvancedOptionsPanel(
-            hostField = hostField, portField = portField, reinstallNotice = reinstallNotice
+            config = config,
+            hostField = hostField,
+            portField = portField,
+            reinstallNotice = reinstallNotice,
         )
 
         autoApproveTargetsPanel = AutoApproveTargetsPanel(config = config)
@@ -106,8 +110,11 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     }
 
     fun getConfig(): McpConfig {
-        config.host = hostField.text
-        portField.text.toIntOrNull()?.let { config.port = it }
+        ConfigValidation.normalizeLoopbackHost(hostField.text)?.let {
+            config.host = it
+            hostField.text = it
+        }
+        portField.text.trim().toIntOrNull()?.let { config.port = it }
         return config
     }
 
@@ -141,7 +148,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
 
                     val friendlyMessage = when (state.exception) {
                         is UnresolvedAddressException -> "Unable to resolve address"
-                        else -> state.exception.message ?: state.exception.javaClass.simpleName
+                        else -> safeExceptionSummary(state.exception)
                     }
 
                     Dialogs.showMessageDialog(

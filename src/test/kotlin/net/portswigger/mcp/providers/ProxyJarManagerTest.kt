@@ -3,6 +3,7 @@ package net.portswigger.mcp.providers
 import burp.api.montoya.logging.Logging
 import io.mockk.mockk
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -13,6 +14,23 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ProxyJarManagerTest {
+    @Test
+    fun `proxy extraction refuses a symlinked parent directory`(@TempDir directory: Path) {
+        val realDirectory = directory.resolve("real").also { Files.createDirectory(it) }
+        val linkedDirectory = directory.resolve("linked")
+        runCatching { Files.createSymbolicLink(linkedDirectory, realDirectory.fileName) }.getOrElse { return }
+        val manager = ProxyJarManager(
+            logging = mockk<Logging>(relaxed = true),
+            resourceProvider = { null },
+            proxyDirectory = linkedDirectory,
+        )
+
+        val error = assertThrows<IllegalArgumentException> { manager.getProxyJar() }
+
+        assertTrue(error.message.orEmpty().contains("symbolic link"))
+        assertTrue(Files.notExists(realDirectory.resolve("mcp-proxy-all.jar")))
+    }
+
     @Test
     fun `current extracted proxy does not read the large jar resource again`(@TempDir proxyDirectory: Path) {
         val proxyBytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
@@ -47,5 +65,10 @@ class ProxyJarManagerTest {
         manager.getProxyJar()
         assertEquals(2, proxyResourceReads)
         assertTrue(Files.exists(extracted))
+
+        Files.writeString(extracted, "tampered")
+        manager.getProxyJar()
+        assertEquals(3, proxyResourceReads, "a matching version marker must not bypass JAR verification")
+        assertContentEquals(proxyBytes, Files.readAllBytes(extracted))
     }
 }
