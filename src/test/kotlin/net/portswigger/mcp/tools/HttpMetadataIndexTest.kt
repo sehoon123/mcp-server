@@ -16,10 +16,15 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -55,6 +60,7 @@ class HttpMetadataIndexTest {
         assertEquals(1, snapshot.indexedFrom)
         assertEquals(1, snapshot.omittedRecords)
         assertEquals(listOf(1, 2), snapshot.availableRecords.map { it.sourceIndex })
+        assertEquals(listOf(2, 3), snapshot.availableRecords.map { it.numericSourceId })
         assertEquals(listOf("/api/users/123", "/api/users/456"), snapshot.availableRecords.map { it.path })
         assertTrue(snapshot.availableRecords.all { '?' !in it.path && '#' !in it.path })
         assertTrue(snapshot.availableRecords.all { it.fingerprint.matches(Regex("[a-f0-9]{32}")) })
@@ -99,6 +105,83 @@ class HttpMetadataIndexTest {
         assertEquals(MAX_METADATA_INDEX_RECORDS_PER_SOURCE, snapshot.availableRecords.size)
         assertTrue(getCalls <= MAX_METADATA_INDEX_RECORDS_PER_SOURCE + 16)
         verify(exactly = 0) { fixture.request.body() }
+    }
+
+    @Test
+    fun `search hint snapshot never performs a cold source build`() = runBlocking {
+        history += proxyItem(1, "/cold").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+
+        val snapshot = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(null, snapshot)
+        assertFailsWith<IllegalArgumentException> {
+            index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.SITE_MAP))
+        }
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
+    fun `search hint snapshot returns recent same-size anchor-validated metadata`() = runBlocking {
+        history += proxyItem(1, "/warm").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        val cached = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(MetadataIndexRefresh.REUSED, cached?.sources?.single()?.refresh)
+        assertEquals(1, cached?.sources?.single()?.availableRecords?.size)
+        verify(exactly = 2) { proxy.history() }
+    }
+
+    @Test
+    fun `search hints never wait for a contended index build`() = runBlocking {
+        val fixture = proxyItem(1, "/contended")
+        val enteredRequest = CountDownLatch(1)
+        val releaseRequest = CountDownLatch(1)
+        every { fixture.item.request() } answers {
+            enteredRequest.countDown()
+            check(releaseRequest.await(5, TimeUnit.SECONDS)) { "timed out waiting to release index build" }
+            fixture.request
+        }
+        history += fixture.item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertTrue(enteredRequest.await(5, TimeUnit.SECONDS))
+
+        try {
+            assertEquals(
+                null,
+                withTimeout(250) { index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)) },
+            )
+        } finally {
+            releaseRequest.countDown()
+        }
+        assertEquals("project-one", build.await().projectId)
+    }
+
+    @Test
+    fun `resized warm cache falls back and preserves append state`() = runBlocking {
+        history += proxyItem(1, "/first").item
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            reuseMillis = 1_000,
+            nanoTime = { nowNanos },
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        history += proxyItem(2, "/second").item
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        assertEquals(
+            MetadataIndexRefresh.UPDATED,
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
+
+        nowNanos += 1_000_000_000L
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
     }
 
     @Test
@@ -331,8 +414,10 @@ class HttpMetadataIndexTest {
         assertEquals(listOf(HttpMessageSource.SITE_MAP, HttpMessageSource.ORGANIZER), sources.map { it.source })
         assertEquals("/site/resource", sources[0].availableRecords.single().path)
         assertEquals(null, sources[0].availableRecords.single().sourceId)
+        assertEquals(null, sources[0].availableRecords.single().numericSourceId)
         assertEquals("/organizer/resource", sources[1].availableRecords.single().path)
         assertEquals("77", sources[1].availableRecords.single().sourceId)
+        assertEquals(77, sources[1].availableRecords.single().numericSourceId)
         verify(exactly = 0) { siteParts.request.body() }
         verify(exactly = 0) { organizerParts.request.body() }
     }

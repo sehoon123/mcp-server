@@ -281,7 +281,11 @@ internal fun Server.registerTools(
     auditSink: McpAuditSink = NoOpMcpAuditSink,
 ) {
     bindToolRuntimePolicy(config, auditSink)
-    val httpMessageSearchService = HttpMessageSearchService(api, config)
+    val httpMessageSearchService = HttpMessageSearchService(
+        api = api,
+        config = config,
+        metadataIndex = services.httpMetadataIndex,
+    )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)

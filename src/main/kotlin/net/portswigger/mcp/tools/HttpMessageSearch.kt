@@ -207,6 +207,7 @@ private class ExpectedSearchError(
 internal class HttpMessageSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
+    private val metadataIndex: HttpMetadataIndex? = null,
     cursorSecret: ByteArray = ByteArray(32).also(SecureRandom()::nextBytes),
     private val maxScannedItems: Int = MAX_HTTP_SEARCH_SCANNED_ITEMS,
     private val maxTextBytes: Long = MAX_HTTP_SEARCH_TEXT_BYTES,
@@ -276,16 +277,74 @@ internal class HttpMessageSearchService(
             )
         }
 
-        val views = query.sources.map(::loadView)
-        val snapshots = try {
-            if (cursor == null) {
-                views.map { it.snapshot() }
-            } else {
-                validateCursor(cursor, views)
-                cursor.snapshots
+        val indexSources = query.metadataIndexSources()
+        val indexSnapshot = if (metadataIndex != null && indexSources.isNotEmpty()) {
+            try {
+                metadataIndex.searchHintsSnapshot(projectId, indexSources)
+            } catch (e: HttpMetadataProjectMismatchException) {
+                return searchError(
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed while preparing the search",
+                    e.currentProjectId,
+                )
+            } catch (_: HttpMetadataIndexChangingException) {
+                null
             }
+        } else {
+            null
+        }
+
+        var result = try {
+            executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints))
         } catch (e: ExpectedSearchError) {
             return searchError(e.status, e.message, projectId)
+        }
+
+        if (indexSnapshot != null) {
+            val indexStillCurrent = try {
+                requireNotNull(metadataIndex).areSearchHintsCurrent(indexSnapshot)
+            } catch (e: HttpMetadataProjectMismatchException) {
+                return searchError(
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed while searching HTTP messages",
+                    e.currentProjectId,
+                )
+            } catch (_: HttpMetadataIndexChangingException) {
+                false
+            }
+            if (!indexStillCurrent) {
+                result = try {
+                    executeSearch(query, cursor, limit, projectId, hints = null)
+                } catch (e: ExpectedSearchError) {
+                    return searchError(e.status, e.message, projectId)
+                }
+            }
+        }
+
+        val finalProjectId = currentProjectId()
+        if (finalProjectId != projectId) {
+            return searchError(
+                HttpMessageSearchStatus.PROJECT_MISMATCH,
+                "Burp project changed while searching HTTP messages",
+                finalProjectId,
+            )
+        }
+        return result
+    }
+
+    private suspend fun executeSearch(
+        query: NormalizedHttpSearchQuery,
+        cursor: HttpSearchCursor?,
+        limit: Int,
+        projectId: String,
+        hints: IndexedSearchHints?,
+    ): SearchHttpMessagesResult {
+        val views = query.sources.map(::loadView)
+        val snapshots = if (cursor == null) {
+            views.map { it.snapshot() }
+        } else {
+            validateCursor(cursor, views)
+            cursor.snapshots
         }
 
         val position = if (cursor == null) {
@@ -310,15 +369,19 @@ internal class HttpMessageSearchService(
             }
 
             val view = views[position.sourceIndex]
-            val candidate = view.candidate(position.itemIndex)
-            if (candidate == null) {
-                scanned++
+            val itemIndex = position.itemIndex
+            scanned++
+            val indexedRecord = hints?.record(view.source, itemIndex)
+            val predictedRejection = indexedRecord?.predictedRejection(matcher)
+            if (predictedRejection != null &&
+                view.currentRecordStillRejects(itemIndex, indexedRecord, predictedRejection, matcher)
+            ) {
                 advancePosition(position, snapshots, query.newestFirst)
                 continue
             }
 
-            scanned++
-            if (!candidate.matchesMetadata(matcher)) {
+            val candidate = view.candidate(itemIndex)
+            if (candidate == null || !candidate.matchesMetadata(matcher)) {
                 advancePosition(position, snapshots, query.newestFirst)
                 continue
             }
@@ -341,7 +404,7 @@ internal class HttpMessageSearchService(
                 }
             }
 
-            results += candidate.toSummary(projectId, position.itemIndex)
+            results += candidate.toSummary(projectId, itemIndex)
             advancePosition(position, snapshots, query.newestFirst)
         }
 
@@ -568,6 +631,12 @@ private interface SourceView {
     val size: Int
     fun candidate(index: Int): SearchCandidate?
     fun anchor(index: Int): String?
+    fun currentRecordStillRejects(
+        index: Int,
+        indexedRecord: HttpMetadataRecord,
+        predicted: MetadataRejectionReason,
+        matcher: CompiledHttpSearchQuery,
+    ): Boolean = false
 
     fun snapshot(): CursorSourceSnapshot = CursorSourceSnapshot(
         source = source,
@@ -595,6 +664,18 @@ private class ProxySourceView(private val items: List<ProxyHttpRequestResponse>)
     }
 
     override fun anchor(index: Int): String? = items.getOrNull(index)?.id()?.toString()
+
+    override fun currentRecordStillRejects(
+        index: Int,
+        indexedRecord: HttpMetadataRecord,
+        predicted: MetadataRejectionReason,
+        matcher: CompiledHttpSearchQuery,
+    ): Boolean = currentProxyRecordStillRejects(
+        items.getOrNull(index),
+        indexedRecord.numericSourceId,
+        predicted,
+        matcher,
+    )
 }
 
 private class SiteMapSourceView(private val items: List<MontoyaHttpRequestResponse>) : SourceView {
@@ -633,12 +714,127 @@ private class OrganizerSourceView(private val items: List<OrganizerItem>) : Sour
     }
 
     override fun anchor(index: Int): String? = items.getOrNull(index)?.id()?.toString()
+
+    override fun currentRecordStillRejects(
+        index: Int,
+        indexedRecord: HttpMetadataRecord,
+        predicted: MetadataRejectionReason,
+        matcher: CompiledHttpSearchQuery,
+    ): Boolean = currentOrganizerRecordStillRejects(
+        items.getOrNull(index),
+        indexedRecord.numericSourceId,
+        predicted,
+        matcher,
+    )
+}
+
+private fun currentProxyRecordStillRejects(
+    item: ProxyHttpRequestResponse?,
+    expectedSourceId: Int?,
+    predicted: MetadataRejectionReason,
+    matcher: CompiledHttpSearchQuery,
+): Boolean = currentRejectionOrFallback {
+    if (item == null) return@currentRejectionOrFallback true
+    if (expectedSourceId == null || item.id() != expectedSourceId) return@currentRejectionOrFallback false
+    currentFieldStillRejects(
+        predicted,
+        matcher,
+        currentService = { item.httpService() },
+        currentRequest = { item.request() },
+        currentResponse = { item.response() },
+    )
+}
+
+private fun currentOrganizerRecordStillRejects(
+    item: OrganizerItem?,
+    expectedSourceId: Int?,
+    predicted: MetadataRejectionReason,
+    matcher: CompiledHttpSearchQuery,
+): Boolean = currentRejectionOrFallback {
+    if (item == null) return@currentRejectionOrFallback true
+    if (expectedSourceId == null || item.id() != expectedSourceId) return@currentRejectionOrFallback false
+    currentFieldStillRejects(
+        predicted,
+        matcher,
+        currentService = { item.httpService() },
+        currentRequest = { item.request() },
+        currentResponse = { item.response() },
+    )
+}
+
+private inline fun currentFieldStillRejects(
+    predicted: MetadataRejectionReason,
+    matcher: CompiledHttpSearchQuery,
+    currentService: () -> HttpService,
+    currentRequest: () -> HttpRequest?,
+    currentResponse: () -> HttpResponse?,
+): Boolean = when (predicted) {
+    MetadataRejectionReason.HOST ->
+        !hostMatches(currentService().host(), requireNotNull(matcher.query.host))
+    MetadataRejectionReason.PATH -> currentRequest()?.let {
+        !pathMatches(it.path(), requireNotNull(matcher.query.pathContains), matcher.query.caseSensitive)
+    } ?: true
+    MetadataRejectionReason.METHOD -> currentRequest()?.let {
+        !methodMatches(it.method(), requireNotNull(matcher.methods))
+    } ?: true
+    MetadataRejectionReason.STATUS_CODE ->
+        currentResponse()?.statusCode()?.toInt() !in requireNotNull(matcher.statusCodes)
+    MetadataRejectionReason.MIME_TYPE ->
+        currentResponse()?.mimeType()?.name !in requireNotNull(matcher.mimeTypes)
+    MetadataRejectionReason.SCOPE -> currentRequest()?.let { !it.isInScope() } ?: true
+    MetadataRejectionReason.HAS_RESPONSE ->
+        (currentResponse() != null) != requireNotNull(matcher.query.hasResponse)
 }
 
 private class CompiledHttpSearchQuery(val query: NormalizedHttpSearchQuery) {
     val methods = query.methods?.toHashSet()
     val statusCodes = query.statusCodes?.toHashSet()
     val mimeTypes = query.mimeTypes?.toHashSet()
+    val indexedMimeTypes = query.mimeTypes?.mapTo(HashSet()) { it.lowercase() }
+}
+
+private enum class MetadataRejectionReason {
+    HOST,
+    PATH,
+    METHOD,
+    STATUS_CODE,
+    MIME_TYPE,
+    SCOPE,
+    HAS_RESPONSE,
+}
+
+/**
+ * Uses cached metadata only to predict which current field can reject a record cheaply.
+ *
+ * The source view always re-reads that field from the current Burp record and verifies the numeric Proxy/Organizer ID
+ * before skipping anything. A stale prediction therefore falls back to the original raw matcher and cannot alter
+ * search or cursor semantics.
+ */
+private class IndexedSearchHints(snapshot: HttpMetadataIndexSnapshot) {
+    private val sources = arrayOfNulls<HttpMetadataSourceSnapshot>(HttpMessageSource.entries.size).also { indexed ->
+        snapshot.sources.forEach { indexed[it.source.ordinal] = it }
+    }
+
+    fun record(source: HttpMessageSource, sourceIndex: Int): HttpMetadataRecord? {
+        val sourceSnapshot = sources[source.ordinal] ?: return null
+        val record = sourceSnapshot.slots.getOrNull(sourceIndex - sourceSnapshot.indexedFrom) ?: return null
+        return record.takeIf { it.sourceIndex == sourceIndex }
+    }
+}
+
+private fun HttpMetadataRecord.predictedRejection(matcher: CompiledHttpSearchQuery): MetadataRejectionReason? {
+    val query = matcher.query
+    return when {
+        query.host != null && !host.equals(query.host, ignoreCase = true) -> MetadataRejectionReason.HOST
+        query.pathContains != null && !pathTruncated &&
+            !pathMatches(path, query.pathContains, query.caseSensitive) -> MetadataRejectionReason.PATH
+        matcher.methods != null && method !in matcher.methods -> MetadataRejectionReason.METHOD
+        matcher.statusCodes != null && statusCode !in matcher.statusCodes -> MetadataRejectionReason.STATUS_CODE
+        matcher.indexedMimeTypes != null && mimeType !in matcher.indexedMimeTypes -> MetadataRejectionReason.MIME_TYPE
+        query.inScopeOnly && !inScope -> MetadataRejectionReason.SCOPE
+        query.hasResponse != null && hasResponse != query.hasResponse -> MetadataRejectionReason.HAS_RESPONSE
+        else -> null
+    }
 }
 
 private data class SearchCandidate(
@@ -654,14 +850,9 @@ private data class SearchCandidate(
 
     fun matchesMetadata(matcher: CompiledHttpSearchQuery): Boolean {
         val query = matcher.query
-        if (query.host != null && !service.host().trimEnd('.').equals(query.host, ignoreCase = true)) return false
-        if (query.pathContains != null &&
-            !request.path().contains(query.pathContains, ignoreCase = !query.caseSensitive)
-        ) return false
-        if (matcher.methods != null) {
-            val method = request.method()
-            if (method !in matcher.methods && method.uppercase() !in matcher.methods) return false
-        }
+        if (query.host != null && !hostMatches(service.host(), query.host)) return false
+        if (query.pathContains != null && !pathMatches(request.path(), query.pathContains, query.caseSensitive)) return false
+        if (matcher.methods != null && !methodMatches(request.method(), matcher.methods)) return false
         if (matcher.statusCodes != null && response?.statusCode()?.toInt() !in matcher.statusCodes) return false
         if (matcher.mimeTypes != null && response?.mimeType()?.name !in matcher.mimeTypes) return false
         if (query.inScopeOnly && !request.isInScope()) return false
@@ -714,6 +905,30 @@ private data class SearchCandidate(
             notesTruncated = boundedNotes.second,
         )
     }
+}
+
+private inline fun currentRejectionOrFallback(block: () -> Boolean): Boolean = try {
+    block()
+} catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+} catch (_: Exception) {
+    false
+}
+
+private fun hostMatches(actual: String, expected: String): Boolean =
+    actual.trimEnd('.').equals(expected, ignoreCase = true)
+
+private fun pathMatches(actual: String, expected: String, caseSensitive: Boolean): Boolean =
+    actual.contains(expected, ignoreCase = !caseSensitive)
+
+private fun methodMatches(actual: String, expected: Set<String>): Boolean =
+    actual in expected || actual.uppercase() in expected
+
+private fun NormalizedHttpSearchQuery.metadataIndexSources(): List<HttpMessageSource> {
+    val hasMetadataPredicate = host != null || pathContains != null || methods != null || statusCodes != null ||
+        mimeTypes != null || inScopeOnly || hasResponse != null
+    if (text != null || !newestFirst || !hasMetadataPredicate) return emptyList()
+    return sources.filter { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }
 }
 
 private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery {

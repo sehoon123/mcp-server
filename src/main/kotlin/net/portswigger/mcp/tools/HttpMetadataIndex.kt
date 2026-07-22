@@ -53,6 +53,7 @@ internal data class HttpMetadataRecord(
     val source: HttpMessageSource,
     val sourceIndex: Int,
     val sourceId: String?,
+    val numericSourceId: Int?,
     val fingerprint: String,
     val scheme: String,
     val host: String,
@@ -149,6 +150,79 @@ internal class HttpMetadataIndex(
                 }
             }
             HttpMetadataIndexSnapshot(expectedProjectId, generation, snapshots)
+        }
+    }
+
+    /**
+     * Returns recent, already-warm metadata strictly as search branch-prediction hints.
+     *
+     * This path returns only same-size sources that pass the normal bounded anchor and age checks. Every predicted
+     * rejection must still be checked against the corresponding field and numeric ID on the current Proxy or Organizer
+     * record before it can be skipped; hints must never authorize aggregation, details, or actions. A contended index
+     * returns no hints immediately, so a selective query never waits for or performs a cold 5,000-record build.
+     */
+    suspend fun searchHintsSnapshot(
+        expectedProjectId: String,
+        sources: List<HttpMessageSource>,
+    ): HttpMetadataIndexSnapshot? {
+        require(sources.all { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }) {
+            "Search hints support only Proxy and Organizer records"
+        }
+        if (!lock.tryLock()) return null
+        return try {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            val currentProjectId = api.project().id()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != expectedProjectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
+            }
+
+            val coroutineContext = currentCoroutineContext()
+            val now = nanoTime()
+            val snapshots = ArrayList<HttpMetadataSourceSnapshot>(sources.size)
+            for (source in sources) {
+                coroutineContext.ensureActive()
+                val existing = entries[source] ?: continue
+                val reusableAge = maxReuseNanos > 0 &&
+                    elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
+                if (!reusableAge) continue
+
+                val view = loadView(source)
+                if (view.size == existing.totalRecords && validateAnchors(view, existing.anchors)) {
+                    snapshots += existing.toSnapshot(MetadataIndexRefresh.REUSED)
+                } else if (view.size == existing.totalRecords) {
+                    entries.remove(source)
+                    generation++
+                }
+                val projectAfterSource = api.project().id()
+                if (projectAfterSource != expectedProjectId) {
+                    observeProjectLocked(projectAfterSource)
+                    throw HttpMetadataProjectMismatchException(projectAfterSource)
+                }
+            }
+            snapshots.takeIf { it.isNotEmpty() }?.let {
+                HttpMetadataIndexSnapshot(expectedProjectId, generation, it)
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /** Non-blocking response-point check for advisory search hints; contention forces the existing raw retry. */
+    suspend fun areSearchHintsCurrent(snapshot: HttpMetadataIndexSnapshot): Boolean {
+        if (!lock.tryLock()) return false
+        return try {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            val currentProjectId = api.project().id()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != snapshot.projectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
+            }
+            snapshot.generation == generation
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -365,11 +439,13 @@ private class ProxyMetadataSourceView(
 
     override fun metadata(index: Int): HttpMetadataRecord? = metadataOrNull {
         val item = items.getOrNull(index) ?: return@metadataOrNull null
-        val sourceId = item.id().toString().takeIf { it.length in 1..128 } ?: return@metadataOrNull null
+        val numericSourceId = item.id()
+        val sourceId = numericSourceId.toString().takeIf { it.length in 1..128 } ?: return@metadataOrNull null
         metadataRecord(
             source = source,
             sourceIndex = index,
             sourceId = sourceId,
+            numericSourceId = numericSourceId,
             request = item.request() ?: return@metadataOrNull null,
             response = item.response(),
             service = item.httpService(),
@@ -392,6 +468,7 @@ private class SiteMapMetadataSourceView(
             source = source,
             sourceIndex = index,
             sourceId = null,
+            numericSourceId = null,
             request = item.request() ?: return@metadataOrNull null,
             response = item.response(),
             service = item.httpService(),
@@ -409,11 +486,13 @@ private class OrganizerMetadataSourceView(
 
     override fun metadata(index: Int): HttpMetadataRecord? = metadataOrNull {
         val item = items.getOrNull(index) ?: return@metadataOrNull null
-        val sourceId = item.id().toString().takeIf { it.length in 1..128 } ?: return@metadataOrNull null
+        val numericSourceId = item.id()
+        val sourceId = numericSourceId.toString().takeIf { it.length in 1..128 } ?: return@metadataOrNull null
         metadataRecord(
             source = source,
             sourceIndex = index,
             sourceId = sourceId,
+            numericSourceId = numericSourceId,
             request = item.request() ?: return@metadataOrNull null,
             response = item.response(),
             service = item.httpService(),
@@ -442,6 +521,7 @@ private fun metadataRecord(
     source: HttpMessageSource,
     sourceIndex: Int,
     sourceId: String?,
+    numericSourceId: Int?,
     request: HttpRequest,
     response: HttpResponse?,
     service: HttpService,
@@ -480,6 +560,7 @@ private fun metadataRecord(
         source = source,
         sourceIndex = sourceIndex,
         sourceId = sourceId,
+        numericSourceId = numericSourceId,
         fingerprint = fingerprint,
         scheme = scheme,
         host = host,

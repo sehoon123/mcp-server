@@ -143,9 +143,19 @@ Each result contains the current Burp `projectId` and a `{source, id}` reference
 
 Search work is bounded per call to 10,000 metadata records. Literal content searches additionally inspect at most
 32 MiB of message data; individually oversized messages are counted in `oversizedContentSkipped`. URLs, notes, result
-counts, cursor sizes, and detail reads are also bounded. Successful requests issued through `send_http1_request` or
-`send_http2_request` are added to Burp's Site Map on a best-effort basis without changing the already-completed request
-result if local recording fails.
+counts, cursor sizes, and detail reads are also bounded.
+
+Eligible newest-first Proxy and Organizer searches without a content predicate can reuse recent, already-warm body-free
+index entries for host, path, method, status, MIME, scope, and response-presence filtering. Search validates the current
+source size and at most 16 anchors per warm source but never performs a cold index build. A cached mismatch only
+predicts which field to read: the extension rechecks that field and the numeric Proxy/Organizer ID on the current Burp
+record before skipping it, so stale, reordered, query-bearing, or replaced records fall back to the original raw
+matcher. Site Map, expired, unindexed, contended, text, and oldest-first ranges use the raw path. The 10,000-record
+count, 32 MiB content budget, signed cursor, result order, and selected-record identity behavior are unchanged; query
+values are never added to the index.
+
+Successful requests issued through `send_http1_request` or `send_http2_request` are added to Burp's Site Map on a
+best-effort basis without changing the already-completed request result if local recording fails.
 
 ## Body-free attack-surface summary
 

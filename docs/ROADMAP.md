@@ -84,15 +84,18 @@ Implemented foundation:
   after execution, including cancellation and uncertain completion paths.
 - `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
+- Eligible newest-first metadata-only Proxy and Organizer searches reuse only recent, already-warm, same-size,
+  anchor-validated index entries as advisory hints. Every predicted mismatch is rechecked on the current source field and numeric ID. Stale, reordered,
+  unindexed, Site Map, text, and oldest-first records fall back to the raw matcher without changing scan, cursor,
+  content-budget, or result semantics.
 
 Remaining work:
 
 - Migrate the remaining legacy source-specific list tools from offset pagination to the signed cursor model. Summary mode
   is now the default for Proxy/WebSocket/Organizer lists; selected previews and pages are bounded and silent mid-JSON
   5,000-character truncation has been removed.
-- Use the metadata index for eligible structured-search filters without changing the existing 10,000-record scan,
-  signed-cursor, or content-budget behavior. Re-resolve and identity-check every selected source record before details or
-  actions, and add lifecycle hooks only where Montoya events make freshness provable.
+- Validate metadata-index and unified-search performance with an actual large Burp history. Synthetic differential,
+  accessor-count, and JFR allocation probes remain regression evidence rather than Burp product latency claims.
 
 ### 4. Standardize structured results and errors
 
@@ -203,7 +206,7 @@ Remaining work:
 | 4 | Focused audit and Scanner task lifecycle | Implemented for passive evidence and explicit active insertion points; crawl remains deferred | High |
 | 5 | Structured comparison and Intruder insertion points | Implemented with bounded diff/variation output and semantic selectors | Medium–high |
 | 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
-| 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds; structured-search integration remains | Medium |
+| 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds and advisory warm-search hints | Medium |
 | 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
 | 9 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
 

@@ -179,6 +179,17 @@ mismatch performs no body-size query and consumes none of the 32 MiB content bud
 compiled to hash sets once per call rather than searched linearly for every candidate. Regression tests verify zero
 `bodyOffset`, body scan, note, fingerprint, and serialization calls for the relevant rejected records.
 
+Eligible newest-first Proxy and Organizer searches with no content predicate can consume recent, already-warm index
+records as branch-prediction hints. Search validates the current size and at most 16 anchors per warm source, but never
+performs a cold index build. A hint may only choose a likely rejecting field; that field and the numeric
+Proxy/Organizer ID are re-read from the current record before it is skipped. A stale prediction, source
+reorder/replacement, query-only path match, unavailable slot, expired or contended cache, unindexed range, Site Map
+source, or unsupported search shape falls back to the unchanged raw matcher. Selected summaries are always built from
+the current source item, and a final project/generation check triggers at most one full raw retry after explicit
+invalidation. The existing raw
+source snapshots, 10,000-record scan count, signed cursor payload/version, result order, and 32 MiB content accounting
+remain authoritative.
+
 ## Body-free HTTP metadata index
 
 `summarize_http_attack_surface` uses an extension-lifetime index rather than retaining an MCP-session snapshot. Each
@@ -197,6 +208,9 @@ cache freshness, not a claim that Montoya provides a complete same-size mutation
 
 A synthetic 100,000-record list regression verifies that a cold source build dereferences no more than the 5,000
 retained records plus 16 anchors; it does not treat that synthetic test as a Burp latency or allocation benchmark.
+Search's hint-only path reads only the current source list and at most 16 anchor records per warm source while acquiring
+a recent warm snapshot. It uses a non-blocking lock attempt so a concurrent index build cannot add latency to the raw
+fallback; every predicted rejection is then independently checked on the current source record.
 
 A separate one-off Java 21 probe used lightweight dynamic Montoya-interface fixtures, a 100,000-record Proxy list, the
 5,000-record retained range, three warm-up rounds, and twelve measured rounds. Its aggregation case deliberately used
@@ -217,6 +231,19 @@ services and 200 returned paths. Allocation-free ASCII classifiers replace per-s
 construction scans only the requested one to four segments. These figures are local regression evidence, not Burp
 Suite latency claims; an actual large-history Burp JFR/soak run remains required.
 
+A second one-off Java 21/JFR probe exercised metadata search over a synthetic 100,000-record Proxy list with concrete
+primitive source-ID and host methods. The selected host occurred at the 5,000th newest position, the index was already
+warm, and each phase contained 120 measured calls. Every cached rejection still read the current numeric ID and the
+same `httpService().host()` field as the raw matcher. Under JFR, raw and indexed median call times were 0.537 ms and
+0.437 ms, while weighted allocation samples inside the marked phases were 28.47 MiB and 13.87 MiB. Three separate
+no-build-cache runs without JFR measured raw medians of 0.532/0.501/0.527 ms and indexed medians of
+0.298/0.336/0.289 ms. Full request and response dereferences for a representative call fell from 5,000 each to 17 each
+(the selected record plus 16 anchors). The indexed call made 5,016 service, 5,017 host, and 5,018 numeric-ID reads to
+preserve anchor, identity, and current-field validation.
+These sub-millisecond figures remain sensitive to fixture, JIT, and recorder noise. The probe is allocation/accessor
+regression evidence, not a Burp latency claim. A cold search does not build the index and keeps the
+original raw path.
+
 The attack-surface tool defaults to in-scope Proxy metadata, strips query strings, normalizes likely numeric, UUID, hex,
 and long token path segments, and bounds service/path/global method, status, MIME, and file-extension count lists.
 Each snapshot captures a monotonic invalidation generation. The tool rechecks both that generation and the current
@@ -226,9 +253,10 @@ both before and after the mutation; non-cancellable cleanup releases that barrie
 External Burp UI changes remain subject to the documented anchors and 30-second reuse limit because Montoya exposes no
 corresponding lifecycle event.
 
-Individual detail and action tools do not trust aggregate cache entries: their existing resolvers fetch the current Burp object and validate the project and stable or
-opaque Site Map identity immediately before use. Integrating eligible metadata-only `search_http_messages` predicates
-with this index remains separate work and must preserve the existing 10,000-record scan and signed-cursor semantics.
+Individual detail and action tools do not trust aggregate cache entries: their existing resolvers fetch the current
+Burp object and validate the project and stable or opaque Site Map identity immediately before use. Search likewise
+uses cache entries only as advisory field-selection hints and builds every returned reference from the current source
+item.
 
 ## Stable-ID lookup and action hot paths
 
