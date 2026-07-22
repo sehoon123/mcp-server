@@ -44,6 +44,15 @@ class SwingSensitiveActionApprovalHandler : SensitiveActionApprovalHandler {
     }
 }
 
+enum class SensitiveActionAuditOperation(val auditKind: String) {
+    PROJECT_OPTIONS_READ("sensitive_action:project_options_read"),
+    USER_OPTIONS_READ("sensitive_action:user_options_read"),
+    PROJECT_OPTIONS_WRITE("sensitive_action:project_options_write"),
+    USER_OPTIONS_WRITE("sensitive_action:user_options_write"),
+    TASK_EXECUTION_ENGINE("sensitive_action:task_execution_engine"),
+    PROXY_INTERCEPT("sensitive_action:proxy_intercept"),
+}
+
 /** Approval gate for scope changes, Scanner starts, and other sensitive Burp project mutations. */
 object SensitiveActionSecurity {
     var approvalHandler: SensitiveActionApprovalHandler = SwingSensitiveActionApprovalHandler()
@@ -54,6 +63,7 @@ object SensitiveActionSecurity {
         reviewContent: String? = null,
         renderContentAsHttp: Boolean = false,
         api: MontoyaApi,
+        auditOperation: SensitiveActionAuditOperation? = null,
     ): Boolean {
         require(action.length in 1..MAX_SENSITIVE_ACTION_LABEL_CHARS && action.none(Char::isISOControl)) {
             "sensitive action label is invalid"
@@ -65,7 +75,8 @@ object SensitiveActionSecurity {
             "sensitive action review content is too large"
         }
         val approved = approvalHandler.requestApproval(action, summary, reviewContent, renderContentAsHttp, api)
-        recordCurrentToolApproval("sensitive_action", if (approved) "user_allow" else "user_deny")
+        val auditKind = auditOperation?.auditKind ?: "sensitive_action"
+        recordCurrentToolApproval(auditKind, if (approved) "user_allow" else "user_deny")
         return approved
     }
 }

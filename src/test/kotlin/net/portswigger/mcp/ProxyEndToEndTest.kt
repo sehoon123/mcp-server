@@ -164,7 +164,7 @@ class ProxyEndToEndTest {
         runBlocking {
             val tools = client.listTools()
             assertFalse(tools.isEmpty(), "Tool list should not be empty")
-            assertTrue(tools.any { it.name == "url_encode" }, "url_encode tool should be present")
+            assertTrue(tools.any { it.name == "transform_data" }, "transform_data tool should be present")
             val action = tools.single { it.name == "send_http_request_from_id" }
             assertEquals(true, action.annotations?.destructiveHint)
             assertEquals(true, action.annotations?.openWorldHint)
@@ -214,9 +214,15 @@ class ProxyEndToEndTest {
         every { annotations.notes() } returns null
 
         runBlocking {
-            val result = client.callTool("get_http_message_by_id", mapOf("id" to 42))
+            val result = client.callTool(
+                "get_http_message",
+                mapOf(
+                    "projectId" to "proxy-e2e-project",
+                    "ref" to mapOf("source" to "proxy", "id" to "42"),
+                ),
+            )
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertEquals("42", result?.structuredContent?.get("id")?.jsonPrimitive?.content)
+            assertTrue(result?.structuredContent?.get("ref").toString().contains("\"id\":\"42\""))
 
             val search = client.callTool("search_http_messages", mapOf("host" to "example.test"))
             assertEquals("ok", search?.structuredContent?.get("status")?.jsonPrimitive?.content)
@@ -226,10 +232,11 @@ class ProxyEndToEndTest {
             val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
             every { api.repeater() } returns repeater
             val action = client.callTool(
-                "create_repeater_tab_from_id",
+                "route_http_message_from_id",
                 mapOf(
                     "projectId" to "proxy-e2e-project",
                     "ref" to mapOf("source" to "proxy", "id" to "42"),
+                    "destination" to "repeater",
                     "tabName" to "proxy-e2e",
                 ),
             )
@@ -240,9 +247,12 @@ class ProxyEndToEndTest {
     }
 
     @Test
-    fun `proxy should call url_encode tool`() {
+    fun `proxy should call transform_data tool`() {
         runBlocking {
-            val result = client.callTool("url_encode", mapOf("content" to "hello world"))
+            val result = client.callTool(
+                "transform_data",
+                mapOf("operation" to "url_encode", "content" to "hello world"),
+            )
             assertNotNull(result, "Tool call result should not be null")
             assertFalse(result?.isError ?: false, "Tool call should not return an error")
             assertTrue(result?.content?.first() is TextContent, "Result should contain TextContent")

@@ -260,10 +260,11 @@ item.
 
 ## Stable-ID lookup and action hot paths
 
-Proxy HTTP, Proxy WebSocket, and Organizer get-by-ID paths use Montoya's filtered overloads. Montoya may still inspect
-its internal store, but the extension no longer asks it to construct and return a complete list before selecting one
-record. Site Map keeps positional validation because its opaque ID deliberately fails closed after removal or reorder
-and Montoya exposes no direct stable-ID lookup.
+The unified HTTP reader uses Montoya's filtered overloads for Proxy and Organizer references; the WebSocket reader does
+the same. Montoya may still inspect its internal store, but the extension no longer asks it to construct and return a
+complete list before selecting one record. Site Map keeps positional validation because its opaque ID deliberately
+fails closed after removal or reorder and Montoya exposes no direct stable-ID lookup. The HTTP reader rechecks the
+project after materializing a bounded result and drops that result if a project transition won the race.
 
 Stable-ID request actions cap source and resulting requests at 2 MiB. Exact replay computes byte length from
 `bodyOffset + body.length` and does not materialize a complete byte array. Request text is held behind a non-thread-safe
@@ -302,7 +303,9 @@ request metadata, client names, headers, bodies, or Montoya objects. The Swing d
 snapshot per second, so it does not poll Burp history or session transports.
 
 The audit path constructs one small record at tool completion. Argument keys are capped at 16, approvals at 8, and all
-stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized. The
+stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized.
+Consolidated routing, configuration, and global-control tools retain only fixed approval classifications such as
+`request_routing:intruder`, never the operation argument value. The
 in-memory deque holds 50–1,000 records (250 by default) for at most 30 days, the persisted JSON document is capped at 1 MiB, and copied
 JSONL is capped at 100 records/64 KiB. A single daemon writer coalesces completions for 250 ms, keeps persistence off
 request workers and the Swing event thread, and flushes synchronously only during explicit test/lifecycle barriers.
@@ -321,7 +324,7 @@ build and a forced rerun from identical inputs must produce byte-identical proxy
 The feature phase added compact stable-ID summaries, bounded field reads, complete-record legacy pagination, and a
 constrained regex policy. Remaining performance work is deliberately narrower:
 
-1. Migrate legacy source-specific list tools to signed cursors where compatibility permits.
+1. Migrate the three consolidated legacy source-specific list tools to signed cursors where compatibility permits.
 2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
 3. Use the body-free index for eligible metadata-only search predicates while preserving signed cursor behavior, and add
    lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be resolved

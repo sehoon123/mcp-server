@@ -76,6 +76,7 @@ class ToolsKtTest {
             every { getBoolean("enabled") } returns true
             every { getBoolean("emergencyReadOnlyMode") } returns false
             every { getBoolean("configEditingTooling") } returns true
+            every { getBoolean("filterConfigCredentials") } returns false
             every { getBoolean("requireHttpRequestApproval") } returns false
             every { getBoolean("requireRequestActionApproval") } returns false
             every { getBoolean("requireDataAccessApproval") } returns false
@@ -561,7 +562,8 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "url_encode", mapOf(
+                    "transform_data", mapOf(
+                        "operation" to "url_encode",
                         "content" to "test string with spaces"
                     )
                 )
@@ -584,7 +586,8 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "url_decode", mapOf(
+                    "transform_data", mapOf(
+                        "operation" to "url_decode",
                         "content" to "test+string+with+spaces"
                     )
                 )
@@ -607,7 +610,8 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "base64_encode", mapOf(
+                    "transform_data", mapOf(
+                        "operation" to "base64_encode",
                         "content" to "test string"
                     )
                 )
@@ -633,7 +637,8 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "base64_decode", mapOf(
+                    "transform_data", mapOf(
+                        "operation" to "base64_decode",
                         "content" to "dGVzdCBzdHJpbmc="
                     )
                 )
@@ -683,8 +688,9 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "set_task_execution_engine_state", mapOf(
-                        "running" to true
+                    "set_burp_control_state", mapOf(
+                        "control" to "task_execution_engine",
+                        "enabled" to true
                     )
                 )
                 
@@ -698,8 +704,9 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "set_task_execution_engine_state", mapOf(
-                        "running" to false
+                    "set_burp_control_state", mapOf(
+                        "control" to "task_execution_engine",
+                        "enabled" to false
                     )
                 )
                 
@@ -720,8 +727,9 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "set_proxy_intercept_state", mapOf(
-                        "intercepting" to true
+                    "set_burp_control_state", mapOf(
+                        "control" to "proxy_intercept",
+                        "enabled" to true
                     )
                 )
                 
@@ -735,8 +743,9 @@ class ToolsKtTest {
             
             runBlocking {
                 val result = client.callTool(
-                    "set_proxy_intercept_state", mapOf(
-                        "intercepting" to false
+                    "set_burp_control_state", mapOf(
+                        "control" to "proxy_intercept",
+                        "enabled" to false
                     )
                 )
                 
@@ -755,15 +764,22 @@ class ToolsKtTest {
 
             every { api.burpSuite() } returns burpSuite
             every { api.logging() } returns apiLogging
+            every { burpSuite.exportProjectOptionsAsJson() } returns "{\"project_options\":{}}"
+            every { burpSuite.exportUserOptionsAsJson() } returns "{\"user_options\":{}}"
             every { burpSuite.importProjectOptionsFromJson(any()) } just runs
             every { burpSuite.importUserOptionsFromJson(any()) } just runs
 
             runBlocking {
+                val projectRead = client.callTool("get_burp_options", mapOf("level" to "project"))
+                val userRead = client.callTool("get_burp_options", mapOf("level" to "user"))
+                projectRead.expectTextContent("{\"project_options\":{}}")
+                userRead.expectTextContent("{\"user_options\":{}}")
+
                 val projectResult = client.callTool(
-                    "set_project_options", mapOf("json" to sensitiveJson)
+                    "set_burp_options", mapOf("level" to "project", "json" to sensitiveJson)
                 )
                 val userResult = client.callTool(
-                    "set_user_options", mapOf("json" to sensitiveJson)
+                    "set_burp_options", mapOf("level" to "user", "json" to sensitiveJson)
                 )
 
                 delay(100)
@@ -771,14 +787,16 @@ class ToolsKtTest {
                 userResult.expectTextContent("User configuration has been applied")
 
                 val tools = client.listTools()
-                val projectDescription = tools.single { it.name == "set_project_options" }.description.orEmpty()
-                val userDescription = tools.single { it.name == "set_user_options" }.description.orEmpty()
-                assertTrue(projectDescription.contains("top-level 'project_options'"))
-                assertFalse(projectDescription.contains("top-level 'user_options'"))
-                assertTrue(userDescription.contains("top-level 'user_options'"))
-                assertFalse(userDescription.contains("top-level 'project_options'"))
+                val readTool = tools.single { it.name == "get_burp_options" }
+                assertEquals(listOf("level"), readTool.inputSchema.required)
+                assertTrue(readTool.inputSchema.properties?.get("level").toString().contains("project"))
+                val description = tools.single { it.name == "set_burp_options" }.description.orEmpty()
+                assertTrue(description.contains("top-level 'project_options'"))
+                assertTrue(description.contains("top-level 'user_options'"))
             }
 
+            verify(exactly = 1) { burpSuite.exportProjectOptionsAsJson() }
+            verify(exactly = 1) { burpSuite.exportUserOptionsAsJson() }
             verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(sensitiveJson) }
             verify(exactly = 1) { burpSuite.importUserOptionsFromJson(sensitiveJson) }
             verify(exactly = 0) { apiLogging.logToOutput(match { "secret-value" in it }) }
@@ -789,7 +807,7 @@ class ToolsKtTest {
 
             runBlocking {
                 val result = client.callTool(
-                    "set_project_options", mapOf("json" to sensitiveJson)
+                    "set_burp_options", mapOf("level" to "project", "json" to sensitiveJson)
                 )
 
                 delay(100)
@@ -919,6 +937,33 @@ class ToolsKtTest {
                 verify(exactly = 0) { skipped.id() }
             }
             verify(exactly = 1) { proxyHistory.last().id() }
+        }
+
+        @Test
+        fun `optional regex keeps Proxy history filtering in the consolidated tool`() {
+            val proxy = mockk<Proxy>()
+            val matching = mockk<ProxyHttpRequestResponse>()
+            val skipped = mockk<ProxyHttpRequestResponse>()
+            stubProxyHistorySummary(matching, 7)
+            every { matching.contains(any<java.util.regex.Pattern>()) } returns true
+            every { skipped.contains(any<java.util.regex.Pattern>()) } returns false
+            every { api.proxy() } returns proxy
+            every { proxy.history(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+                listOf(matching, skipped).filter(filter::matches)
+            }
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history",
+                    mapOf("count" to 1, "offset" to 0, "regex" to "example\\.test"),
+                )
+                assertTrue(result.expectTextContent().contains("\"id\":7"))
+            }
+
+            verify(exactly = 1) { proxy.history(any()) }
+            verify(exactly = 0) { proxy.history() }
+            verify(exactly = 0) { skipped.id() }
         }
 
         @Test
@@ -1070,8 +1115,11 @@ class ToolsKtTest {
                 assertTrue(attackSurface?.structuredContent?.get("pathPrefixes").toString().contains("/search"))
 
                 val wrongProject = client.callTool(
-                    "get_http_message_by_id",
-                    mapOf("id" to 81, "projectId" to "another-project"),
+                    "get_http_message",
+                    mapOf(
+                        "projectId" to "another-project",
+                        "ref" to mapOf("source" to "proxy", "id" to "81"),
+                    ),
                 )
                 assertEquals(
                     "project_mismatch",
@@ -1088,8 +1136,9 @@ class ToolsKtTest {
                 assertEquals(true, searchTool.annotations?.readOnlyHint)
                 assertEquals(false, searchTool.annotations?.destructiveHint)
 
-                val detailTool = client.listTools().single { it.name == "get_sitemap_message_by_id" }
-                assertEquals(setOf("projectId", "id"), detailTool.inputSchema.required?.toSet())
+                val detailTool = client.listTools().single { it.name == "get_http_message" }
+                assertEquals(setOf("projectId", "ref"), detailTool.inputSchema.required?.toSet())
+                assertTrue(detailTool.inputSchema.properties?.get("ref").toString().contains("site_map"))
                 assertTrue(detailTool.outputSchema?.properties?.get("status").toString().contains("project_mismatch"))
             }
         }
@@ -1134,10 +1183,11 @@ class ToolsKtTest {
 
             runBlocking {
                 val result = client.callTool(
-                    "create_repeater_tab_from_id",
+                    "route_http_message_from_id",
                     mapOf(
                         "projectId" to "project-actions",
                         "ref" to mapOf("source" to "proxy", "id" to "91"),
+                        "destination" to "repeater",
                         "tabName" to "derived",
                     ),
                 )
@@ -1148,8 +1198,8 @@ class ToolsKtTest {
                 verify(exactly = 1) { repeater.sendToRepeater(request, "derived") }
 
                 val tools = client.listTools()
-                val repeaterTool = tools.single { it.name == "create_repeater_tab_from_id" }
-                assertEquals(setOf("projectId", "ref"), repeaterTool.inputSchema.required?.toSet())
+                val repeaterTool = tools.single { it.name == "route_http_message_from_id" }
+                assertEquals(setOf("projectId", "ref", "destination"), repeaterTool.inputSchema.required?.toSet())
                 assertEquals(false, repeaterTool.annotations?.readOnlyHint)
                 assertEquals(false, repeaterTool.annotations?.destructiveHint)
                 assertEquals(false, repeaterTool.annotations?.idempotentHint)
@@ -1162,8 +1212,12 @@ class ToolsKtTest {
                 val modeSchema = sendTool.inputSchema.properties?.get("httpMode").toString()
                 assertTrue(modeSchema.contains("http_2_ignore_alpn"))
 
-                assertNotNull(tools.singleOrNull { it.name == "send_to_intruder_from_id" })
-                assertNotNull(tools.singleOrNull { it.name == "send_to_organizer_from_id" })
+                val destinations = repeaterTool.inputSchema.properties?.get("destination").toString()
+                assertTrue(destinations.contains("repeater"))
+                assertTrue(destinations.contains("intruder"))
+                assertTrue(destinations.contains("organizer"))
+                assertNull(tools.singleOrNull { it.name == "send_to_intruder_from_id" })
+                assertNull(tools.singleOrNull { it.name == "send_to_organizer_from_id" })
             }
         }
     }
@@ -1172,6 +1226,7 @@ class ToolsKtTest {
     inner class StableHistoryAccessTests {
         @Test
         fun `HTTP message lookup returns bounded structured content and read-only metadata`() {
+            val project = mockk<burp.api.montoya.project.Project>()
             val proxy = mockk<Proxy>()
             val item = mockk<ProxyHttpRequestResponse>()
             val request = mockk<HttpRequest>()
@@ -1180,6 +1235,8 @@ class ToolsKtTest {
             val service = mockk<burp.api.montoya.http.HttpService>()
             val annotations = mockk<Annotations>()
 
+            every { api.project() } returns project
+            every { project.id() } returns "project-history"
             every { api.proxy() } returns proxy
             every { proxy.history(any()) } answers {
                 val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
@@ -1195,6 +1252,7 @@ class ToolsKtTest {
             every { item.annotations() } returns annotations
             every { request.method() } returns "POST"
             every { request.url() } returns "https://example.test/upload"
+            every { request.httpService() } returns service
             every { request.body() } returns body
             every { body.length() } returns 10
             every { body.subArray(2, 6) } returns selected
@@ -1206,9 +1264,10 @@ class ToolsKtTest {
 
             runBlocking {
                 val result = client.callTool(
-                    "get_http_message_by_id",
+                    "get_http_message",
                     mapOf(
-                        "id" to 42,
+                        "projectId" to "project-history",
+                        "ref" to mapOf("source" to "proxy", "id" to "42"),
                         "part" to "request_body",
                         "offset" to 2,
                         "limit" to 4,
@@ -1219,14 +1278,16 @@ class ToolsKtTest {
                 assertNotNull(result?.structuredContent)
                 val structured = result!!.structuredContent!!
                 assertEquals("ok", structured["status"]?.jsonPrimitive?.content)
-                assertEquals("42", structured["id"]?.jsonPrimitive?.content)
+                assertTrue(structured["ref"].toString().contains("\"id\":\"42\""))
+                assertTrue(structured["metadata"].toString().contains("\"time\":\"2026-01-02T03:04:05Z\""))
+                assertTrue(structured["metadata"].toString().contains("\"notes\":\"reviewed\""))
                 val content = structured["content"]
                 assertNotNull(content)
                 assertTrue(content.toString().contains("\"data\":\"cdef\""))
                 assertTrue(content.toString().contains("\"nextOffsetBytes\":6"))
 
-                val tool = client.listTools().single { it.name == "get_http_message_by_id" }
-                assertEquals(listOf("id"), tool.inputSchema.required)
+                val tool = client.listTools().single { it.name == "get_http_message" }
+                assertEquals(setOf("projectId", "ref"), tool.inputSchema.required?.toSet())
                 val outputProperties = tool.outputSchema?.properties
                 assertNotNull(outputProperties)
                 assertTrue(outputProperties!!.containsKey("status"))
@@ -1244,12 +1305,16 @@ class ToolsKtTest {
 
         @Test
         fun `Organizer lookup returns metadata by stable ID`() {
+            val project = mockk<burp.api.montoya.project.Project>()
             val organizer = mockk<Organizer>()
             val item = mockk<OrganizerItem>()
             val request = mockk<HttpRequest>()
             val service = mockk<burp.api.montoya.http.HttpService>()
             val annotations = mockk<Annotations>()
+            val body = mockk<MontoyaByteArray>()
 
+            every { api.project() } returns project
+            every { project.id() } returns "project-history"
             every { api.organizer() } returns organizer
             every { organizer.items(any()) } answers {
                 val filter = firstArg<burp.api.montoya.organizer.OrganizerItemFilter>()
@@ -1262,13 +1327,22 @@ class ToolsKtTest {
             every { item.annotations() } returns annotations
             every { request.method() } returns "GET"
             every { request.url() } returns "https://example.test/organized"
+            every { request.httpService() } returns service
+            every { request.body() } returns body
+            every { body.length() } returns 0
             every { service.host() } returns "example.test"
             every { service.port() } returns 443
             every { service.secure() } returns true
             every { annotations.notes() } returns null
 
             runBlocking {
-                val result = client.callTool("get_organizer_item_by_id", mapOf("id" to 73))
+                val result = client.callTool(
+                    "get_http_message",
+                    mapOf(
+                        "projectId" to "project-history",
+                        "ref" to mapOf("source" to "organizer", "id" to "73"),
+                    ),
+                )
                 assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertTrue(result?.structuredContent?.get("metadata").toString().contains("\"source\":\"organizer\""))
             }
@@ -1324,8 +1398,50 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(37, tools.size)
+        assertEquals(24, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
+        val toolNames = tools.mapTo(mutableSetOf()) { it.name }
+        assertTrue(
+            toolNames.containsAll(
+                setOf(
+                    "transform_data",
+                    "get_burp_options",
+                    "set_burp_options",
+                    "set_burp_control_state",
+                    "get_http_message",
+                    "route_http_message_from_id",
+                )
+            )
+        )
+        assertTrue(
+            toolNames.intersect(
+                setOf(
+                    "url_encode",
+                    "url_decode",
+                    "base64_encode",
+                    "base64_decode",
+                    "output_project_options",
+                    "output_user_options",
+                    "set_project_options",
+                    "set_user_options",
+                    "set_task_execution_engine_state",
+                    "set_proxy_intercept_state",
+                    "get_http_message_by_id",
+                    "get_organizer_item_by_id",
+                    "get_sitemap_message_by_id",
+                    "create_repeater_tab_from_id",
+                    "send_to_intruder_from_id",
+                    "send_to_organizer_from_id",
+                    "get_proxy_http_history_regex",
+                    "get_organizer_items_regex",
+                    "get_proxy_websocket_history_regex",
+                )
+            ).isEmpty()
+        )
+
+        val transform = tools.single { it.name == "transform_data" }
+        assertEquals(setOf("operation", "content"), transform.inputSchema.required?.toSet())
+        assertTrue(transform.inputSchema.properties?.get("operation").toString().contains("base64_decode"))
 
         val attackSurface = tools.single { it.name == "summarize_http_attack_surface" }
         assertEquals(setOf("projectId"), attackSurface.inputSchema.required?.toSet())
@@ -1361,7 +1477,7 @@ class ToolsKtTest {
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
 
-        val intruder = tools.single { it.name == "send_to_intruder_from_id" }
+        val intruder = tools.single { it.name == "route_http_message_from_id" }
         val insertionSchema = intruder.inputSchema.properties?.get("insertionPoints").toString()
         assertTrue(insertionSchema.contains("parameter"))
         assertTrue(insertionSchema.contains("header"))
@@ -1378,6 +1494,7 @@ class ToolsKtTest {
         assertEquals(true, legacyHistory.annotations?.readOnlyHint)
         assertTrue(legacyHistory.inputSchema.properties?.get("count").toString().contains("\"maximum\":50"))
         assertNotNull(legacyHistory.inputSchema.properties?.get("part"))
+        assertNotNull(legacyHistory.inputSchema.properties?.get("regex"))
 
         val project = mockk<burp.api.montoya.project.Project>()
         val scope = mockk<burp.api.montoya.scope.Scope>()
@@ -1486,7 +1603,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(44, tools.size)
+            assertEquals(31, tools.size)
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())

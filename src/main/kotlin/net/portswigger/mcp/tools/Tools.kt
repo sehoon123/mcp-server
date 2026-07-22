@@ -15,6 +15,7 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
@@ -26,6 +27,8 @@ import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.RequestActionSecurity
+import net.portswigger.mcp.security.RequestRoutingAuditOperation
+import net.portswigger.mcp.security.SensitiveActionAuditOperation
 import net.portswigger.mcp.security.SensitiveActionSecurity
 import net.portswigger.mcp.security.filterConfigCredentials
 import java.awt.KeyboardFocusManager
@@ -288,6 +291,7 @@ internal fun Server.registerTools(
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
+    val httpMessageReadService = HttpMessageReadService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
@@ -372,6 +376,7 @@ internal fun Server.registerTools(
             fixedContent,
             config,
             api,
+            RequestRoutingAuditOperation.REPEATER,
         )
         if (!approved) return@mcpTool
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
@@ -399,6 +404,7 @@ internal fun Server.registerTools(
             review,
             config,
             api,
+            RequestRoutingAuditOperation.REPEATER,
         )
         if (!approved) return@mcpTool
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
@@ -422,6 +428,7 @@ internal fun Server.registerTools(
             fixedContent,
             config,
             api,
+            RequestRoutingAuditOperation.INTRUDER,
         )
         if (!approved) return@mcpTool
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
@@ -429,28 +436,21 @@ internal fun Server.registerTools(
         else api.intruder().sendToIntruder(request, tabName)
     }
 
-    mcpTool<UrlEncode>("URL encodes bounded input.", LOCAL_TRANSFORM_TOOL_ANNOTATIONS) {
+    mcpTool<TransformData>(
+        "URL-encodes, URL-decodes, Base64-encodes, or Base64-decodes bounded content according to operation.",
+        LOCAL_TRANSFORM_TOOL_ANNOTATIONS,
+    ) {
         require(content.length <= MAX_UTILITY_INPUT_CHARS) { "content is too large" }
-        api.utilities().urlUtils().encode(content)
-    }
-
-    mcpTool<UrlDecode>("URL decodes bounded input.", LOCAL_TRANSFORM_TOOL_ANNOTATIONS) {
-        require(content.length <= MAX_UTILITY_INPUT_CHARS) { "content is too large" }
-        api.utilities().urlUtils().decode(content).also {
-            require(it.length <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
+        when (operation) {
+            DataTransformOperation.URL_ENCODE -> api.utilities().urlUtils().encode(content)
+            DataTransformOperation.URL_DECODE -> api.utilities().urlUtils().decode(content).also {
+                require(it.length <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
+            }
+            DataTransformOperation.BASE64_ENCODE -> api.utilities().base64Utils().encodeToString(content)
+            DataTransformOperation.BASE64_DECODE -> api.utilities().base64Utils().decode(content).also {
+                require(it.length() <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
+            }.toString()
         }
-    }
-
-    mcpTool<Base64Encode>("Base64 encodes bounded input.", LOCAL_TRANSFORM_TOOL_ANNOTATIONS) {
-        require(content.length <= MAX_UTILITY_INPUT_CHARS) { "content is too large" }
-        api.utilities().base64Utils().encodeToString(content)
-    }
-
-    mcpTool<Base64Decode>("Base64 decodes bounded input.", LOCAL_TRANSFORM_TOOL_ANNOTATIONS) {
-        require(content.length <= MAX_UTILITY_INPUT_CHARS) { "content is too large" }
-        api.utilities().base64Utils().decode(content).also {
-            require(it.length() <= MAX_UTILITY_INPUT_CHARS) { "decoded content is too large" }
-        }.toString()
     }
 
     mcpTool<GenerateRandomString>(
@@ -464,86 +464,77 @@ internal fun Server.registerTools(
         api.utilities().randomUtils().randomString(length, characterSet)
     }
 
-    mcpTool(
-        "output_project_options",
-        "Outputs bounded current project-level configuration after explicit approval.",
+    mcpTool<GetBurpOptions>(
+        "Outputs bounded current project- or user-level Burp configuration after explicit approval.",
         READ_ONLY_TOOL_ANNOTATIONS,
     ) {
-        if (!SensitiveActionSecurity.checkPermission(
+        val approved = when (level) {
+            BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
                 "read project configuration",
                 "Export project-level Burp configuration to the MCP client",
                 api = api,
+                auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_READ,
             )
-        ) return@mcpTool "Project configuration access denied by Burp Suite"
-        val json = api.burpSuite().exportProjectOptionsAsJson()
-        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "project configuration exceeds the output limit" }
-        if (config.filterConfigCredentials) {
-            filterConfigCredentials(json)
-        } else {
-            json
-        }
-    }
-
-    mcpTool(
-        "output_user_options",
-        "Outputs bounded current user-level configuration after explicit approval.",
-        READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        if (!SensitiveActionSecurity.checkPermission(
+            BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
                 "read user configuration",
                 "Export user-level Burp configuration to the MCP client",
                 api = api,
+                auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_READ,
             )
-        ) return@mcpTool "User configuration access denied by Burp Suite"
-        val json = api.burpSuite().exportUserOptionsAsJson()
-        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "user configuration exceeds the output limit" }
-        if (config.filterConfigCredentials) {
-            filterConfigCredentials(json)
-        } else {
-            json
         }
+        if (!approved) {
+            return@mcpTool "${if (level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration access denied by Burp Suite"
+        }
+        val json = when (level) {
+            BurpOptionsLevel.PROJECT -> api.burpSuite().exportProjectOptionsAsJson()
+            BurpOptionsLevel.USER -> api.burpSuite().exportUserOptionsAsJson()
+        }
+        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "configuration exceeds the output limit" }
+        if (config.filterConfigCredentials) filterConfigCredentials(json) else json
     }
 
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    mcpTool<SetProjectOptions>(
-        "Imports bounded project configuration JSON after explicit approval. The JSON must have a top-level 'project_options' object.",
+    mcpTool<SetBurpOptions>(
+        "Imports bounded project- or user-level configuration JSON after explicit approval. Project JSON must contain top-level 'project_options'; user JSON must contain top-level 'user_options'.",
         PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) {
         require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "json is too large" }
         if (!config.configEditingTooling) return@mcpTool toolingDisabledMessage
-        val approved = SensitiveActionSecurity.checkPermission(
-            "change project configuration",
-            "Merge supplied JSON into Burp project configuration",
-            json,
-            api = api,
-        )
-        if (!approved) return@mcpTool "Project configuration change denied by Burp Suite"
-        api.logging().logToOutput("Applying project-level configuration through MCP")
-        services.httpMetadataIndex.withMutation {
-            api.burpSuite().importProjectOptionsFromJson(json)
+        val approved = when (level) {
+            BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
+                "change project configuration",
+                "Merge supplied JSON into Burp project configuration",
+                json,
+                api = api,
+                auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
+            )
+            BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
+                "change user configuration",
+                "Merge supplied JSON into Burp user configuration",
+                json,
+                api = api,
+                auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_WRITE,
+            )
         }
-        "Project configuration has been applied"
-    }
-
-
-    mcpTool<SetUserOptions>(
-        "Imports bounded user configuration JSON after explicit approval. The JSON must have a top-level 'user_options' object.",
-        PROJECT_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        require(json.length <= MAX_CONFIGURATION_JSON_CHARS) { "json is too large" }
-        if (!config.configEditingTooling) return@mcpTool toolingDisabledMessage
-        val approved = SensitiveActionSecurity.checkPermission(
-            "change user configuration",
-            "Merge supplied JSON into Burp user configuration",
-            json,
-            api = api,
-        )
-        if (!approved) return@mcpTool "User configuration change denied by Burp Suite"
-        api.logging().logToOutput("Applying user-level configuration through MCP")
-        api.burpSuite().importUserOptionsFromJson(json)
-        "User configuration has been applied"
+        if (!approved) {
+            return@mcpTool "${if (level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration change denied by Burp Suite"
+        }
+        when (level) {
+            BurpOptionsLevel.PROJECT -> {
+                api.logging().logToOutput("Applying project-level configuration through MCP")
+                services.httpMetadataIndex.withMutation {
+                    api.burpSuite().importProjectOptionsFromJson(json)
+                }
+                "Project configuration has been applied"
+            }
+            BurpOptionsLevel.USER -> {
+                api.logging().logToOutput("Applying user-level configuration through MCP")
+                api.burpSuite().importUserOptionsFromJson(json)
+                "User configuration has been applied"
+            }
+        }
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
@@ -629,7 +620,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredTool<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Read a result with the source-specific get-by-ID tool, or copy projectId and ref into the *_from_id replay and routing tools.",
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         httpMessageSearchService.search(this)
@@ -663,11 +654,11 @@ internal fun Server.registerTools(
         httpMessageComparisonService.compare(this)
     }
 
-    mcpStructuredTool<GetSitemapMessageById, SiteMapMessageReadResult>(
-        description = "Reads one Site Map message returned by search_http_messages. projectId and id must be copied from the search result. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and supports text or base64.",
+    mcpStructuredTool<GetHttpMessage, GetHttpMessageResult>(
+        description = "Reads one Proxy, Site Map, or Organizer message returned by search_http_messages. Copy projectId and the complete ref from the search result. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and supports text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
-        httpMessageSearchService.readSiteMapMessage(this)
+        httpMessageReadService.read(this)
     }
 
     mcpStructuredTool<SendHttpRequestFromId, HttpMessageActionResult>(
@@ -677,29 +668,15 @@ internal fun Server.registerTools(
         httpMessageActionService.send(this)
     }
 
-    mcpStructuredTool<CreateRepeaterTabFromId, HttpMessageActionResult>(
-        description = "Creates a Repeater tab from an existing Proxy, Site Map, or Organizer request, optionally after a bounded structured patch. Requires the matching projectId and approvals. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
+    mcpStructuredTool<RouteHttpMessageFromId, HttpMessageActionResult>(
+        description = "Routes one existing Proxy, Site Map, or Organizer request to exactly one Repeater, Intruder, or Organizer destination, optionally after a bounded structured patch. tabName applies only to Repeater or Intruder; semantic insertionPoints apply only to Intruder, and no Intruder attack is started. The matching projectId and approvals are required. executionState=uncertain means an item or tab may already exist and the action must not be retried automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
-        httpMessageActionService.createRepeaterTab(this)
-    }
-
-    mcpStructuredTool<SendToIntruderFromId, HttpMessageActionResult>(
-        description = "Sends an existing Proxy, Site Map, or Organizer request to Intruder, optionally after a bounded structured patch. Optional semantic insertionPoints select parameter values, header values, or the request body without model-supplied byte offsets. Requires the matching projectId and approvals. This creates an Intruder tab but does not start an attack. executionState=uncertain means a tab may already exist and the action must not be retried automatically.",
-        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageActionService.sendToIntruder(this)
-    }
-
-    mcpStructuredTool<SendToOrganizerFromId, HttpMessageActionResult>(
-        description = "Sends an existing Proxy, Site Map, or Organizer request to Organizer, optionally after a bounded structured patch. An unmodified source response is preserved when the Montoya source supports it; patched requests never attach a mismatched response. executionState=uncertain means an item may already exist and the action must not be retried automatically.",
-        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageActionService.sendToOrganizer(this)
+        httpMessageActionService.route(this)
     }
 
     mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
-        "Displays bounded Proxy history summaries by default. Set summariesOnly=false and select one part for a byte-limited preview; use get_http_message_by_id for further byte pagination.",
+        "Displays bounded Proxy history summaries, optionally matching a conservatively safe regex. Set summariesOnly=false and select one part for a byte-limited preview; use get_http_message for further byte pagination.",
         mapper = {
             if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
             else Json.encodeToString(
@@ -717,34 +694,15 @@ internal fun Server.registerTools(
             return@mcpPaginatedSequenceTool PaginatedSource.Message("HTTP history access denied by Burp Suite")
         }
 
-        PaginatedSource.Items(api.proxy().history().asSequence())
-    }
-
-    mcpPaginatedSequenceTool<GetProxyHttpHistoryRegex, ProxyHttpRequestResponse>(
-        "Displays bounded Proxy history summaries matching a conservatively safe regex. Set summariesOnly=false and select one byte-limited part; use get_http_message_by_id for further pagination.",
-        mapper = {
-            if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPart(
-                    normalizeHttpPart(part ?: "request"),
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
-    ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("HTTP history access denied by Burp Suite")
-        }
-
-        val compiledRegex = validateLegacyRegex(regex)
-        PaginatedSource.Items(api.proxy().history { it.contains(compiledRegex) }.asSequence())
+        val records = regex?.let { pattern ->
+            val compiled = validateLegacyRegex(pattern)
+            api.proxy().history { it.contains(compiled) }
+        } ?: api.proxy().history()
+        PaginatedSource.Items(records.asSequence())
     }
 
     mcpPaginatedSequenceTool<GetOrganizerItems, OrganizerItem>(
-        "Displays bounded Organizer summaries by default. Set summariesOnly=false and select one part for a byte-limited preview; use get_organizer_item_by_id for further pagination.",
+        "Displays bounded Organizer summaries, optionally matching a conservatively safe regex. Set summariesOnly=false and select one part for a byte-limited preview; use get_http_message for further byte pagination.",
         mapper = {
             if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
             else Json.encodeToString(
@@ -762,69 +720,15 @@ internal fun Server.registerTools(
             return@mcpPaginatedSequenceTool PaginatedSource.Message("Organizer access denied by Burp Suite")
         }
 
-        PaginatedSource.Items(api.organizer().items().asSequence())
-    }
-
-    mcpPaginatedSequenceTool<GetOrganizerItemsRegex, OrganizerItem>(
-        "Displays bounded Organizer summaries matching a conservatively safe regex. Set summariesOnly=false and select one byte-limited part; use get_organizer_item_by_id for further pagination.",
-        mapper = {
-            if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPart(
-                    normalizeHttpPart(part ?: "request"),
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
-    ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("Organizer access denied by Burp Suite")
-        }
-
-        val compiledRegex = validateLegacyRegex(regex)
-        PaginatedSource.Items(api.organizer().items { it.contains(compiledRegex) }.asSequence())
-    }
-
-    mcpStructuredTool<GetOrganizerItemById, HttpMessageReadResult>(
-        description = "Reads one Organizer item by its stable Burp ID. Pass projectId from search_http_messages to reject cross-project IDs. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
-        annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        val normalizedPart = normalizeHttpPart(part)
-        val normalizedOffset = normalizeHistoryOffset(offset)
-        val normalizedLimit = normalizeHistoryLimit(limit)
-        val normalizedEncoding = normalizeHistoryEncoding(encoding)
-        if (!checkDataAccessOrDeny(DataAccessType.ORGANIZER, config, api, "Organizer item $id")) {
-            return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.ACCESS_DENIED,
-                id = id,
-                part = normalizedPart,
-                error = "Organizer access denied by Burp Suite",
-            )
-        }
-        if (!projectId.matchesCurrentProject(api)) {
-            return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.PROJECT_MISMATCH,
-                id = id,
-                part = normalizedPart,
-                error = "Organizer item ID belongs to a different Burp project",
-            )
-        }
-
-        val item = api.organizer().items { it.id() == id }.firstOrNull()
-            ?: return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.NOT_FOUND,
-                id = id,
-                part = normalizedPart,
-                error = "Organizer item $id was not found",
-            )
-        item.readPart(normalizedPart, normalizedOffset, normalizedLimit, normalizedEncoding)
+        val records = regex?.let { pattern ->
+            val compiled = validateLegacyRegex(pattern)
+            api.organizer().items { it.contains(compiled) }
+        } ?: api.organizer().items()
+        PaginatedSource.Items(records.asSequence())
     }
 
     mcpPaginatedSequenceTool<GetProxyWebsocketHistory, ProxyWebSocketMessage>(
-        "Displays bounded WebSocket history summaries by default. Set summariesOnly=false for one byte-limited payload preview; use get_websocket_message_by_id for further pagination.",
+        "Displays bounded WebSocket history summaries, optionally matching a conservatively safe regex. Set summariesOnly=false for one byte-limited payload preview; use get_websocket_message_by_id for further pagination.",
         mapper = {
             if (summariesOnly != false) Json.encodeToString(it.toHistorySummary())
             else Json.encodeToString(
@@ -842,65 +746,11 @@ internal fun Server.registerTools(
             return@mcpPaginatedSequenceTool PaginatedSource.Message("WebSocket history access denied by Burp Suite")
         }
 
-        PaginatedSource.Items(api.proxy().webSocketHistory().asSequence())
-    }
-
-    mcpPaginatedSequenceTool<GetProxyWebsocketHistoryRegex, ProxyWebSocketMessage>(
-        "Displays bounded WebSocket summaries matching a conservatively safe regex. Set summariesOnly=false for one byte-limited payload preview; use get_websocket_message_by_id for further pagination.",
-        mapper = {
-            if (summariesOnly != false) Json.encodeToString(it.toHistorySummary())
-            else Json.encodeToString(
-                it.readPayload(
-                    edited == true,
-                    0,
-                    normalizeLegacyPreviewLimit(contentLimit),
-                    normalizeHistoryEncoding(encoding),
-                )
-            )
-        }
-    ) {
-        val allowed = checkDataAccessOrDeny(DataAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
-        if (!allowed) {
-            return@mcpPaginatedSequenceTool PaginatedSource.Message("WebSocket history access denied by Burp Suite")
-        }
-
-        val compiledRegex = validateLegacyRegex(regex)
-        PaginatedSource.Items(api.proxy().webSocketHistory { it.contains(compiledRegex) }.asSequence())
-    }
-
-    mcpStructuredTool<GetHttpMessageById, HttpMessageReadResult>(
-        description = "Reads one proxy HTTP history item by its stable Burp ID. Pass projectId from search_http_messages to reject cross-project IDs. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and can be returned as text or base64.",
-        annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        val normalizedPart = normalizeHttpPart(part)
-        val normalizedOffset = normalizeHistoryOffset(offset)
-        val normalizedLimit = normalizeHistoryLimit(limit)
-        val normalizedEncoding = normalizeHistoryEncoding(encoding)
-        if (!checkDataAccessOrDeny(DataAccessType.HTTP_HISTORY, config, api, "HTTP history item $id")) {
-            return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.ACCESS_DENIED,
-                id = id,
-                part = normalizedPart,
-                error = "HTTP history access denied by Burp Suite",
-            )
-        }
-        if (!projectId.matchesCurrentProject(api)) {
-            return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.PROJECT_MISMATCH,
-                id = id,
-                part = normalizedPart,
-                error = "HTTP history ID belongs to a different Burp project",
-            )
-        }
-
-        val item = api.proxy().history { it.id() == id }.firstOrNull()
-            ?: return@mcpStructuredTool HttpMessageReadResult(
-                status = HistoryReadStatus.NOT_FOUND,
-                id = id,
-                part = normalizedPart,
-                error = "Proxy HTTP history item $id was not found",
-            )
-        item.readPart(normalizedPart, normalizedOffset, normalizedLimit, normalizedEncoding)
+        val records = regex?.let { pattern ->
+            val compiled = validateLegacyRegex(pattern)
+            api.proxy().webSocketHistory { it.contains(compiled) }
+        } ?: api.proxy().webSocketHistory()
+        PaginatedSource.Items(records.asSequence())
     }
 
     mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(
@@ -941,32 +791,34 @@ internal fun Server.registerTools(
         item.readPayload(edited == true, normalizedOffset, normalizedLimit, normalizedEncoding)
     }
 
-    mcpTool<SetTaskExecutionEngineState>(
-        "Changes Burp's global task execution engine state after explicit approval.",
+    mcpTool<SetBurpControlState>(
+        "Changes exactly one Burp global control: the task execution engine or Proxy Intercept state.",
         PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) {
-        val approved = SensitiveActionSecurity.checkPermission(
-            "change task execution engine state",
-            "Set Burp task execution engine to ${if (running) "running" else "paused"}",
-            api = api,
-        )
-        if (!approved) return@mcpTool "Task execution engine change denied by Burp Suite"
-        api.burpSuite().taskExecutionEngine().state = if (running) RUNNING else PAUSED
-        "Task execution engine is now ${if (running) "running" else "paused"}"
-    }
-
-    mcpTool<SetProxyInterceptState>(
-        "Changes Burp Proxy Intercept state after explicit approval.",
-        PROJECT_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        val approved = SensitiveActionSecurity.checkPermission(
-            "change Proxy Intercept state",
-            "Set Burp Proxy Intercept to ${if (intercepting) "enabled" else "disabled"}",
-            api = api,
-        )
-        if (!approved) return@mcpTool "Proxy Intercept change denied by Burp Suite"
-        if (intercepting) api.proxy().enableIntercept() else api.proxy().disableIntercept()
-        "Intercept has been ${if (intercepting) "enabled" else "disabled"}"
+        when (control) {
+            BurpControl.TASK_EXECUTION_ENGINE -> {
+                val approved = SensitiveActionSecurity.checkPermission(
+                    "change task execution engine state",
+                    "Set Burp task execution engine to ${if (enabled) "running" else "paused"}",
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.TASK_EXECUTION_ENGINE,
+                )
+                if (!approved) return@mcpTool "Task execution engine change denied by Burp Suite"
+                api.burpSuite().taskExecutionEngine().state = if (enabled) RUNNING else PAUSED
+                "Task execution engine is now ${if (enabled) "running" else "paused"}"
+            }
+            BurpControl.PROXY_INTERCEPT -> {
+                val approved = SensitiveActionSecurity.checkPermission(
+                    "change Proxy Intercept state",
+                    "Set Burp Proxy Intercept to ${if (enabled) "enabled" else "disabled"}",
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.PROXY_INTERCEPT,
+                )
+                if (!approved) return@mcpTool "Proxy Intercept change denied by Burp Suite"
+                if (enabled) api.proxy().enableIntercept() else api.proxy().disableIntercept()
+                "Intercept has been ${if (enabled) "enabled" else "disabled"}"
+            }
+        }
     }
 
     mcpTool(
@@ -1169,16 +1021,26 @@ data class SendToIntruder(
 ) : HttpServiceParams
 
 @Serializable
-data class UrlEncode(@JsonSchemaMetadata(maxLength = 262144) val content: String)
+enum class DataTransformOperation {
+    @SerialName("url_encode")
+    URL_ENCODE,
+
+    @SerialName("url_decode")
+    URL_DECODE,
+
+    @SerialName("base64_encode")
+    BASE64_ENCODE,
+
+    @SerialName("base64_decode")
+    BASE64_DECODE,
+}
 
 @Serializable
-data class UrlDecode(@JsonSchemaMetadata(maxLength = 262144) val content: String)
-
-@Serializable
-data class Base64Encode(@JsonSchemaMetadata(maxLength = 262144) val content: String)
-
-@Serializable
-data class Base64Decode(@JsonSchemaMetadata(maxLength = 262144) val content: String)
+data class TransformData(
+    val operation: DataTransformOperation,
+    @JsonSchemaMetadata(maxLength = 262144)
+    val content: String,
+)
 
 @Serializable
 data class GenerateRandomString(
@@ -1187,16 +1049,38 @@ data class GenerateRandomString(
 )
 
 @Serializable
-data class SetProjectOptions(@JsonSchemaMetadata(maxLength = 1048576) val json: String)
+enum class BurpOptionsLevel {
+    @SerialName("project")
+    PROJECT,
+
+    @SerialName("user")
+    USER,
+}
 
 @Serializable
-data class SetUserOptions(@JsonSchemaMetadata(maxLength = 1048576) val json: String)
+data class GetBurpOptions(val level: BurpOptionsLevel)
 
 @Serializable
-data class SetTaskExecutionEngineState(val running: Boolean)
+data class SetBurpOptions(
+    val level: BurpOptionsLevel,
+    @JsonSchemaMetadata(maxLength = 1048576)
+    val json: String,
+)
 
 @Serializable
-data class SetProxyInterceptState(val intercepting: Boolean)
+enum class BurpControl {
+    @SerialName("task_execution_engine")
+    TASK_EXECUTION_ENGINE,
+
+    @SerialName("proxy_intercept")
+    PROXY_INTERCEPT,
+}
+
+@Serializable
+data class SetBurpControlState(
+    val control: BurpControl,
+    val enabled: Boolean,
+)
 
 @Serializable
 data class SetActiveEditorContents(
@@ -1225,24 +1109,8 @@ data class GetProxyHttpHistory(
     val contentLimit: Int? = null,
     @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
-) : Paginated
-
-@Serializable
-data class GetProxyHttpHistoryRegex(
-    @JsonSchemaMetadata(description = "Conservatively safe history regex.", minLength = 1, maxLength = 512)
-    val regex: String,
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "History offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Optional selected message part when summariesOnly=false.", enumValues = ["request", "request_headers", "request_body", "response", "response_headers", "response_body"])
-    val part: String? = null,
-    @JsonSchemaMetadata(description = "Maximum selected-part bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
+    @JsonSchemaMetadata(description = "Optional conservatively safe history regex.", minLength = 1, maxLength = 512)
+    val regex: String? = null,
 ) : Paginated
 
 @Serializable
@@ -1259,24 +1127,8 @@ data class GetOrganizerItems(
     val contentLimit: Int? = null,
     @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
-) : Paginated
-
-@Serializable
-data class GetOrganizerItemsRegex(
-    @JsonSchemaMetadata(description = "Conservatively safe Organizer regex.", minLength = 1, maxLength = 512)
-    val regex: String,
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "Organizer offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Optional selected message part when summariesOnly=false.", enumValues = ["request", "request_headers", "request_body", "response", "response_headers", "response_body"])
-    val part: String? = null,
-    @JsonSchemaMetadata(description = "Maximum selected-part bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Selected-part encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
+    @JsonSchemaMetadata(description = "Optional conservatively safe Organizer regex.", minLength = 1, maxLength = 512)
+    val regex: String? = null,
 ) : Paginated
 
 @Serializable
@@ -1293,51 +1145,15 @@ data class GetProxyWebsocketHistory(
     val contentLimit: Int? = null,
     @JsonSchemaMetadata(description = "Payload encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
+    @JsonSchemaMetadata(description = "Optional conservatively safe WebSocket regex.", minLength = 1, maxLength = 512)
+    val regex: String? = null,
 ) : Paginated
-
-@Serializable
-data class GetProxyWebsocketHistoryRegex(
-    @JsonSchemaMetadata(description = "Conservatively safe WebSocket regex.", minLength = 1, maxLength = 512)
-    val regex: String,
-    @JsonSchemaMetadata(description = "Maximum records returned.", minimum = 1, maximum = 50)
-    override val count: Int,
-    @JsonSchemaMetadata(description = "History offset.", minimum = 0, maximum = 1000000)
-    override val offset: Int,
-    @JsonSchemaMetadata(description = "Return compact stable-ID summaries.", defaultJson = "true")
-    val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Select the edited payload variant.", defaultJson = "false")
-    val edited: Boolean? = null,
-    @JsonSchemaMetadata(description = "Maximum payload bytes per record.", minimum = 1, maximum = 32768, defaultJson = "8192")
-    val contentLimit: Int? = null,
-    @JsonSchemaMetadata(description = "Payload encoding.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
-    val encoding: String? = null,
-) : Paginated
-
-@Serializable
-data class GetHttpMessageById(
-    @JsonSchemaMetadata(description = "Stable Proxy history ID.", minimum = 0) val id: Int,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String? = null,
-    @JsonSchemaMetadata(enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body"], defaultJson = "\"metadata\"") val part: String? = null,
-    @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
-    @JsonSchemaMetadata(enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,
-)
 
 @Serializable
 data class GetWebsocketMessageById(
     @JsonSchemaMetadata(description = "Stable WebSocket history ID.", minimum = 0) val id: Int,
     @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String? = null,
     @JsonSchemaMetadata(description = "Read the edited payload variant.", defaultJson = "false") val edited: Boolean? = null,
-    @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
-    @JsonSchemaMetadata(enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,
-)
-
-@Serializable
-data class GetOrganizerItemById(
-    @JsonSchemaMetadata(description = "Stable Organizer item ID.", minimum = 0) val id: Int,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String? = null,
-    @JsonSchemaMetadata(enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body"], defaultJson = "\"metadata\"") val part: String? = null,
     @JsonSchemaMetadata(minimum = 0, defaultJson = "0") val offset: Int? = null,
     @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
     @JsonSchemaMetadata(enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,

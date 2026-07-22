@@ -79,10 +79,11 @@ class HttpMessageActionsTest {
         val repeater = mockk<Repeater>(relaxed = true)
         every { api.repeater() } returns repeater
 
-        val result = service.createRepeaterTab(
-            CreateRepeaterTabFromId(
+        val result = service.route(
+            RouteHttpMessageFromId(
                 projectId = "project-123",
                 ref = HttpMessageReference(HttpMessageSource.PROXY, "42"),
+                destination = HttpMessageRouteDestination.REPEATER,
                 tabName = "derived",
             )
         )
@@ -97,6 +98,31 @@ class HttpMessageActionsTest {
         verify(exactly = 1) { fixture.request.bodyOffset() }
         verify(exactly = 0) { fixture.request.toString() }
         verify(exactly = 1) { repeater.sendToRepeater(fixture.request, "derived") }
+    }
+
+    @Test
+    fun `unified routing rejects destination specific fields before source access`() = runBlocking {
+        val repeater = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "42"),
+                destination = HttpMessageRouteDestination.REPEATER,
+                insertionPoints = listOf(HttpInsertionPointSelector(HttpInsertionPointKind.BODY)),
+            )
+        )
+        val organizer = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "42"),
+                destination = HttpMessageRouteDestination.ORGANIZER,
+                tabName = "unsupported",
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, repeater.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, repeater.executionState)
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, organizer.status)
+        verify(exactly = 0) { proxy.history(any()) }
     }
 
     @Test

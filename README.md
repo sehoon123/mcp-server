@@ -27,6 +27,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
+- Compact catalog: 31 tools on Professional and 24 on Community, grouped by common safety policy
 - HTTP/1.1 and HTTP/2 request tools with target approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
@@ -39,6 +40,26 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Live redacted diagnostics, a bounded persistent audit trail, and an emergency read-only switch
 - URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
+
+## v3 compact tool catalog
+
+Version 3 consolidates operations only when they share the same MCP safety classification and preserves one side effect
+per invocation. This is a breaking tool-name change; removed v2 names are not advertised as aliases because aliases
+would defeat the bounded 31-tool catalog.
+
+| v2 tools | v3 tool |
+|---|---|
+| `url_encode`, `url_decode`, `base64_encode`, `base64_decode` | `transform_data` with `operation` |
+| `output_project_options`, `output_user_options` | `get_burp_options` with `level` |
+| `set_project_options`, `set_user_options` | `set_burp_options` with `level` |
+| `set_task_execution_engine_state`, `set_proxy_intercept_state` | `set_burp_control_state` with `control` and `enabled` |
+| `get_http_message_by_id`, `get_organizer_item_by_id`, `get_sitemap_message_by_id` | `get_http_message` with `projectId` and `ref` |
+| `create_repeater_tab_from_id`, `send_to_intruder_from_id`, `send_to_organizer_from_id` | `route_http_message_from_id` with one `destination` |
+| The three `*_regex` list tools | Optional `regex` on their corresponding base list tool |
+
+Source-specific data approval, project and stable-ID validation, request-routing approval, metadata-index invalidation,
+and bounded output rules remain in force. Persistent audit approvals use fixed operation classes rather than storing enum
+or other argument values.
 
 ## Build and install
 
@@ -135,11 +156,9 @@ the source sizes seen by the first page. Appended traffic does not leak into an 
 sources return `stale_cursor` instead of silently skipping or duplicating records. Cursors are intentionally invalidated
 when the MCP server restarts.
 
-Each result contains the current Burp `projectId` and a `{source, id}` reference. Use:
-
-- `get_http_message_by_id` with the numeric ID when `source` is `proxy`
-- `get_organizer_item_by_id` with the numeric ID when `source` is `organizer`
-- `get_sitemap_message_by_id` with both `projectId` and the opaque ID when `source` is `site_map`
+Each result contains the current Burp `projectId` and a `{source, id}` reference. Pass both unchanged to
+`get_http_message`, regardless of whether the source is `proxy`, `organizer`, or `site_map`. Numeric Proxy/Organizer
+IDs and opaque Site Map IDs are validated according to the selected source.
 
 Search work is bounded per call to 10,000 metadata records. Literal content searches additionally inspect at most
 32 MiB of message data; individually oversized messages are counted in `oversizedContentSkipped`. URLs, notes, result
@@ -178,13 +197,11 @@ mutations; they resolve the current Burp record and verify its project/identity 
 ## Stable-ID request actions
 
 Copy `projectId` and the complete `{source, id}` reference from `search_http_messages`; do not reconstruct the original
-HTTP message in the model. The following structured tools resolve the current Burp item and fail closed if its project
-or opaque Site Map identity no longer matches:
+HTTP message in the model. Two structured tools resolve the current Burp item and fail closed if its project or opaque
+Site Map identity no longer matches:
 
-- `send_http_request_from_id`
-- `create_repeater_tab_from_id`
-- `send_to_intruder_from_id`
-- `send_to_organizer_from_id`
+- `send_http_request_from_id` replays one request to its original network destination.
+- `route_http_message_from_id` routes one request to exactly one `repeater`, `intruder`, or `organizer` destination.
 
 An optional `patch` can change the method or path; remove, set, or add headers; remove, set, or add typed URL/body/cookie/
 XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Body replacement cannot be mixed with
@@ -204,8 +221,9 @@ remains bound to its original host, port, and TLS mode.
 ```
 
 Source and resulting requests are capped at 2 MiB; replacement bodies at 1 MiB; header and parameter mutations at 64
-each. `send_to_intruder_from_id` can additionally resolve up to 32 semantic parameter, header-value, or whole-body
-insertion points; clients cannot supply raw byte offsets. HTTP replay defaults to the source protocol, rejects every
+each. `route_http_message_from_id` with `destination: "intruder"` can additionally resolve up to 32 semantic parameter,
+header-value, or whole-body insertion points; clients cannot supply raw byte offsets. `tabName` is accepted only for
+Repeater or Intruder, and `insertionPoints` only for Intruder. HTTP replay defaults to the source protocol, rejects every
 automatic redirect mode because redirected destinations cannot be reviewed separately, uses a 30-second response timeout,
 and returns at most an 8 KiB body preview by default
 (64 KiB maximum). Responses are recorded in Site Map on a best-effort basis. When the recorded item can be located,
@@ -260,19 +278,18 @@ Collaborator interaction reads use their own **Always allow** data-access option
 
 ## Stable history access
 
-The existing paginated Proxy, WebSocket, and Organizer tools now return compact stable-ID summaries by default. Set
-`summariesOnly=false` only with one selected `part`, `contentLimit` (8 KiB default, 32 KiB maximum), and `encoding` for a
-bounded preview. Pages contain at most 50 records and 128 Ki characters; explicit truncation metadata replaces invalid
-mid-JSON string cutting. Legacy regex variants accept at most 512 characters and conservatively reject backreferences,
-lookarounds, quantified groups, and multiple unbounded quantifiers. Summaries expose Burp's project-scoped numeric IDs;
-Scanner issue IDs are
+The paginated Proxy, WebSocket, and Organizer tools return compact stable-ID summaries by default. Their optional
+`regex` field accepts at most 512 characters and conservatively rejects backreferences, lookarounds, quantified groups,
+and multiple unbounded quantifiers; omitting it lists the source without regex filtering. Set `summariesOnly=false` only
+with one selected `part`, `contentLimit` (8 KiB default, 32 KiB maximum), and `encoding` for a bounded preview. Pages
+contain at most 50 records and 128 Ki characters; explicit truncation metadata replaces invalid mid-JSON string cutting.
+Summaries expose Burp's project-scoped numeric IDs; Scanner issue IDs are
 deterministic `issue_<hash>` values derived from issue identity fields.
 
 Use the corresponding read tool to fetch only the required record and field:
 
-- `get_http_message_by_id`
+- `get_http_message` for Proxy, Site Map, or Organizer `{source, id}` references
 - `get_websocket_message_by_id`
-- `get_organizer_item_by_id`
 - `get_scanner_issue_by_id` (Burp Professional)
 
 HTTP, Site Map, and Organizer reads support `metadata`, complete request/response messages, headers, or bodies. Scanner reads

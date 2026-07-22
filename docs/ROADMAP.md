@@ -65,7 +65,7 @@ Large histories should not be copied into every model response.
 Implemented foundation:
 
 - Optional compact summaries expose project-scoped HTTP, WebSocket, Organizer, and deterministic Scanner issue IDs.
-- ID lookup tools support explicit message/field selection and byte-exact base64 reads.
+- One project-scoped `get_http_message` tool resolves Proxy, Site Map, or Organizer references and supports explicit message-part selection and byte-exact base64 reads.
 - Unified HTTP search covers Proxy history, Site Map, and Organizer with structured filters and compact references.
 - Search cursors are signed, project-bound, query-bound, and preserve append-only snapshot sizes while detecting cleared
   or reordered source boundaries.
@@ -84,6 +84,9 @@ Implemented foundation:
   after execution, including cancellation and uncertain completion paths.
 - `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
+- The v3 catalog consolidates same-policy transforms, configuration access, global controls, stable-reference routing,
+  cross-source HTTP detail reads, and plain/regex history lists into 31 Professional tools (24 on Community). Each
+  invocation retains one operation or destination, and fixed value-free audit classifications preserve operation context.
 - Eligible newest-first metadata-only Proxy and Organizer searches reuse only recent, already-warm, same-size,
   anchor-validated index entries as advisory hints. Every predicted mismatch is rechecked on the current source field and numeric ID. Stale, reordered,
   unindexed, Site Map, text, and oldest-first records fall back to the raw matcher without changing scan, cursor,
@@ -91,9 +94,9 @@ Implemented foundation:
 
 Remaining work:
 
-- Migrate the remaining legacy source-specific list tools from offset pagination to the signed cursor model. Summary mode
-  is now the default for Proxy/WebSocket/Organizer lists; selected previews and pages are bounded and silent mid-JSON
-  5,000-character truncation has been removed.
+- Migrate the remaining three legacy source-specific list tools from offset pagination to the signed cursor model.
+  Plain and conservatively safe regex modes now share one tool per source; summary mode is the default, selected previews
+  and pages are bounded, and silent mid-JSON truncation has been removed.
 - Validate metadata-index and unified-search performance with an actual large Burp history. Synthetic differential,
   accessor-count, and JFR allocation probes remain regression evidence rather than Burp product latency claims.
 

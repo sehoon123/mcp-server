@@ -31,6 +31,16 @@ internal data class ResolvedHttpMessage(
     val request: HttpRequest,
     val response: HttpResponse?,
     val envelope: MontoyaHttpRequestResponse?,
+    val sourceMetadata: ResolvedHttpSourceMetadata? = null,
+)
+
+internal data class ResolvedHttpSourceMetadata(
+    val time: String? = null,
+    val listenerPort: Int? = null,
+    val edited: Boolean? = null,
+    val inScope: Boolean? = null,
+    val notes: String? = null,
+    val notesTruncated: Boolean = false,
 )
 
 internal sealed interface HttpMessageBatchResolution {
@@ -61,12 +71,14 @@ internal class HttpMessageResolver(
     suspend fun resolve(
         projectId: String,
         ref: HttpMessageReference,
-    ): HttpMessageBatchResolution = resolveAll(projectId, listOf(ref), 1)
+        includeSourceMetadata: Boolean = false,
+    ): HttpMessageBatchResolution = resolveAll(projectId, listOf(ref), 1, includeSourceMetadata)
 
     suspend fun resolveAll(
         projectId: String,
         refs: List<HttpMessageReference>,
         maxRefs: Int = MAX_HTTP_REFERENCES_PER_BATCH,
+        includeSourceMetadata: Boolean = false,
     ): HttpMessageBatchResolution {
         if (!isValidProjectId(projectId)) {
             return failure(
@@ -157,7 +169,7 @@ internal class HttpMessageResolver(
         }
 
         return try {
-            resolveValidated(currentProjectId, validated)
+            resolveValidated(currentProjectId, validated, includeSourceMetadata)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -174,6 +186,7 @@ internal class HttpMessageResolver(
     private suspend fun resolveValidated(
         projectId: String,
         refs: List<ValidatedHttpReference>,
+        includeSourceMetadata: Boolean,
     ): HttpMessageBatchResolution {
         val siteMapItems by lazy(LazyThreadSafetyMode.NONE) { api.siteMap().requestResponses() }
         val resolved = ArrayList<ResolvedHttpMessage>(refs.size)
@@ -186,7 +199,17 @@ internal class HttpMessageResolver(
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    ResolvedHttpMessage(validated.ref, request, item.response(), null)
+                    val sourceMetadata = if (includeSourceMetadata) {
+                        val notes = item.annotations().notes().boundedResolvedNotes()
+                        ResolvedHttpSourceMetadata(
+                            time = item.time().toString(),
+                            listenerPort = item.listenerPort(),
+                            edited = item.edited(),
+                            notes = notes.first,
+                            notesTruncated = notes.second,
+                        )
+                    } else null
+                    ResolvedHttpMessage(validated.ref, request, item.response(), null, sourceMetadata)
                 }
 
                 HttpMessageSource.ORGANIZER -> {
@@ -194,7 +217,11 @@ internal class HttpMessageResolver(
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item)
+                    val sourceMetadata = if (includeSourceMetadata) {
+                        val notes = item.annotations().notes().boundedResolvedNotes()
+                        ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
+                    } else null
+                    ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata)
                 }
 
                 HttpMessageSource.SITE_MAP -> {
@@ -206,7 +233,15 @@ internal class HttpMessageResolver(
                     }
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item)
+                    val sourceMetadata = if (includeSourceMetadata) {
+                        val notes = item.annotations().notes().boundedResolvedNotes()
+                        ResolvedHttpSourceMetadata(
+                            inScope = request.isInScope(),
+                            notes = notes.first,
+                            notesTruncated = notes.second,
+                        )
+                    } else null
+                    ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata)
                 }
             }
             resolved += message
@@ -291,5 +326,10 @@ private fun failure(
     refIndex = refIndex,
     error = error.take(512),
 )
+
+private fun String?.boundedResolvedNotes(): Pair<String?, Boolean> {
+    if (this == null || length <= MAX_NOTES_CHARS) return this to false
+    return take(MAX_NOTES_CHARS) to true
+}
 
 private fun safeResolverException(error: Exception): String = safeExceptionSummary(error)

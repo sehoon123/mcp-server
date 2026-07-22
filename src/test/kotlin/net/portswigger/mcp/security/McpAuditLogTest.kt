@@ -1,7 +1,9 @@
 package net.portswigger.mcp.security
 
+import burp.api.montoya.MontoyaApi
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -63,6 +65,64 @@ class McpAuditLogTest {
         assertFalse(persisted.contains("hunter2"))
         assertFalse(persisted.contains("/home/user"))
         log.close()
+    }
+
+    @Test
+    fun `consolidated operations retain fixed value-free audit classifications`() = runBlocking {
+        val fixture = auditFixture()
+        fixture.config.requireRequestActionApproval = false
+        val api = mockk<MontoyaApi>()
+        val originalHandler = SensitiveActionSecurity.approvalHandler
+        val handler = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = handler
+        coEvery { handler.requestApproval(any(), any(), any(), any(), api) } returns true
+        try {
+            val invocation = newToolAuditInvocation(
+                sink = fixture.log,
+                sessionId = "catalog-session",
+                tool = "consolidated_tool",
+                readOnly = false,
+                argumentKeys = listOf("operation", "secretInput"),
+                clock = fixedClock,
+            )
+            withContext(invocation) {
+                RequestActionSecurity.checkPermission(
+                    action = "send to Intruder",
+                    source = "proxy:secret-source",
+                    target = "secret-target.test:443",
+                    changes = "secret changes",
+                    requestContent = "Authorization: Bearer secret-token",
+                    config = fixture.config,
+                    api = api,
+                    auditOperation = RequestRoutingAuditOperation.INTRUDER,
+                )
+                SensitiveActionSecurity.checkPermission(
+                    action = "change project configuration",
+                    summary = "secret summary",
+                    api = api,
+                    auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
+                )
+            }
+            invocation.complete("completed")
+            fixture.log.flush()
+
+            val record = fixture.log.snapshot().single()
+            assertEquals(
+                listOf(
+                    McpAuditApproval("request_routing:intruder", "policy_allow"),
+                    McpAuditApproval("sensitive_action:project_options_write", "user_allow"),
+                ),
+                record.approvals,
+            )
+            val persisted = fixture.storage.getValue("redactedAuditV1") as String
+            assertFalse(persisted.contains("secret-source"))
+            assertFalse(persisted.contains("secret-target"))
+            assertFalse(persisted.contains("secret-token"))
+            assertFalse(persisted.contains("secret summary"))
+        } finally {
+            SensitiveActionSecurity.approvalHandler = originalHandler
+            fixture.log.close()
+        }
     }
 
     @Test

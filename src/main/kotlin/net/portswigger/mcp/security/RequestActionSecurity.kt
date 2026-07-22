@@ -68,6 +68,12 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
     }
 }
 
+enum class RequestRoutingAuditOperation(val auditKind: String) {
+    REPEATER("request_routing:repeater"),
+    INTRUDER("request_routing:intruder"),
+    ORGANIZER("request_routing:organizer"),
+}
+
 object RequestActionSecurity {
     var approvalHandler: RequestActionApprovalHandler = SwingRequestActionApprovalHandler()
 
@@ -79,13 +85,15 @@ object RequestActionSecurity {
         requestContent: String,
         config: McpConfig,
         api: MontoyaApi,
+        auditOperation: RequestRoutingAuditOperation? = null,
     ): Boolean {
+        val auditKind = auditOperation?.auditKind ?: "request_routing"
         if (!config.requireRequestActionApproval) {
-            recordCurrentToolApproval("request_routing", "policy_allow")
+            recordCurrentToolApproval(auditKind, "policy_allow")
             return true
         }
         val approved = approvalHandler.requestApproval(action, source, target, changes, requestContent, config, api)
-        recordCurrentToolApproval("request_routing", if (approved) "user_allow" else "user_deny")
+        recordCurrentToolApproval(auditKind, if (approved) "user_allow" else "user_deny")
         return approved
     }
 }

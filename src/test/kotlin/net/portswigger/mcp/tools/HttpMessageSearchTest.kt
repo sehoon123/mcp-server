@@ -173,6 +173,20 @@ class HttpMessageSearchTest {
         assertEquals(4, detail.content?.nextOffsetBytes)
         assertEquals(found.ref.id, detail.metadata?.id)
 
+        val unified = HttpMessageReadService(api, config).read(
+            GetHttpMessage(
+                projectId = assertNotNull(search.projectId),
+                ref = found.ref,
+                part = "response_body",
+                offset = 1,
+                limit = 3,
+            )
+        )
+        assertEquals(HttpMessageReadStatus.OK, unified.status)
+        assertEquals("bcd", unified.content?.data)
+        assertEquals(true, unified.metadata?.inScope)
+        assertEquals(found.ref, unified.metadata?.ref)
+
         val invalidOffset = service.readSiteMapMessage(
             GetSitemapMessageById(
                 projectId = assertNotNull(search.projectId),
@@ -331,9 +345,12 @@ class HttpMessageSearchTest {
     private fun request(method: String, url: String, bodyLength: Int): HttpRequest {
         val request = mockk<HttpRequest>()
         val body = byteArray(bodyLength, "")
+        val uri = java.net.URI(url)
+        val service = httpService(uri.host, if (uri.port > 0) uri.port else 443, uri.scheme == "https")
         every { request.method() } returns method
         every { request.url() } returns url
-        every { request.path() } returns java.net.URI(url).rawPath
+        every { request.path() } returns uri.rawPath
+        every { request.httpService() } returns service
         every { request.isInScope() } returns true
         every { request.body() } returns body
         every { request.bodyOffset() } returns 100

@@ -21,6 +21,8 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.RequestActionSecurity
+import net.portswigger.mcp.security.RequestRoutingAuditOperation
+import net.portswigger.mcp.security.recordCurrentToolApproval
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -61,6 +63,33 @@ data class SendHttpRequestFromId(
     val responseBodyLimit: Int? = null,
     @JsonSchemaMetadata(description = "Response body encoding.", pattern = "^(text|base64)$", defaultJson = "\"text\"")
     val responseBodyEncoding: String? = null,
+)
+
+@Serializable
+enum class HttpMessageRouteDestination {
+    @SerialName("repeater")
+    REPEATER,
+
+    @SerialName("intruder")
+    INTRUDER,
+
+    @SerialName("organizer")
+    ORGANIZER,
+}
+
+@Serializable
+data class RouteHttpMessageFromId(
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    val projectId: String,
+    @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
+    val ref: HttpMessageReference,
+    @JsonSchemaMetadata(description = "Single Burp tool destination for this action.")
+    val destination: HttpMessageRouteDestination,
+    val patch: HttpRequestPatch? = null,
+    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
+    val tabName: String? = null,
+    @JsonSchemaMetadata(description = "Optional semantic Intruder insertion points; rejected for other destinations.", minItems = 1, maxItems = 32)
+    val insertionPoints: List<HttpInsertionPointSelector>? = null,
 )
 
 @Serializable
@@ -401,6 +430,46 @@ internal class HttpMessageActionService(
         )
     }
 
+    suspend fun route(input: RouteHttpMessageFromId): HttpMessageActionResult = when (input.destination) {
+        HttpMessageRouteDestination.REPEATER -> {
+            if (input.insertionPoints != null) {
+                invalidArgument(
+                    input.projectId,
+                    input.ref,
+                    HttpMessageActionDestination.REPEATER,
+                    "insertionPoints are supported only for the Intruder destination",
+                )
+            } else {
+                createRepeaterTab(
+                    CreateRepeaterTabFromId(input.projectId, input.ref, input.patch, input.tabName)
+                )
+            }
+        }
+
+        HttpMessageRouteDestination.INTRUDER -> sendToIntruder(
+            SendToIntruderFromId(
+                input.projectId,
+                input.ref,
+                input.patch,
+                input.tabName,
+                input.insertionPoints,
+            )
+        )
+
+        HttpMessageRouteDestination.ORGANIZER -> {
+            if (input.tabName != null || input.insertionPoints != null) {
+                invalidArgument(
+                    input.projectId,
+                    input.ref,
+                    HttpMessageActionDestination.ORGANIZER,
+                    "tabName and insertionPoints are not supported for the Organizer destination",
+                )
+            } else {
+                sendToOrganizer(SendToOrganizerFromId(input.projectId, input.ref, input.patch))
+            }
+        }
+    }
+
     suspend fun createRepeaterTab(input: CreateRepeaterTabFromId): HttpMessageActionResult = route(
         projectId = input.projectId,
         ref = input.ref,
@@ -587,7 +656,11 @@ internal class HttpMessageActionService(
         patched: PatchedRequest,
         changes: String = patched.summary,
     ): Boolean {
-        if (!config.requireRequestActionApproval) return true
+        val auditOperation = destination.routingAuditOperation()
+        if (!config.requireRequestActionApproval) {
+            recordCurrentToolApproval(auditOperation?.auditKind ?: "request_routing", "policy_allow")
+            return true
+        }
         val service = patched.service
         return RequestActionSecurity.checkPermission(
             action = destination.approvalLabel(),
@@ -597,6 +670,7 @@ internal class HttpMessageActionService(
             requestContent = patched.requestContent,
             config = config,
             api = api,
+            auditOperation = auditOperation,
         )
     }
 }
@@ -876,6 +950,13 @@ private fun HttpMessageActionDestination.approvalLabel(): String = when (this) {
     HttpMessageActionDestination.REPEATER -> "create a Repeater tab from this request"
     HttpMessageActionDestination.INTRUDER -> "send this request to Intruder"
     HttpMessageActionDestination.ORGANIZER -> "send this request to Organizer"
+}
+
+private fun HttpMessageActionDestination.routingAuditOperation(): RequestRoutingAuditOperation? = when (this) {
+    HttpMessageActionDestination.HTTP -> null
+    HttpMessageActionDestination.REPEATER -> RequestRoutingAuditOperation.REPEATER
+    HttpMessageActionDestination.INTRUDER -> RequestRoutingAuditOperation.INTRUDER
+    HttpMessageActionDestination.ORGANIZER -> RequestRoutingAuditOperation.ORGANIZER
 }
 
 private fun HttpMessageActionService.resolutionFailure(
