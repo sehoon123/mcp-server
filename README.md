@@ -27,7 +27,7 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v3.1 migration catalog: 33 tools on Professional and 26 on Community, including two v4 replacements plus deprecated v3 names
+- v4 compact catalog: 26 tools on Professional and 19 on Community, with deprecated v3 aliases removed
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
@@ -41,11 +41,10 @@ Streamable HTTP, so users do not need to download or install a second component.
 - URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
 
-## v3 compact tool catalog
+## Compact tool catalog
 
-Version 3 consolidates operations only when they share the same MCP safety classification and preserves one side effect
-per invocation. This is a breaking tool-name change; removed v2 names are not advertised as aliases because aliases
-would defeat the bounded 31-tool catalog.
+Version 3 consolidated operations only when they shared the same MCP safety classification and preserved one side effect
+per invocation. Removed names were not advertised as aliases because aliases would defeat the bounded catalog.
 
 | v2 tools | v3 tool |
 |---|---|
@@ -61,26 +60,34 @@ Source-specific data approval, project and stable-ID validation, request-routing
 and bounded output rules remain in force. Persistent audit approvals use fixed operation classes rather than storing enum
 or other argument values.
 
-### v3.1 migration window for the v4 catalog
+### v4 catalog
 
-Version 3.1 introduces the two v4 replacement tools while retaining seven deprecated v3 names for one compatibility
-release. The temporary catalog therefore contains 33 tools on Professional and 26 on Community:
+Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 19 Community tools:
 
-| Deprecated v3 names retained in v3.1 | v4 replacement |
+| Removed v3 names | v4 replacement |
 |---|---|
 | `send_http1_request`, `send_http2_request` | `send_raw_http_request` with exactly one protocol-matching nested input |
 | `create_repeater_tab`, `create_repeater_tab_http2`, `send_to_intruder` | `route_raw_http_request` with exactly one destination |
 | `get_proxy_http_history`, `get_organizer_items` | `search_http_messages` with one selected source and optional safe `regex` |
+| `get_proxy_websocket_history` | `search_websocket_messages` with a signed snapshot cursor |
+
+The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transform_data`, `generate_random_string`,
+`get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`, `check_scope`,
+`update_scope`, `compare_http_messages`, `get_http_message`, `send_http_request_from_id`,
+`route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
+`set_burp_control_state`, `get_active_editor_contents`, and `set_active_editor_contents`.
+
+Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
+`start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 26 total. Individual WebSocket and Scanner
+issue reads now require `projectId`; v3 aliases are not advertised.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
-classification; HTTP/2-to-Intruder is rejected until verified against a supported Burp runtime. Safe-regex HTTP search
-uses the existing 10,000-record/32 MiB budgets and deliberately bypasses metadata-index hints.
-
-Version 4 removes those seven deprecated names, replaces the offset-based WebSocket list with cursor-based
-`search_websocket_messages`, and requires project binding on individual WebSocket/Scanner reads. The resulting target is
-26 Professional tools and 19 Community tools. Deprecated aliases will not be advertised in v4 because doing so would
-increase the catalog again.
+classification; HTTP/2-to-Intruder is rejected until verified against a supported Burp runtime. Safe-regex HTTP and
+WebSocket searches use 10,000-record/32 MiB budgets and conservative regex validation. HTTP regex search deliberately
+bypasses metadata-index hints.
 
 ## Build and install
 
@@ -172,8 +179,9 @@ exact host, literal path, literal request/response content, or one conservativel
 status codes, MIME types, in-scope state, and response presence. Literal text and regex are mutually exclusive. Results
 default to newest-first within each source; regex is case-sensitive unless `caseSensitive: false` is explicit.
 
-The default page size is 25 and the maximum is 50. If `hasMore` is true, call the tool again with only `nextCursor`
-(and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original query, and preserve
+The default page size is 25 and the maximum is 50. If `hasMore` is true, call the tool again with `cursor` set to the
+returned `nextCursor` (and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original
+query, and preserve
 the source sizes seen by the first page. Appended traffic does not leak into an existing snapshot; cleared or reordered
 sources return `stale_cursor` instead of silently skipping or duplicating records. Cursors are intentionally invalidated
 when the MCP server restarts.
@@ -199,7 +207,20 @@ Use `send_raw_http_request` for new raw traffic. It accepts exactly one HTTP/1.1
 Montoya protocol mode, denies redirects, bounds response timeout/body output, and adds completed exchanges to Site Map
 on a best-effort basis. Use `route_raw_http_request` for exactly one Repeater, Intruder, or Organizer destination. Both
 return structured execution state; `uncertain` means the side effect may exist and must not be retried automatically.
-The older protocol/destination-specific names remain deprecated only through the v3.1 migration window.
+The older protocol- and destination-specific names were removed in v4.
+
+## WebSocket search
+
+Use `search_websocket_messages` with the current `projectId` to search Proxy WebSocket history by connection ID,
+direction, listener port, or one conservatively safe payload regex. Pages contain at most 50 compact summaries and scan
+at most 10,000 raw records. Regex calls inspect at most 32 MiB of payload data, skip individually oversized records, and
+default to case-sensitive matching.
+
+The signed cursor binds the project, query, order, original source size, raw source index, and source-boundary anchors.
+Appended messages are excluded from an existing snapshot; a shrunken or boundary-reordered history returns
+`stale_cursor`. Continue with only `projectId`, `cursor` set to the returned `nextCursor`, and optional `limit`. Cursors
+are invalidated when the MCP server restarts. Use the returned numeric ID and the same required `projectId` with
+`get_websocket_message_by_id` for a bounded original or edited payload slice.
 
 ## Body-free attack-surface summary
 
@@ -303,13 +324,12 @@ Collaborator interaction reads use their own **Always allow** data-access option
 
 ## Stable history access
 
-The paginated Proxy, WebSocket, and Organizer compatibility tools return compact stable-ID summaries by default. Their optional
-`regex` field accepts at most 512 characters and conservatively rejects backreferences, lookarounds, quantified groups,
-and multiple unbounded quantifiers; omitting it lists the source without regex filtering. Set `summariesOnly=false` only
-with one selected `part`, `contentLimit` (8 KiB default, 32 KiB maximum), and `encoding` for a bounded preview. Pages
-contain at most 50 records and 128 Ki characters; explicit truncation metadata replaces invalid mid-JSON string cutting.
-Summaries expose Burp's project-scoped numeric IDs; Scanner issue IDs are
-deterministic `issue_<hash>` values derived from issue identity fields.
+HTTP discovery uses `search_http_messages`; WebSocket discovery uses `search_websocket_messages`. Both return at most 50
+compact complete summaries, enforce 10,000-record and 32 MiB content-search budgets, and use signed raw-source-index
+cursors instead of offset-based compatibility lists. Their optional regex accepts at most 512 characters and
+conservatively rejects backreferences, lookarounds, quantified groups, and multiple unbounded quantifiers. Summaries
+expose project-scoped references; Scanner issue IDs are deterministic `issue_<hash>` values derived from issue identity
+fields.
 
 Use the corresponding read tool to fetch only the required record and field:
 
@@ -323,8 +343,8 @@ offsets, default to 32 KiB, and are capped at 256 KiB per call. Responses includ
 `nextOffsetBytes`; repeat the call with the next offset to retrieve the complete field. Use `encoding: "base64"` for
 byte-exact binary content.
 
-WebSocket and Scanner issue detail results include the project ID used for resolution and recheck it after source lookup;
-v3.1 still accepts an omitted `projectId` for compatibility, while v4 requires it.
+WebSocket and Scanner issue detail calls require the current `projectId`, include it in results, and recheck it after
+source lookup and bounded content materialization.
 
 These read tools return both JSON text and MCP `structuredContent`, advertise output schemas, and carry read-only,
 non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read. On Professional,

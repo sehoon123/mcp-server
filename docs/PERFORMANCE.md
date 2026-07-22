@@ -190,6 +190,20 @@ invalidation. The existing raw
 source snapshots, 10,000-record scan count, signed cursor payload/version, result order, and 32 MiB content accounting
 remain authoritative.
 
+## Bounded WebSocket search
+
+`search_websocket_messages` copies one Montoya WebSocket history list per call and advances a raw source index inside an
+HMAC-signed project/query/snapshot cursor. It applies connection ID, direction, and listener-port predicates before
+payload length or pattern access. Each page returns at most 50 summaries and scans at most 10,000 raw records. Safe-regex
+calls account at most 32 MiB of payload bytes; individually oversized records are skipped without invoking the regex
+matcher, and an aggregate-budget stop leaves the cursor at the uninspected record.
+
+The cursor stores only bounded query metadata, the original source size, next index, and one-way first/last boundary
+anchors. Appended messages remain outside the original size. Source shrinkage or boundary replacement/reordering fails
+with `stale_cursor`; selected summaries are discarded if the Burp project changes after source access or content
+materialization. The cursor secret is process-local, so server restart invalidation avoids retaining another long-lived
+credential. These properties are covered by synthetic/mock regression tests and are not Burp product latency claims.
+
 ## Body-free HTTP metadata index
 
 `summarize_http_attack_surface` uses an extension-lifetime index rather than retaining an MCP-session snapshot. Each
@@ -279,13 +293,12 @@ Intruder semantic selectors resolve at most 32 non-overlapping parameter/header/
 native request template. Replay recording searches at most the last 10,000 Site Map entries for the newly added response;
 a missing stable reference becomes a non-retryable warning after the request has completed.
 
-The v3.1 compatibility raw HTTP/1.1, Repeater, and Intruder tools retain their output but normalize request preludes in
-one pass instead of up to five complete replacement passes. Bodies remain untouched. HTTP/2 header construction reuses
-its ordered map rather than allocating a second merged map. The parsed auto-approval target list is also reused until the
-persisted raw value changes.
+The unified raw path normalizes HTTP/1.1 request preludes in one pass instead of up to five complete replacement passes.
+Bodies remain untouched, and HTTP/2 header construction reuses its ordered map rather than allocating a second merged
+map. The parsed auto-approval target list is also reused until the persisted raw value changes.
 
-The v4 replacement path accepts one nested protocol variant, computes request size from `bodyOffset + body.length`, and
-returns structured state. Network sends use an explicit HTTP mode, `RedirectionMode.NEVER`, a 100 ms–120 s timeout, and
+Each raw call accepts one nested protocol variant, computes request size from `bodyOffset + body.length`, and returns
+structured state. Network sends use an explicit HTTP mode, `RedirectionMode.NEVER`, a 100 ms–120 s timeout, and
 a body preview capped at 64 KiB. A post-delivery exception is `execution_uncertain`, preventing an unsafe model retry.
 Raw routing executes one approved destination and retains fixed destination audit kinds; HTTP/2-to-Intruder is rejected
 before approval or request construction until a supported Burp runtime is verified.
@@ -327,16 +340,14 @@ build and a forced rerun from identical inputs must produce byte-identical proxy
 
 ## Deferred changes that affect behavior or APIs
 
-The feature phase added compact stable-ID summaries, bounded field reads, complete-record legacy pagination, and a
-constrained regex policy. Remaining performance work is deliberately narrower:
+The feature phase added compact stable-ID summaries, bounded field reads, signed HTTP/WebSocket cursors, complete-record
+Scanner compatibility pagination, and a constrained regex policy. Remaining performance work is deliberately narrower:
 
-1. Complete the v4 WebSocket list migration to a signed cursor; HTTP Proxy/Organizer safe regex is already available
-   through `search_http_messages` with its existing scan/content budgets and no metadata-hint use.
-2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
-3. Use the body-free index for eligible metadata-only search predicates while preserving signed cursor behavior, and add
-   lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be resolved
-   and identity-checked against the current source.
-4. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
+1. Add hard timeouts to remaining long-running read/config tools only where they can work with Ktor receive behavior and
+   without treating an ambiguous mutation as retryable.
+2. Add lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be
+   resolved and identity-checked against the current source.
+3. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
 
 ## Regression checks
 
@@ -351,7 +362,7 @@ Performance changes should preserve the following:
   cannot build or return a snapshot during an MCP Scope or project-option mutation.
 - Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
 - Derived request actions render full request text only when an interactive approval needs it.
-- Signed search and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.
+- Signed HTTP, WebSocket, and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.
 - HTTP comparison never inspects more than 1 MiB per reference and never claims equality for a truncated matching prefix.
 - Focused active audits reject out-of-scope requests and missing/overlapping insertion points before Scanner starts.
 - Scanner get/cancel accepts only extension-owned task IDs; at most eight active and 32 retained handles are tracked.
