@@ -45,11 +45,13 @@ import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.portswigger.mcp.config.ConfigValidation
 import net.portswigger.mcp.config.McpConfig
@@ -59,6 +61,7 @@ import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.tools.ToolServices
 import net.portswigger.mcp.tools.registerTools
 import net.portswigger.mcp.tools.unbindToolRuntimePolicy
+import java.net.BindException
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -95,7 +98,11 @@ internal fun Application.configureMcpHttpEndpoint(
     port: Int,
     bearerToken: String? = null,
     runtimeMetrics: McpRuntimeMetrics? = null,
+    maxSessions: Int = MCP_MAX_SESSIONS,
+    sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
 ) {
+    require(maxSessions > 0) { "maxSessions must be positive" }
+    require(sseHeartbeatMillis > 0) { "sseHeartbeatMillis must be positive" }
     if (bearerToken != null) {
         require(bearerToken.length in 32..128 && bearerToken.none { it.isWhitespace() || it.isISOControl() }) {
             "local MCP bearer token is invalid"
@@ -183,7 +190,7 @@ internal fun Application.configureMcpHttpEndpoint(
         }
     }
 
-    val sessions = BoundedMcpSessionRegistry(MCP_MAX_SESSIONS, MCP_SESSION_IDLE_MILLIS, runtimeMetrics)
+    val sessions = BoundedMcpSessionRegistry(maxSessions, MCP_SESSION_IDLE_MILLIS, runtimeMetrics)
     monitor.subscribe(ApplicationStopping) {
         runtimeMetrics?.markStopping()
         runBlocking {
@@ -236,7 +243,7 @@ internal fun Application.configureMcpHttpEndpoint(
                 val sseSession = this
                 val heartbeatJob = launch(CoroutineName("McpSseHeartbeat")) {
                     while (isActive) {
-                        delay(MCP_SSE_HEARTBEAT_MILLIS)
+                        delay(sseHeartbeatMillis)
                         try {
                             sseSession.send(ServerSentEvent(comments = "mcp-keepalive"))
                         } catch (e: CancellationException) {
@@ -274,8 +281,8 @@ internal fun Application.configureMcpHttpEndpoint(
                         maxRequestBodySize = MCP_MAX_REQUEST_BODY_BYTES,
                     )
                 )
-                val pending = sessions.reserve(transport)
-                if (pending == null) {
+                val reservation = sessions.reserve(transport)
+                if (reservation == null) {
                     runtimeMetrics?.onSessionCapacityRejected()
                     runCatching { transport.close() }
                     call.response.header(HttpHeaders.RetryAfter, "60")
@@ -286,6 +293,7 @@ internal fun Application.configureMcpHttpEndpoint(
                     )
                     return@post
                 }
+                val pending = reservation.pending
 
                 transport.setOnSessionInitialized { initializedSessionId ->
                     sessions.activate(pending, initializedSessionId)
@@ -296,6 +304,13 @@ internal fun Application.configureMcpHttpEndpoint(
 
                 var completedNormally = false
                 try {
+                    reservation.displaced?.let { displaced ->
+                        withContext(NonCancellable) {
+                            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) {
+                                runCatching { displaced.closeTransport() }
+                            }
+                        }
+                    }
                     mcpServer.createSession(transport)
                     transport.handleRequest(null, call)
                     completedNormally = true
@@ -419,6 +434,11 @@ private suspend fun ApplicationCall.rejectMcp(status: HttpStatusCode, code: Int,
     )
 }
 
+internal data class McpSessionReservation(
+    val pending: ManagedMcpSession,
+    val displaced: ManagedMcpSession? = null,
+)
+
 internal class BoundedMcpSessionRegistry(
     maxSessions: Int,
     private val idleMillis: Long,
@@ -430,18 +450,26 @@ internal class BoundedMcpSessionRegistry(
     private val entries = HashSet<ManagedMcpSession>()
     private var closed = false
 
-    fun reserve(transport: StreamableHttpServerTransport): ManagedMcpSession? {
-        if (!slots.tryAcquire()) return null
-        val entry = ManagedMcpSession(transport, slots)
-        synchronized(lock) {
-            if (closed) {
-                slots.release()
-                return null
-            }
-            entries += entry
-            updateMetricsLocked()
+    fun reserve(transport: StreamableHttpServerTransport): McpSessionReservation? = synchronized(lock) {
+        if (closed) return null
+
+        var displaced: ManagedMcpSession? = null
+        if (!slots.tryAcquire()) {
+            displaced = sessions.values
+                .mapNotNull { entry -> entry.capacityEvictionOrder()?.let { order -> entry to order } }
+                .minByOrNull { (_, order) -> order }
+                ?.first
+                ?: return null
+            displaced.sessionId()?.let { sessionId -> sessions.remove(sessionId, displaced) }
+            entries.remove(displaced)
+            displaced.releaseSlot()
+            check(slots.tryAcquire()) { "displaced MCP session did not release its capacity slot" }
         }
-        return entry
+
+        val pending = ManagedMcpSession(transport, slots)
+        entries += pending
+        updateMetricsLocked()
+        McpSessionReservation(pending = pending, displaced = displaced)
     }
 
     fun activate(entry: ManagedMcpSession, sessionId: String) {
@@ -567,6 +595,7 @@ internal class ManagedMcpSession(
     private val transportClosed = AtomicBoolean(false)
     private val streamJobs = HashSet<Job>()
     private var streamRegistrationClosed = false
+    private var hasRegisteredStream = false
     private var activeSessionId: String? = null
     private var activeCalls = 0
     private var lastActivityNanos = System.nanoTime()
@@ -592,6 +621,7 @@ internal class ManagedMcpSession(
     @Synchronized
     fun registerStream(job: Job): Boolean {
         if (streamRegistrationClosed) return false
+        hasRegisteredStream = true
         streamJobs += job
         return true
     }
@@ -599,6 +629,7 @@ internal class ManagedMcpSession(
     @Synchronized
     fun unregisterStream(job: Job) {
         streamJobs -= job
+        lastActivityNanos = System.nanoTime()
     }
 
     fun cancelStreams() {
@@ -615,6 +646,15 @@ internal class ManagedMcpSession(
 
     @Synchronized
     fun sessionId(): String? = activeSessionId
+
+    /**
+     * Only sessions whose optional event stream was observed and has since disconnected are displaced under
+     * capacity pressure. Sessions with active calls, an open stream, or no stream history retain their slot until
+     * explicit termination or the normal idle timeout.
+     */
+    @Synchronized
+    fun capacityEvictionOrder(): Long? =
+        lastActivityNanos.takeIf { hasRegisteredStream && streamJobs.isEmpty() && activeCalls == 0 }
 
     fun isActive(): Boolean = sessionId() != null
 
@@ -654,10 +694,13 @@ class KtorServerManager internal constructor(
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
+        val requestedHost = config.host
+        val requestedPort = config.port
+        val normalizedRequestedHost = ConfigValidation.normalizeLoopbackHost(requestedHost)
         val metrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
-        val endpointPreview = ConfigValidation.normalizeLoopbackHost(config.host)
-            ?.takeIf { config.port in 1..65_535 }
-            ?.let { "http://${formatHostForUrl(it)}:${config.port}/mcp" }
+        val endpointPreview = normalizedRequestedHost
+            ?.takeIf { requestedPort in 1..65_535 }
+            ?.let { "http://${formatHostForUrl(it)}:$requestedPort/mcp" }
         metrics.markStarting(endpointPreview)
         runtimeMetrics = metrics
         callback(ServerState.Starting)
@@ -666,7 +709,7 @@ class KtorServerManager internal constructor(
             try {
                 stopCurrentServer()
 
-                val bindHost = ConfigValidation.normalizeLoopbackHost(config.host)
+                val bindHost = normalizedRequestedHost
                     ?: throw IllegalArgumentException(
                         "MCP server host must be 127.0.0.1 or ::1; non-loopback listeners are not supported"
                     )
@@ -688,14 +731,14 @@ class KtorServerManager internal constructor(
                     configure = {
                         connector {
                             host = bindHost
-                            port = config.port
+                            port = requestedPort
                         }
                         connectionIdleTimeoutSeconds = CIO_IDLE_TIMEOUT_SECONDS
                     },
                 ) {
                     configureMcpHttpEndpoint(
                         newMcpServer,
-                        config.port,
+                        requestedPort,
                         config.localBearerToken,
                         metrics,
                     )
@@ -705,16 +748,17 @@ class KtorServerManager internal constructor(
                 metrics.markRunning()
 
                 api.logging().logToOutput(
-                    "Started authenticated MCP Streamable HTTP server at http://${formatHostForUrl(bindHost)}:${config.port}/mcp"
+                    "Started authenticated MCP Streamable HTTP server at http://${formatHostForUrl(bindHost)}:$requestedPort/mcp"
                 )
                 callback(ServerState.Running)
 
             } catch (e: Exception) {
                 runCatching { stopCurrentServer() }
-                val summary = safeExceptionSummary(e)
+                val failure = normalizeMcpServerStartFailure(e, normalizedRequestedHost, requestedPort)
+                val summary = safeExceptionSummary(failure)
                 metrics.markFailed(summary)
                 api.logging().logToError("MCP server failed: $summary")
-                callback(ServerState.Failed(e))
+                callback(ServerState.Failed(failure))
             }
         }
     }
@@ -751,8 +795,13 @@ class KtorServerManager internal constructor(
             mcpServer = null
             if (currentMcpServer != null) {
                 currentMcpServer.unbindToolRuntimePolicy()
-                runBlocking {
-                    withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
+                try {
+                    runBlocking {
+                        withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
+                    }
+                } catch (e: CancellationException) {
+                    if (e.hasNonCancellationCause()) throw e
+                    // Closing an MCP server cancels its own transport jobs. That is successful shutdown, not a failure.
                 }
             }
         }
@@ -775,6 +824,42 @@ class KtorServerManager internal constructor(
             executor.shutdownNow()
         }
         toolServices.close()
+    }
+}
+
+internal class McpServerStartupException(message: String, cause: Throwable) : Exception(message, cause)
+
+internal fun normalizeMcpServerStartFailure(
+    error: Throwable,
+    bindHost: String?,
+    port: Int,
+): Throwable {
+    if (error.causeChain().any { it is BindException }) {
+        val endpoint = bindHost?.let { "${formatHostForUrl(it)}:$port" } ?: "the configured local endpoint"
+        return McpServerStartupException(
+            "Cannot start the MCP server because $endpoint is already in use. " +
+                "Stop the existing listener or choose another local port.",
+            error,
+        )
+    }
+    if (error is CancellationException) {
+        val underlying = error.causeChain().firstOrNull { it !== error && it !is CancellationException }
+        val message = underlying?.let { "MCP server startup failed: ${safeExceptionSummary(it)}" }
+            ?: "MCP server startup was cancelled before the listener became ready"
+        return McpServerStartupException(message, error)
+    }
+    return error
+}
+
+private fun Throwable.hasNonCancellationCause(): Boolean =
+    causeChain().any { it !is CancellationException }
+
+private fun Throwable.causeChain(): Sequence<Throwable> = sequence {
+    val seen = HashSet<Throwable>()
+    var current: Throwable? = this@causeChain
+    while (current != null && seen.size < 32 && seen.add(current)) {
+        yield(current)
+        current = current.cause
     }
 }
 

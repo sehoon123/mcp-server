@@ -3,7 +3,8 @@
 Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 
 This fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern **Streamable HTTP**
-transport exclusively. The deprecated two-endpoint HTTP+SSE server has been removed.
+transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoint retains the protocol's optional SSE
+channel for server-initiated messages. The deprecated two-endpoint HTTP+SSE server has been removed.
 
 ## Distribution and architecture
 
@@ -139,13 +140,13 @@ Load the resulting JAR in Burp through **Extensions → Installed → Add → Ja
 
 Open the **MCP** tab in Burp:
 
-- Enable or stop the MCP server.
+- Enable or stop the MCP server and confirm the loaded extension version shown under the MCP heading.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map and Collaborator items.
 - Enable configuration-editing tools only when they are required. Configuration changes and other global-state mutations still require explicit **Allow Once / Deny** approval.
-- Use **Diagnostics and Safety** to inspect listener/session/admission counters and verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail.
+- Use **Diagnostics and Safety** to inspect listener/session/admission counters and verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
 - Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
 
 The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
@@ -481,7 +482,8 @@ Register the native HTTP endpoint in the user-level mcporter configuration:
 ```shell
 export BURP_MCP_BEARER_TOKEN='<token copied from Burp>'
 mcporter config add burp http://127.0.0.1:9876/mcp --scope home \
-  --header "Authorization=Bearer $BURP_MCP_BEARER_TOKEN"
+  --header 'Authorization=Bearer ${BURP_MCP_BEARER_TOKEN}'
+# Set the resulting burp entry's lifecycle to "keep-alive" as shown below.
 mcporter list burp --schema
 ```
 
@@ -491,16 +493,20 @@ For a repository-local configuration, use `--scope project`. The equivalent `con
 {
   "mcpServers": {
     "burp": {
-      "baseUrl": "http://127.0.0.1:9876/mcp",
+      "url": "http://127.0.0.1:9876/mcp",
+      "lifecycle": "keep-alive",
       "headers": {
-        "Authorization": "Bearer <token copied from Burp>"
+        "Authorization": "Bearer ${BURP_MCP_BEARER_TOKEN}"
       }
     }
   }
 }
 ```
 
-Restrict permissions on `mcporter.json` because this static form contains the token. Example tool call:
+The environment placeholder avoids persisting the token, but still restrict permissions on `mcporter.json`. The
+`keep-alive` daemon reuses one Streamable HTTP session across separate CLI invocations. Without it, current mcporter
+versions close each ephemeral client without sending the optional HTTP `DELETE`, which can otherwise retain one server
+session per command until cleanup. Example tool call:
 
 ```shell
 mcporter call burp.search_http_messages \
@@ -587,9 +593,16 @@ until restarted. A `401 Unauthorized` after rotation almost always means one sid
 
 - A `401` means the bearer header is missing, malformed, or stale. Copy the current token, restart the Burp listener,
   and update or reinstall the client.
-- A `404` usually means the client was pointed at `/` or an obsolete SSE path; use `/mcp`.
+- A `404` usually means the client was pointed at `/` or an obsolete SSE path; use `/mcp`. The root path intentionally
+  does not redirect because authorization headers must not be moved implicitly.
+- A hand-written Streamable HTTP POST must advertise `Accept: application/json, text/event-stream`; initialize with a
+  supported protocol version rather than the legacy `2024-11-05` version.
 - `Server not initialized` from a hand-written HTTP request means the endpoint is reachable but the request did not
   perform the MCP initialization handshake.
+- `MCP session capacity is full` usually means a client repeatedly initialized sessions without terminating or reusing
+  them. For mcporter, use `"lifecycle": "keep-alive"`. The server also reclaims the least-recently-used inactive session
+  whose optional SSE channel has disconnected when capacity is under pressure; active calls and open streams are never
+  displaced.
 - Keep only one copy of the Burp MCP extension enabled to avoid a port conflict on `9876`.
 - Native HTTP clients do not use `mcp-proxy-all.jar`; stdio-only clients use the copy extracted by the extension.
 - `127.0.0.1` refers to the client's own host. A client inside a container or separate VM cannot reach Burp through

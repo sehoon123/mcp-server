@@ -25,6 +25,62 @@ class McpHttpSessionStressTest {
     private data class InitializeResult(val status: Int, val sessionId: String?)
 
     @Test
+    fun `disconnected optional streams are reclaimed before session capacity rejects a new client`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val endpoint = URI("http://127.0.0.1:$port/mcp")
+        val metrics = McpRuntimeMetrics("session-pressure-test", maxHttpCalls = 64, maxSessions = 2)
+        val server = Server(
+            serverInfo = Implementation("session-pressure-test", "1.0"),
+            options = ServerOptions(
+                capabilities = ServerCapabilities(
+                    tools = ServerCapabilities.Tools(listChanged = false),
+                )
+            ),
+        )
+        val engine = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+            configureMcpHttpEndpoint(
+                mcpServer = server,
+                port = port,
+                runtimeMetrics = metrics,
+                maxSessions = 2,
+                sseHeartbeatMillis = 25,
+            )
+        }.start()
+        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
+
+        try {
+            val first = initialize(client, endpoint, 1)
+            assertEquals(200, first.status)
+            val firstSession = requireNotNull(first.sessionId)
+            notifyInitialized(client, endpoint, firstSession)
+            disconnectOptionalStream(client, endpoint, firstSession)
+            awaitNoActiveCalls(metrics)
+
+            val second = initialize(client, endpoint, 2)
+            assertEquals(200, second.status)
+            val secondSession = requireNotNull(second.sessionId)
+            notifyInitialized(client, endpoint, secondSession)
+            disconnectOptionalStream(client, endpoint, secondSession)
+            awaitNoActiveCalls(metrics)
+
+            val replacement = initialize(client, endpoint, 3)
+            assertEquals(200, replacement.status)
+            val replacementSession = requireNotNull(replacement.sessionId)
+
+            assertEquals(404, ping(client, endpoint, firstSession))
+            assertEquals(200, ping(client, endpoint, secondSession))
+            assertEquals(2, metrics.snapshot().activeSessions)
+            assertEquals(0, metrics.snapshot().sessionCapacityRejections)
+
+            assertTrue(delete(client, endpoint, secondSession) in setOf(200, 202))
+            assertTrue(delete(client, endpoint, replacementSession) in setOf(200, 202))
+        } finally {
+            runCatching { engine.stop(100, 3_000) }
+            runBlocking { server.close() }
+        }
+    }
+
+    @Test
     fun `session capacity is enforced reclaimed and safe during concurrent shutdown`() {
         val port = ServerSocket(0).use { it.localPort }
         val endpoint = URI("http://127.0.0.1:$port/mcp")
@@ -109,6 +165,54 @@ class McpHttpSessionStressTest {
             response.statusCode(),
             response.headers().firstValue("Mcp-Session-Id").orElse(null),
         )
+    }
+
+    private fun notifyInitialized(client: HttpClient, endpoint: URI, sessionId: String) {
+        val request = HttpRequest.newBuilder(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", sessionId)
+            .POST(HttpRequest.BodyPublishers.ofString(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"
+            ))
+            .build()
+        val status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
+        assertTrue(status in setOf(200, 202), "Initialized notification returned HTTP $status")
+    }
+
+    private fun disconnectOptionalStream(client: HttpClient, endpoint: URI, sessionId: String) {
+        val request = HttpRequest.newBuilder(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Accept", "text/event-stream")
+            .header("Mcp-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", sessionId)
+            .GET()
+            .build()
+        val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+        assertEquals(200, response.statusCode())
+        response.body().close()
+    }
+
+    private fun awaitNoActiveCalls(metrics: McpRuntimeMetrics) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+        while (metrics.snapshot().activeHttpCalls != 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals(0, metrics.snapshot().activeHttpCalls)
+    }
+
+    private fun ping(client: HttpClient, endpoint: URI, sessionId: String): Int {
+        val request = HttpRequest.newBuilder(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", sessionId)
+            .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}"))
+            .build()
+        return client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
     }
 
     private fun delete(client: HttpClient, endpoint: URI, sessionId: String): Int {
