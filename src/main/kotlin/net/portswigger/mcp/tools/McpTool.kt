@@ -362,10 +362,14 @@ inline fun Server.mcpTool(
     )
 }
 
+/** A typed result plus compatibility text; expected machine-readable failures may retain structuredContent. */
 data class StructuredToolResponse<O : Any>(
     val output: O,
-    val text: String? = null,
-)
+    val text: String?,
+    val isError: Boolean,
+) {
+    constructor(output: O, text: String? = null) : this(output, text, false)
+}
 
 class ToolCallContext @PublishedApi internal constructor(
     private val connection: ClientConnection,
@@ -426,7 +430,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
             val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
             CallToolResult(
                 content = listOf(TextContent(response.text ?: structuredContent.toString())),
-                isError = false,
+                isError = response.isError,
                 structuredContent = structuredContent,
             )
         }
