@@ -87,16 +87,25 @@ Implemented foundation:
 - The v3 catalog consolidates same-policy transforms, configuration access, global controls, stable-reference routing,
   cross-source HTTP detail reads, and plain/regex history lists into 31 Professional tools (24 on Community). Each
   invocation retains one operation or destination, and fixed value-free audit classifications preserve operation context.
+- v3.1 adds `send_raw_http_request` and `route_raw_http_request` with protocol-nested inputs, structured execution state,
+  bounded timeout/output, redirect denial, destination-specific approval/audit, and no automatic retry of uncertain
+  outcomes. Seven older protocol/source-specific names remain for one migration release, temporarily yielding 33
+  Professional tools and 26 Community tools.
+- `search_http_messages` now supports the same bounded conservative regex language as compatibility lists while keeping
+  its signed cursor, 10,000-record, and 32 MiB budgets. Regex always uses the raw path rather than warm metadata hints.
+- Individual WebSocket and Scanner issue reads accept an optional compatibility `projectId`, bind omitted calls to the
+  current project, and discard looked-up results after a project transition.
 - Eligible newest-first metadata-only Proxy and Organizer searches reuse only recent, already-warm, same-size,
   anchor-validated index entries as advisory hints. Every predicted mismatch is rechecked on the current source field and numeric ID. Stale, reordered,
-  unindexed, Site Map, text, and oldest-first records fall back to the raw matcher without changing scan, cursor,
+  unindexed, Site Map, text, regex, and oldest-first records fall back to the raw matcher without changing scan, cursor,
   content-budget, or result semantics.
 
 Remaining work:
 
-- Migrate the remaining three legacy source-specific list tools from offset pagination to the signed cursor model.
-  Plain and conservatively safe regex modes now share one tool per source; summary mode is the default, selected previews
-  and pages are bounded, and silent mid-JSON truncation has been removed.
+- In v4, remove the seven deprecated raw/list names, replace offset-based `get_proxy_websocket_history` with signed-cursor
+  `search_websocket_messages`, and require `projectId` on individual WebSocket/Scanner issue reads. This yields the final
+  26 Professional / 19 Community catalog without advertising aliases.
+- Validate raw HTTP/2 routing against an actual supported Burp runtime; HTTP/2-to-Intruder remains rejected until then.
 - Validate metadata-index and unified-search performance with an actual large Burp history. Synthetic differential,
   accessor-count, and JFR allocation probes remain regression evidence rather than Burp product latency claims.
 

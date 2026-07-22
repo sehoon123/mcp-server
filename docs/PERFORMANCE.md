@@ -279,10 +279,16 @@ Intruder semantic selectors resolve at most 32 non-overlapping parameter/header/
 native request template. Replay recording searches at most the last 10,000 Site Map entries for the newly added response;
 a missing stable reference becomes a non-retryable warning after the request has completed.
 
-Existing raw HTTP/1.1, Repeater, and Intruder tools retain their output but now normalize request preludes in one pass
-instead of up to five complete replacement passes. Bodies remain untouched. HTTP/2 header construction reuses its
-ordered map rather than allocating a second merged map. The parsed auto-approval target list is also reused until the
+The v3.1 compatibility raw HTTP/1.1, Repeater, and Intruder tools retain their output but normalize request preludes in
+one pass instead of up to five complete replacement passes. Bodies remain untouched. HTTP/2 header construction reuses
+its ordered map rather than allocating a second merged map. The parsed auto-approval target list is also reused until the
 persisted raw value changes.
+
+The v4 replacement path accepts one nested protocol variant, computes request size from `bodyOffset + body.length`, and
+returns structured state. Network sends use an explicit HTTP mode, `RedirectionMode.NEVER`, a 100 ms–120 s timeout, and
+a body preview capped at 64 KiB. A post-delivery exception is `execution_uncertain`, preventing an unsafe model retry.
+Raw routing executes one approved destination and retains fixed destination audit kinds; HTTP/2-to-Intruder is rejected
+before approval or request construction until a supported Burp runtime is verified.
 
 A standalone Java 21 `ThreadMXBean` probe compared the previous replacement/substrings pipeline with the current
 compiled `normalizeHttpContent` implementation. After warm-up, the median of nine alternating rounds was:
@@ -324,7 +330,8 @@ build and a forced rerun from identical inputs must produce byte-identical proxy
 The feature phase added compact stable-ID summaries, bounded field reads, complete-record legacy pagination, and a
 constrained regex policy. Remaining performance work is deliberately narrower:
 
-1. Migrate the three consolidated legacy source-specific list tools to signed cursors where compatibility permits.
+1. Complete the v4 WebSocket list migration to a signed cursor; HTTP Proxy/Organizer safe regex is already available
+   through `search_http_messages` with its existing scan/content budgets and no metadata-hint use.
 2. Add hard timeouts to remaining long-running read/config tools without treating an ambiguous mutation as retryable.
 3. Use the body-free index for eligible metadata-only search predicates while preserving signed cursor behavior, and add
    lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be resolved

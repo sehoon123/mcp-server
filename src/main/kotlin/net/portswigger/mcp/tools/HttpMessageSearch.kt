@@ -35,7 +35,7 @@ private const val MAX_HTTP_SEARCH_TEXT_CHARS = 512
 private const val MAX_HTTP_SEARCH_FILTER_VALUES = 32
 internal const val MAX_HTTP_SEARCH_URL_CHARS = 2_048
 private const val MAX_HTTP_SEARCH_NOTES_CHARS = 512
-private const val CURSOR_VERSION = 1
+private const val CURSOR_VERSION = 2
 private const val CURSOR_HMAC_ALGORITHM = "HmacSHA256"
 private val HTTP_METHOD_PATTERN = Regex("[A-Z!#$%&'*+.^_`|~-]{1,32}")
 private val MIME_TYPE_PATTERN = Regex("[A-Z0-9_+.-]{1,64}")
@@ -82,11 +82,13 @@ data class SearchHttpMessages(
     val inScopeOnly: Boolean? = null,
     @JsonSchemaMetadata(description = "Filter by response presence when supplied.")
     val hasResponse: Boolean? = null,
-    @JsonSchemaMetadata(description = "Bounded request or response text to search for.", maxLength = 512)
+    @JsonSchemaMetadata(description = "Bounded literal request or response text to search for; mutually exclusive with regex.", maxLength = 512)
     val text: String? = null,
-    @JsonSchemaMetadata(description = "Message part searched by text.", defaultJson = "\"both\"")
+    @JsonSchemaMetadata(description = "Conservatively safe request or response regex; mutually exclusive with text.", minLength = 1, maxLength = 512)
+    val regex: String? = null,
+    @JsonSchemaMetadata(description = "Message part searched by text or regex.", defaultJson = "\"both\"")
     val searchIn: HttpSearchLocation? = null,
-    @JsonSchemaMetadata(description = "Use case-sensitive text matching.", defaultJson = "false")
+    @JsonSchemaMetadata(description = "Use case-sensitive matching. Defaults to false for text and true for regex.")
     val caseSensitive: Boolean? = null,
     @JsonSchemaMetadata(description = "Return newest matches first.", defaultJson = "true")
     val newestFirst: Boolean? = null,
@@ -174,6 +176,7 @@ private data class NormalizedHttpSearchQuery(
     val inScopeOnly: Boolean,
     val hasResponse: Boolean?,
     val text: String?,
+    val regex: String?,
     val searchIn: HttpSearchLocation,
     val caseSensitive: Boolean,
     val newestFirst: Boolean,
@@ -386,7 +389,7 @@ internal class HttpMessageSearchService(
                 continue
             }
 
-            if (query.text != null) {
+            if (query.hasContentPredicate()) {
                 val candidateBytes = candidate.approximateContentBytes()
                 if (candidateBytes > maxTextBytes) {
                     oversizedContentSkipped++
@@ -398,7 +401,7 @@ internal class HttpMessageSearchService(
                     break
                 }
                 scannedContentBytes += candidateBytes
-                if (!candidate.matchesText(matcher)) {
+                if (!candidate.matchesContent(matcher)) {
                     advancePosition(position, snapshots, query.newestFirst)
                     continue
                 }
@@ -791,6 +794,7 @@ private class CompiledHttpSearchQuery(val query: NormalizedHttpSearchQuery) {
     val statusCodes = query.statusCodes?.toHashSet()
     val mimeTypes = query.mimeTypes?.toHashSet()
     val indexedMimeTypes = query.mimeTypes?.mapTo(HashSet()) { it.lowercase() }
+    val regex = query.regex?.let { validateLegacyRegex(it, query.caseSensitive) }
 }
 
 private enum class MetadataRejectionReason {
@@ -860,14 +864,19 @@ private data class SearchCandidate(
         return true
     }
 
-    fun matchesText(matcher: CompiledHttpSearchQuery): Boolean {
+    fun matchesContent(matcher: CompiledHttpSearchQuery): Boolean {
         val query = matcher.query
-        val text = query.text ?: return true
-        val requestMatches = query.searchIn != HttpSearchLocation.RESPONSE &&
-            request.contains(text, query.caseSensitive)
+        val requestMatches = query.searchIn != HttpSearchLocation.RESPONSE && when {
+            query.text != null -> request.contains(query.text, query.caseSensitive)
+            matcher.regex != null -> request.contains(matcher.regex)
+            else -> true
+        }
         if (requestMatches) return true
-        return query.searchIn != HttpSearchLocation.REQUEST &&
-            response?.contains(text, query.caseSensitive) == true
+        return query.searchIn != HttpSearchLocation.REQUEST && when {
+            query.text != null -> response?.contains(query.text, query.caseSensitive) == true
+            matcher.regex != null -> response?.contains(matcher.regex) == true
+            else -> true
+        }
     }
 
     fun toSummary(projectId: String, sourceIndex: Int): HttpMessageSearchItem {
@@ -924,10 +933,12 @@ private fun pathMatches(actual: String, expected: String, caseSensitive: Boolean
 private fun methodMatches(actual: String, expected: Set<String>): Boolean =
     actual in expected || actual.uppercase() in expected
 
+private fun NormalizedHttpSearchQuery.hasContentPredicate(): Boolean = text != null || regex != null
+
 private fun NormalizedHttpSearchQuery.metadataIndexSources(): List<HttpMessageSource> {
     val hasMetadataPredicate = host != null || pathContains != null || methods != null || statusCodes != null ||
         mimeTypes != null || inScopeOnly || hasResponse != null
-    if (text != null || !newestFirst || !hasMetadataPredicate) return emptyList()
+    if (hasContentPredicate() || !newestFirst || !hasMetadataPredicate) return emptyList()
     return sources.filter { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }
 }
 
@@ -976,9 +987,14 @@ private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery
         require(it.isNotEmpty()) { "mimeTypes must not be empty" }
         require(it.size <= MAX_HTTP_SEARCH_FILTER_VALUES) { "too many MIME types" }
     }
+    require(input.text == null || input.regex == null) { "text and regex are mutually exclusive" }
     val text = input.text?.also {
         require(it.isNotEmpty()) { "text must not be empty" }
         require(it.length <= MAX_HTTP_SEARCH_TEXT_CHARS) { "text is too long" }
+    }
+    val regex = input.regex?.also {
+        require(it.length <= MAX_HTTP_SEARCH_TEXT_CHARS) { "regex is too long" }
+        validateLegacyRegex(it, input.caseSensitive ?: true)
     }
 
     return NormalizedHttpSearchQuery(
@@ -991,16 +1007,17 @@ private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery
         inScopeOnly = input.inScopeOnly ?: false,
         hasResponse = input.hasResponse,
         text = text,
+        regex = regex,
         searchIn = input.searchIn ?: HttpSearchLocation.BOTH,
-        caseSensitive = input.caseSensitive ?: false,
+        caseSensitive = input.caseSensitive ?: (regex != null),
         newestFirst = input.newestFirst ?: true,
     )
 }
 
 private fun SearchHttpMessages.hasExplicitQuery(): Boolean =
     sources != null || host != null || pathContains != null || methods != null || statusCodes != null ||
-        mimeTypes != null || inScopeOnly != null || hasResponse != null || text != null || searchIn != null ||
-        caseSensitive != null || newestFirst != null
+        mimeTypes != null || inScopeOnly != null || hasResponse != null || text != null || regex != null ||
+        searchIn != null || caseSensitive != null || newestFirst != null
 
 private fun initialItemIndex(size: Int, newestFirst: Boolean): Int = if (newestFirst) size - 1 else 0
 

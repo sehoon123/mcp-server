@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -386,12 +387,15 @@ class HttpMessageIndexedSearchTest {
         val service = service(newIndex(maxRecords = 10))
 
         val text = service.search(SearchHttpMessages(text = "needle"))
+        val regex = service.search(SearchHttpMessages(regex = "needle"))
         val oldest = service.search(SearchHttpMessages(host = "target.test", newestFirst = false))
 
         assertEquals(1, text.scanned)
         assertTrue(text.scannedContentBytes > 0)
+        assertEquals(1, regex.scanned)
+        assertTrue(regex.scannedContentBytes > 0)
         assertEquals("1", oldest.items.single().ref.id)
-        verify(exactly = 2) { proxy.history() }
+        verify(exactly = 3) { proxy.history() }
     }
 
     @Test
@@ -545,6 +549,7 @@ class HttpMessageIndexedSearchTest {
         every { request.headers() } returns emptyList()
         every { request.httpVersion() } returns "HTTP/1.1"
         every { request.contains(any<String>(), any<Boolean>()) } returns false
+        every { request.contains(any<Pattern>()) } returns false
         every { request.toByteArray() } returns body
         return request
     }
@@ -559,6 +564,7 @@ class HttpMessageIndexedSearchTest {
         every { response.headers() } returns emptyList()
         every { response.httpVersion() } returns "HTTP/1.1"
         every { response.contains(any<String>(), any<Boolean>()) } returns false
+        every { response.contains(any<Pattern>()) } returns false
         every { response.toByteArray() } returns body
         return response
     }

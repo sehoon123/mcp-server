@@ -827,7 +827,7 @@ private fun finalizePatchedRequest(
     )
 }
 
-private fun requestByteLength(request: HttpRequest): Int {
+internal fun requestByteLength(request: HttpRequest): Int {
     val headerBytes = request.bodyOffset()
     val bodyBytes = request.body().length()
     require(headerBytes >= 0 && bodyBytes >= 0) { "request reported an invalid byte length" }
@@ -934,7 +934,7 @@ private fun HttpActionParameterType.serialName(): String = name.lowercase()
 private fun HttpMessageSource.serialName(): String = name.lowercase()
 private fun String.boundedDiff(): String = replace("\r", "\\r").replace("\n", "\\n").take(256)
 
-private fun HttpResponse.toActionSummary(limit: Int, encoding: String): HttpActionResponseSummary {
+internal fun HttpResponse.toActionSummary(limit: Int, encoding: String): HttpActionResponseSummary {
     val responseBody = body()
     return HttpActionResponseSummary(
         statusCode = statusCode().toInt(),

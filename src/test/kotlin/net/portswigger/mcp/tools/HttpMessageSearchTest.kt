@@ -22,6 +22,7 @@ import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
+import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -280,6 +281,59 @@ class HttpMessageSearchTest {
     }
 
     @Test
+    fun `safe regex search is budgeted cursor-bound and defaults to case sensitive`() = runBlocking {
+        val skipped = proxyItem(10, "GET", "https://example.test/skipped", 200)
+        val selected = proxyItem(11, "GET", "https://example.test/selected", 200)
+        every { skipped.request.contains(any<Pattern>()) } answers {
+            firstArg<Pattern>().matcher("TOKEN-123").find()
+        }
+        every { selected.request.contains(any<Pattern>()) } answers {
+            firstArg<Pattern>().matcher("token-456").find()
+        }
+        proxyHistory += skipped.item
+        proxyHistory += selected.item
+
+        val caseSensitive = service.search(
+            SearchHttpMessages(
+                regex = "token-[0-9]+",
+                searchIn = HttpSearchLocation.REQUEST,
+                newestFirst = false,
+                limit = 1,
+            )
+        )
+        assertEquals(listOf("11"), caseSensitive.items.map { it.ref.id })
+        assertEquals(2, caseSensitive.scanned)
+        assertTrue(caseSensitive.scannedContentBytes > 0)
+
+        val insensitive = service.search(
+            SearchHttpMessages(
+                regex = "token-[0-9]+",
+                searchIn = HttpSearchLocation.REQUEST,
+                caseSensitive = false,
+                newestFirst = false,
+                limit = 1,
+            )
+        )
+        assertEquals(listOf("10"), insensitive.items.map { it.ref.id })
+        assertNotNull(insensitive.nextCursor)
+
+        val changed = service.search(
+            SearchHttpMessages(regex = "other", cursor = insensitive.nextCursor)
+        )
+        assertEquals(HttpMessageSearchStatus.INVALID_CURSOR, changed.status)
+    }
+
+    @Test
+    fun `regex rejects unsafe or conflicting predicates before history access`() = runBlocking {
+        val conflicting = service.search(SearchHttpMessages(text = "literal", regex = "safe"))
+        val unsafe = service.search(SearchHttpMessages(regex = "(a+)+"))
+
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, conflicting.status)
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, unsafe.status)
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
     fun `oversized content search skips the item without scanning its bytes`() = runBlocking {
         val oversized = proxyItem(
             id = 9,
@@ -357,6 +411,7 @@ class HttpMessageSearchTest {
         every { request.headers() } returns emptyList()
         every { request.httpVersion() } returns "HTTP/1.1"
         every { request.contains(any<String>(), any<Boolean>()) } returns false
+        every { request.contains(any<Pattern>()) } returns false
         every { request.toByteArray() } returns body
         return request
     }
@@ -371,6 +426,7 @@ class HttpMessageSearchTest {
         every { response.headers() } returns emptyList()
         every { response.httpVersion() } returns "HTTP/1.1"
         every { response.contains(any<String>(), any<Boolean>()) } returns false
+        every { response.contains(any<Pattern>()) } returns false
         every { response.toByteArray() } returns body
         return response
     }

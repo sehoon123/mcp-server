@@ -214,6 +214,9 @@ class ToolsKtTest {
             ) = true
         }
         setupHttpHeaderMocks()
+        val defaultProject = mockk<burp.api.montoya.project.Project>()
+        every { defaultProject.id() } returns "project-default"
+        every { api.project() } returns defaultProject
 
         serverManager.start(config) { state ->
             if (state is ServerState.Running) serverStarted = true
@@ -1384,21 +1387,55 @@ class ToolsKtTest {
                 assertNotNull(result?.structuredContent)
                 val structured = result!!.structuredContent!!
                 assertEquals("ok", structured["status"]?.jsonPrimitive?.content)
+                assertEquals("project-default", structured["projectId"]?.jsonPrimitive?.content)
                 assertTrue(structured["content"].toString().contains("\"data\":\"AgME\""))
 
                 val missing = client.callTool("get_websocket_message_by_id", mapOf("id" to 999))
                 assertEquals("not_found", missing?.structuredContent?.get("status")?.jsonPrimitive?.content)
+
+                val wrongProject = client.callTool(
+                    "get_websocket_message_by_id",
+                    mapOf("id" to 17, "projectId" to "different-project"),
+                )
+                assertEquals(
+                    "project_mismatch",
+                    wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
+                )
             }
 
             verify(exactly = 2) { proxy.webSocketHistory(any()) }
             verify(exactly = 0) { proxy.webSocketHistory() }
+        }
+
+        @Test
+        fun `WebSocket lookup discards a result when the project changes during resolution`() = runBlocking {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyWebSocketMessage>()
+            every { api.project() } returns project
+            every { project.id() } returnsMany listOf("project-before", "project-after")
+            every { api.proxy() } returns proxy
+            every { proxy.webSocketHistory(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyWebSocketHistoryFilter>()
+                listOf(item).filter(filter::matches)
+            }
+            every { item.id() } returns 21
+
+            val result = client.callTool(
+                "get_websocket_message_by_id",
+                mapOf("id" to 21, "projectId" to "project-before"),
+            )
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("project-after", result?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+            verify(exactly = 0) { item.payload() }
         }
     }
     
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(24, tools.size)
+        assertEquals(26, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertTrue(
@@ -1410,6 +1447,8 @@ class ToolsKtTest {
                     "set_burp_control_state",
                     "get_http_message",
                     "route_http_message_from_id",
+                    "send_raw_http_request",
+                    "route_raw_http_request",
                 )
             )
         )
@@ -1489,6 +1528,32 @@ class ToolsKtTest {
         val redirectSchema = replay.inputSchema.properties?.get("redirection").toString()
         assertTrue(redirectSchema.contains("\"enum\":[\"never\"]"))
         assertTrue(redirectSchema.contains("\"default\":\"never\""))
+
+        val rawSend = tools.single { it.name == "send_raw_http_request" }
+        assertEquals(
+            setOf("protocol", "targetHostname", "targetPort", "usesHttps"),
+            rawSend.inputSchema.required?.toSet(),
+        )
+        assertNotNull(rawSend.inputSchema.properties?.get("http1"))
+        assertNotNull(rawSend.inputSchema.properties?.get("http2"))
+        assertNotNull(rawSend.inputSchema.properties?.get("responseTimeoutMs"))
+        assertTrue(rawSend.outputSchema?.properties?.get("executionState").toString().contains("uncertain"))
+        assertNotNull(rawSend.outputSchema?.properties?.get("recordedRef"))
+        assertEquals(false, rawSend.annotations?.readOnlyHint)
+        assertEquals(true, rawSend.annotations?.destructiveHint)
+        assertEquals(true, rawSend.annotations?.openWorldHint)
+        assertEquals(false, rawSend.annotations?.idempotentHint)
+
+        val rawRoute = tools.single { it.name == "route_raw_http_request" }
+        assertTrue(rawRoute.inputSchema.properties?.get("destination").toString().contains("organizer"))
+        assertTrue(rawRoute.inputSchema.properties?.get("protocol").toString().contains("http_2"))
+        assertEquals(false, rawRoute.annotations?.readOnlyHint)
+        assertEquals(false, rawRoute.annotations?.destructiveHint)
+        assertEquals(false, rawRoute.annotations?.openWorldHint)
+        assertEquals(false, rawRoute.annotations?.idempotentHint)
+
+        val search = tools.single { it.name == "search_http_messages" }
+        assertTrue(search.inputSchema.properties?.get("regex").toString().contains("\"maxLength\":512"))
 
         val legacyHistory = tools.single { it.name == "get_proxy_http_history" }
         assertEquals(true, legacyHistory.annotations?.readOnlyHint)
@@ -1603,7 +1668,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(31, tools.size)
+            assertEquals(33, tools.size)
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
@@ -1680,7 +1745,20 @@ class ToolsKtTest {
                 val result = client.callTool("get_scanner_issue_by_id", mapOf("id" to id))
                 assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertEquals(id, result?.structuredContent?.get("id")?.jsonPrimitive?.content)
+                assertEquals(
+                    collaboratorProjectId,
+                    result?.structuredContent?.get("projectId")?.jsonPrimitive?.content,
+                )
+                val wrongProject = client.callTool(
+                    "get_scanner_issue_by_id",
+                    mapOf("id" to id, "projectId" to "different-project"),
+                )
+                assertEquals(
+                    "project_mismatch",
+                    wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
+                )
             }
+            verify(exactly = 1) { siteMap.issues() }
         }
 
         @Test

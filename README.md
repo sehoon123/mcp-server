@@ -27,8 +27,8 @@ Streamable HTTP, so users do not need to download or install a second component.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- Compact catalog: 31 tools on Professional and 24 on Community, grouped by common safety policy
-- HTTP/1.1 and HTTP/2 request tools with target approval controls
+- v3.1 migration catalog: 33 tools on Professional and 26 on Community, including two v4 replacements plus deprecated v3 names
+- Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
@@ -60,6 +60,27 @@ would defeat the bounded 31-tool catalog.
 Source-specific data approval, project and stable-ID validation, request-routing approval, metadata-index invalidation,
 and bounded output rules remain in force. Persistent audit approvals use fixed operation classes rather than storing enum
 or other argument values.
+
+### v3.1 migration window for the v4 catalog
+
+Version 3.1 introduces the two v4 replacement tools while retaining seven deprecated v3 names for one compatibility
+release. The temporary catalog therefore contains 33 tools on Professional and 26 on Community:
+
+| Deprecated v3 names retained in v3.1 | v4 replacement |
+|---|---|
+| `send_http1_request`, `send_http2_request` | `send_raw_http_request` with exactly one protocol-matching nested input |
+| `create_repeater_tab`, `create_repeater_tab_http2`, `send_to_intruder` | `route_raw_http_request` with exactly one destination |
+| `get_proxy_http_history`, `get_organizer_items` | `search_http_messages` with one selected source and optional safe `regex` |
+
+The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
+post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
+classification; HTTP/2-to-Intruder is rejected until verified against a supported Burp runtime. Safe-regex HTTP search
+uses the existing 10,000-record/32 MiB budgets and deliberately bypasses metadata-index hints.
+
+Version 4 removes those seven deprecated names, replaces the offset-based WebSocket list with cursor-based
+`search_websocket_messages`, and requires project binding on individual WebSocket/Scanner reads. The resulting target is
+26 Professional tools and 19 Community tools. Deprecated aliases will not be advertised in v4 because doing so would
+increase the catalog again.
 
 ## Build and install
 
@@ -147,8 +168,9 @@ are rejected before tool input is executed.
 
 Use `search_http_messages` to search compact HTTP metadata. It searches Proxy history by default; set `sources` to any
 combination of `proxy`, `site_map`, and `organizer` to search those stores in a fixed order. Available filters include
-exact host, literal path or request/response content, methods, status codes, MIME types, in-scope state, and response
-presence. Results default to newest-first within each source.
+exact host, literal path, literal request/response content, or one conservatively safe content regex, plus methods,
+status codes, MIME types, in-scope state, and response presence. Literal text and regex are mutually exclusive. Results
+default to newest-first within each source; regex is case-sensitive unless `caseSensitive: false` is explicit.
 
 The default page size is 25 and the maximum is 50. If `hasMore` is true, call the tool again with only `nextCursor`
 (and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original query, and preserve
@@ -160,8 +182,8 @@ Each result contains the current Burp `projectId` and a `{source, id}` reference
 `get_http_message`, regardless of whether the source is `proxy`, `organizer`, or `site_map`. Numeric Proxy/Organizer
 IDs and opaque Site Map IDs are validated according to the selected source.
 
-Search work is bounded per call to 10,000 metadata records. Literal content searches additionally inspect at most
-32 MiB of message data; individually oversized messages are counted in `oversizedContentSkipped`. URLs, notes, result
+Search work is bounded per call to 10,000 metadata records. Literal and safe-regex content searches additionally inspect
+at most 32 MiB of message data; individually oversized messages are counted in `oversizedContentSkipped`. URLs, notes, result
 counts, cursor sizes, and detail reads are also bounded.
 
 Eligible newest-first Proxy and Organizer searches without a content predicate can reuse recent, already-warm body-free
@@ -169,12 +191,15 @@ index entries for host, path, method, status, MIME, scope, and response-presence
 source size and at most 16 anchors per warm source but never performs a cold index build. A cached mismatch only
 predicts which field to read: the extension rechecks that field and the numeric Proxy/Organizer ID on the current Burp
 record before skipping it, so stale, reordered, query-bearing, or replaced records fall back to the original raw
-matcher. Site Map, expired, unindexed, contended, text, and oldest-first ranges use the raw path. The 10,000-record
+matcher. Site Map, expired, unindexed, contended, text, regex, and oldest-first ranges use the raw path. The 10,000-record
 count, 32 MiB content budget, signed cursor, result order, and selected-record identity behavior are unchanged; query
 values are never added to the index.
 
-Successful requests issued through `send_http1_request` or `send_http2_request` are added to Burp's Site Map on a
-best-effort basis without changing the already-completed request result if local recording fails.
+Use `send_raw_http_request` for new raw traffic. It accepts exactly one HTTP/1.1 or HTTP/2 variant, uses an explicit
+Montoya protocol mode, denies redirects, bounds response timeout/body output, and adds completed exchanges to Site Map
+on a best-effort basis. Use `route_raw_http_request` for exactly one Repeater, Intruder, or Organizer destination. Both
+return structured execution state; `uncertain` means the side effect may exist and must not be retried automatically.
+The older protocol/destination-specific names remain deprecated only through the v3.1 migration window.
 
 ## Body-free attack-surface summary
 
@@ -278,7 +303,7 @@ Collaborator interaction reads use their own **Always allow** data-access option
 
 ## Stable history access
 
-The paginated Proxy, WebSocket, and Organizer tools return compact stable-ID summaries by default. Their optional
+The paginated Proxy, WebSocket, and Organizer compatibility tools return compact stable-ID summaries by default. Their optional
 `regex` field accepts at most 512 characters and conservatively rejects backreferences, lookarounds, quantified groups,
 and multiple unbounded quantifiers; omitting it lists the source without regex filtering. Set `summariesOnly=false` only
 with one selected `part`, `contentLimit` (8 KiB default, 32 KiB maximum), and `encoding` for a bounded preview. Pages
@@ -297,6 +322,9 @@ support metadata, detail, remediation, and individual evidence request/response 
 offsets, default to 32 KiB, and are capped at 256 KiB per call. Responses include `totalBytes`, `hasMore`, and
 `nextOffsetBytes`; repeat the call with the next offset to retrieve the complete field. Use `encoding: "base64"` for
 byte-exact binary content.
+
+WebSocket and Scanner issue detail results include the project ID used for resolution and recheck it after source lookup;
+v3.1 still accepts an omitted `projectId` for compatibility, while v4 requires it.
 
 These read tools return both JSON text and MCP `structuredContent`, advertise output schemas, and carry read-only,
 non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read. On Professional,

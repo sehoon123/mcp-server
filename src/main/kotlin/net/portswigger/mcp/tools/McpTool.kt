@@ -220,6 +220,10 @@ inline fun <reified I : Any> Server.mcpTool(
     })
 }
 
+@Deprecated(
+    "Unit tool handlers cannot communicate approval denial; return an explicit String or structured result",
+    level = DeprecationLevel.ERROR,
+)
 @OptIn(ExperimentalTypeInference::class)
 @OverloadResolutionByLambdaReturnType
 @JvmName("mcpToolUnit")
@@ -230,8 +234,7 @@ inline fun <reified I : Any> Server.mcpTool(
 ) {
     mcpTool<I>(description, annotations, execute = {
         execute(this)
-
-        listOf(TextContent("Executed tool"))
+        listOf(TextContent("Tool completed without a structured result"))
     })
 }
 
@@ -276,8 +279,8 @@ internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequence
         val input = this
         when (val source = execute(input)) {
             is PaginatedSource.Message -> {
-                val message = sequenceOf(source.text).drop(offset).take(count).firstOrNull()
-                listOf(TextContent(message ?: "Reached end of items"))
+                // Authorization and source-level status messages are not collection items. Preserve them at every offset.
+                listOf(TextContent(source.text))
             }
 
             is PaginatedSource.Items -> {

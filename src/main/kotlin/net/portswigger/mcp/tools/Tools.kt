@@ -47,9 +47,6 @@ private suspend fun checkDataAccessOrDeny(
     return true
 }
 
-private fun String?.matchesCurrentProject(api: MontoyaApi): Boolean =
-    this == null || this == api.project().id()
-
 private const val MAX_LEGACY_RAW_REQUEST_CHARS = 2 * 1024 * 1024
 private const val MAX_LEGACY_HTTP2_BODY_CHARS = 1024 * 1024
 private const val MAX_LEGACY_HTTP_HEADERS = 128
@@ -66,13 +63,13 @@ private const val DEFAULT_LEGACY_PREVIEW_BYTES = 8 * 1024
 private const val MAX_LEGACY_PREVIEW_BYTES = 32 * 1024
 private const val MAX_LEGACY_REGEX_CHARS = 512
 
-private fun validateLegacyTarget(hostname: String, port: Int) {
+internal fun validateLegacyTarget(hostname: String, port: Int) {
     require(TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null) {
         "targetHostname or targetPort is invalid"
     }
 }
 
-private fun validateLegacyHttp2Input(
+internal fun validateLegacyHttp2Input(
     pseudoHeaders: Map<String, String>,
     headers: Map<String, String>,
     body: String,
@@ -118,7 +115,7 @@ private fun normalizeLegacyPreviewLimit(limit: Int?): Int {
 }
 
 /** Conservatively rejects Java-regex constructs that can create unbounded backtracking. */
-internal fun validateLegacyRegex(regex: String): Pattern {
+internal fun validateLegacyRegex(regex: String, caseSensitive: Boolean = true): Pattern {
     require(regex.isNotEmpty() && regex.length <= MAX_LEGACY_REGEX_CHARS) {
         "regex must contain 1 to $MAX_LEGACY_REGEX_CHARS characters"
     }
@@ -174,10 +171,11 @@ internal fun validateLegacyRegex(regex: String): Pattern {
         }
     }
     require(!escaped && !inClass) { "regex has an incomplete escape or character class" }
-    return Pattern.compile(regex)
+    val flags = if (caseSensitive) 0 else Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CASE
+    return Pattern.compile(regex, flags)
 }
 
-private fun buildHttp2HeaderList(
+internal fun buildHttp2HeaderList(
     pseudoHeaders: Map<String, String>, headers: Map<String, String>
 ): List<HttpHeader> {
     val orderedPseudoHeaderNames = listOf(":scheme", ":method", ":path", ":authority")
@@ -291,12 +289,27 @@ internal fun Server.registerTools(
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
+    val rawHttpActionService = RawHttpActionService(api, config)
     val httpMessageReadService = HttpMessageReadService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
+    mcpStructuredTool<SendRawHttpRequest, RawHttpActionResult>(
+        description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. executionState=uncertain means the request may have been sent and must not be retried automatically.",
+        annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
+    ) {
+        rawHttpActionService.send(this)
+    }
+
+    mcpStructuredTool<RouteRawHttpRequest, RawHttpActionResult>(
+        description = "Routes exactly one bounded raw HTTP/1.1 or HTTP/2 request to one Repeater, Intruder, or Organizer destination after request-routing approval. HTTP/2 Intruder routing is rejected until verified. executionState=uncertain means the tab or item may already exist and must not be retried automatically.",
+        annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
+    ) {
+        rawHttpActionService.route(this)
+    }
+
     mcpTool<SendHttp1Request>(
-        "Issues an HTTP/1.1 request and returns a bounded response preview.",
+        "Deprecated compatibility alias for v3: issues an HTTP/1.1 request. Migrate to send_raw_http_request before v4.",
         HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         validateLegacyTarget(targetHostname, targetPort)
@@ -324,7 +337,7 @@ internal fun Server.registerTools(
     }
 
     mcpTool<SendHttp2Request>(
-        "Issues an HTTP/2 request and returns a bounded response preview. Do not pass headers in requestBody.",
+        "Deprecated compatibility alias for v3: issues an HTTP/2 request. Migrate to send_raw_http_request before v4.",
         HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         validateLegacyTarget(targetHostname, targetPort)
@@ -360,7 +373,7 @@ internal fun Server.registerTools(
     }
 
     mcpTool<CreateRepeaterTab>(
-        "Creates a Repeater tab from a bounded raw HTTP/1.1 request after request-routing approval.",
+        "Deprecated compatibility alias for v3: creates a raw HTTP/1.1 Repeater tab. Migrate to route_raw_http_request before v4.",
         REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         validateLegacyTarget(targetHostname, targetPort)
@@ -378,14 +391,15 @@ internal fun Server.registerTools(
             api,
             RequestRoutingAuditOperation.REPEATER,
         )
-        if (!approved) return@mcpTool
+        if (!approved) return@mcpTool "Repeater routing denied by Burp Suite"
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         if (tabName == null) api.repeater().sendToRepeater(request)
         else api.repeater().sendToRepeater(request, tabName)
+        "Created Repeater tab"
     }
 
     mcpTool<CreateRepeaterTabHttp2>(
-        "Creates a Repeater tab from a bounded HTTP/2 request after request-routing approval.",
+        "Deprecated compatibility alias for v3: creates a raw HTTP/2 Repeater tab. Migrate to route_raw_http_request before v4.",
         REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         validateLegacyTarget(targetHostname, targetPort)
@@ -406,14 +420,15 @@ internal fun Server.registerTools(
             api,
             RequestRoutingAuditOperation.REPEATER,
         )
-        if (!approved) return@mcpTool
+        if (!approved) return@mcpTool "Repeater routing denied by Burp Suite"
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
         if (tabName == null) api.repeater().sendToRepeater(request)
         else api.repeater().sendToRepeater(request, tabName)
+        "Created Repeater tab"
     }
 
     mcpTool<SendToIntruder>(
-        "Creates an Intruder tab from a bounded raw request after request-routing approval; it does not start an attack.",
+        "Deprecated compatibility alias for v3: creates an HTTP/1.1 Intruder tab without starting an attack. Migrate to route_raw_http_request before v4.",
         REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         validateLegacyTarget(targetHostname, targetPort)
@@ -430,10 +445,11 @@ internal fun Server.registerTools(
             api,
             RequestRoutingAuditOperation.INTRUDER,
         )
-        if (!approved) return@mcpTool
+        if (!approved) return@mcpTool "Intruder routing denied by Burp Suite"
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         if (tabName == null) api.intruder().sendToIntruder(request)
         else api.intruder().sendToIntruder(request, tabName)
+        "Created Intruder tab"
     }
 
     mcpTool<TransformData>(
@@ -555,30 +571,63 @@ internal fun Server.registerTools(
             val normalizedOffset = normalizeHistoryOffset(offset)
             val normalizedLimit = normalizeHistoryLimit(limit)
             val normalizedEncoding = normalizeHistoryEncoding(encoding)
+            val expectedProjectId = api.project().id()
+            if (projectId != null && projectId != expectedProjectId) {
+                return@mcpStructuredTool ScannerIssueReadResult(
+                    status = HistoryReadStatus.PROJECT_MISMATCH,
+                    id = id,
+                    field = normalizedField,
+                    projectId = expectedProjectId,
+                    error = "Scanner issue ID belongs to a different Burp project",
+                )
+            }
             if (!checkDataAccessOrDeny(DataAccessType.SCANNER_ISSUES, config, api, "Scanner issue $id")) {
                 return@mcpStructuredTool ScannerIssueReadResult(
                     status = HistoryReadStatus.ACCESS_DENIED,
                     id = id,
                     field = normalizedField,
+                    projectId = expectedProjectId,
                     error = "Scanner issue access denied by Burp Suite",
                 )
             }
-            if (!projectId.matchesCurrentProject(api)) {
+            val issue = api.siteMap().issues().firstOrNull { it.stableHistoryId() == id }
+            val currentProjectId = api.project().id()
+            if (currentProjectId != expectedProjectId) {
                 return@mcpStructuredTool ScannerIssueReadResult(
                     status = HistoryReadStatus.PROJECT_MISMATCH,
                     id = id,
                     field = normalizedField,
-                    error = "Scanner issue ID belongs to a different Burp project",
+                    projectId = currentProjectId,
+                    error = "Burp project changed while the Scanner issue was resolved",
                 )
             }
-            val issue = api.siteMap().issues().firstOrNull { it.stableHistoryId() == id }
-                ?: return@mcpStructuredTool ScannerIssueReadResult(
+            if (issue == null) {
+                return@mcpStructuredTool ScannerIssueReadResult(
                     status = HistoryReadStatus.NOT_FOUND,
                     id = id,
                     field = normalizedField,
+                    projectId = expectedProjectId,
                     error = "Scanner issue $id was not found",
                 )
-            issue.readField(normalizedField, evidenceIndex, normalizedOffset, normalizedLimit, normalizedEncoding)
+            }
+            val result = issue.readField(
+                normalizedField,
+                evidenceIndex,
+                normalizedOffset,
+                normalizedLimit,
+                normalizedEncoding,
+            )
+            val finalProjectId = api.project().id()
+            if (finalProjectId != expectedProjectId) {
+                return@mcpStructuredTool ScannerIssueReadResult(
+                    status = HistoryReadStatus.PROJECT_MISMATCH,
+                    id = id,
+                    field = normalizedField,
+                    projectId = finalProjectId,
+                    error = "Burp project changed while the Scanner issue was read",
+                )
+            }
+            result.copy(projectId = expectedProjectId)
         }
 
         mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
@@ -620,7 +669,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredTool<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal path/content, method, status, MIME type, scope, and response presence. Results are bounded to 50 items. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         httpMessageSearchService.search(this)
@@ -676,7 +725,7 @@ internal fun Server.registerTools(
     }
 
     mcpPaginatedSequenceTool<GetProxyHttpHistory, ProxyHttpRequestResponse>(
-        "Displays bounded Proxy history summaries, optionally matching a conservatively safe regex. Set summariesOnly=false and select one part for a byte-limited preview; use get_http_message for further byte pagination.",
+        "Deprecated for removal in v4: use search_http_messages with sources=[proxy] and optional regex, then get_http_message for detail. This compatibility tool retains bounded offset pagination.",
         mapper = {
             if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
             else Json.encodeToString(
@@ -702,7 +751,7 @@ internal fun Server.registerTools(
     }
 
     mcpPaginatedSequenceTool<GetOrganizerItems, OrganizerItem>(
-        "Displays bounded Organizer summaries, optionally matching a conservatively safe regex. Set summariesOnly=false and select one part for a byte-limited preview; use get_http_message for further byte pagination.",
+        "Deprecated for removal in v4: use search_http_messages with sources=[organizer] and optional regex, then get_http_message for detail. This compatibility tool retains bounded offset pagination.",
         mapper = {
             if (summariesOnly != false && part == null) Json.encodeToString(it.toHistorySummary())
             else Json.encodeToString(
@@ -760,6 +809,15 @@ internal fun Server.registerTools(
         val normalizedOffset = normalizeHistoryOffset(offset)
         val normalizedLimit = normalizeHistoryLimit(limit)
         val normalizedEncoding = normalizeHistoryEncoding(encoding)
+        val expectedProjectId = api.project().id()
+        if (projectId != null && projectId != expectedProjectId) {
+            return@mcpStructuredTool WebSocketMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = id,
+                projectId = expectedProjectId,
+                error = "WebSocket history ID belongs to a different Burp project",
+            )
+        }
         if (!checkDataAccessOrDeny(
                 DataAccessType.WEBSOCKET_HISTORY,
                 config,
@@ -770,25 +828,40 @@ internal fun Server.registerTools(
             return@mcpStructuredTool WebSocketMessageReadResult(
                 status = HistoryReadStatus.ACCESS_DENIED,
                 id = id,
+                projectId = expectedProjectId,
                 error = "WebSocket history access denied by Burp Suite",
             )
         }
 
-        if (!projectId.matchesCurrentProject(api)) {
+        val item = api.proxy().webSocketHistory { it.id() == id }.firstOrNull()
+        val currentProjectId = api.project().id()
+        if (currentProjectId != expectedProjectId) {
             return@mcpStructuredTool WebSocketMessageReadResult(
                 status = HistoryReadStatus.PROJECT_MISMATCH,
                 id = id,
-                error = "WebSocket history ID belongs to a different Burp project",
+                projectId = currentProjectId,
+                error = "Burp project changed while the WebSocket message was resolved",
             )
         }
-
-        val item = api.proxy().webSocketHistory { it.id() == id }.firstOrNull()
-            ?: return@mcpStructuredTool WebSocketMessageReadResult(
+        if (item == null) {
+            return@mcpStructuredTool WebSocketMessageReadResult(
                 status = HistoryReadStatus.NOT_FOUND,
                 id = id,
+                projectId = expectedProjectId,
                 error = "Proxy WebSocket history item $id was not found",
             )
-        item.readPayload(edited == true, normalizedOffset, normalizedLimit, normalizedEncoding)
+        }
+        val result = item.readPayload(edited == true, normalizedOffset, normalizedLimit, normalizedEncoding)
+        val finalProjectId = api.project().id()
+        if (finalProjectId != expectedProjectId) {
+            return@mcpStructuredTool WebSocketMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = id,
+                projectId = finalProjectId,
+                error = "Burp project changed while the WebSocket message was read",
+            )
+        }
+        result.copy(projectId = expectedProjectId)
     }
 
     mcpTool<SetBurpControlState>(

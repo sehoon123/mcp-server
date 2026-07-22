@@ -169,6 +169,7 @@ data class WebSocketMessageMetadata(
 data class WebSocketMessageReadResult(
     val status: HistoryReadStatus,
     val id: Int,
+    val projectId: String? = null,
     val metadata: WebSocketMessageMetadata? = null,
     val content: HistoryContentSlice? = null,
     val error: String? = null,
@@ -179,6 +180,7 @@ data class ScannerIssueReadResult(
     val status: HistoryReadStatus,
     val id: String,
     val field: String,
+    val projectId: String? = null,
     val summary: ScannerIssueSummary? = null,
     val evidenceIndex: Int? = null,
     val content: HistoryContentSlice? = null,

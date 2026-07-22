@@ -9,6 +9,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -119,6 +120,34 @@ class McpToolPolicyTest {
         server.close()
     }
 
+    @Test
+    fun `paginated source status is preserved at nonzero offsets`() = runBlocking {
+        val server = Server(
+            serverInfo = Implementation("test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        server.bindToolRuntimePolicy(configFixture(), RecordingAuditSink())
+        server.mcpPaginatedSequenceTool<PageProbe, String>(description = "page probe") {
+            PaginatedSource.Message("source access denied")
+        }
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "page-session"
+        }
+        val arguments = buildJsonObject {
+            put("count", JsonPrimitive(1))
+            put("offset", JsonPrimitive(10))
+        }
+
+        val result = server.tools.getValue("page_probe").handler(
+            connection,
+            CallToolRequest(CallToolRequestParams("page_probe", arguments)),
+        )
+
+        assertEquals("source access denied", (result.content.single() as TextContent).text)
+        server.unbindToolRuntimePolicy()
+        server.close()
+    }
+
     private fun configFixture(): McpConfig {
         val storage = mutableMapOf<String, Any>()
         val persistedObject = mockk<PersistedObject>().apply {
@@ -140,6 +169,12 @@ class McpToolPolicyTest {
 
     @Serializable
     private data class AuditArgumentProbe(val allowed: String)
+
+    @Serializable
+    private data class PageProbe(
+        override val count: Int = 10,
+        override val offset: Int = 0,
+    ) : Paginated
 
     private class ThrowingAuditSink : McpAuditSink {
         override fun append(record: McpAuditRecord): Unit = error("audit unavailable")
