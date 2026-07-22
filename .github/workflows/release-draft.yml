@@ -278,5 +278,7 @@ jobs:
           fi
           gh release upload "$RELEASE_TAG" "$stage"/* --clobber
 
-          gh api "repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" \
-            --jq '{tag_name,draft,prerelease,target_commitish,assets:[.assets[].name]}'
+          # Draft releases have no tag ref yet, so GitHub's release-by-tag REST endpoint returns 404.
+          gh release view "$RELEASE_TAG" \
+            --json tagName,isDraft,isPrerelease,targetCommitish,assets \
+            --jq '{tag_name:.tagName,draft:.isDraft,prerelease:.isPrerelease,target_commitish:.targetCommitish,assets:[.assets[].name]}'
