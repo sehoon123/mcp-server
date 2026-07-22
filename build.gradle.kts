@@ -260,6 +260,8 @@ application {
 tasks {
     test {
         useJUnitPlatform()
+        // Mock-heavy Montoya integration suites can exceed Gradle's 512 MiB worker default on clean CI runners.
+        maxHeapSize = "1g"
         systemProperty("file.encoding", "UTF-8")
         jvmArgs("-javaagent:${byteBuddyAgent.singleFile.absolutePath}")
 
