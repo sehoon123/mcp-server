@@ -875,11 +875,15 @@ class KtorServerManager internal constructor(
                     serverInfo = Implementation("burp-suite", serverVersion),
                     options = ServerOptions(
                         capabilities = ServerCapabilities(
-                            tools = ServerCapabilities.Tools(listChanged = false)
+                            tools = ServerCapabilities.Tools(listChanged = false),
+                            resources = ServerCapabilities.Resources(listChanged = false, subscribe = false),
+                            prompts = ServerCapabilities.Prompts(listChanged = false),
                         )
                     )
                 )
                 newMcpServer.registerTools(api, config, toolServices, auditSink, sessionApprovals)
+                newMcpServer.registerMcpResources(api, config, ::diagnostics)
+                newMcpServer.registerMcpPrompts(api)
                 mcpServer = newMcpServer
 
                 val environment = applicationEnvironment()

@@ -8,7 +8,18 @@ import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.StreamableHttpClientTransport
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.EmptyResult
+import io.modelcontextprotocol.kotlin.sdk.types.GetPromptRequest
+import io.modelcontextprotocol.kotlin.sdk.types.GetPromptRequestParams
+import io.modelcontextprotocol.kotlin.sdk.types.GetPromptResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ListResourceTemplatesRequest
+import io.modelcontextprotocol.kotlin.sdk.types.ListResourceTemplatesResult
+import io.modelcontextprotocol.kotlin.sdk.types.Prompt
+import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceRequest
+import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceRequestParams
+import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceResult
+import io.modelcontextprotocol.kotlin.sdk.types.Resource
+import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import org.slf4j.LoggerFactory
 
@@ -46,6 +57,21 @@ class TestStreamableHttpMcpClient(
     suspend fun ping(): EmptyResult = mcp.ping()
 
     suspend fun listTools(): List<Tool> = mcp.listTools().tools
+
+    fun serverCapabilities(): ServerCapabilities? = mcp.serverCapabilities
+
+    suspend fun listResources(): List<Resource> = mcp.listResources().resources
+
+    suspend fun listResourceTemplates(): ListResourceTemplatesResult =
+        mcp.listResourceTemplates(ListResourceTemplatesRequest())
+
+    suspend fun readResource(uri: String): ReadResourceResult =
+        mcp.readResource(ReadResourceRequest(ReadResourceRequestParams(uri)))
+
+    suspend fun listPrompts(): List<Prompt> = mcp.listPrompts().prompts
+
+    suspend fun getPrompt(name: String, arguments: Map<String, String> = emptyMap()): GetPromptResult =
+        mcp.getPrompt(GetPromptRequest(GetPromptRequestParams(name, arguments)))
 
     suspend fun callTool(toolName: String, arguments: Map<String, Any>): CallToolResult? =
         mcp.callTool(toolName, arguments)

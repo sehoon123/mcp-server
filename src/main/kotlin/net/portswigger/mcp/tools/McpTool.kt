@@ -8,6 +8,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ContentBlock
 import io.modelcontextprotocol.kotlin.sdk.types.ProgressNotification
 import io.modelcontextprotocol.kotlin.sdk.types.ProgressNotificationParams
 import io.modelcontextprotocol.kotlin.sdk.types.ProgressToken
+import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
@@ -129,6 +130,41 @@ internal fun Server.bindToolRuntimePolicy(
 
 internal fun Server.unbindToolRuntimePolicy() {
     toolRuntimePolicies.remove(this)
+}
+
+/** Applies the same bounded execution, audit, and session-approval context to native resource reads as tool calls. */
+internal suspend fun Server.executeRegisteredResource(
+    connection: ClientConnection,
+    resourceName: String,
+    argumentKeys: Collection<String> = emptyList(),
+    onError: (String) -> ReadResourceResult,
+    execute: suspend () -> ReadResourceResult,
+): ReadResourceResult {
+    val policy = toolRuntimePolicies[this]
+    val sessionId = runCatching { connection.sessionId }.getOrNull()
+    val invocation = newToolAuditInvocation(
+        sink = policy?.auditSink ?: NoOpMcpAuditSink,
+        sessionId = sessionId ?: "unknown",
+        tool = "resource:$resourceName",
+        readOnly = true,
+        argumentKeys = argumentKeys,
+    )
+    val sessionApprovalContext = sessionId?.let { policy?.sessionApprovals?.contextFor(it) }
+    return try {
+        val executionContext = sessionApprovalContext?.let { invocation + it } ?: invocation
+        val result = withContext(executionContext) {
+            withContext(toolExecutionDispatcher) { execute() }
+        }
+        invocation.complete("completed")
+        result
+    } catch (e: CancellationException) {
+        invocation.complete("cancelled")
+        throw e
+    } catch (e: Exception) {
+        val summary = safeExceptionSummary(e)
+        invocation.complete("error", e)
+        onError(summary)
+    }
 }
 
 @PublishedApi

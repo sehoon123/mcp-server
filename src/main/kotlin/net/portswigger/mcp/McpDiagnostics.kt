@@ -1,5 +1,6 @@
 package net.portswigger.mcp
 
+import kotlinx.serialization.Serializable
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -7,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 internal const val PRODUCTION_MCP_PROTOCOL_VERSION = "2025-11-25"
 
+@Serializable
 data class McpDiagnosticsSnapshot(
     val state: String,
     val serverVersion: String,

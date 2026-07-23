@@ -6,7 +6,6 @@ import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.R
 import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse
-import burp.api.montoya.scanner.audit.issues.AuditIssue
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
@@ -27,7 +26,7 @@ import java.awt.KeyboardFocusManager
 import java.util.regex.Pattern
 import javax.swing.JTextArea
 
-private suspend fun checkDataAccessOrDeny(
+internal suspend fun checkDataAccessOrDeny(
     accessType: DataAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
 ): Boolean {
     val allowed = DataAccessSecurity.checkDataAccessPermission(accessType, config)
@@ -51,7 +50,6 @@ private const val MAX_CONFIGURATION_JSON_CHARS = 1024 * 1024
 private const val MAX_EDITOR_CONTENT_CHARS = 1024 * 1024
 private const val MAX_EDITOR_PREVIEW_CHARS = 32 * 1024
 private const val MAX_SAFE_REGEX_CHARS = 512
-private val SCANNER_ISSUE_ID_REGEX = Regex("^issue_[0-9a-f]{32}$")
 
 internal fun validateRawTarget(hostname: String, port: Int) {
     require(TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null) {
@@ -258,6 +256,7 @@ internal fun Server.registerTools(
     val rawHttpActionService = RawHttpActionService(api, config)
     val httpMessageReadService = HttpMessageReadService(api, config)
     val webSocketMessageSearchService = WebSocketMessageSearchService(api, config)
+    val webSocketMessageReadService = WebSocketMessageReadService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
@@ -675,6 +674,7 @@ internal fun Server.registerTools(
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
         val scannerIssueSearchService = ScannerIssueSearchService(api, config)
+        val scannerIssueReadService = ScannerIssueReadService(api, config)
         val collaboratorToolService = services.collaborator
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
             description = "Reads Scanner issues. Existing offset/count calls retain their legacy text format with a 512 KiB safety cap. Set cursorMode=true, or supply severity/confidence/host/name filters, for bounded compact summaries with a signed project-bound snapshot cursor; cursor mode never serializes complete evidence messages.",
@@ -687,73 +687,7 @@ internal fun Server.registerTools(
             description = "Reads one Scanner issue by its stable issue ID and required projectId, rechecking the project after lookup and bounded content materialization. Select metadata, detail, remediation, evidence_request, or evidence_response. Evidence content is byte-paginated and can be returned as text or base64.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
-            require(id.matches(SCANNER_ISSUE_ID_REGEX)) {
-                "id must be a stable Scanner issue ID returned by Burp MCP"
-            }
-            require(projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)) {
-                "projectId is invalid"
-            }
-            val normalizedField = normalizeScannerIssueField(field)
-            val normalizedOffset = normalizeHistoryOffset(offset)
-            val normalizedLimit = normalizeHistoryLimit(limit)
-            val normalizedEncoding = normalizeHistoryEncoding(encoding)
-            val expectedProjectId = api.project().id()
-            if (projectId != expectedProjectId) {
-                return@mcpStructuredTool ScannerIssueReadResult(
-                    status = HistoryReadStatus.PROJECT_MISMATCH,
-                    id = id,
-                    field = normalizedField,
-                    projectId = expectedProjectId,
-                    error = "Scanner issue ID belongs to a different Burp project",
-                )
-            }
-            if (!checkDataAccessOrDeny(DataAccessType.SCANNER_ISSUES, config, api, "Scanner issue $id")) {
-                return@mcpStructuredTool ScannerIssueReadResult(
-                    status = HistoryReadStatus.ACCESS_DENIED,
-                    id = id,
-                    field = normalizedField,
-                    projectId = expectedProjectId,
-                    error = "Scanner issue access denied by Burp Suite",
-                )
-            }
-            val issue = api.siteMap().issues().firstOrNull { it.stableHistoryId() == id }
-            val currentProjectId = api.project().id()
-            if (currentProjectId != expectedProjectId) {
-                return@mcpStructuredTool ScannerIssueReadResult(
-                    status = HistoryReadStatus.PROJECT_MISMATCH,
-                    id = id,
-                    field = normalizedField,
-                    projectId = currentProjectId,
-                    error = "Burp project changed while the Scanner issue was resolved",
-                )
-            }
-            if (issue == null) {
-                return@mcpStructuredTool ScannerIssueReadResult(
-                    status = HistoryReadStatus.NOT_FOUND,
-                    id = id,
-                    field = normalizedField,
-                    projectId = expectedProjectId,
-                    error = "Scanner issue $id was not found",
-                )
-            }
-            val result = issue.readField(
-                normalizedField,
-                evidenceIndex,
-                normalizedOffset,
-                normalizedLimit,
-                normalizedEncoding,
-            )
-            val finalProjectId = api.project().id()
-            if (finalProjectId != expectedProjectId) {
-                return@mcpStructuredTool ScannerIssueReadResult(
-                    status = HistoryReadStatus.PROJECT_MISMATCH,
-                    id = id,
-                    field = normalizedField,
-                    projectId = finalProjectId,
-                    error = "Burp project changed while the Scanner issue was read",
-                )
-            }
-            result.copy(projectId = expectedProjectId)
+            scannerIssueReadService.read(this)
         }
 
         mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
@@ -861,66 +795,7 @@ internal fun Server.registerTools(
         description = "Reads one Proxy WebSocket payload by its stable Burp ID and required projectId. The project is rechecked after lookup and bounded content materialization. Content is byte-paginated and can be returned as text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
-        require(id >= 0) { "id must be non-negative" }
-        require(projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)) {
-            "projectId is invalid"
-        }
-        val normalizedOffset = normalizeHistoryOffset(offset)
-        val normalizedLimit = normalizeHistoryLimit(limit)
-        val normalizedEncoding = normalizeHistoryEncoding(encoding)
-        val expectedProjectId = api.project().id()
-        if (projectId != expectedProjectId) {
-            return@mcpStructuredTool WebSocketMessageReadResult(
-                status = HistoryReadStatus.PROJECT_MISMATCH,
-                id = id,
-                projectId = expectedProjectId,
-                error = "WebSocket history ID belongs to a different Burp project",
-            )
-        }
-        if (!checkDataAccessOrDeny(
-                DataAccessType.WEBSOCKET_HISTORY,
-                config,
-                api,
-                "WebSocket history item $id",
-            )
-        ) {
-            return@mcpStructuredTool WebSocketMessageReadResult(
-                status = HistoryReadStatus.ACCESS_DENIED,
-                id = id,
-                projectId = expectedProjectId,
-                error = "WebSocket history access denied by Burp Suite",
-            )
-        }
-
-        val item = api.proxy().webSocketHistory { it.id() == id }.firstOrNull()
-        val currentProjectId = api.project().id()
-        if (currentProjectId != expectedProjectId) {
-            return@mcpStructuredTool WebSocketMessageReadResult(
-                status = HistoryReadStatus.PROJECT_MISMATCH,
-                id = id,
-                projectId = currentProjectId,
-                error = "Burp project changed while the WebSocket message was resolved",
-            )
-        }
-        if (item == null) {
-            return@mcpStructuredTool WebSocketMessageReadResult(
-                status = HistoryReadStatus.NOT_FOUND,
-                id = id,
-                projectId = expectedProjectId,
-                error = "Proxy WebSocket history item $id was not found",
-            )
-        }
-        val result = item.readPayload(edited == true, normalizedOffset, normalizedLimit, normalizedEncoding)
-        val finalProjectId = api.project().id()
-        if (finalProjectId != expectedProjectId) {
-            return@mcpStructuredTool WebSocketMessageReadResult(
-                status = HistoryReadStatus.PROJECT_MISMATCH,
-                id = id,
-                projectId = finalProjectId,
-                error = "Burp project changed while the WebSocket message was read",
-            )
-        }
-        result.copy(projectId = expectedProjectId)
+        webSocketMessageReadService.read(this)
     }
 
     mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(

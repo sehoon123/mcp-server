@@ -8,10 +8,13 @@ import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceResult
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -86,6 +89,57 @@ class McpToolPolicyTest {
             CallToolRequest(CallToolRequestParams("safe_read")),
         )
         assertFalse(resultWithBrokenAudit.isError == true, "Audit failure must not change a completed tool result")
+
+        server.unbindToolRuntimePolicy()
+        server.close()
+    }
+
+    @Test
+    fun `resource execution shares session approval audit and cancellation policy`() = runBlocking {
+        val audit = RecordingAuditSink()
+        val approvals = McpSessionApprovalRegistry(1)
+        assertTrue(approvals.activate("resource-session"))
+        val server = Server(
+            serverInfo = Implementation("test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(resources = ServerCapabilities.Resources())),
+        )
+        server.bindToolRuntimePolicy(configFixture(), audit, approvals)
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "resource-session"
+        }
+        val errorResult: (String) -> ReadResourceResult = { message ->
+            ReadResourceResult(listOf(TextResourceContents(message, "burp://error", "application/json")))
+        }
+
+        val result = server.executeRegisteredResource(
+            connection = connection,
+            resourceName = "policy_probe",
+            argumentKeys = listOf("projectId", "id"),
+            onError = errorResult,
+        ) {
+            assertFalse(isCurrentSessionApproved(McpSessionApproval.HTTP_HISTORY))
+            grantCurrentSessionApproval(McpSessionApproval.HTTP_HISTORY)
+            ReadResourceResult(listOf(TextResourceContents("ok", "burp://probe", "application/json")))
+        }
+        assertEquals("ok", (result.contents.single() as TextResourceContents).text)
+        assertTrue(approvals.isGranted("resource-session", McpSessionApproval.HTTP_HISTORY))
+
+        var cancellationPropagated = false
+        try {
+            server.executeRegisteredResource(
+                connection = connection,
+                resourceName = "cancel_probe",
+                onError = errorResult,
+            ) {
+                throw CancellationException("cancel test")
+            }
+        } catch (_: CancellationException) {
+            cancellationPropagated = true
+        }
+        assertTrue(cancellationPropagated)
+        assertEquals(listOf("completed", "cancelled"), audit.records.map { it.outcome })
+        assertEquals("resource:policy_probe", audit.records.first().tool)
+        assertEquals(listOf("id", "projectId"), audit.records.first().argumentKeys)
 
         server.unbindToolRuntimePolicy()
         server.close()
