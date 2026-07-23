@@ -23,6 +23,7 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.asInputSchema
 import net.portswigger.mcp.schema.asOutputSchema
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.newToolAuditInvocation
 import net.portswigger.mcp.security.safeExceptionSummary
@@ -113,12 +114,17 @@ private val wordSeparator = Regex("[\\s-]+")
 private data class ToolRuntimePolicy(
     val config: McpConfig,
     val auditSink: McpAuditSink,
+    val sessionApprovals: McpSessionApprovalRegistry,
 )
 
 private val toolRuntimePolicies = Collections.synchronizedMap(WeakHashMap<Server, ToolRuntimePolicy>())
 
-internal fun Server.bindToolRuntimePolicy(config: McpConfig, auditSink: McpAuditSink) {
-    toolRuntimePolicies[this] = ToolRuntimePolicy(config, auditSink)
+internal fun Server.bindToolRuntimePolicy(
+    config: McpConfig,
+    auditSink: McpAuditSink,
+    sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(32),
+) {
+    toolRuntimePolicies[this] = ToolRuntimePolicy(config, auditSink, sessionApprovals)
 }
 
 internal fun Server.unbindToolRuntimePolicy() {
@@ -136,13 +142,15 @@ internal suspend fun Server.executeRegisteredTool(
 ): CallToolResult {
     val policy = toolRuntimePolicies[this]
     val readOnly = annotations?.readOnlyHint == true
+    val sessionId = runCatching { connection.sessionId }.getOrNull()
     val invocation = newToolAuditInvocation(
         sink = policy?.auditSink ?: NoOpMcpAuditSink,
-        sessionId = runCatching { connection.sessionId }.getOrDefault("unknown"),
+        sessionId = sessionId ?: "unknown",
         tool = toolName,
         readOnly = readOnly,
         argumentKeys = request.params.arguments?.keys.orEmpty().filter(declaredArgumentKeys::contains),
     )
+    val sessionApprovalContext = sessionId?.let { policy?.sessionApprovals?.contextFor(it) }
     return try {
         if (policy?.config?.emergencyReadOnlyMode == true && !readOnly) {
             invocation.complete("blocked_read_only")
@@ -151,7 +159,8 @@ internal suspend fun Server.executeRegisteredTool(
                 isError = true,
             )
         } else {
-            val result = withContext(invocation) { execute() }
+            val executionContext = sessionApprovalContext?.let { invocation + it } ?: invocation
+            val result = withContext(executionContext) { execute() }
             invocation.complete(if (result.isError == true) "error" else "completed")
             result
         }

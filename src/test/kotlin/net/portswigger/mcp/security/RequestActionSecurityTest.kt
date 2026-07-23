@@ -9,6 +9,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
@@ -98,7 +99,7 @@ class RequestActionSecurityTest {
         try {
             config.requireRequestActionApproval = true
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
-            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 1
+            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 2
 
             val approval = async(start = CoroutineStart.UNDISPATCHED) {
                 SwingRequestActionApprovalHandler().requestApproval(
@@ -124,6 +125,66 @@ class RequestActionSecurityTest {
     }
 
     @Test
+    fun `Allow for This Session bypasses routing prompts only for the granting session`() = runBlocking {
+        val approvals = McpSessionApprovalRegistry(2)
+        assertTrue(approvals.activate("routing-session"))
+        assertTrue(approvals.activate("other-session"))
+        val queuedAction = slot<Runnable>()
+        val options = slot<Array<String>>()
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            config.requireRequestActionApproval = true
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 1
+            val approval = async(start = CoroutineStart.UNDISPATCHED) {
+                withContext(requireNotNull(approvals.contextFor("routing-session"))) {
+                    SwingRequestActionApprovalHandler().requestApproval(
+                        "create a Repeater tab",
+                        "proxy:1",
+                        "example.test:443",
+                        "none",
+                        "GET / HTTP/1.1\r\n\r\n",
+                        config,
+                        api,
+                    )
+                }
+            }
+            queuedAction.captured.run()
+
+            assertTrue(approval.await())
+            assertTrue(options.captured.contains("Allow for This Session"))
+            assertTrue(config.requireRequestActionApproval)
+            assertTrue(approvals.isGranted("routing-session", McpSessionApproval.REQUEST_ROUTING))
+            assertFalse(approvals.isGranted("other-session", McpSessionApproval.REQUEST_ROUTING))
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+
+        val handler = mockk<RequestActionApprovalHandler>()
+        RequestActionSecurity.approvalHandler = handler
+        coEvery { handler.requestApproval(any(), any(), any(), any(), any(), any(), any()) } returns false
+        withContext(requireNotNull(approvals.contextFor("routing-session"))) {
+            assertTrue(
+                RequestActionSecurity.checkPermission(
+                    "send to Organizer", "proxy:2", "other.test:443", "none", "GET / HTTP/1.1\r\n\r\n",
+                    config, api,
+                )
+            )
+        }
+        withContext(requireNotNull(approvals.contextFor("other-session"))) {
+            assertFalse(
+                RequestActionSecurity.checkPermission(
+                    "send to Organizer", "proxy:2", "other.test:443", "none", "GET / HTTP/1.1\r\n\r\n",
+                    config, api,
+                )
+            )
+        }
+        coVerify(exactly = 1) { handler.requestApproval(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `cancellation while the dialog is open cannot enable Always Allow`() = runBlocking {
         val queuedAction = slot<Runnable>()
         lateinit var approval: Deferred<Boolean>
@@ -134,7 +195,7 @@ class RequestActionSecurityTest {
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
             every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } answers {
                 approval.cancel()
-                1
+                2
             }
 
             approval = async(start = CoroutineStart.UNDISPATCHED) {

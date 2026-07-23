@@ -19,6 +19,10 @@ import kotlinx.serialization.json.buildJsonObject
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.McpAuditRecord
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.McpSessionApproval
+import net.portswigger.mcp.security.McpSessionApprovalRegistry
+import net.portswigger.mcp.security.grantCurrentSessionApproval
+import net.portswigger.mcp.security.isCurrentSessionApproved
 import net.portswigger.mcp.security.recordCurrentToolApproval
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -116,6 +120,86 @@ class McpToolPolicyTest {
         )
 
         assertEquals(listOf("allowed"), audit.records.single().argumentKeys)
+        server.unbindToolRuntimePolicy()
+        server.close()
+    }
+
+    @Test
+    fun `tool execution receives only the approval state for its actual MCP session`() = runBlocking {
+        val config = configFixture()
+        val audit = RecordingAuditSink()
+        val approvals = McpSessionApprovalRegistry(2)
+        assertTrue(approvals.activate("approval-session"))
+        assertTrue(approvals.activate("other-session"))
+        val server = Server(
+            serverInfo = Implementation("test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        server.bindToolRuntimePolicy(config, audit, approvals)
+        server.mcpTool(
+            name = "approval_context_probe",
+            description = "approval context probe",
+            annotations = READ_ONLY_TOOL_ANNOTATIONS,
+        ) {
+            if (!isCurrentSessionApproved(McpSessionApproval.OUTBOUND_HTTP)) {
+                grantCurrentSessionApproval(McpSessionApproval.OUTBOUND_HTTP)
+            }
+            assertTrue(isCurrentSessionApproved(McpSessionApproval.OUTBOUND_HTTP))
+            "ok"
+        }
+        val approvedConnection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "approval-session"
+        }
+        val otherConnection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "other-session"
+        }
+
+        server.tools.getValue("approval_context_probe").handler(
+            approvedConnection,
+            CallToolRequest(CallToolRequestParams("approval_context_probe")),
+        )
+        assertTrue(approvals.isGranted("approval-session", McpSessionApproval.OUTBOUND_HTTP))
+        assertFalse(approvals.isGranted("other-session", McpSessionApproval.OUTBOUND_HTTP))
+
+        server.tools.getValue("approval_context_probe").handler(
+            otherConnection,
+            CallToolRequest(CallToolRequestParams("approval_context_probe")),
+        )
+        assertTrue(approvals.isGranted("other-session", McpSessionApproval.OUTBOUND_HTTP))
+        assertEquals(listOf("session_grant", "session_grant"), audit.records.map { it.approvals.single().decision })
+
+        server.unbindToolRuntimePolicy()
+        server.close()
+    }
+
+    @Test
+    fun `unavailable connection session ID cannot inherit a synthetic session approval`() = runBlocking {
+        val approvals = McpSessionApprovalRegistry(1)
+        assertTrue(approvals.activate("unknown"))
+        requireNotNull(approvals.contextFor("unknown")).grant(McpSessionApproval.OUTBOUND_HTTP)
+        val server = Server(
+            serverInfo = Implementation("test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        server.bindToolRuntimePolicy(configFixture(), RecordingAuditSink(), approvals)
+        server.mcpTool(
+            name = "missing_session_context_probe",
+            description = "missing session context probe",
+            annotations = READ_ONLY_TOOL_ANNOTATIONS,
+        ) {
+            assertFalse(isCurrentSessionApproved(McpSessionApproval.OUTBOUND_HTTP))
+            "ok"
+        }
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } throws IllegalStateException("session unavailable")
+        }
+
+        val result = server.tools.getValue("missing_session_context_probe").handler(
+            connection,
+            CallToolRequest(CallToolRequestParams("missing_session_context_probe")),
+        )
+
+        assertFalse(result.isError == true)
         server.unbindToolRuntimePolicy()
         server.close()
     }

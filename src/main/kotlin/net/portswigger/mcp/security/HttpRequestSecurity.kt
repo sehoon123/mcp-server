@@ -20,12 +20,22 @@ class SwingUserApprovalHandler : UserApprovalHandler {
             appendLine()
             appendLine("Target: ${TargetValidation.formatTarget(hostname, port)}")
             appendLine()
+            appendLine(
+                "Allow All for This Session permits requests to any syntactically valid destination until this " +
+                    "MCP session ends or session approvals are reset."
+            )
         }
         val result = SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(
                 findBurpFrame(),
                 message,
-                arrayOf("Allow Once", "Always Allow Host", "Always Allow Host:Port", "Deny"),
+                arrayOf(
+                    "Allow Once",
+                    "Allow All for This Session",
+                    "Always Allow Host",
+                    "Always Allow Host:Port",
+                    "Deny",
+                ),
                 requestContent,
                 api,
             )
@@ -33,10 +43,14 @@ class SwingUserApprovalHandler : UserApprovalHandler {
         return when (result) {
             0 -> true
             1 -> {
-                config.addAutoApproveTarget(hostname)
+                grantCurrentSessionApproval(McpSessionApproval.OUTBOUND_HTTP)
                 true
             }
             2 -> {
+                config.addAutoApproveTarget(hostname)
+                true
+            }
+            3 -> {
                 config.addAutoApproveTarget(TargetValidation.formatTarget(hostname, port))
                 true
             }
@@ -68,6 +82,10 @@ object HttpRequestSecurity {
             recordCurrentToolApproval("http_request", "persisted_allow")
             return true
         }
+        if (isCurrentSessionApproved(McpSessionApproval.OUTBOUND_HTTP)) {
+            recordCurrentToolApproval("http_request", "session_allow")
+            return true
+        }
 
         val approved = approvalHandler.requestApproval(hostname, port, config, requestContent, api)
         recordCurrentToolApproval("http_request", if (approved) "user_allow" else "user_deny")
@@ -92,6 +110,10 @@ object HttpRequestSecurity {
         }
         if (isAutoApproved(hostname, port, config)) {
             recordCurrentToolApproval("http_request", "persisted_allow")
+            return true
+        }
+        if (isCurrentSessionApproved(McpSessionApproval.OUTBOUND_HTTP)) {
+            recordCurrentToolApproval("http_request", "session_allow")
             return true
         }
         val approved = approvalHandler.requestApproval(hostname, port, config, requestContent(), api)

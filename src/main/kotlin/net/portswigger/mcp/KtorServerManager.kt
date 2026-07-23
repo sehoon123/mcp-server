@@ -60,6 +60,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import net.portswigger.mcp.config.ConfigValidation
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.tools.ToolServices
@@ -112,6 +113,7 @@ internal fun Application.configureMcpHttpEndpoint(
     bearerToken: String? = null,
     runtimeMetrics: McpRuntimeMetrics? = null,
     maxSessions: Int = MCP_MAX_SESSIONS,
+    sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(maxSessions),
     sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
     sseClientLivenessTimeoutMillis: Long = MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS,
 ) {
@@ -206,7 +208,12 @@ internal fun Application.configureMcpHttpEndpoint(
         }
     }
 
-    val sessions = BoundedMcpSessionRegistry(maxSessions, MCP_SESSION_IDLE_MILLIS, runtimeMetrics)
+    val sessions = BoundedMcpSessionRegistry(
+        maxSessions,
+        MCP_SESSION_IDLE_MILLIS,
+        runtimeMetrics,
+        sessionApprovals,
+    )
     monitor.subscribe(ApplicationStopping) {
         runtimeMetrics?.markStopping()
         runBlocking {
@@ -533,6 +540,7 @@ internal class BoundedMcpSessionRegistry(
     maxSessions: Int,
     private val idleMillis: Long,
     private val runtimeMetrics: McpRuntimeMetrics? = null,
+    private val sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(maxSessions),
 ) {
     private val lock = Any()
     private val slots = Semaphore(maxSessions, true)
@@ -550,7 +558,9 @@ internal class BoundedMcpSessionRegistry(
                 .minByOrNull { (_, order) -> order }
                 ?.first
                 ?: return null
-            displaced.sessionId()?.let { sessionId -> sessions.remove(sessionId, displaced) }
+            displaced.sessionId()?.let { sessionId ->
+                if (sessions.remove(sessionId, displaced)) sessionApprovals.remove(sessionId)
+            }
             entries.remove(displaced)
             displaced.releaseSlot()
             runtimeMetrics?.onPressureEvicted()
@@ -567,11 +577,19 @@ internal class BoundedMcpSessionRegistry(
         val accepted = synchronized(lock) {
             if (closed || sessionId.isBlank() || sessionId.length > 128 || sessions.containsKey(sessionId)) {
                 false
+            } else if (!sessionApprovals.activate(sessionId)) {
+                false
             } else {
-                entry.activate(sessionId)
-                sessions[sessionId] = entry
-                updateMetricsLocked()
-                true
+                val serverSession = entry.attachedServerSession()
+                if (serverSession != null && !sessionApprovals.attachServerSession(sessionId, serverSession.sessionId)) {
+                    sessionApprovals.remove(sessionId)
+                    false
+                } else {
+                    entry.activate(sessionId)
+                    sessions[sessionId] = entry
+                    updateMetricsLocked()
+                    true
+                }
             }
         }
         if (!accepted) {
@@ -612,7 +630,9 @@ internal class BoundedMcpSessionRegistry(
 
     fun remove(entry: ManagedMcpSession) {
         synchronized(lock) {
-            entry.sessionId()?.let { id -> sessions.remove(id, entry) }
+            entry.sessionId()?.let { id ->
+                if (sessions.remove(id, entry)) sessionApprovals.remove(id)
+            }
             entries.remove(entry)
             updateMetricsLocked()
         }
@@ -635,7 +655,9 @@ internal class BoundedMcpSessionRegistry(
         val expired = synchronized(lock) {
             val stale = sessions.values.filter { it.isIdle(now, idleMillis) }
             stale.forEach { entry ->
-                entry.sessionId()?.let { sessions.remove(it, entry) }
+                entry.sessionId()?.let { sessionId ->
+                    if (sessions.remove(sessionId, entry)) sessionApprovals.remove(sessionId)
+                }
                 entries.remove(entry)
             }
             updateMetricsLocked()
@@ -660,6 +682,7 @@ internal class BoundedMcpSessionRegistry(
             closed = true
             val snapshot = entries.toList()
             sessions.clear()
+            sessionApprovals.clearSessions()
             entries.clear()
             updateMetricsLocked()
             snapshot
@@ -703,6 +726,9 @@ internal class ManagedMcpSession(
         check(serverSession == null) { "MCP server session is already attached" }
         serverSession = session
     }
+
+    @Synchronized
+    fun attachedServerSession(): ServerSession? = serverSession
 
     @Synchronized
     fun acquire() {
@@ -817,6 +843,7 @@ class KtorServerManager internal constructor(
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
 
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
+    private val sessionApprovals = McpSessionApprovalRegistry(MCP_MAX_SESSIONS)
     @Volatile
     private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
     private var server: EmbeddedServer<*, *>? = null
@@ -852,7 +879,7 @@ class KtorServerManager internal constructor(
                         )
                     )
                 )
-                newMcpServer.registerTools(api, config, toolServices, auditSink)
+                newMcpServer.registerTools(api, config, toolServices, auditSink, sessionApprovals)
                 mcpServer = newMcpServer
 
                 val environment = applicationEnvironment()
@@ -872,6 +899,7 @@ class KtorServerManager internal constructor(
                         requestedPort,
                         config.localBearerToken,
                         metrics,
+                        sessionApprovals = sessionApprovals,
                     )
                 }
                 server = newEngine
@@ -914,7 +942,15 @@ class KtorServerManager internal constructor(
         }
     }
 
-    override fun diagnostics(): McpDiagnosticsSnapshot = runtimeMetrics.snapshot()
+    override fun diagnostics(): McpDiagnosticsSnapshot {
+        val approvalSummary = sessionApprovals.summary()
+        return runtimeMetrics.snapshot().copy(
+            sessionsWithApprovals = approvalSummary.sessionsWithApprovals,
+            sessionApprovalGrants = approvalSummary.approvalGrants,
+        )
+    }
+
+    internal fun clearSessionApprovals(): Int = sessionApprovals.clearApprovals()
 
     private fun stopCurrentServer() {
         val currentEngine = server
@@ -922,18 +958,22 @@ class KtorServerManager internal constructor(
         try {
             currentEngine?.stop(1000, 5000)
         } finally {
-            val currentMcpServer = mcpServer
-            mcpServer = null
-            if (currentMcpServer != null) {
-                currentMcpServer.unbindToolRuntimePolicy()
-                try {
-                    runBlocking {
-                        withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
+            try {
+                val currentMcpServer = mcpServer
+                mcpServer = null
+                if (currentMcpServer != null) {
+                    currentMcpServer.unbindToolRuntimePolicy()
+                    try {
+                        runBlocking {
+                            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
+                        }
+                    } catch (e: CancellationException) {
+                        if (e.hasNonCancellationCause()) throw e
+                        // Closing an MCP server cancels its own transport jobs. That is successful shutdown, not a failure.
                     }
-                } catch (e: CancellationException) {
-                    if (e.hasNonCancellationCause()) throw e
-                    // Closing an MCP server cancels its own transport jobs. That is successful shutdown, not a failure.
                 }
+            } finally {
+                sessionApprovals.clearSessions()
             }
         }
     }

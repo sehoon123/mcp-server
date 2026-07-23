@@ -18,6 +18,7 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.SensitiveActionAuditOperation
 import net.portswigger.mcp.security.SensitiveActionSecurity
@@ -244,8 +245,9 @@ internal fun Server.registerTools(
     config: McpConfig,
     services: ToolServices,
     auditSink: McpAuditSink = NoOpMcpAuditSink,
+    sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(32),
 ) {
-    bindToolRuntimePolicy(config, auditSink)
+    bindToolRuntimePolicy(config, auditSink, sessionApprovals)
     val httpMessageSearchService = HttpMessageSearchService(
         api = api,
         config = config,

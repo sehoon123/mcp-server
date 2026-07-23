@@ -33,6 +33,10 @@ internal class SwingScopeActionApprovalHandler : ScopeActionApprovalHandler {
             appendLine()
             appendLine("Review every normalized URL before allowing this Target scope change.")
             appendLine()
+            appendLine(
+                "Allow for This Session permits later include and exclude changes only until this MCP session ends " +
+                    "or session approvals are reset."
+            )
             append(
                 "Always Allow disables future include and exclude prompts until " +
                     "Require approval for Target scope changes is re-enabled in MCP settings."
@@ -42,7 +46,7 @@ internal class SwingScopeActionApprovalHandler : ScopeActionApprovalHandler {
             Dialogs.showOptionDialog(
                 parent = findBurpFrame(),
                 message = message,
-                options = arrayOf("Allow Once", "Always Allow", "Deny"),
+                options = arrayOf("Allow Once", "Allow for This Session", "Always Allow", "Deny"),
                 requestContent = reviewContent,
                 api = null,
             )
@@ -50,6 +54,10 @@ internal class SwingScopeActionApprovalHandler : ScopeActionApprovalHandler {
         return when (result) {
             0 -> true
             1 -> {
+                grantCurrentSessionApproval(McpSessionApproval.SCOPE_CHANGES)
+                true
+            }
+            2 -> {
                 val persisted = runCatching { config.requireScopeChangeApproval = false }
                 runCatching {
                     if (persisted.isSuccess) {
@@ -96,6 +104,10 @@ internal object ScopeActionSecurity {
         }
         if (!config.requireScopeChangeApproval) {
             recordCurrentToolApproval(operation.auditKind, "policy_allow")
+            return true
+        }
+        if (isCurrentSessionApproved(McpSessionApproval.SCOPE_CHANGES)) {
+            recordCurrentToolApproval(operation.auditKind, "session_allow")
             return true
         }
         val approved = approvalHandler.requestApproval(action, summary, reviewContent, config, api)

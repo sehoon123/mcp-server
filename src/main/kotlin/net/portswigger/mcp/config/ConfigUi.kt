@@ -30,6 +30,7 @@ class ConfigUi internal constructor(
     private val auditLog: McpAuditSink,
     private val proxyProvenance: ProxyProvenance?,
     private val proxyVerified: Boolean,
+    private val clearSessionApprovals: () -> Int,
 ) {
     constructor(config: McpConfig, providers: List<Provider>) : this(
         config = config,
@@ -38,6 +39,7 @@ class ConfigUi internal constructor(
         auditLog = NoOpMcpAuditSink,
         proxyProvenance = null,
         proxyVerified = false,
+        clearSessionApprovals = { 0 },
     )
 
     private val panel = JPanel(BorderLayout())
@@ -117,6 +119,8 @@ class ConfigUi internal constructor(
             auditLog = auditLog,
             proxyProvenance = proxyProvenance,
             proxyVerified = proxyVerified,
+            clearSessionApprovals = clearSessionApprovals,
+            onPersistentApprovalsReset = serverConfigurationPanel::updatePersistentApprovalControls,
         )
 
         installationPanel = InstallationPanel(

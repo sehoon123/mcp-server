@@ -43,6 +43,8 @@ class DiagnosticsPanelTest {
                 heartbeatFailures = 2,
                 sessionDeleteRequests = 8,
                 pressureEvictions = 9,
+                sessionsWithApprovals = 2,
+                sessionApprovalGrants = 5,
             ),
             readOnlyMode = true,
             auditEnabled = true,
@@ -59,6 +61,7 @@ class DiagnosticsPanelTest {
         assertTrue(text.contains("State: running"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))
+        assertTrue(text.contains("Session approvals: 5 grants across 2 active sessions"))
         assertTrue(text.contains("Event streams: 1 active, 7 opened, 6 closed, 3 reopened"))
         assertTrue(text.contains("Liveness: pings=20, responses=18, timeouts=1, errors=1, heartbeat-failures=2"))
         assertTrue(text.contains("Session cleanup: DELETE=8, pressure-evictions=9, idle-evictions=1"))

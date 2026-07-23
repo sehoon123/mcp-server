@@ -32,19 +32,32 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
             appendLine("An MCP client is requesting access to your Burp Suite $accessTypeName.")
             appendLine()
             appendLine("This may include sensitive data from previous web sessions.")
+            appendLine(
+                "Allow for This Session applies only to $accessTypeName and expires when this MCP session ends or " +
+                    "session approvals are reset."
+            )
             appendLine("Choose how you would like to respond:")
         }
         val result = SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(
                 findBurpFrame(),
                 message,
-                arrayOf("Allow Once", "Always Allow $accessTypeName", "Deny"),
+                arrayOf(
+                    "Allow Once",
+                    "Allow $accessTypeName for This Session",
+                    "Always Allow $accessTypeName",
+                    "Deny",
+                ),
             )
         }
 
         return when (result) {
             0 -> true
             1 -> {
+                grantCurrentSessionApproval(accessType.sessionApproval())
+                true
+            }
+            2 -> {
                 when (accessType) {
                     DataAccessType.HTTP_HISTORY -> config.alwaysAllowHttpHistory = true
                     DataAccessType.SITE_MAP -> config.alwaysAllowSiteMap = true
@@ -85,6 +98,10 @@ object DataAccessSecurity {
             recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "persisted_allow")
             return true
         }
+        if (isCurrentSessionApproved(accessType.sessionApproval())) {
+            recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "session_allow")
+            return true
+        }
 
         val approved = approvalHandler.requestDataAccess(accessType, config)
         recordCurrentToolApproval(
@@ -93,4 +110,13 @@ object DataAccessSecurity {
         )
         return approved
     }
+}
+
+private fun DataAccessType.sessionApproval(): McpSessionApproval = when (this) {
+    DataAccessType.HTTP_HISTORY -> McpSessionApproval.HTTP_HISTORY
+    DataAccessType.SITE_MAP -> McpSessionApproval.SITE_MAP
+    DataAccessType.WEBSOCKET_HISTORY -> McpSessionApproval.WEBSOCKET_HISTORY
+    DataAccessType.ORGANIZER -> McpSessionApproval.ORGANIZER
+    DataAccessType.SCANNER_ISSUES -> McpSessionApproval.SCANNER_ISSUES
+    DataAccessType.COLLABORATOR_INTERACTIONS -> McpSessionApproval.COLLABORATOR_INTERACTIONS
 }

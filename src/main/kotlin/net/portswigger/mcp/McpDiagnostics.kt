@@ -40,6 +40,8 @@ data class McpDiagnosticsSnapshot(
     val heartbeatFailures: Long = 0,
     val sessionDeleteRequests: Long = 0,
     val pressureEvictions: Long = 0,
+    val sessionsWithApprovals: Int = 0,
+    val sessionApprovalGrants: Int = 0,
 )
 
 internal fun unavailableMcpDiagnosticsSnapshot(): McpDiagnosticsSnapshot =

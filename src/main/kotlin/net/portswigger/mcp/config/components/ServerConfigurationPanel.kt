@@ -21,8 +21,10 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
     private lateinit var alwaysAllowCollaboratorInteractionsCheckBox: JCheckBox
+    private lateinit var allowAllHttpRequestsCheckBox: JCheckBox
     private lateinit var requestActionApprovalCheckBox: JCheckBox
     private lateinit var scopeChangeApprovalCheckBox: JCheckBox
+    private lateinit var dataAccessApprovalCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -61,12 +63,14 @@ class ServerConfigurationPanel(
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
-        val allowAllHttpRequestsCheckBox = createCheckBoxWithSubtitle(
+        val allowAllHttpRequestsPanel = createCheckBoxWithSubtitle(
             "Always allow all outbound HTTP requests",
             "WARNING: Disables per-target approval for every destination",
-            !config.requireHttpRequestApproval
-        ) { allowAll -> config.requireHttpRequestApproval = !allowAll }
-        add(allowAllHttpRequestsCheckBox)
+            !config.requireHttpRequestApproval,
+            onChange = { allowAll -> config.requireHttpRequestApproval = !allowAll },
+            onCreated = { allowAllHttpRequestsCheckBox = it },
+        )
+        add(allowAllHttpRequestsPanel)
         add(createVerticalStrut(Design.Spacing.MD))
 
         requestActionApprovalCheckBox = createStandardCheckBox(
@@ -81,7 +85,7 @@ class ServerConfigurationPanel(
         add(scopeChangeApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
-        val dataAccessApprovalCheckBox = createDataAccessApprovalCheckBox()
+        dataAccessApprovalCheckBox = createDataAccessApprovalCheckBox()
         add(dataAccessApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
@@ -183,13 +187,40 @@ class ServerConfigurationPanel(
 
     fun updateDataAccessCheckboxes() {
         SwingUtilities.invokeLater {
+            dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
             alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
             alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
             alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
             alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+            updateDataAccessEnabledState(config.requireDataAccessApproval)
         }
+    }
+
+    fun updatePersistentApprovalControls() {
+        SwingUtilities.invokeLater {
+            allowAllHttpRequestsCheckBox.isSelected = !config.requireHttpRequestApproval
+            requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+            scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
+            dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
+            alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
+            alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
+            alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
+            alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+            alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+            alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+            updateDataAccessEnabledState(config.requireDataAccessApproval)
+        }
+    }
+
+    private fun updateDataAccessEnabledState(enabled: Boolean) {
+        alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
+        alwaysAllowSiteMapCheckBox.isEnabled = enabled
+        alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
+        alwaysAllowOrganizerCheckBox.isEnabled = enabled
+        alwaysAllowScannerIssuesCheckBox.isEnabled = enabled
+        alwaysAllowCollaboratorInteractionsCheckBox.isEnabled = enabled
     }
 
     fun updateRequestActionApprovalCheckbox() {
@@ -235,7 +266,11 @@ class ServerConfigurationPanel(
     }
 
     private fun createCheckBoxWithSubtitle(
-        mainText: String, subtitleText: String, initialValue: Boolean, onChange: (Boolean) -> Unit
+        mainText: String,
+        subtitleText: String,
+        initialValue: Boolean,
+        onCreated: (JCheckBox) -> Unit = {},
+        onChange: (Boolean) -> Unit,
     ): JPanel {
         val checkBox = JCheckBox(mainText).apply {
             alignmentX = LEFT_ALIGNMENT
@@ -246,6 +281,8 @@ class ServerConfigurationPanel(
                 onChange(event.stateChange == ItemEvent.SELECTED)
             }
         }
+
+        onCreated(checkBox)
 
         val subtitleLabel = JLabel(subtitleText).apply {
             font = Design.Typography.labelMedium

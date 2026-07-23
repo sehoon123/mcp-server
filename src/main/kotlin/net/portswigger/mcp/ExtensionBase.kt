@@ -43,6 +43,7 @@ class ExtensionBase : BurpExtension {
             auditLog = auditLog,
             proxyProvenance = proxyProvenance,
             proxyVerified = proxyVerified,
+            clearSessionApprovals = serverManager::clearSessionApprovals,
         )
 
         configUi.onEnabledToggled { enabled ->
