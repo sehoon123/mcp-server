@@ -120,12 +120,14 @@ structured result. Correction-required validation, output-limit, and Burp failur
 approval, disabled, and unavailable outcomes remain non-protocol structured outcomes. Malformed MCP arguments that
 cannot be deserialized still use the protocol-level tool error path.
 
-### v4.2 transport lifecycle and scope approvals
+### v4.2 transport lifecycle and approval controls
 
 Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,
 best-effort session termination on graceful EOF, while the server exposes value-free event-stream, liveness, DELETE,
 and pressure-eviction diagnostics. Target scope include/exclude reviews also add **Always Allow** backed by a single
-local boolean and an MCP-tab control for restoring prompts; no URL, project ID, or client value is persisted.
+local boolean and an MCP-tab control for restoring prompts; no URL, project ID, or client value is persisted. The MCP
+tab additionally provides an explicit, unchecked-by-default **Always allow all outbound HTTP requests** control for
+users who intentionally want to disable per-target request prompts.
 
 ## Build and install
 
@@ -182,6 +184,7 @@ Open the **MCP** tab in Burp:
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
+- `Always allow all outbound HTTP requests` is off by default. Enable it only when every destination may bypass per-target **Allow Once / Always Allow Host / Always Allow Host:Port / Deny** review; target syntax validation and all other tool safeguards remain active.
 - Target scope include/exclude dialogs offer **Allow Once / Always Allow / Deny**; re-enable `Require approval for Target scope changes` to restore prompts. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
 - Enable configuration-editing tools only when they are required.
 - Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
