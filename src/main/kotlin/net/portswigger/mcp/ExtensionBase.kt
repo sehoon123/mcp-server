@@ -61,8 +61,12 @@ class ExtensionBase : BurpExtension {
         }
 
         api.userInterface().registerSuiteTab("MCP", configUi.component)
+        val referenceMenuProvider = McpReferenceContextMenuProvider(api)
+        val referenceMenuRegistration = api.userInterface().registerContextMenuItemsProvider(referenceMenuProvider)
 
         api.extension().registerUnloadingHandler {
+            runCatching { referenceMenuRegistration.deregister() }
+            referenceMenuProvider.close()
             serverManager.shutdown()
             configUi.cleanup()
             auditLog.close()
