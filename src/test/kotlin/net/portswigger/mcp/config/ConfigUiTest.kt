@@ -23,6 +23,36 @@ class ConfigUiTest {
     }
 
     @Test
+    fun `allow all HTTP requests checkbox inversely controls the secure approval policy`() {
+        val booleans = mutableMapOf("requireHttpRequestApproval" to true)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { booleans[firstArg()] }
+        every { storage.setBoolean(any(), any()) } answers { booleans[firstArg()] = secondArg() }
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val ui = ConfigUi(config, emptyList())
+
+        try {
+            val checkbox = ui.component.descendants()
+                .filterIsInstance<JCheckBox>()
+                .single { it.text == "Always allow all outbound HTTP requests" }
+            assertFalse(checkbox.isSelected)
+            assertTrue(config.requireHttpRequestApproval)
+
+            SwingUtilities.invokeAndWait { checkbox.doClick() }
+            assertTrue(checkbox.isSelected)
+            assertFalse(config.requireHttpRequestApproval)
+
+            SwingUtilities.invokeAndWait { checkbox.doClick() }
+            assertFalse(checkbox.isSelected)
+            assertTrue(config.requireHttpRequestApproval)
+        } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
     fun `scope approval checkbox tracks Always Allow and can re-enable prompts`() {
         val booleans = mutableMapOf("requireScopeChangeApproval" to true)
         val storage = mockk<PersistedObject>(relaxed = true)

@@ -61,10 +61,12 @@ class ServerConfigurationPanel(
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
-        val httpRequestApprovalCheckBox = createStandardCheckBox(
-            "Require approval for HTTP requests", config.requireHttpRequestApproval
-        ) { config.requireHttpRequestApproval = it }
-        add(httpRequestApprovalCheckBox)
+        val allowAllHttpRequestsCheckBox = createCheckBoxWithSubtitle(
+            "Always allow all outbound HTTP requests",
+            "WARNING: Disables per-target approval for every destination",
+            !config.requireHttpRequestApproval
+        ) { allowAll -> config.requireHttpRequestApproval = !allowAll }
+        add(allowAllHttpRequestsCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         requestActionApprovalCheckBox = createStandardCheckBox(
