@@ -161,6 +161,9 @@ class McpHttpSessionStressTest {
             client.connectToServer("http://127.0.0.1:$port/mcp")
             delay(750)
             client.ping()
+            // The client may observe its POST response just before the server's admission finally releases that
+            // short-lived call. Wait for the stable standalone GET count instead of racing the response cleanup.
+            awaitActiveCalls(metrics, expected = 1)
             val snapshot = metrics.snapshot()
             assertEquals(1, snapshot.activeHttpCalls)
             assertEquals(1, snapshot.activeSessions)
@@ -336,12 +339,14 @@ class McpHttpSessionStressTest {
         response.body().close()
     }
 
-    private fun awaitNoActiveCalls(metrics: McpRuntimeMetrics) {
+    private fun awaitNoActiveCalls(metrics: McpRuntimeMetrics) = awaitActiveCalls(metrics, expected = 0)
+
+    private fun awaitActiveCalls(metrics: McpRuntimeMetrics, expected: Int) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
-        while (metrics.snapshot().activeHttpCalls != 0 && System.nanoTime() < deadline) {
+        while (metrics.snapshot().activeHttpCalls != expected && System.nanoTime() < deadline) {
             Thread.sleep(10)
         }
-        assertEquals(0, metrics.snapshot().activeHttpCalls)
+        assertEquals(expected, metrics.snapshot().activeHttpCalls)
     }
 
     private fun ping(client: HttpClient, endpoint: URI, sessionId: String): Int {
