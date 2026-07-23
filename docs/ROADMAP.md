@@ -166,30 +166,38 @@ Remaining work:
 
 ### 6. Expose read-heavy Burp data as resources
 
-Resources can reuse the project-scoped resolver introduced by unified HTTP search and reduce the number of custom tools:
+Implemented foundation in v4.4.0:
 
-```text
-burp://proxy/history/{requestId}
-burp://websocket/history/{messageId}
-burp://sitemap/{encodedUrl}
-burp://scanner/issues/{issueId}
-burp://organizer/{itemId}
-```
+- Advertise fixed `burp://diagnostics`, `burp://project/summary`, and `burp://scope/summary` JSON resources.
+- Advertise canonical project-scoped HTTP, WebSocket, and Professional Scanner issue resource templates.
+- Reuse the existing source-specific approval gate on every protected read, including bounded session grants.
+- Reuse current-project, stable-ID, and post-materialization revalidation rather than treating a URI as authority.
+- Return only the first bounded content slice and direct clients to the existing tools for additional byte pagination.
+- Relay resources unchanged through the embedded stdio compatibility proxy.
 
-Resource templates and subscriptions can notify clients when an explicitly selected item changes. Sensitive data
-checks must run on every read, not only when a URI is listed.
+Remaining work:
+
+- Add official Montoya context-menu actions that copy project-scoped MCP references without copying raw traffic.
+- Add an instance label only after defining a migration-safe URI form that prevents confusion across multiple Burp
+  instances.
+- Evaluate resource subscriptions and list-change notifications only for explicitly selected, policy-safe records.
 
 ### 7. Add reusable prompts for common workflows
 
-Examples:
+Implemented foundation in v4.4.0:
 
-- Analyze a selected request without sending traffic.
-- Create a minimal Repeater test plan.
-- Review authentication and session-handling evidence.
-- Summarize a Scanner issue with request/response references.
-- Compare two stable message IDs.
+- Analyze one selected HTTP reference without sending traffic.
+- Compare two stable HTTP references.
+- Review authentication and session-handling evidence passively.
+- Summarize a Scanner issue without starting or changing a scan (Professional).
+- Bound prompt arguments and keep prompt retrieval independent from project-data reads, so protected resources still
+  apply their approval checks when the client follows a prompt.
 
-Prompts should guide the client to ask for scope and approval; they must not silently launch active testing.
+Remaining work:
+
+- Add a minimal Repeater test-plan prompt only after its wording and client behavior can reliably distinguish planning
+  from request routing or transmission.
+- Validate resource-link rendering and prompt discovery across the supported client matrix.
 
 ### 8. Support progress, cancellation, and MCP tasks
 
@@ -262,7 +270,7 @@ Remaining work:
 | 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
 | 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds and advisory warm-search hints | Medium |
 | 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
-| 9 | Resources and reusable prompts | More MCP-native API after resolver stability | Medium |
+| 9 | Resources and reusable prompts | MCP-native fixed/templates and passive prompts implemented in v4.4.0; subscriptions and client UX remain | Medium |
 
 ## Design constraints
 

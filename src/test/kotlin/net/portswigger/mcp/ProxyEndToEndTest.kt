@@ -10,9 +10,12 @@ import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.*
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
@@ -187,6 +190,37 @@ class ProxyEndToEndTest {
             assertEquals(true, action.annotations?.openWorldHint)
             assertNotNull(action.outputSchema?.properties?.get("executionState"))
         }
+    }
+
+    @Test
+    fun `proxy should transparently preserve native resources and prompts`() = runBlocking {
+        every { api.project().id() } returns "proxy-resource-project"
+
+        assertEquals(
+            setOf(DIAGNOSTICS_RESOURCE_URI, PROJECT_SUMMARY_RESOURCE_URI, SCOPE_SUMMARY_RESOURCE_URI),
+            client.listResources().map { it.uri }.toSet(),
+        )
+        val templates = client.listResourceTemplates().resourceTemplates.map { it.uriTemplate }.toSet()
+        assertTrue(HTTP_RESOURCE_TEMPLATE in templates)
+        assertTrue(WEBSOCKET_RESOURCE_TEMPLATE in templates)
+        val prompts = client.listPrompts().map { it.name }.toSet()
+        assertTrue("analyze_http_without_sending" in prompts)
+        assertTrue("review_auth_session_handling" in prompts)
+
+        val projectContent = assertInstanceOf(
+            TextResourceContents::class.java,
+            client.readResource(PROJECT_SUMMARY_RESOURCE_URI).contents.single(),
+        )
+        val project = Json.parseToJsonElement(projectContent.text).jsonObject
+        assertEquals("ok", project["status"]?.jsonPrimitive?.content)
+        assertEquals("proxy-resource-project", project["projectId"]?.jsonPrimitive?.content)
+
+        val prompt = client.getPrompt(
+            "analyze_http_without_sending",
+            mapOf("httpReference" to "burp://http/proxy-resource-project/proxy/42"),
+        )
+        val promptText = assertInstanceOf(TextContent::class.java, prompt.messages.single().content).text
+        assertTrue(promptText.contains("Do not send traffic"))
     }
 
     @Test

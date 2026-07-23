@@ -41,6 +41,7 @@ client-liveness, and capacity-pressure safeguards.
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
 - v4 compact catalog: 26 tools on Professional and 19 on Community, with an output schema and structured content on every tool
+- MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
@@ -133,6 +134,39 @@ header, body, project identifier, or client-provided value and is removed on aut
 capacity eviction, listener restart, or Burp shutdown. **Reset active session approvals** clears all current grants
 without cancelling operations that have already started. **Reset all persistent approvals...** restores outbound HTTP,
 routing, Scope, and project-data policies to prompt-by-default and removes saved HTTP approval targets.
+
+### v4.4 native resources and prompts
+
+Version 4.4 keeps the Professional/Community tool catalogs at 26/19 and adds the MCP `resources` and `prompts`
+capabilities. Community advertises 3 fixed resources, 4 resource templates, and 3 prompts; Professional advertises the
+same 3 fixed resources plus 7 templates and 4 prompts. The fixed JSON resources are:
+
+- `burp://diagnostics` — secret-free aggregate listener, session, liveness, and approval counters;
+- `burp://project/summary` — the current opaque project ID, with local project names and paths omitted; and
+- `burp://scope/summary` — project binding and MCP scope policy, explicitly noting that Montoya 2025.10 cannot
+  enumerate configured scope rules.
+
+Parameterized resources use project-scoped stable IDs returned by the existing searches:
+
+```text
+burp://http/{projectId}/{source}/{id}
+burp://http/{projectId}/{source}/{id}/{part}
+burp://websocket/{projectId}/{id}
+burp://websocket/{projectId}/{id}/{variant}
+burp://scanner-issue/{projectId}/{id}
+burp://scanner-issue/{projectId}/{id}/{field}
+burp://scanner-issue/{projectId}/{id}/{field}/{evidenceIndex}
+```
+
+HTTP, WebSocket, and Scanner resources reuse the existing source approval checks on every read, including memory-only
+session grants, and revalidate the current project and stable ID before returning bounded content. Message and evidence
+resources return the first 32 KiB slice by default; use the corresponding detail tool when further byte pagination is
+required. URIs must be canonical, and resource subscriptions/list-change notifications are not advertised.
+
+Reusable prompts are `analyze_http_without_sending`, `compare_http_references`, and
+`review_auth_session_handling`; Professional also provides `summarize_scanner_issue`. Prompt arguments are bounded,
+prompts do not read project data themselves, and each workflow explicitly prohibits hidden request sending, routing,
+or mutation. Both native Streamable HTTP clients and the embedded stdio proxy preserve these protocol features.
 
 ### v4.2 transport lifecycle and approval controls
 
