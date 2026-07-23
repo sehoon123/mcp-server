@@ -11,8 +11,8 @@ import burp.api.montoya.scope.Scope
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
-import net.portswigger.mcp.security.SensitiveActionApprovalHandler
-import net.portswigger.mcp.security.SensitiveActionSecurity
+import net.portswigger.mcp.security.ScopeActionApprovalHandler
+import net.portswigger.mcp.security.ScopeActionSecurity
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -29,13 +29,20 @@ class ScopeToolsTest {
     private val logging = mockk<Logging>(relaxed = true)
     private lateinit var metadataIndex: HttpMetadataIndex
     private lateinit var service: ScopeToolService
-    private lateinit var originalApprovalHandler: SensitiveActionApprovalHandler
+    private lateinit var config: McpConfig
+    private lateinit var originalApprovalHandler: ScopeActionApprovalHandler
+    private var scopeApprovalRequired = true
 
     @BeforeEach
     fun setUp() {
-        originalApprovalHandler = SensitiveActionSecurity.approvalHandler
+        originalApprovalHandler = ScopeActionSecurity.approvalHandler
+        scopeApprovalRequired = true
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } returns false
+        every { storage.getBoolean("requireScopeChangeApproval") } answers { scopeApprovalRequired }
+        every { storage.setBoolean("requireScopeChangeApproval", any()) } answers {
+            scopeApprovalRequired = secondArg()
+        }
         every { storage.getString(any()) } returns ""
         every { api.project() } returns project
         every { project.id() } returns "project-123"
@@ -43,14 +50,14 @@ class ScopeToolsTest {
         every { api.proxy() } returns proxy
         every { proxy.history() } returns emptyList()
         every { api.logging() } returns logging
-        val config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging)
         metadataIndex = HttpMetadataIndex(api)
         service = ScopeToolService(api, config, metadataIndex)
     }
 
     @AfterEach
     fun tearDown() {
-        SensitiveActionSecurity.approvalHandler = originalApprovalHandler
+        ScopeActionSecurity.approvalHandler = originalApprovalHandler
     }
 
     @Test
@@ -107,7 +114,7 @@ class ScopeToolsTest {
     fun `scope update denial performs no mutation`() = runBlocking {
         every { scope.isInScope("https://example.test/") } returns false
         metadataIndex.snapshot("project-123", listOf(HttpMessageSource.PROXY))
-        SensitiveActionSecurity.approvalHandler = approvalHandler(false)
+        ScopeActionSecurity.approvalHandler = approvalHandler(false)
 
         val result = service.update(
             UpdateScope(
@@ -129,6 +136,31 @@ class ScopeToolsTest {
     }
 
     @Test
+    fun `scope Always Allow policy bypasses prompts but retains mutation verification`() = runBlocking {
+        val url = "https://policy.example.test/"
+        every { scope.isInScope(url) } returnsMany listOf(false, false, true)
+        every { scope.includeInScope(url) } just runs
+        val handler = mockk<ScopeActionApprovalHandler>()
+        ScopeActionSecurity.approvalHandler = handler
+        config.requireScopeChangeApproval = false
+
+        val result = service.update(
+            UpdateScope(
+                "project-123",
+                ScopeUpdateOperation.INCLUDE,
+                listOf(ScopeTarget(url = url)),
+            )
+        )
+
+        assertEquals(ScopeToolStatus.OK, result.status)
+        assertEquals(ProjectMutationExecutionState.COMPLETED, result.executionState)
+        assertEquals(1, result.changedCount)
+        coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
+        verify(exactly = 1) { scope.includeInScope(url) }
+        verify(exactly = 3) { scope.isInScope(url) }
+    }
+
+    @Test
     fun `scope update applies and verifies each normalized URL after one approval`() = runBlocking {
         val url = "https://example.test/path"
         every { scope.isInScope(url) } returnsMany listOf(false, false, true)
@@ -140,15 +172,15 @@ class ScopeToolsTest {
             }
         }
         var review = ""
-        SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+        ScopeActionSecurity.approvalHandler = object : ScopeActionApprovalHandler {
             override suspend fun requestApproval(
                 action: String,
                 summary: String,
-                reviewContent: String?,
-                renderContentAsHttp: Boolean,
+                reviewContent: String,
+                config: McpConfig,
                 api: MontoyaApi,
             ): Boolean {
-                review = reviewContent.orEmpty()
+                review = reviewContent
                 return true
             }
         }
@@ -180,7 +212,7 @@ class ScopeToolsTest {
         val url = "https://example.test/"
         every { project.id() } returnsMany listOf("project-123", "project-123", "other-project")
         every { scope.isInScope(url) } returns false
-        SensitiveActionSecurity.approvalHandler = approvalHandler(true)
+        ScopeActionSecurity.approvalHandler = approvalHandler(true)
 
         val result = service.update(
             UpdateScope(
@@ -204,7 +236,7 @@ class ScopeToolsTest {
         every { scope.isInScope(second) } returnsMany listOf(false, false)
         every { scope.includeInScope(first) } just runs
         every { scope.includeInScope(second) } throws IllegalStateException("Burp failure")
-        SensitiveActionSecurity.approvalHandler = approvalHandler(true)
+        ScopeActionSecurity.approvalHandler = approvalHandler(true)
 
         val result = service.update(
             UpdateScope(
@@ -223,8 +255,8 @@ class ScopeToolsTest {
 
     @Test
     fun `duplicate normalized scope targets are rejected before approval`() = runBlocking {
-        val handler = mockk<SensitiveActionApprovalHandler>()
-        SensitiveActionSecurity.approvalHandler = handler
+        val handler = mockk<ScopeActionApprovalHandler>()
+        ScopeActionSecurity.approvalHandler = handler
 
         val result = service.update(
             UpdateScope(
@@ -243,12 +275,12 @@ class ScopeToolsTest {
         verify(exactly = 0) { scope.excludeFromScope(any()) }
     }
 
-    private fun approvalHandler(approved: Boolean) = object : SensitiveActionApprovalHandler {
+    private fun approvalHandler(approved: Boolean) = object : ScopeActionApprovalHandler {
         override suspend fun requestApproval(
             action: String,
             summary: String,
-            reviewContent: String?,
-            renderContentAsHttp: Boolean,
+            reviewContent: String,
+            config: McpConfig,
             api: MontoyaApi,
         ): Boolean = approved
     }

@@ -29,6 +29,17 @@ data class McpDiagnosticsSnapshot(
     val lastError: String?,
     val maxHttpCalls: Int,
     val maxSessions: Int,
+    val activeEventStreams: Int = 0,
+    val openedEventStreams: Long = 0,
+    val closedEventStreams: Long = 0,
+    val reopenedEventStreams: Long = 0,
+    val livenessPingsSent: Long = 0,
+    val livenessResponses: Long = 0,
+    val livenessTimeouts: Long = 0,
+    val livenessErrors: Long = 0,
+    val heartbeatFailures: Long = 0,
+    val sessionDeleteRequests: Long = 0,
+    val pressureEvictions: Long = 0,
 )
 
 internal fun unavailableMcpDiagnosticsSnapshot(): McpDiagnosticsSnapshot =
@@ -47,6 +58,17 @@ internal class McpRuntimeMetrics(
     private val lastActivity = AtomicLong(0)
     private val activeHttpCalls = AtomicInteger(0)
     private val peakHttpCalls = AtomicInteger(0)
+    private val activeEventStreams = AtomicInteger(0)
+    private val openedEventStreams = AtomicLong(0)
+    private val closedEventStreams = AtomicLong(0)
+    private val reopenedEventStreams = AtomicLong(0)
+    private val livenessPingsSent = AtomicLong(0)
+    private val livenessResponses = AtomicLong(0)
+    private val livenessTimeouts = AtomicLong(0)
+    private val livenessErrors = AtomicLong(0)
+    private val heartbeatFailures = AtomicLong(0)
+    private val sessionDeleteRequests = AtomicLong(0)
+    private val pressureEvictions = AtomicLong(0)
     private val pendingSessions = AtomicInteger(0)
     private val activeSessions = AtomicInteger(0)
     private val totalRequests = AtomicLong(0)
@@ -66,6 +88,17 @@ internal class McpRuntimeMetrics(
         lastActivity.set(0)
         activeHttpCalls.set(0)
         peakHttpCalls.set(0)
+        activeEventStreams.set(0)
+        openedEventStreams.set(0)
+        closedEventStreams.set(0)
+        reopenedEventStreams.set(0)
+        livenessPingsSent.set(0)
+        livenessResponses.set(0)
+        livenessTimeouts.set(0)
+        livenessErrors.set(0)
+        heartbeatFailures.set(0)
+        sessionDeleteRequests.set(0)
+        pressureEvictions.set(0)
         pendingSessions.set(0)
         activeSessions.set(0)
         totalRequests.set(0)
@@ -91,6 +124,7 @@ internal class McpRuntimeMetrics(
     fun markStopped() {
         state.set("stopped")
         activeHttpCalls.set(0)
+        activeEventStreams.set(0)
         pendingSessions.set(0)
         activeSessions.set(0)
     }
@@ -99,6 +133,7 @@ internal class McpRuntimeMetrics(
         state.set("failed")
         lastError.set(safeError)
         activeHttpCalls.set(0)
+        activeEventStreams.set(0)
         pendingSessions.set(0)
         activeSessions.set(0)
     }
@@ -116,6 +151,48 @@ internal class McpRuntimeMetrics(
 
     fun onCallFinished() {
         activeHttpCalls.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+    }
+
+    fun onEventStreamOpened() {
+        activeEventStreams.incrementAndGet()
+        openedEventStreams.incrementAndGet()
+    }
+
+    fun onEventStreamClosed() {
+        activeEventStreams.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+        closedEventStreams.incrementAndGet()
+    }
+
+    fun onEventStreamReopened() {
+        reopenedEventStreams.incrementAndGet()
+    }
+
+    fun onLivenessPingSent() {
+        livenessPingsSent.incrementAndGet()
+    }
+
+    fun onLivenessResponse() {
+        livenessResponses.incrementAndGet()
+    }
+
+    fun onLivenessTimeout() {
+        livenessTimeouts.incrementAndGet()
+    }
+
+    fun onLivenessError() {
+        livenessErrors.incrementAndGet()
+    }
+
+    fun onHeartbeatFailure() {
+        heartbeatFailures.incrementAndGet()
+    }
+
+    fun onSessionDeleteRequest() {
+        sessionDeleteRequests.incrementAndGet()
+    }
+
+    fun onPressureEvicted() {
+        pressureEvictions.incrementAndGet()
     }
 
     fun updateSessions(pending: Int, active: Int) {
@@ -173,5 +250,16 @@ internal class McpRuntimeMetrics(
         lastError = lastError.get(),
         maxHttpCalls = maxHttpCalls,
         maxSessions = maxSessions,
+        activeEventStreams = activeEventStreams.get(),
+        openedEventStreams = openedEventStreams.get(),
+        closedEventStreams = closedEventStreams.get(),
+        reopenedEventStreams = reopenedEventStreams.get(),
+        livenessPingsSent = livenessPingsSent.get(),
+        livenessResponses = livenessResponses.get(),
+        livenessTimeouts = livenessTimeouts.get(),
+        livenessErrors = livenessErrors.get(),
+        heartbeatFailures = heartbeatFailures.get(),
+        sessionDeleteRequests = sessionDeleteRequests.get(),
+        pressureEvictions = pressureEvictions.get(),
     )
 }

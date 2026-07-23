@@ -53,7 +53,7 @@ enum class SensitiveActionAuditOperation(val auditKind: String) {
     PROXY_INTERCEPT("sensitive_action:proxy_intercept"),
 }
 
-/** Approval gate for scope changes, Scanner starts, and other sensitive Burp project mutations. */
+/** Approval gate for Scanner starts and sensitive Burp mutations that never support persistent approval. */
 object SensitiveActionSecurity {
     var approvalHandler: SensitiveActionApprovalHandler = SwingSensitiveActionApprovalHandler()
 

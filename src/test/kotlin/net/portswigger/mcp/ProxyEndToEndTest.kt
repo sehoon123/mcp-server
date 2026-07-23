@@ -12,6 +12,7 @@ import io.mockk.*
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
@@ -26,6 +27,7 @@ import java.net.ServerSocket
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * End-to-end test verifying the full stack:
@@ -157,6 +159,21 @@ class ProxyEndToEndTest {
         runBlocking {
             assertDoesNotThrow { client.ping() }
         }
+    }
+
+    @Test
+    fun `graceful stdio EOF explicitly terminates the HTTP session`() = runBlocking {
+        assertEquals(1, serverManager.diagnostics().activeSessions)
+
+        client.close()
+        assertTrue(proxyProcess.waitFor(5, TimeUnit.SECONDS), "Proxy did not exit after graceful stdio EOF")
+        withTimeout(5.seconds) {
+            while (serverManager.diagnostics().activeSessions != 0) delay(25.milliseconds)
+        }
+
+        val diagnostics = serverManager.diagnostics()
+        assertEquals(0, diagnostics.activeSessions)
+        assertEquals(1, diagnostics.sessionDeleteRequests)
     }
 
     @Test

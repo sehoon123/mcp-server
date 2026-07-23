@@ -814,7 +814,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredTool<UpdateScope, UpdateScopeResult>(
-        description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before an always-required Burp approval. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
+        description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before approval unless the user has explicitly selected Always Allow for Target scope changes. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
     ) {
         scopeToolService.update(this)

@@ -59,6 +59,8 @@ class McpHttpSessionStressTest {
             notifyInitialized(client, endpoint, firstSession)
             disconnectOptionalStreamWithGracefulFin(endpoint, firstSession)
             awaitNoActiveCalls(metrics)
+            disconnectOptionalStream(client, endpoint, firstSession)
+            awaitNoActiveCalls(metrics)
 
             val second = initialize(client, endpoint, 2)
             assertEquals(200, second.status)
@@ -73,11 +75,18 @@ class McpHttpSessionStressTest {
 
             assertEquals(404, ping(client, endpoint, firstSession))
             assertEquals(200, ping(client, endpoint, secondSession))
-            assertEquals(2, metrics.snapshot().activeSessions)
-            assertEquals(0, metrics.snapshot().sessionCapacityRejections)
+            val pressureSnapshot = metrics.snapshot()
+            assertEquals(2, pressureSnapshot.activeSessions)
+            assertEquals(0, pressureSnapshot.activeEventStreams)
+            assertEquals(3, pressureSnapshot.openedEventStreams)
+            assertEquals(3, pressureSnapshot.closedEventStreams)
+            assertEquals(1, pressureSnapshot.reopenedEventStreams)
+            assertEquals(1, pressureSnapshot.pressureEvictions)
+            assertEquals(0, pressureSnapshot.sessionCapacityRejections)
 
             assertTrue(delete(client, endpoint, secondSession) in setOf(200, 202))
             assertTrue(delete(client, endpoint, replacementSession) in setOf(200, 202))
+            assertEquals(2, metrics.snapshot().sessionDeleteRequests)
         } finally {
             runCatching { engine.stop(100, 3_000) }
             runBlocking { server.close() }
@@ -120,6 +129,14 @@ class McpHttpSessionStressTest {
                 // must cancel only this optional stream and retain the session as an evictable disconnected entry.
                 awaitNoActiveCalls(metrics)
             }
+            val disconnectedSnapshot = metrics.snapshot()
+            assertEquals(0, disconnectedSnapshot.activeEventStreams)
+            assertEquals(1, disconnectedSnapshot.openedEventStreams)
+            assertEquals(1, disconnectedSnapshot.closedEventStreams)
+            assertTrue(disconnectedSnapshot.livenessPingsSent >= 1)
+            assertTrue(disconnectedSnapshot.livenessTimeouts >= 1)
+            assertEquals(0, disconnectedSnapshot.livenessResponses)
+            assertEquals(0, disconnectedSnapshot.livenessErrors)
 
             val replacement = initialize(client, endpoint, 12)
             assertEquals(200, replacement.status)
@@ -167,6 +184,13 @@ class McpHttpSessionStressTest {
             val snapshot = metrics.snapshot()
             assertEquals(1, snapshot.activeHttpCalls)
             assertEquals(1, snapshot.activeSessions)
+            assertEquals(1, snapshot.activeEventStreams)
+            assertEquals(1, snapshot.openedEventStreams)
+            assertEquals(0, snapshot.closedEventStreams)
+            assertTrue(snapshot.livenessPingsSent >= 1)
+            assertTrue(snapshot.livenessResponses >= 1)
+            assertEquals(0, snapshot.livenessTimeouts)
+            assertEquals(0, snapshot.livenessErrors)
             assertEquals(0, snapshot.sessionCapacityRejections)
         } finally {
             runCatching { client.close() }

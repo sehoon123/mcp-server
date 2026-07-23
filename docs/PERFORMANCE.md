@@ -84,9 +84,10 @@ sessions after 20 Client.close() calls: 20
 additional sessions retained after 20 terminateSession()+close(): 0
 ```
 
-Each retained server session also owns notification bookkeeping. The packaged proxy now calls `terminateSession()`
-with a short timeout during graceful shutdown, and `KtorServerManager` explicitly closes the MCP `Server` whenever it
-stops or replaces the Ktor engine.
+Each retained server session also owns notification bookkeeping. The packaged proxy calls `terminateSession()` during
+graceful stdio EOF or process shutdown. Termination treats an already-absent session as success and retries one
+transient HTTP/connection failure within a two-second total budget; it never sends DELETE for an ambiguous in-flight
+call. `KtorServerManager` explicitly closes the MCP `Server` whenever it stops or replaces the Ktor engine.
 
 The server additionally wraps SDK transports in a bounded registry. At most 32 pending or active sessions can exist;
 idle sessions are evicted after 15 minutes by a 60-second sweep. Explicit DELETE, initialization failure, capacity
@@ -386,14 +387,17 @@ including byte-for-byte preservation of body text.
 
 ## Diagnostics and audit overhead
 
-Runtime diagnostics use atomic counters and timestamps on the HTTP admission and session-registry paths. They retain no
-request metadata, client names, headers, bodies, or Montoya objects. The Swing diagnostics view samples one immutable
-snapshot per second, so it does not poll Burp history or session transports.
+Runtime diagnostics use fixed-cardinality atomic counters and timestamps on the HTTP admission, optional event-stream,
+and session-registry paths. In addition to calls and sessions, they count stream opens/closes/reopens, liveness
+pings/responses/timeouts/errors, heartbeat write failures, authenticated DELETE requests, and pressure evictions. They
+retain no request metadata, client names, identifiers, headers, bodies, or Montoya objects and reset on listener start.
+The Swing diagnostics view samples one immutable snapshot per second, so it does not poll Burp history or session
+transports.
 
 The audit path constructs one small record at tool completion. Argument keys are capped at 16, approvals at 8, and all
 stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized.
-Consolidated routing, configuration, and global-control tools retain only fixed approval classifications such as
-`request_routing:intruder`, never the operation argument value. The
+Consolidated routing, scope, configuration, and global-control tools retain only fixed approval classifications such
+as `request_routing:intruder` or `scope_change:include`, never the operation argument value. The
 in-memory deque holds 50–1,000 records (250 by default) for at most 30 days, the persisted JSON document is capped at 1 MiB, and copied
 JSONL is capped at 100 records/64 KiB. A single daemon writer coalesces completions for 250 ms, keeps persistence off
 request workers and the Swing event thread, and flushes synchronously only during explicit test/lifecycle barriers.
@@ -439,7 +443,9 @@ Performance changes should preserve the following:
 - Approval cancellation remains a coroutine cancellation rather than a tool error.
 - Server stop/restart closes pending and active SDK transports exactly once and waits no more than two seconds.
 - HTTP body, URI, header, call, session, idle, and shutdown limits remain enforced before or around SDK dispatch.
-- Proxy graceful shutdown sends DELETE when a session exists, but never blocks shutdown for more than two seconds.
+- Proxy graceful stdio EOF and process shutdown send DELETE when a session exists, retry at most one transient failure,
+  but never block shutdown for more than two seconds or terminate an ambiguous in-flight call.
+- Event-stream/liveness/DELETE/pressure diagnostics retain fixed counters only and reset on listener start.
 - Proxy request concurrency and pending queues remain bounded under bursts; rejected requests are never forwarded.
 - Ambiguous post-send failures never retry arbitrary or custom requests.
 - Existing proxy extraction is skipped without reading the nested JAR.

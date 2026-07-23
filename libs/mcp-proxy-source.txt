@@ -1,10 +1,10 @@
 Source: https://github.com/sehoon123/mcp-proxy.git
-Commit: f46c402adc54ee45aff9a0ffea371708d2b6b004
+Commit: 32c49d7d823c56621250f2a51d212e186bb747de
 Branch: main
-Version: 2.1.0
+Version: 2.1.1
 Build: ./gradlew clean test shadowJar writeRuntimeComponents
 Artifact: build/libs/mcp-proxy-all.jar
-SHA-256: ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82
+SHA-256: 7ef26d25ea56d5e2349c897cbb1c9ef3fb18fdabc5fb72ce83d47cc43ecc183e
 Runtime component: com.typesafe:config:1.4.5 4a4b0affb22a9572409d3a6bde99ce3f2045c551cadc1ca7fe09690892c526c3
 Runtime component: io.github.oshai:kotlin-logging-jvm:8.0.4 0bbac3f9dac5067b40d02fe461a053782bc8d3ef5162a923581b369adef7e02d
 Runtime component: io.ktor:ktor-client-cio-jvm:3.4.3 46906daeff1dc1bfa1d63acf832c0760b84dd156c597879a63a907260229fe98

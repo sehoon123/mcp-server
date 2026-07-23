@@ -9,7 +9,8 @@ scoped, auditable, and safe to invoke from an LLM.
 - No deprecated two-endpoint HTTP+SSE route
 - Native HTTP clients connect directly
 - Stdio-only clients use the proxy embedded in `burp-mcp-all.jar`
-- The proxy relays JSON-RPC methods and parameters supported by the pinned SDK, restores sessions after Burp restarts, and never retries ambiguous arbitrary requests
+- The proxy relays JSON-RPC methods and parameters supported by the pinned SDK, restores sessions after Burp restarts,
+  never retries ambiguous arbitrary requests, and sends bounded best-effort DELETE on graceful stdio shutdown
 - Numeric-loopback binding, constant-time per-installation bearer authentication, and Host/Origin validation are mandatory
 - Request body/header/URI/concurrency and stateful session count/idle lifetime are bounded
 
@@ -46,6 +47,8 @@ Implemented for stable-ID and focused active actions:
   Collaborator reads carry explicit annotations.
 - Approval shows the source reference, immutable destination service, normalized patch or scope/insertion-point summary,
   and exact resulting request where applicable.
+- Target scope include/exclude reviews offer an explicit Always Allow policy that stores one boolean, not target or
+  project values; validation, project rechecks, mutation serialization, and verification remain mandatory.
 - Redacted Burp log lines record bounded action metadata without bodies or header values.
 - Structured results distinguish `not_started`, `completed`, and ambiguous `uncertain` execution.
 - Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
@@ -204,13 +207,15 @@ Long-running operations should not look like hung calls.
 
 ### 10. Add protocol diagnostics
 
-Implemented for v2.1.1:
+Implemented incrementally through v4.2.0:
 
 - A local Burp panel shows listener state/endpoint, the production protocol target, request and active/peak call counts,
   pending/active/initialized sessions, idle evictions, admission/authentication rejections, and last activity.
 - Copyable diagnostics exclude credentials, traffic, client identifiers, and paths; only a centrally sanitized startup or
   shutdown error can appear.
 - The panel reports the embedded proxy version, full source commit, SHA-256, and extraction verification state.
+- Fixed-cardinality counters report optional event-stream opens/closes/reopens, liveness ping outcomes, heartbeat failures,
+  explicit authenticated DELETE requests, and pressure evictions without retaining client or traffic values.
 
 Remaining work:
 

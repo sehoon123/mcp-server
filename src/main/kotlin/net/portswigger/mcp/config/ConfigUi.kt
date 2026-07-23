@@ -84,6 +84,9 @@ class ConfigUi internal constructor(
     private val requestActionApprovalRefreshListener: () -> Unit = {
         serverConfigurationPanel.updateRequestActionApprovalCheckbox()
     }
+    private val scopeChangeApprovalRefreshListener: () -> Unit = {
+        serverConfigurationPanel.updateScopeChangeApprovalCheckbox()
+    }
 
     init {
         enabledToggle.setState(config.enabled, animate = false)
@@ -126,6 +129,7 @@ class ConfigUi internal constructor(
     private fun setupConfigListeners() {
         listenerHandles += config.addDataAccessChangeListener(dataAccessRefreshListener)
         listenerHandles += config.addRequestActionApprovalChangeListener(requestActionApprovalRefreshListener)
+        listenerHandles += config.addScopeChangeApprovalChangeListener(scopeChangeApprovalRefreshListener)
     }
 
     fun cleanup() {

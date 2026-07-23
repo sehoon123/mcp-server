@@ -88,7 +88,8 @@ class BoundedMcpSessionRegistryTest {
         val firstTransport = transport()
         val secondTransport = transport()
         val replacementTransport = transport()
-        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
+        val metrics = McpRuntimeMetrics("test", maxHttpCalls = 64, maxSessions = 2)
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000, runtimeMetrics = metrics)
         val first = assertNotNull(registry.reserve(firstTransport)).pending
         registry.activate(first, "first-session")
         val firstStream = Job()
@@ -108,6 +109,7 @@ class BoundedMcpSessionRegistryTest {
         coVerify(exactly = 1) { firstTransport.close() }
         coVerify(exactly = 0) { secondTransport.close() }
         assertFalse(openSecondStream.isCancelled)
+        assertEquals(1, metrics.snapshot().pressureEvictions)
         registry.closeAll()
     }
 
@@ -155,6 +157,29 @@ class BoundedMcpSessionRegistryTest {
         assertEquals(active, replacement.displaced)
         replacement.displaced?.closeTransport()
         registry.closeAll()
+    }
+
+    @Test
+    fun `event stream reopen excludes additional concurrent streams`() = runBlocking {
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val active = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(active, "multi-stream-session")
+        var reopened = 0
+        val streams = List(4) { Job() }
+
+        assertTrue(active.registerStream(streams[0]) { reopened++ })
+        assertTrue(active.registerStream(streams[1]) { reopened++ })
+        active.unregisterStream(streams[0])
+        assertTrue(active.registerStream(streams[2]) { reopened++ })
+        assertEquals(0, reopened)
+
+        active.unregisterStream(streams[1])
+        active.unregisterStream(streams[2])
+        assertTrue(active.registerStream(streams[3]) { reopened++ })
+        assertEquals(1, reopened)
+
+        registry.closeAll()
+        streams.forEach { it.cancel() }
     }
 
     @Test
