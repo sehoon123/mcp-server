@@ -112,6 +112,76 @@ class BoundedMcpSessionRegistryTest {
     }
 
     @Test
+    fun `capacity pressure waits for an in-flight call before displacing a disconnected stream session`() = runBlocking {
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val active = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(active, "busy-session")
+        val stream = Job()
+        assertTrue(active.registerStream(stream))
+        active.unregisterStream(stream)
+        active.acquire()
+
+        assertNull(registry.reserve(transport()))
+
+        active.release()
+        val replacement = assertNotNull(registry.reserve(transport()))
+        assertEquals(active, replacement.displaced)
+        replacement.displaced?.closeTransport()
+        registry.closeAll()
+    }
+
+    @Test
+    fun `request lease releases its call and stream registration at most once`() = runBlocking {
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val active = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(active, "idempotent-lease-session")
+        active.acquire()
+        active.acquire()
+        val firstLease = ManagedMcpSessionLease(active, "idempotent-lease-session")
+        val secondLease = ManagedMcpSessionLease(active, "idempotent-lease-session")
+        val stream = Job()
+
+        assertTrue(firstLease.registerStream(stream))
+        firstLease.unregisterStream(stream)
+        firstLease.unregisterStream(stream)
+        firstLease.close()
+        firstLease.close()
+
+        // The second request lease is still active, so duplicate cleanup cannot make this session displaceable.
+        assertNull(registry.reserve(transport()))
+        secondLease.close()
+
+        val replacement = assertNotNull(registry.reserve(transport()))
+        assertEquals(active, replacement.displaced)
+        replacement.displaced?.closeTransport()
+        registry.closeAll()
+    }
+
+    @Test
+    fun `completed calls refresh disconnected stream LRU order`() = runBlocking {
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
+        val first = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(first, "first-session")
+        val firstStream = Job()
+        assertTrue(first.registerStream(firstStream))
+        first.unregisterStream(firstStream)
+
+        val second = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(second, "second-session")
+        val secondStream = Job()
+        assertTrue(second.registerStream(secondStream))
+        second.unregisterStream(secondStream)
+
+        first.acquire()
+        first.release()
+        val replacement = assertNotNull(registry.reserve(transport()))
+
+        assertEquals(second, replacement.displaced)
+        replacement.displaced?.closeTransport()
+        registry.closeAll()
+    }
+
+    @Test
     fun `capacity pressure preserves sessions that never registered an event stream`() = runBlocking {
         val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
         val active = assertNotNull(registry.reserve(transport())).pending

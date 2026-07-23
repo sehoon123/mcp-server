@@ -6,13 +6,17 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
+import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
@@ -53,7 +57,7 @@ class McpHttpSessionStressTest {
             assertEquals(200, first.status)
             val firstSession = requireNotNull(first.sessionId)
             notifyInitialized(client, endpoint, firstSession)
-            disconnectOptionalStream(client, endpoint, firstSession)
+            disconnectOptionalStreamWithGracefulFin(endpoint, firstSession)
             awaitNoActiveCalls(metrics)
 
             val second = initialize(client, endpoint, 2)
@@ -77,6 +81,94 @@ class McpHttpSessionStressTest {
         } finally {
             runCatching { engine.stop(100, 3_000) }
             runBlocking { server.close() }
+        }
+    }
+
+    @Test
+    fun `SSE client that ignores server ping is disconnected and becomes pressure evictable`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val endpoint = URI("http://127.0.0.1:$port/mcp")
+        val metrics = McpRuntimeMetrics("sse-liveness-test", maxHttpCalls = 64, maxSessions = 1)
+        val server = Server(
+            serverInfo = Implementation("sse-liveness-test", "1.0"),
+            options = ServerOptions(
+                capabilities = ServerCapabilities(
+                    tools = ServerCapabilities.Tools(listChanged = false),
+                )
+            ),
+        )
+        val engine = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+            configureMcpHttpEndpoint(
+                mcpServer = server,
+                port = port,
+                runtimeMetrics = metrics,
+                maxSessions = 1,
+                sseHeartbeatMillis = 1_000,
+                sseClientLivenessTimeoutMillis = 150,
+            )
+        }.start()
+        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
+
+        try {
+            val first = initialize(client, endpoint, 11)
+            assertEquals(200, first.status)
+            val firstSession = requireNotNull(first.sessionId)
+            notifyInitialized(client, endpoint, firstSession)
+
+            openOptionalStream(endpoint, firstSession).use {
+                // The TCP connection deliberately remains open but never processes the core MCP ping. The server
+                // must cancel only this optional stream and retain the session as an evictable disconnected entry.
+                awaitNoActiveCalls(metrics)
+            }
+
+            val replacement = initialize(client, endpoint, 12)
+            assertEquals(200, replacement.status)
+            val replacementSession = requireNotNull(replacement.sessionId)
+            assertEquals(404, ping(client, endpoint, firstSession))
+            assertEquals(0, metrics.snapshot().sessionCapacityRejections)
+            assertTrue(delete(client, endpoint, replacementSession) in setOf(200, 202))
+        } finally {
+            runCatching { engine.stop(100, 3_000) }
+            runBlocking { server.close() }
+        }
+    }
+
+    @Test
+    fun `compliant streamable client answers liveness pings and keeps its session`() = runBlocking {
+        val port = ServerSocket(0).use { it.localPort }
+        val metrics = McpRuntimeMetrics("sse-live-client-test", maxHttpCalls = 64, maxSessions = 1)
+        val server = Server(
+            serverInfo = Implementation("sse-live-client-test", "1.0"),
+            options = ServerOptions(
+                capabilities = ServerCapabilities(
+                    tools = ServerCapabilities.Tools(listChanged = false),
+                )
+            ),
+        )
+        val engine = embeddedServer(CIO, host = "127.0.0.1", port = port) {
+            configureMcpHttpEndpoint(
+                mcpServer = server,
+                port = port,
+                runtimeMetrics = metrics,
+                maxSessions = 1,
+                sseHeartbeatMillis = 100,
+                sseClientLivenessTimeoutMillis = 500,
+            )
+        }.start()
+        val client = TestStreamableHttpMcpClient()
+
+        try {
+            client.connectToServer("http://127.0.0.1:$port/mcp")
+            delay(750)
+            client.ping()
+            val snapshot = metrics.snapshot()
+            assertEquals(1, snapshot.activeHttpCalls)
+            assertEquals(1, snapshot.activeSessions)
+            assertEquals(0, snapshot.sessionCapacityRejections)
+        } finally {
+            runCatching { client.close() }
+            runCatching { engine.stop(100, 3_000) }
+            server.close()
         }
     }
 
@@ -180,6 +272,55 @@ class McpHttpSessionStressTest {
             .build()
         val status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
         assertTrue(status in setOf(200, 202), "Initialized notification returned HTTP $status")
+    }
+
+    private fun disconnectOptionalStreamWithGracefulFin(endpoint: URI, sessionId: String) {
+        openOptionalStream(endpoint, sessionId).use { socket ->
+            // Drain the response headers and SDK priming event before shutdown so this produces a graceful FIN
+            // rather than relying on an unread-response reset.
+            socket.shutdownOutput()
+        }
+    }
+
+    private fun openOptionalStream(endpoint: URI, sessionId: String): Socket {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(endpoint.host, endpoint.port), 2_000)
+            socket.soTimeout = 5_000
+            socket.getOutputStream().apply {
+                write(
+                    buildString {
+                        append("GET ${endpoint.rawPath} HTTP/1.1\r\n")
+                        append("Host: ${endpoint.host}:${endpoint.port}\r\n")
+                        append("Accept: text/event-stream\r\n")
+                        append("Mcp-Protocol-Version: 2025-11-25\r\n")
+                        append("Mcp-Session-Id: $sessionId\r\n")
+                        append("Connection: keep-alive\r\n\r\n")
+                    }.toByteArray(StandardCharsets.US_ASCII)
+                )
+                flush()
+            }
+
+            val reader = socket.getInputStream().bufferedReader(StandardCharsets.US_ASCII)
+            assertTrue(reader.readLine().startsWith("HTTP/1.1 200"))
+            while (reader.readLine().isNotEmpty()) {
+                // response headers
+            }
+            val chunkSize = reader.readLine().substringBefore(';').trim().toInt(16)
+            val chunk = CharArray(chunkSize)
+            var offset = 0
+            while (offset < chunk.size) {
+                val read = reader.read(chunk, offset, chunk.size - offset)
+                check(read >= 0) { "SSE priming event ended early" }
+                offset += read
+            }
+            assertTrue(String(chunk).startsWith("data:"))
+            reader.readLine() // trailing CRLF after the first chunk
+            return socket
+        } catch (failure: Throwable) {
+            socket.close()
+            throw failure
+        }
     }
 
     private fun disconnectOptionalStream(client: HttpClient, endpoint: URI, sessionId: String) {
