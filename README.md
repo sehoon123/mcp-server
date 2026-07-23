@@ -120,6 +120,20 @@ structured result. Correction-required validation, output-limit, and Burp failur
 approval, disabled, and unavailable outcomes remain non-protocol structured outcomes. Malformed MCP arguments that
 cannot be deserialized still use the protocol-level tool error path.
 
+### v4.3 session-scoped approvals
+
+Version 4.3 keeps the 26/19 tool catalog and all tool inputs stable while adding a safer alternative to persistent
+approval bypasses. Outbound HTTP, request routing, Target scope changes, and each project-data source can be approved
+for only the current MCP session. Outbound HTTP uses the explicit **Allow All for This Session** label because that grant
+covers every syntactically valid destination in that session; target validation and all other tool safeguards remain
+active. Project-data grants remain source-specific (for example, Site Map does not grant HTTP history access).
+
+Session approval state is a fixed enum set attached to the bounded 32-session registry. It stores no URL, target,
+header, body, project identifier, or client-provided value and is removed on authenticated `DELETE /mcp`, idle expiry,
+capacity eviction, listener restart, or Burp shutdown. **Reset active session approvals** clears all current grants
+without cancelling operations that have already started. **Reset all persistent approvals...** restores outbound HTTP,
+routing, Scope, and project-data policies to prompt-by-default and removes saved HTTP approval targets.
+
 ### v4.2 transport lifecycle and approval controls
 
 Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,
@@ -184,8 +198,9 @@ Open the **MCP** tab in Burp:
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
-- `Always allow all outbound HTTP requests` is off by default. Enable it only when every destination may bypass per-target **Allow Once / Always Allow Host / Always Allow Host:Port / Deny** review; target syntax validation and all other tool safeguards remain active.
-- Target scope include/exclude dialogs offer **Allow Once / Always Allow / Deny**; re-enable `Require approval for Target scope changes` to restore prompts. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
+- `Always allow all outbound HTTP requests` is off by default. Enable it only when every destination may permanently bypass per-target **Allow Once / Allow All for This Session / Always Allow Host / Always Allow Host:Port / Deny** review; target syntax validation and all other tool safeguards remain active.
+- Request-routing and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
+- Use **Reset active session approvals** to revoke future use of all memory-only grants without cancelling already-started operations. Use **Reset all persistent approvals...** to restore every saved HTTP, routing, Scope, and project-data approval bypass to prompt-by-default.
 - Enable configuration-editing tools only when they are required.
 - Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
 - Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
@@ -196,9 +211,10 @@ support a remote listener; do not weaken the bind or use an unauthenticated forw
 ### Diagnostics, audit, and emergency read-only mode
 
 The diagnostics view reports only operational metadata: listener state and endpoint, the production protocol target,
-active/peak HTTP calls, pending/active sessions, event-stream opens/closes/reopens, liveness ping outcomes, heartbeat
-failures, explicit session termination, pressure/idle evictions, request and rejection counters, last activity, a safe last-error
-summary, and the embedded proxy version/commit/SHA-256 verification state. Counters reset when the listener starts and
+active/peak HTTP calls, pending/active sessions, aggregate value-free session-approval counts,
+event-stream opens/closes/reopens, liveness ping outcomes, heartbeat failures, explicit session termination,
+pressure/idle evictions, request and rejection counters, last activity, a safe last-error summary, and the embedded proxy
+version/commit/SHA-256 verification state. Counters reset when the listener starts and
 use fixed-cardinality atomic storage, not per-client records. **Copy redacted diagnostics**
 never includes the bearer token, message content, header values, client-provided identifiers, or local file paths.
 
@@ -324,8 +340,9 @@ response.
 Each action returns structured `status` and `executionState`. `not_started` is safe with respect to that invocation.
 `uncertain` means a Burp API call may already have completed and **must not be retried automatically**. Routing actions
 show the exact resulting request and a normalized change summary when request-action approval is enabled. The dialog
-provides **Allow Once**, **Always Allow**, and **Deny**. Always Allow intentionally disables all
-future routing-action prompts until `Require approval for request routing actions` is re-enabled in the MCP tab. Audit
+provides **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**. The session choice retains no
+request or target value and expires with that MCP session. Always Allow intentionally disables all future routing-action
+prompts until `Require approval for request routing actions` is re-enabled in the MCP tab. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
 
@@ -333,8 +350,9 @@ values are not logged.
 
 Use `check_scope` for a bounded read of up to 32 explicit URLs or stable HTTP references. `update_scope` combines include
 and exclude operations through `operation: "include" | "exclude"`; it normalizes every URL and validates the project
-and all references first. Its review offers **Allow Once**, **Always Allow**, and **Deny**. Always Allow applies only to
-future Target scope include/exclude prompts and persists no URL or project value; restore prompts with `Require approval
+and all references first. Its review offers **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**.
+The session choice covers later include/exclude reviews only for that MCP session and stores no URL or project value.
+Always Allow applies only to future Target scope include/exclude prompts and persists no URL or project value; restore prompts with `Require approval
 for Target scope changes` in the MCP tab. Validation, project rechecks, mutation serialization, post-change verification,
 and uncertain-result handling remain active even when prompts are disabled. Scope mutation is verified after each URL.
 `executionState: "uncertain"` means a partial change may exist and must not be retried automatically.

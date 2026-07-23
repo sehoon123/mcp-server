@@ -92,7 +92,10 @@ call. `KtorServerManager` explicitly closes the MCP `Server` whenever it stops o
 The server additionally wraps SDK transports in a bounded registry. At most 32 pending or active sessions can exist;
 idle sessions are evicted after 15 minutes by a 60-second sweep. Explicit DELETE, initialization failure, capacity
 rejection, idle eviction, and application shutdown all close a transport exactly once. Shutdown waits at most two
-seconds for aggregate session cleanup, so a stalled SDK close cannot indefinitely block listener restart.
+seconds for aggregate session cleanup, so a stalled SDK close cannot indefinitely block listener restart. v4.3 adds
+one fixed `EnumSet` of approval categories per active session through the same 32-entry lifecycle; no target, request,
+project, or client value is retained. Aggregate diagnostics read two fixed-cardinality atomic counters; a reset scans at
+most 32 small sets. Resetting approvals does not cancel an operation that already passed its authorization gate.
 
 Native third-party clients that omit DELETE therefore consume a slot until normal idle eviction unless capacity is
 needed first. Under capacity pressure, the registry may displace only the least-recently-used inactive session that

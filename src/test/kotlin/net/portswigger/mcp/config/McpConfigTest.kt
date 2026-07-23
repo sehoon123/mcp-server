@@ -144,6 +144,35 @@ class McpConfigTest {
     }
 
     @Test
+    fun `resetPersistentApprovals restores every approval policy to prompt by default`() {
+        config.requireHttpRequestApproval = false
+        config.addAutoApproveTarget("example.com")
+        config.requireRequestActionApproval = false
+        config.requireScopeChangeApproval = false
+        config.requireDataAccessApproval = false
+        config.alwaysAllowHttpHistory = true
+        config.alwaysAllowSiteMap = true
+        config.alwaysAllowWebSocketHistory = true
+        config.alwaysAllowOrganizer = true
+        config.alwaysAllowScannerIssues = true
+        config.alwaysAllowCollaboratorInteractions = true
+
+        config.resetPersistentApprovals()
+
+        assertTrue(config.requireHttpRequestApproval)
+        assertTrue(config.getAutoApproveTargetsList().isEmpty())
+        assertTrue(config.requireRequestActionApproval)
+        assertTrue(config.requireScopeChangeApproval)
+        assertTrue(config.requireDataAccessApproval)
+        assertFalse(config.alwaysAllowHttpHistory)
+        assertFalse(config.alwaysAllowSiteMap)
+        assertFalse(config.alwaysAllowWebSocketHistory)
+        assertFalse(config.alwaysAllowOrganizer)
+        assertFalse(config.alwaysAllowScannerIssues)
+        assertFalse(config.alwaysAllowCollaboratorInteractions)
+    }
+
+    @Test
     fun `parsed auto approve targets are reused until the raw setting changes`() {
         config.autoApproveTargets = "example.com\ntest.org"
 

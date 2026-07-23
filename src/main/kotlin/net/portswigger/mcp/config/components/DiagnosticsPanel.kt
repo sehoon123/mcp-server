@@ -34,6 +34,8 @@ internal class DiagnosticsPanel(
     private val auditLog: McpAuditSink,
     private val proxyProvenance: ProxyProvenance?,
     private val proxyVerified: Boolean,
+    private val clearSessionApprovals: () -> Int = { 0 },
+    private val onPersistentApprovalsReset: () -> Unit = {},
 ) : JPanel() {
     private val diagnosticsArea = JTextArea(13, 64)
     private val statusLabel = JLabel(" ")
@@ -141,6 +143,58 @@ internal class DiagnosticsPanel(
             verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
         })
         add(Box.createVerticalStrut(Design.Spacing.SM))
+        add(JLabel(
+            "Session approvals are memory-only and expire on session deletion, idle eviction, listener restart, or Burp shutdown."
+        ).apply {
+            font = Design.Typography.bodyMedium
+            foreground = Design.Colors.onSurfaceVariant
+            alignmentX = LEFT_ALIGNMENT
+        })
+        add(Box.createVerticalStrut(Design.Spacing.SM))
+
+        val approvalButtons = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, 0)).apply {
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            add(JButton("Reset active session approvals").apply {
+                addActionListener {
+                    runCatching { clearSessionApprovals() }
+                        .onSuccess { cleared ->
+                            auditLog.recordLocalEvent("session_approvals", "reset")
+                            statusLabel.text = "$cleared active session approval grants reset"
+                            refresh()
+                        }
+                        .onFailure {
+                            statusLabel.text = "Could not reset active session approvals"
+                        }
+                }
+            })
+            add(JButton("Reset all persistent approvals...").apply {
+                addActionListener {
+                    val choice = JOptionPane.showConfirmDialog(
+                        this@DiagnosticsPanel,
+                        "Restore all MCP approval policies to prompt-by-default? " +
+                            "This clears saved HTTP targets and all persistent approval bypasses.",
+                        "Reset persistent MCP approvals",
+                        JOptionPane.OK_CANCEL_OPTION,
+                        JOptionPane.WARNING_MESSAGE,
+                    )
+                    if (choice == JOptionPane.OK_OPTION) {
+                        runCatching {
+                            config.resetPersistentApprovals()
+                            onPersistentApprovalsReset()
+                        }.onSuccess {
+                            auditLog.recordLocalEvent("persistent_approvals", "reset_to_prompt")
+                            statusLabel.text = "Persistent approvals reset to prompt-by-default"
+                            refresh()
+                        }.onFailure {
+                            statusLabel.text = "Could not reset persistent approvals"
+                        }
+                    }
+                }
+            })
+        }
+        add(approvalButtons)
+        add(Box.createVerticalStrut(Design.Spacing.SM))
 
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, 0)).apply {
             isOpaque = false
@@ -230,6 +284,10 @@ internal fun formatMcpDiagnostics(
     appendLine("HTTP calls: ${diagnostics.activeHttpCalls}/${diagnostics.maxHttpCalls} active, peak ${diagnostics.peakHttpCalls}")
     appendLine(
         "Sessions: ${diagnostics.activeSessions} active + ${diagnostics.pendingSessions} pending / ${diagnostics.maxSessions}"
+    )
+    appendLine(
+        "Session approvals: ${diagnostics.sessionApprovalGrants} grants across " +
+            "${diagnostics.sessionsWithApprovals} active sessions"
     )
     appendLine(
         "Event streams: ${diagnostics.activeEventStreams} active, ${diagnostics.openedEventStreams} opened, " +

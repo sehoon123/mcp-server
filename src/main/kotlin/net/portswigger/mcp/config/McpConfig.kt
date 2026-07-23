@@ -208,6 +208,21 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
         autoApproveTargets = ""
     }
 
+    /** Restores every persisted approval bypass to the secure prompt-by-default state. */
+    fun resetPersistentApprovals() {
+        requireHttpRequestApproval = true
+        clearAutoApproveTargets()
+        requireRequestActionApproval = true
+        requireScopeChangeApproval = true
+        requireDataAccessApproval = true
+        alwaysAllowHttpHistory = false
+        alwaysAllowSiteMap = false
+        alwaysAllowWebSocketHistory = false
+        alwaysAllowOrganizer = false
+        alwaysAllowScannerIssues = false
+        alwaysAllowCollaboratorInteractions = false
+    }
+
     fun addTargetsChangeListener(listener: () -> Unit): ListenerHandle {
         val registration = ListenerRegistration(listener)
         targetsChangeListeners.add(registration)

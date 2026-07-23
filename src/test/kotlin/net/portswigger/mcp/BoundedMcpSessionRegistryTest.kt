@@ -6,6 +6,9 @@ import io.mockk.mockk
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import net.portswigger.mcp.security.McpSessionApproval
+import net.portswigger.mcp.security.McpSessionApprovalRegistry
+import net.portswigger.mcp.security.McpSessionApprovalSummary
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -214,6 +217,44 @@ class BoundedMcpSessionRegistryTest {
 
         assertNull(registry.reserve(transport()))
         registry.closeAll()
+    }
+
+    @Test
+    fun `session approvals are removed on deletion idle eviction pressure and shutdown`() = runBlocking {
+        val approvals = McpSessionApprovalRegistry(maxSessions = 1)
+        val registry = BoundedMcpSessionRegistry(
+            maxSessions = 1,
+            idleMillis = 0,
+            sessionApprovals = approvals,
+        )
+
+        val removed = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(removed, "removed-session")
+        assertNotNull(approvals.contextFor("removed-session")).grant(McpSessionApproval.OUTBOUND_HTTP)
+        registry.remove(removed)
+        assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
+
+        val idle = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(idle, "idle-session")
+        assertNotNull(approvals.contextFor("idle-session")).grant(McpSessionApproval.SITE_MAP)
+        registry.evictIdle()
+        assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
+
+        val pressured = assertNotNull(registry.reserve(transport())).pending
+        registry.activate(pressured, "pressured-session")
+        assertNotNull(approvals.contextFor("pressured-session")).grant(McpSessionApproval.REQUEST_ROUTING)
+        val stream = Job()
+        assertTrue(pressured.registerStream(stream))
+        pressured.unregisterStream(stream)
+        val replacement = assertNotNull(registry.reserve(transport()))
+        assertEquals(pressured, replacement.displaced)
+        assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
+        replacement.displaced?.closeTransport()
+
+        registry.activate(replacement.pending, "shutdown-session")
+        assertNotNull(approvals.contextFor("shutdown-session")).grant(McpSessionApproval.SCOPE_CHANGES)
+        registry.closeAll()
+        assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
     }
 
     private fun transport(): StreamableHttpServerTransport =

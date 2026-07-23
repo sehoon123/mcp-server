@@ -16,6 +16,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
@@ -109,7 +110,7 @@ class HttpRequestSecurityTest {
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
             every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } answers {
                 approval.cancel()
-                1
+                2
             }
 
             approval = async(start = CoroutineStart.UNDISPATCHED) {
@@ -120,6 +121,119 @@ class HttpRequestSecurityTest {
 
             assertTrue(approval.isCancelled)
             assertTrue(config.getAutoApproveTargetsList().isEmpty())
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+    }
+
+    @Test
+    fun `Always Allow Host remains persistent after the session option is inserted`() = runBlocking {
+        val queuedAction = slot<Runnable>()
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } returns 2
+            val approval = async(start = CoroutineStart.UNDISPATCHED) {
+                SwingUserApprovalHandler().requestApproval("example.com", 443, config)
+            }
+            queuedAction.captured.run()
+
+            assertTrue(approval.await())
+            assertEquals(listOf("example.com"), config.getAutoApproveTargetsList())
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+    }
+
+    @Test
+    fun `Allow All for This Session grants no persistent target and is isolated to that session`() = runBlocking {
+        val queuedAction = slot<Runnable>()
+        val options = slot<Array<String>>()
+        val approvals = McpSessionApprovalRegistry(2)
+        assertTrue(approvals.activate("http-session"))
+        assertTrue(approvals.activate("other-session"))
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 1
+            val approval = async(start = CoroutineStart.UNDISPATCHED) {
+                withContext(requireNotNull(approvals.contextFor("http-session"))) {
+                    SwingUserApprovalHandler().requestApproval("example.com", 443, config)
+                }
+            }
+            queuedAction.captured.run()
+
+            assertTrue(approval.await())
+            assertTrue(approvals.isGranted("http-session", McpSessionApproval.OUTBOUND_HTTP))
+            assertFalse(approvals.isGranted("other-session", McpSessionApproval.OUTBOUND_HTTP))
+            assertTrue(config.requireHttpRequestApproval)
+            assertTrue(config.getAutoApproveTargetsList().isEmpty())
+            assertTrue(options.captured.contains("Allow All for This Session"))
+        } finally {
+            unmockkObject(Dialogs)
+            unmockkStatic(SwingUtilities::class)
+        }
+    }
+
+    @Test
+    fun `session HTTP approval bypasses prompts and lazy request materialization only in that session`() = runBlocking {
+        val approvals = McpSessionApprovalRegistry(2)
+        assertTrue(approvals.activate("http-session"))
+        assertTrue(approvals.activate("other-session"))
+        coEvery { mockApprovalHandler.requestApproval(any(), any(), config, any(), any()) } returns false
+        var materializations = 0
+
+        withContext(requireNotNull(approvals.contextFor("http-session"))) {
+            grantCurrentSessionApproval(McpSessionApproval.OUTBOUND_HTTP)
+            assertTrue(
+                HttpRequestSecurity.checkHttpRequestPermissionLazy(
+                    "new.example", 443, config, requestContent = {
+                        materializations++
+                        "GET / HTTP/1.1\r\n\r\n"
+                    }
+                )
+            )
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("bad host", 443, config))
+        }
+        assertEquals(0, materializations)
+
+        withContext(requireNotNull(approvals.contextFor("other-session"))) {
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("new.example", 443, config))
+        }
+        approvals.clearApprovals()
+        withContext(requireNotNull(approvals.contextFor("http-session"))) {
+            assertFalse(HttpRequestSecurity.checkHttpRequestPermission("new.example", 443, config))
+        }
+    }
+
+    @Test
+    fun `cancellation while the HTTP dialog is open cannot grant a session approval`() = runBlocking {
+        val approvals = McpSessionApprovalRegistry(1)
+        assertTrue(approvals.activate("cancelled-session"))
+        val queuedAction = slot<Runnable>()
+        lateinit var approval: Deferred<Boolean>
+        mockkStatic(SwingUtilities::class)
+        mockkObject(Dialogs)
+        try {
+            every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
+            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } answers {
+                approval.cancel()
+                1
+            }
+            approval = async(start = CoroutineStart.UNDISPATCHED) {
+                withContext(requireNotNull(approvals.contextFor("cancelled-session"))) {
+                    SwingUserApprovalHandler().requestApproval("example.com", 443, config)
+                }
+            }
+            queuedAction.captured.run()
+            approval.join()
+
+            assertTrue(approval.isCancelled)
+            assertFalse(approvals.isGranted("cancelled-session", McpSessionApproval.OUTBOUND_HTTP))
         } finally {
             unmockkObject(Dialogs)
             unmockkStatic(SwingUtilities::class)

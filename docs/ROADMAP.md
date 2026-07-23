@@ -49,6 +49,9 @@ Implemented for stable-ID and focused active actions:
   and exact resulting request where applicable.
 - Target scope include/exclude reviews offer an explicit Always Allow policy that stores one boolean, not target or
   project values; validation, project rechecks, mutation serialization, and verification remain mandatory.
+- v4.3 adds fixed-category, memory-only session grants for outbound HTTP, request routing, Scope, and each project-data
+  source. They retain no target, request, project, or client value and expire with DELETE, idle/pressure eviction,
+  listener restart, or Burp shutdown. UI controls clear active grants or restore all persistent policies to prompting.
 - Redacted Burp log lines record bounded action metadata without bodies or header values.
 - Structured results distinguish `not_started`, `completed`, and ambiguous `uncertain` execution.
 - Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
@@ -207,7 +210,7 @@ Long-running operations should not look like hung calls.
 
 ### 10. Add protocol diagnostics
 
-Implemented incrementally through v4.2.0:
+Implemented incrementally through v4.3.0:
 
 - A local Burp panel shows listener state/endpoint, the production protocol target, request and active/peak call counts,
   pending/active/initialized sessions, idle evictions, admission/authentication rejections, and last activity.
@@ -215,7 +218,8 @@ Implemented incrementally through v4.2.0:
   shutdown error can appear.
 - The panel reports the embedded proxy version, full source commit, SHA-256, and extraction verification state.
 - Fixed-cardinality counters report optional event-stream opens/closes/reopens, liveness ping outcomes, heartbeat failures,
-  explicit authenticated DELETE requests, and pressure evictions without retaining client or traffic values.
+  explicit authenticated DELETE requests, pressure evictions, and aggregate session-approval grant/session counts without
+  retaining client or traffic values.
 
 Remaining work:
 

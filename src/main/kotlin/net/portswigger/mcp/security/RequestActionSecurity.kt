@@ -35,13 +35,17 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
             appendLine()
             appendLine("Review the exact resulting request before allowing this action.")
             appendLine()
+            appendLine(
+                "Allow for This Session permits later request-routing actions only until this MCP session ends or " +
+                    "session approvals are reset."
+            )
             append("Always Allow disables future request-routing approval prompts until re-enabled in MCP settings.")
         }
         val result = SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(
                 findBurpFrame(),
                 message,
-                arrayOf("Allow Once", "Always Allow", "Deny"),
+                arrayOf("Allow Once", "Allow for This Session", "Always Allow", "Deny"),
                 requestContent,
                 api,
             )
@@ -49,6 +53,10 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
         return when (result) {
             0 -> true
             1 -> {
+                grantCurrentSessionApproval(McpSessionApproval.REQUEST_ROUTING)
+                true
+            }
+            2 -> {
                 val persisted = runCatching { config.requireRequestActionApproval = false }
                 runCatching {
                     if (persisted.isSuccess) {
@@ -90,6 +98,10 @@ object RequestActionSecurity {
         val auditKind = auditOperation?.auditKind ?: "request_routing"
         if (!config.requireRequestActionApproval) {
             recordCurrentToolApproval(auditKind, "policy_allow")
+            return true
+        }
+        if (isCurrentSessionApproved(McpSessionApproval.REQUEST_ROUTING)) {
+            recordCurrentToolApproval(auditKind, "session_allow")
             return true
         }
         val approved = approvalHandler.requestApproval(action, source, target, changes, requestContent, config, api)
