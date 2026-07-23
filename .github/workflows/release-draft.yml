@@ -149,7 +149,11 @@ jobs:
           if [[ "$ready" != true ]]; then cat "$server_log"; exit 1; fi
 
           status=0
-          for scenario in server-initialize ping tools-list dns-rebinding-protection server-sse-multiple-streams; do
+          for scenario in \
+            server-initialize ping tools-list \
+            resources-list resources-read-text resources-templates-read \
+            prompts-list prompts-get-simple prompts-get-with-args \
+            dns-rebinding-protection server-sse-multiple-streams; do
             npx --yes @modelcontextprotocol/conformance@0.1.11 server \
               --url http://127.0.0.1:19877/mcp --scenario "$scenario" --verbose || status=1
           done
