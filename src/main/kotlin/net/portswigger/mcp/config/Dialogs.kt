@@ -288,6 +288,58 @@ object Dialogs {
         return result
     }
 
+    internal fun createOptionButtonPanel(
+        options: Array<String>,
+        onSelected: (Int) -> Unit = {},
+    ): JPanel {
+        require(options.isNotEmpty()) { "At least one dialog option is required" }
+
+        val buttons = options.mapIndexed { index, option ->
+            val button = when {
+                index == 0 -> Design.createFilledButton(option)
+                index == options.lastIndex -> Design.createOutlinedButton(option).apply {
+                    foreground = Design.Colors.error
+                    border = BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(Design.Colors.error, 1),
+                        BorderFactory.createEmptyBorder(
+                            Design.Spacing.SM + 1,
+                            Design.Spacing.LG - 1,
+                            Design.Spacing.SM + 1,
+                            Design.Spacing.LG - 1,
+                        ),
+                    )
+                }
+                else -> Design.createOutlinedButton(option)
+            }
+            button.apply {
+                addActionListener { onSelected(index) }
+            }
+        }
+
+        val buttonWidth = buttons.maxOf { it.preferredSize.width }
+        val buttonHeight = buttons.maxOf { it.preferredSize.height }
+        buttons.forEach { button ->
+            val fittedSize = Dimension(buttonWidth, buttonHeight)
+            button.minimumSize = fittedSize
+            button.preferredSize = fittedSize
+            button.maximumSize = fittedSize
+        }
+
+        val gap = Design.Spacing.SM
+        val panelSize = Dimension(
+            buttonWidth,
+            buttonHeight * buttons.size + gap * (buttons.size - 1),
+        )
+        return JPanel(GridLayout(buttons.size, 1, 0, gap)).apply {
+            background = Design.Colors.surface
+            alignmentX = Component.CENTER_ALIGNMENT
+            minimumSize = panelSize
+            preferredSize = panelSize
+            maximumSize = panelSize
+            buttons.forEach(::add)
+        }
+    }
+
     fun showOptionDialog(
         parent: Component?,
         message: String,
@@ -383,47 +435,31 @@ object Dialogs {
 
             leftPanel.add(requestComponent, BorderLayout.CENTER)
 
+            val buttonPanel = createOptionButtonPanel(options) { index ->
+                result = index
+                dialog.dispose()
+            }
+            val rightContentWidth = maxOf(messageScrollPane.preferredSize.width, buttonPanel.preferredSize.width)
+            val rightPanelWidth = rightContentWidth + Design.Spacing.LG + Design.Spacing.XL
+            val rightPanelHeight = maxOf(
+                400,
+                messageScrollPane.preferredSize.height + Design.Spacing.LG + buttonPanel.preferredSize.height +
+                    Design.Spacing.XL * 2,
+            )
+            leftPanel.preferredSize = Dimension(420, rightPanelHeight)
+
             val rightPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 background = Design.Colors.surface
-                minimumSize = Dimension(400, 300)
-                maximumSize = Dimension(400, Int.MAX_VALUE)
-                preferredSize = Dimension(400, 400)
+                minimumSize = Dimension(rightPanelWidth, rightPanelHeight)
+                maximumSize = Dimension(rightPanelWidth, Int.MAX_VALUE)
+                preferredSize = Dimension(rightPanelWidth, rightPanelHeight)
                 border = EmptyBorder(Design.Spacing.XL, Design.Spacing.LG, Design.Spacing.XL, Design.Spacing.XL)
             }
 
             rightPanel.add(messageScrollPane)
             rightPanel.add(Box.createVerticalStrut(Design.Spacing.LG))
             rightPanel.add(Box.createVerticalGlue())
-
-            val buttonPanel = JPanel().apply {
-                layout = GridLayout(2, 2, Design.Spacing.SM, Design.Spacing.SM)
-                background = Design.Colors.surface
-                alignmentX = Component.CENTER_ALIGNMENT
-                preferredSize = Dimension(390, 80)
-            }
-
-            options.forEachIndexed { index, option ->
-                val button = when (index) {
-                    0 -> Design.createFilledButton(option)
-                    1, 2 -> Design.createOutlinedButton(option)
-                    3 -> Design.createOutlinedButton(option).apply {
-                        foreground = Design.Colors.error
-                        border = BorderFactory.createLineBorder(Design.Colors.error, 1)
-                    }
-
-                    else -> Design.createOutlinedButton(option)
-                }.apply {
-                    preferredSize = Dimension(190, 32)
-                    font = font.deriveFont(10f)
-                    addActionListener {
-                        result = index
-                        dialog.dispose()
-                    }
-                }
-                buttonPanel.add(button)
-            }
-
             rightPanel.add(buttonPanel)
 
             contentPanel.add(leftPanel, BorderLayout.CENTER)
@@ -436,40 +472,14 @@ object Dialogs {
             contentPanel.add(messageScrollPane)
             contentPanel.add(Box.createVerticalStrut(Design.Spacing.XL))
 
-            val buttonPanel = JPanel().apply {
-                layout = GridLayout(2, 2, Design.Spacing.SM, Design.Spacing.SM)
-                background = Design.Colors.surface
-                alignmentX = Component.CENTER_ALIGNMENT
-                preferredSize = Dimension(370, 80)
+            val buttonPanel = createOptionButtonPanel(options) { index ->
+                result = index
+                dialog.dispose()
             }
-
-            options.forEachIndexed { index, option ->
-                val button = when (index) {
-                    0 -> Design.createFilledButton(option)
-                    1, 2 -> Design.createOutlinedButton(option)
-                    else -> Design.createTextButton(option)
-                }.apply {
-                    preferredSize = Dimension(180, 32)
-                    font = font.deriveFont(10f)
-                    addActionListener {
-                        result = index
-                        dialog.dispose()
-                    }
-                }
-                buttonPanel.add(button)
-            }
-
             contentPanel.add(buttonPanel)
         }
 
         dialog.contentPane = contentPanel
-
-        if (requestContent.isNullOrBlank()) {
-            dialog.preferredSize = Dimension(420, 350)
-        } else {
-            dialog.preferredSize = Dimension(860, 400)
-        }
-
         dialog.pack()
 
         if (parent != null && parent.isDisplayable) {
