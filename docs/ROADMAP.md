@@ -280,6 +280,14 @@ Remaining work:
 | 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
 | 9 | Resources and reusable prompts | Native resources/prompts implemented in v4.4.0 and safe context-menu reference copy in v4.4.1; subscriptions remain | Medium |
 
+## v5 protocol gate
+
+Version 5 is reserved for the modern per-request MCP era. The proposed `2026-07-28` protocol is still a draft, Kotlin
+SDK server support is not released, modern conformance remains prerelease, and connection-scoped approval grants need a
+safe sessionless replacement. Continue v4 production hardening while those gates are open; do not ship a partial raw
+transport fork merely to claim draft compatibility. See [V5_READINESS.md](V5_READINESS.md) for the gate matrix,
+migration decisions, and staged release criteria.
+
 ## Design constraints
 
 - Never weaken loopback, Host, or Origin validation merely to make a client connect.
