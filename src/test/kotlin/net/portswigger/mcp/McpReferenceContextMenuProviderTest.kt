@@ -27,6 +27,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import net.portswigger.mcp.tools.HttpMessageReference
 import net.portswigger.mcp.tools.HttpMessageSource
+import net.portswigger.mcp.tools.stableHistoryId
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import javax.swing.JMenuItem
@@ -217,24 +218,63 @@ class McpReferenceContextMenuProviderTest {
     }
 
     @Test
-    fun `scanner issue reference is professional only and hashing is deferred until click`() {
-        val issue = scannerIssue()
+    fun `scanner issue reference resolves the current source issue after click`() {
+        val selected = scannerIssue(
+            detail = "Context-menu representation",
+            baseUrl = "https://example.test/context-view",
+        )
+        val current = scannerIssue(
+            detail = "Current Site Map representation",
+            baseUrl = "https://example.test/current-source",
+        )
+        val siteMap = mockk<SiteMap>()
+        every { api.siteMap() } returns siteMap
+        every { siteMap.issues() } returns listOf(current)
         val event = mockk<AuditIssueContextMenuEvent>()
-        every { event.selectedIssues() } returns listOf(issue)
+        every { event.selectedIssues() } returns listOf(selected)
         val tasks = DeferredTaskExecutor()
         val community = provider(professional = false, tasks = tasks)
         assertTrue(community.provideMenuItems(event).isEmpty())
-        verify(exactly = 0) { issue.detail() }
+        verify(exactly = 0) { api.siteMap() }
+        verify(exactly = 0) { selected.detail() }
+        verify(exactly = 0) { current.detail() }
 
         val professional = provider(professional = true, tasks = tasks)
         val item = professional.provideMenuItems(event).single() as JMenuItem
-        verify(exactly = 0) { issue.detail() }
+        verify(exactly = 0) { api.siteMap() }
         item.doClick()
-        verify(exactly = 0) { issue.detail() }
+        verify(exactly = 0) { api.siteMap() }
+        verify(exactly = 0) { selected.detail() }
+        verify(exactly = 0) { current.detail() }
         tasks.runPending()
 
-        assertTrue(clipboard.value.orEmpty().matches(Regex("burp://scanner-issue/project-A/issue_[0-9a-f]{32}")))
-        verify(exactly = 1) { issue.detail() }
+        verify(exactly = 1) { siteMap.issues() }
+        verify(exactly = 1) { selected.detail() }
+        verify(exactly = 2) { current.detail() }
+        val expectedId = current.stableHistoryId()
+        assertEquals("burp://scanner-issue/project-A/$expectedId", clipboard.value)
+    }
+
+    @Test
+    fun `ambiguous scanner issue source match fails closed`() {
+        val selected = scannerIssue(detail = "Context-menu representation")
+        val first = scannerIssue(detail = "First current issue")
+        val second = scannerIssue(detail = "Second current issue")
+        val siteMap = mockk<SiteMap>()
+        every { api.siteMap() } returns siteMap
+        every { siteMap.issues() } returns listOf(first, second)
+        val event = mockk<AuditIssueContextMenuEvent>()
+        every { event.selectedIssues() } returns listOf(selected)
+
+        val provider = provider(professional = true)
+        (provider.provideMenuItems(event).single() as JMenuItem).doClick()
+
+        assertNull(clipboard.value)
+        verify {
+            logging.raiseErrorEvent(
+                "MCP reference could not be copied. Run the corresponding MCP search to obtain a current stable reference."
+            )
+        }
     }
 
     @Test
@@ -335,17 +375,20 @@ class McpReferenceContextMenuProviderTest {
         }
     }
 
-    private fun scannerIssue(): AuditIssue {
+    private fun scannerIssue(
+        detail: String = "Bounded test detail",
+        baseUrl: String = "https://example.test",
+    ): AuditIssue {
         val definition = mockk<AuditIssueDefinition>()
         every { definition.typeIndex() } returns 1001
         return mockk<AuditIssue>().also { issue ->
             every { issue.definition() } returns definition
             every { issue.name() } returns "Example issue"
-            every { issue.baseUrl() } returns "https://example.test"
+            every { issue.baseUrl() } returns baseUrl
             every { issue.httpService() } returns null
             every { issue.severity() } returns AuditIssueSeverity.INFORMATION
             every { issue.confidence() } returns AuditIssueConfidence.CERTAIN
-            every { issue.detail() } returns "Bounded test detail"
+            every { issue.detail() } returns detail
         }
     }
 }
