@@ -12,7 +12,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Graceful Streamable HTTP client close retained server sessions | 20 connect/close cycles retained 20 sessions; explicit DELETE retained 0 | Terminate the proxy's HTTP session and close the MCP server during lifecycle transitions |
 | P0 | Ephemeral native clients could exhaust all 32 sessions after disconnecting their optional SSE streams without DELETE | Repeated mcporter commands eventually returned `MCP session capacity is full` | Prefer one keep-alive client session and displace only the least-recently-used inactive disconnected-stream session under capacity pressure |
 | P0 | CIO wrapped an occupied listener in `JobCancellationException` | A real occupied-port regression reached `BindException` only after two cancellation causes | Recognize the bounded cause chain, report the numeric endpoint conflict, and verify retry after cleanup |
-| P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | A live JS SDK close left the server socket in `CLOSE_WAIT` and the active-call counter nonzero | Track the handler job, cancel it on session close, and emit a comment-only heartbeat to detect a dead peer |
+| P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | Linux lifecycle tests passed, but on Windows/Burp 29 primed streams closed with a normal FIN remained active after 35 seconds and exhausted all 32 session slots | Prove stream liveness with core MCP pings and idempotently detach only the GET stream's registry/admission leases on timeout; never cancel POST work |
 | P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
 | P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
@@ -98,12 +98,57 @@ needed first. Under capacity pressure, the registry may displace only the least-
 previously registered an optional GET event stream and whose stream has disconnected. It never pressure-evicts a
 session with an active call, an open event stream, or no observed stream. The displaced transport is closed with a
 bounded cleanup before the replacement initializes; if no eligible session exists, the new transport is rejected and
-closed immediately. A real-CIO regression uses a short test heartbeat to close two optional streams, initializes a
-replacement at the configured limit, verifies the oldest session returns 404, and verifies the newer session remains
-usable. Against the real CIO fixture, 40 sequential mcporter `ephemeral` discovery processes (spaced 500 ms so closed
-peers reached the production heartbeat) and 100 rapid `keep-alive` daemon discoveries both completed without a
-capacity rejection. Keep-alive remains the recommended mode because a burst faster than disconnect detection can still
-consume the fixed admission budget temporarily.
+closed immediately.
+
+CIO can close the peer socket without resuming a long-lived SSE response coroutine. An RST-oriented Java client made
+the original heartbeat regression pass, while a client that drained the priming event and closed with a normal FIN
+left the registry and HTTP admission leases active. Installing Ktor's `HttpRequestLifecycle` fixed the Linux fixture,
+but a Windows Burp Community v2026.6 process still retained all 29 closed streams after 35 seconds. On that path the
+close callback could cancel child jobs without running the response handler's `finally`, so the plugin also prevented
+a child liveness watchdog from completing. It is therefore not used as the authoritative cleanup mechanism.
+
+Each optional GET now proves bidirectional protocol liveness. After the stream collector is ready, the server sends a
+core MCP `ping` within 250 ms and then every 15 seconds; the client has two seconds to return the normal JSON-RPC
+response by POST. MCP clients are required to handle ping, and both the JavaScript SDK used by mcporter and Kotlin SDK
+0.14.0 do so. A timeout closes and cancels only that GET stream, then idempotently releases its stream-registration,
+session-request, and HTTP-admission leases even if CIO never resumes normal response cleanup. The 15-second comment
+heartbeat uses the same detach path if its write fails. POST is not connection-cancelled, so a disconnected mutation
+continues to its definite or uncertain result rather than being interrupted after a side effect may have begun.
+
+In the final Windows live probe, three POST-only sessions were preserved while 29 normally closed streams became
+pressure-evictable within four seconds; ten replacements initialized and remained usable, the oldest disconnected
+session returned 404, and capacity rejection remained zero. A standards-compliant mcporter keep-alive stream remained
+the single active session through a separate 31-session pressure run and recurring liveness pings. Sixty-four unspaced
+mcporter `ephemeral` discoveries completed 64/64 in 20.262 seconds, and 100 concurrent malformed requests returned
+100/100 bounded 400 responses. Nine further pressure cycles ended at one active stream, zero pending sessions, one
+active HTTP call, and zero overload or capacity rejection. Process private bytes and handles plateaued in the last
+three-cycle batch (+0.6 MiB and +1 handle), rather than growing in proportion to closed streams. Keep-alive and
+explicit DELETE remain recommended because a disconnected session is retained as a bounded pressure candidate rather
+than deleted automatically.
+
+### Compatibility when standalone SSE is unavailable
+
+A JSON-only fixture that returned 405 for `GET /mcp` but valid JSON for every POST established the basic compatibility
+boundary:
+
+- mcporter 0.9.0 (JavaScript MCP SDK 1.29.0) completed initialize, tool listing, and tool invocation;
+- the embedded Kotlin SDK 0.14.0 proxy logged that GET/SSE was disabled, then completed initialize/list/call and exited
+  normally; and
+- official initialize, ping, tools-list, and concurrent POST scenarios passed, with the conformance client explicitly
+  accepting three JSON responses and zero SSE responses.
+
+This mode is not feature-equivalent. With the same progress-capable tool, a connected GET delivered progress values
+`0`, `50`, and `100`; without GET, the JSON POST still returned final `status=ok` but exposed zero progress events.
+Sampling, elicitation, roots, logging, resource/list-change notifications, and other server-initiated messages lose
+their only delivery channel as well. SDK 0.14.0 does not expose the original incoming JSON-RPC request ID to the tool
+handler, so progress cannot be safely reassigned to that request's POST stream with a small server-side patch.
+
+GET also supplies the only conservative abandonment evidence for a stateful client that omits DELETE. Without it, an
+abandoned JSON-only session is indistinguishable from a legitimate inactive POST-only session; preserving the latter
+means the former remains until the 15-minute idle policy. Consequently v4.1 does not add a "disable SSE" server switch.
+Safe removal requires reliable client DELETE, a deliberate weaker eviction policy, a correctly implemented stateless
+transport, or a future protocol/SDK transition. The draft transport that removes GET and protocol sessions cannot be
+backported unchanged to the negotiated `2025-11-25` protocol.
 
 CIO reports an occupied startup connector through cancellation wrappers whose bounded cause chain ends in
 `BindException`. Startup now recognizes that specific root cause and reports only the numeric local endpoint and that
@@ -160,17 +205,21 @@ following admission limits are exceeded:
 | Pending plus active sessions | 32 |
 | Session idle age | 15 minutes |
 | Session sweep interval | 60 seconds |
-| Optional GET SSE heartbeat | 15 seconds |
+| Optional GET SSE comment heartbeat | 15 seconds |
+| Optional GET MCP liveness ping | within 250 ms, then every 15 seconds |
+| SSE client-response timeout | 2 seconds |
 | Capacity-pressure policy | Oldest inactive session with a disconnected observed SSE stream only |
 | CIO connection idle timeout | 180 seconds |
 | Session cleanup wait during stop | 2 seconds |
 
 Duplicate `Mcp-Session-Id`, ambiguous framing (`Content-Length` plus `Transfer-Encoding`), duplicate or malformed
-`Content-Length`, and oversized chunked bodies fail before dispatch. The optional GET event stream emits only an SSE
-comment every 15 seconds, allowing a closed peer to release its concurrent HTTP slot without creating an MCP message;
-DELETE, eviction, and server shutdown also cancel its registered handler immediately. Disconnect still does not itself
-delete the stateful session. The session remains subject to the separate 32-session and idle-lifetime bounds, but it is
-a lower-priority capacity candidate after its observed stream has disconnected.
+`Content-Length`, and oversized chunked bodies fail before dispatch. The optional GET stream sends a core MCP liveness
+ping within 250 ms and every 15 seconds, with a two-second client-response timeout; it also retains the comment-only
+15-second heartbeat. Either failure path idempotently detaches only that stream. POST is deliberately excluded from
+connection-close cancellation because a mutation may already be executing. DELETE, eviction, and server shutdown also
+cancel a GET handler immediately. Disconnect still does not itself delete the stateful session. The session remains
+subject to the separate 32-session and idle-lifetime bounds, but it is a lower-priority capacity candidate after its
+observed stream has disconnected.
 
 The 180-second CIO value is an idle connection limit, not a total tool-execution deadline. A separate receive-pipeline
 wall-clock timeout was not added because Ktor can pre-buffer the body before that interceptor; the byte cap remains

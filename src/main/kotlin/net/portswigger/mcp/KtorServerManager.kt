@@ -33,13 +33,17 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
+import io.ktor.util.AttributeKey
 import io.modelcontextprotocol.kotlin.sdk.server.DnsRebindingProtection
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.server.ServerSession
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
+import io.modelcontextprotocol.kotlin.sdk.types.EmptyResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.JSONRPCError
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
+import io.modelcontextprotocol.kotlin.sdk.types.PingRequest
 import io.modelcontextprotocol.kotlin.sdk.types.RPCError
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import kotlinx.coroutines.CancellationException
@@ -82,7 +86,10 @@ private const val MCP_SESSION_IDLE_MILLIS = 15L * 60 * 1000
 private const val MCP_SESSION_SWEEP_MILLIS = 60L * 1000
 private const val CIO_IDLE_TIMEOUT_SECONDS = 180
 private const val MCP_SSE_HEARTBEAT_MILLIS = 15_000L
+private const val MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS = 2_000L
+private const val MCP_SSE_INITIAL_LIVENESS_DELAY_MILLIS = 250L
 private const val MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS = 2_000L
+private val MCP_HTTP_CALL_LEASE_KEY = AttributeKey<McpHttpCallLease>("McpHttpCallLease")
 private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1")
 private val DNS_ALLOWED_HOSTS = listOf("localhost", "127.0.0.1", "[::1]")
 private val DNS_ALLOWED_ORIGINS = listOf("http://localhost", "http://127.0.0.1", "http://[::1]")
@@ -100,9 +107,11 @@ internal fun Application.configureMcpHttpEndpoint(
     runtimeMetrics: McpRuntimeMetrics? = null,
     maxSessions: Int = MCP_MAX_SESSIONS,
     sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
+    sseClientLivenessTimeoutMillis: Long = MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS,
 ) {
     require(maxSessions > 0) { "maxSessions must be positive" }
     require(sseHeartbeatMillis > 0) { "sseHeartbeatMillis must be positive" }
+    require(sseClientLivenessTimeoutMillis > 0) { "SSE client liveness timeout must be positive" }
     if (bearerToken != null) {
         require(bearerToken.length in 32..128 && bearerToken.none { it.isWhitespace() || it.isISOControl() }) {
             "local MCP bearer token is invalid"
@@ -181,12 +190,13 @@ internal fun Application.configureMcpHttpEndpoint(
             finish()
             return@intercept
         }
+        val callLease = McpHttpCallLease(activeCalls, runtimeMetrics)
+        context.attributes.put(MCP_HTTP_CALL_LEASE_KEY, callLease)
         runtimeMetrics?.onCallStarted()
         try {
             proceed()
         } finally {
-            activeCalls.decrementAndGet()
-            runtimeMetrics?.onCallFinished()
+            callLease.close()
         }
     }
 
@@ -226,40 +236,68 @@ internal fun Application.configureMcpHttpEndpoint(
                 }
             }
 
-            sse {
-                val lease = sessions.acquireExisting(call) ?: return@sse
-                val streamJob = currentCoroutineContext()[Job]
-                if (streamJob == null || !lease.registerStream(streamJob)) {
-                    lease.close()
-                    call.rejectMcp(
-                        HttpStatusCode.NotFound,
-                        RPCError.ErrorCode.CONNECTION_CLOSED,
-                        "Session not found",
-                    )
-                    return@sse
-                }
+            route("", HttpMethod.Get) {
+                sse {
+                    val lease = sessions.acquireExisting(call) ?: return@sse
+                    val streamJob = currentCoroutineContext()[Job]
+                    if (streamJob == null || !lease.registerStream(streamJob)) {
+                        lease.close()
+                        call.rejectMcp(
+                            HttpStatusCode.NotFound,
+                            RPCError.ErrorCode.CONNECTION_CLOSED,
+                            "Session not found",
+                        )
+                        return@sse
+                    }
 
-                call.response.header(MCP_SESSION_ID_HEADER, lease.sessionId)
-                val sseSession = this
-                val heartbeatJob = launch(CoroutineName("McpSseHeartbeat")) {
-                    while (isActive) {
-                        delay(sseHeartbeatMillis)
-                        try {
-                            sseSession.send(ServerSentEvent(comments = "mcp-keepalive"))
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            streamJob.cancel(CancellationException("MCP SSE client disconnected"))
-                            return@launch
+                    call.response.header(MCP_SESSION_ID_HEADER, lease.sessionId)
+                    val sseSession = this
+                    suspend fun detachStream(reason: String) {
+                        runCatching { sseSession.close() }
+                        lease.unregisterStream(streamJob)
+                        lease.close()
+                        call.attributes.getOrNull(MCP_HTTP_CALL_LEASE_KEY)?.close()
+                        streamJob.cancel(CancellationException(reason))
+                    }
+                    val heartbeatJob = launch(CoroutineName("McpSseHeartbeat")) {
+                        while (isActive) {
+                            delay(sseHeartbeatMillis)
+                            try {
+                                sseSession.send(ServerSentEvent(comments = "mcp-keepalive"))
+                            } catch (e: CancellationException) {
+                                detachStream("MCP SSE stream cancelled")
+                                throw e
+                            } catch (_: Exception) {
+                                detachStream("MCP SSE client disconnected")
+                                return@launch
+                            }
                         }
                     }
-                }
-                try {
-                    lease.transport.handleRequest(sseSession, call)
-                } finally {
-                    heartbeatJob.cancel()
-                    lease.unregisterStream(streamJob)
-                    lease.close()
+                    val livenessJob = launch(CoroutineName("McpSseClientLiveness")) {
+                        // CIO's request-close callback is not reliable for a graceful FIN on every supported JVM/OS.
+                        // A core MCP ping proves that the client still receives this stream without large heartbeat
+                        // writes or cancelling POST tool calls. A timeout closes only this optional GET stream; a
+                        // compliant client reconnects and the session itself remains available.
+                        delay(minOf(MCP_SSE_INITIAL_LIVENESS_DELAY_MILLIS, sseHeartbeatMillis))
+                        while (isActive) {
+                            if (!lease.pingClient(sseClientLivenessTimeoutMillis)) {
+                                // On some Windows CIO paths the network writer closes but the response coroutine does
+                                // not resume its finally block. Detach the bounded-registry and admission leases before
+                                // cancellation; both are idempotent when normal coroutine cleanup also runs.
+                                detachStream("MCP SSE client did not respond to ping")
+                                return@launch
+                            }
+                            delay(sseHeartbeatMillis)
+                        }
+                    }
+                    try {
+                        lease.transport.handleRequest(sseSession, call)
+                    } finally {
+                        livenessJob.cancel()
+                        heartbeatJob.cancel()
+                        lease.unregisterStream(streamJob)
+                        lease.close()
+                    }
                 }
             }
 
@@ -311,7 +349,8 @@ internal fun Application.configureMcpHttpEndpoint(
                             }
                         }
                     }
-                    mcpServer.createSession(transport)
+                    val serverSession = mcpServer.createSession(transport)
+                    pending.attachServerSession(serverSession)
                     transport.handleRequest(null, call)
                     completedNormally = true
                 } finally {
@@ -333,6 +372,20 @@ internal fun Application.configureMcpHttpEndpoint(
                     lease.close()
                 }
             }
+        }
+    }
+}
+
+private class McpHttpCallLease(
+    private val activeCalls: java.util.concurrent.atomic.AtomicInteger,
+    private val runtimeMetrics: McpRuntimeMetrics?,
+) {
+    private val closed = AtomicBoolean(false)
+
+    fun close() {
+        if (closed.compareAndSet(false, true)) {
+            activeCalls.decrementAndGet()
+            runtimeMetrics?.onCallFinished()
         }
     }
 }
@@ -597,6 +650,7 @@ internal class ManagedMcpSession(
     private var streamRegistrationClosed = false
     private var hasRegisteredStream = false
     private var activeSessionId: String? = null
+    private var serverSession: ServerSession? = null
     private var activeCalls = 0
     private var lastActivityNanos = System.nanoTime()
 
@@ -604,6 +658,12 @@ internal class ManagedMcpSession(
     fun activate(sessionId: String) {
         activeSessionId = sessionId
         lastActivityNanos = System.nanoTime()
+    }
+
+    @Synchronized
+    fun attachServerSession(session: ServerSession) {
+        check(serverSession == null) { "MCP server session is already attached" }
+        serverSession = session
     }
 
     @Synchronized
@@ -658,6 +718,20 @@ internal class ManagedMcpSession(
 
     fun isActive(): Boolean = sessionId() != null
 
+    suspend fun pingClient(timeoutMillis: Long): Boolean {
+        val session = synchronized(this) { serverSession } ?: return false
+        return try {
+            withTimeoutOrNull(timeoutMillis) {
+                session.request<EmptyResult>(PingRequest())
+                true
+            } == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun releaseSlot() {
         if (slotReleased.compareAndSet(false, true)) slots.release()
     }
@@ -672,10 +746,26 @@ internal class ManagedMcpSessionLease(
     private val entry: ManagedMcpSession,
     val sessionId: String,
 ) {
+    private val closed = AtomicBoolean(false)
+    private val streamRegistered = AtomicBoolean(false)
+
     val transport: StreamableHttpServerTransport get() = entry.transport
-    fun registerStream(job: Job): Boolean = entry.registerStream(job)
-    fun unregisterStream(job: Job) = entry.unregisterStream(job)
-    fun close() = entry.release()
+
+    fun registerStream(job: Job): Boolean {
+        val registered = entry.registerStream(job)
+        if (registered) streamRegistered.set(true)
+        return registered
+    }
+
+    fun unregisterStream(job: Job) {
+        if (streamRegistered.compareAndSet(true, false)) entry.unregisterStream(job)
+    }
+
+    suspend fun pingClient(timeoutMillis: Long): Boolean = entry.pingClient(timeoutMillis)
+
+    fun close() {
+        if (closed.compareAndSet(false, true)) entry.release()
+    }
 }
 
 class KtorServerManager internal constructor(
