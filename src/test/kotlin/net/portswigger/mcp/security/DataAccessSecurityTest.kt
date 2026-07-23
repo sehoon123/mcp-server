@@ -95,12 +95,13 @@ class DataAccessSecurityTest {
         every { storage.getString(any()) } returns ""
         val config = McpConfig(storage, mockk<Logging>(relaxed = true))
         val queuedAction = slot<Runnable>()
+        val message = slot<String>()
         val options = slot<Array<String>>()
         mockkStatic(SwingUtilities::class)
         mockkObject(Dialogs)
         try {
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
-            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 2
+            every { Dialogs.showOptionDialog(any(), capture(message), capture(options), any(), any()) } returns 2
             val approval = async(start = CoroutineStart.UNDISPATCHED) {
                 SwingDataAccessApprovalHandler().requestDataAccess(DataAccessType.SITE_MAP, config)
             }
@@ -109,6 +110,7 @@ class DataAccessSecurityTest {
             assertTrue(approval.await())
             assertTrue(config.alwaysAllowSiteMap)
             assertTrue(options.captured.contains("Allow Site Map items for This Session"))
+            assertTrue(message.captured.contains("does not expire automatically"))
         } finally {
             unmockkObject(Dialogs)
             unmockkStatic(SwingUtilities::class)

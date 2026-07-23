@@ -39,7 +39,11 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
                 "Allow for This Session permits later request-routing actions only until this MCP session ends or " +
                     "session approvals are reset."
             )
-            append("Always Allow disables future request-routing approval prompts until re-enabled in MCP settings.")
+            appendLine("Allow Once applies only to this action.")
+            append(
+                "Always Allow is stored in MCP settings, does not expire automatically, and disables future " +
+                    "request-routing approval prompts until re-enabled."
+            )
         }
         val result = SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(

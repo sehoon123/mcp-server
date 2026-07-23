@@ -238,7 +238,7 @@ class ConfigUi internal constructor(
 
         leftPanel.add(headerBox)
 
-        val rightPanelContent = JPanel().apply {
+        val rightPanelContent = WidthTrackingPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             background = Design.Colors.surface
             border = BorderFactory.createEmptyBorder(

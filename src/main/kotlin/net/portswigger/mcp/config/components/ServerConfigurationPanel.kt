@@ -148,9 +148,11 @@ class ServerConfigurationPanel(
             isOpaque = false
             alignmentX = LEFT_ALIGNMENT
         }
+        enabledToggle.accessibleContext.accessibleName = "MCP server enabled"
         enabledPanel.add(JLabel("Enabled").apply {
             font = Design.Typography.bodyLarge
             foreground = Design.Colors.onSurface
+            labelFor = enabledToggle
         })
         enabledPanel.add(createHorizontalStrut(Design.Spacing.MD))
         enabledPanel.add(enabledToggle)
@@ -277,6 +279,7 @@ class ServerConfigurationPanel(
             isSelected = initialValue
             font = Design.Typography.bodyLarge
             foreground = Design.Colors.onSurface
+            accessibleContext.accessibleDescription = subtitleText
             addItemListener { event ->
                 onChange(event.stateChange == ItemEvent.SELECTED)
             }
@@ -284,16 +287,8 @@ class ServerConfigurationPanel(
 
         onCreated(checkBox)
 
-        val subtitleLabel = JLabel(subtitleText).apply {
-            font = Design.Typography.labelMedium
-            foreground = Design.Colors.onSurfaceVariant
-        }
-
-        val subtitlePanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            isOpaque = false
-            alignmentX = LEFT_ALIGNMENT
-            add(createHorizontalStrut(20))
-            add(subtitleLabel)
+        val subtitle = WrappingText(subtitleText, WrappingTextStyle.LABEL_MEDIUM).apply {
+            border = BorderFactory.createEmptyBorder(0, Design.Spacing.LG, 0, 0)
         }
 
         return JPanel().apply {
@@ -301,7 +296,7 @@ class ServerConfigurationPanel(
             alignmentX = LEFT_ALIGNMENT
             isOpaque = false
             add(checkBox)
-            add(subtitlePanel)
+            add(subtitle)
         }
     }
 

@@ -228,6 +228,20 @@ Remaining work:
 
 ## Priority 2 — usability and integrations
 
+Implemented incrementally through v4.3.2:
+
+- The MCP settings viewport tracks the available width instead of silently hiding horizontally oversized content.
+- Explanatory text wraps, long action rows stack when required, and the single/two-column breakpoint follows the UI font scale.
+- Approval options retain text-fitted single-row choices; persistent Always Allow choices use warning styling and
+  explicitly state that they do not expire automatically, while the final denial remains the safe keyboard default.
+- Styled buttons, links, and the server toggle expose visible focus and support Enter/Space; fields, toggles, and policy
+  controls expose accessible labels or descriptions. Geometry tests cover the 1,024×720 viewport at 100%, 150%, and
+  200% UI fonts with light and dark palettes.
+
+Remaining work:
+
+- Validate the complete settings and approval surface in live supported Burp light/dark themes, keyboard-only navigation,
+  and OS-level high-contrast modes on each release candidate.
 - Add installers and verified examples for Claude Desktop, Claude Code, VS Code/Copilot, Cursor, Codex, and MCP
   Inspector.
 - Add named security-policy profiles such as read-only review, scoped active testing, and full local control.

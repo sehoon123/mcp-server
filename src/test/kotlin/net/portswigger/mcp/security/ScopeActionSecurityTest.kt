@@ -89,13 +89,14 @@ class ScopeActionSecurityTest {
     @Test
     fun `Always Allow selection disables later include and exclude prompts`() = runBlocking {
         val queuedAction = slot<Runnable>()
+        val message = slot<String>()
         val options = slot<Array<String>>()
         mockkStatic(SwingUtilities::class)
         mockkObject(Dialogs)
         try {
             config.requireScopeChangeApproval = true
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
-            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 2
+            every { Dialogs.showOptionDialog(any(), capture(message), capture(options), any(), any()) } returns 2
 
             val approval = async(start = CoroutineStart.UNDISPATCHED) {
                 SwingScopeActionApprovalHandler().requestApproval(
@@ -115,6 +116,7 @@ class ScopeActionSecurityTest {
                     arrayOf("Allow Once", "Allow for This Session", "Always Allow", "Deny")
                 )
             )
+            assertTrue(message.captured.contains("does not expire automatically"))
 
             val laterHandler = mockk<ScopeActionApprovalHandler>()
             ScopeActionSecurity.approvalHandler = laterHandler

@@ -24,6 +24,12 @@ class SwingUserApprovalHandler : UserApprovalHandler {
                 "Allow All for This Session permits requests to any syntactically valid destination until this " +
                     "MCP session ends or session approvals are reset."
             )
+            appendLine()
+            appendLine("Allow Once applies only to this request.")
+            append(
+                "Always Allow Host and Always Allow Host:Port are stored in MCP settings and do not expire " +
+                    "automatically."
+            )
         }
         val result = SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(

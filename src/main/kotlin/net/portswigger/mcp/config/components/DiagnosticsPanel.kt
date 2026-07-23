@@ -38,7 +38,7 @@ internal class DiagnosticsPanel(
     private val onPersistentApprovalsReset: () -> Unit = {},
 ) : JPanel() {
     private val diagnosticsArea = JTextArea(13, 64)
-    private val statusLabel = JLabel(" ")
+    private val statusLabel = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
     private val refreshTimer = Timer(1_000) { refresh() }
 
     init {
@@ -72,10 +72,12 @@ internal class DiagnosticsPanel(
         add(Design.createSectionLabel("Diagnostics and Safety"))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        add(JCheckBox("Emergency read-only mode (blocks tools not explicitly marked read-only)").apply {
+        add(JCheckBox("Emergency read-only mode").apply {
             isOpaque = false
             isSelected = config.emergencyReadOnlyMode
             alignmentX = LEFT_ALIGNMENT
+            accessibleContext.accessibleDescription =
+                "Blocks tools that are not explicitly marked read-only"
             addActionListener {
                 config.emergencyReadOnlyMode = isSelected
                 auditLog.recordLocalEvent(
@@ -85,11 +87,10 @@ internal class DiagnosticsPanel(
                 refresh()
             }
         })
-        add(JLabel("Existing Scanner work is not cancelled; new mutation, routing, generation, and active actions are blocked.").apply {
-            font = Design.Typography.bodyMedium
-            foreground = Design.Colors.onSurfaceVariant
-            alignmentX = LEFT_ALIGNMENT
-        })
+        add(WrappingText("Blocks tools that are not explicitly marked read-only."))
+        add(WrappingText(
+            "Existing Scanner work is not cancelled; new mutation, routing, generation, and active actions are blocked."
+        ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
         add(JCheckBox("Persist bounded redacted MCP audit records").apply {
@@ -143,96 +144,80 @@ internal class DiagnosticsPanel(
             verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
         })
         add(Box.createVerticalStrut(Design.Spacing.SM))
-        add(JLabel(
+        add(WrappingText(
             "Session approvals are memory-only and expire on session deletion, idle eviction, listener restart, or Burp shutdown."
-        ).apply {
-            font = Design.Typography.bodyMedium
-            foreground = Design.Colors.onSurfaceVariant
-            alignmentX = LEFT_ALIGNMENT
-        })
+        ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        val approvalButtons = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, 0)).apply {
-            isOpaque = false
-            alignmentX = LEFT_ALIGNMENT
-            add(JButton("Reset active session approvals").apply {
-                addActionListener {
-                    runCatching { clearSessionApprovals() }
-                        .onSuccess { cleared ->
-                            auditLog.recordLocalEvent("session_approvals", "reset")
-                            statusLabel.text = "$cleared active session approval grants reset"
-                            refresh()
-                        }
-                        .onFailure {
-                            statusLabel.text = "Could not reset active session approvals"
-                        }
-                }
-            })
-            add(JButton("Reset all persistent approvals...").apply {
-                addActionListener {
-                    val choice = JOptionPane.showConfirmDialog(
-                        this@DiagnosticsPanel,
-                        "Restore all MCP approval policies to prompt-by-default? " +
-                            "This clears saved HTTP targets and all persistent approval bypasses.",
-                        "Reset persistent MCP approvals",
-                        JOptionPane.OK_CANCEL_OPTION,
-                        JOptionPane.WARNING_MESSAGE,
-                    )
-                    if (choice == JOptionPane.OK_OPTION) {
-                        runCatching {
-                            config.resetPersistentApprovals()
-                            onPersistentApprovalsReset()
-                        }.onSuccess {
-                            auditLog.recordLocalEvent("persistent_approvals", "reset_to_prompt")
-                            statusLabel.text = "Persistent approvals reset to prompt-by-default"
-                            refresh()
-                        }.onFailure {
-                            statusLabel.text = "Could not reset persistent approvals"
-                        }
-                    }
-                }
-            })
-        }
-        add(approvalButtons)
-        add(Box.createVerticalStrut(Design.Spacing.SM))
-
-        val buttons = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, 0)).apply {
-            isOpaque = false
-            alignmentX = LEFT_ALIGNMENT
-            add(JButton("Refresh").apply { addActionListener { refresh() } })
-            add(JButton("Copy redacted diagnostics").apply {
-                addActionListener { copyToClipboard(diagnosticsArea.text, "Diagnostics copied") }
-            })
-            add(JButton("Copy recent redacted audit").apply {
-                addActionListener {
-                    val exported = auditLog.exportJsonLines(100)
-                    if (exported.isEmpty()) statusLabel.text = "No audit records to copy"
-                    else copyToClipboard(exported, "Recent redacted audit copied")
-                }
-            })
-            add(JButton("Clear audit...").apply {
-                addActionListener {
-                    val choice = JOptionPane.showConfirmDialog(
-                        this@DiagnosticsPanel,
-                        "Delete all persisted MCP audit records? This cannot be undone.",
-                        "Clear MCP audit",
-                        JOptionPane.OK_CANCEL_OPTION,
-                        JOptionPane.WARNING_MESSAGE,
-                    )
-                    if (choice == JOptionPane.OK_OPTION) {
-                        auditLog.clear()
-                        statusLabel.text = "Audit records cleared"
+        val resetSessionApprovalsButton = JButton("Reset active session approvals").apply {
+            addActionListener {
+                runCatching { clearSessionApprovals() }
+                    .onSuccess { cleared ->
+                        auditLog.recordLocalEvent("session_approvals", "reset")
+                        statusLabel.updateContent("$cleared active session approval grants reset")
                         refresh()
                     }
-                }
-            })
+                    .onFailure {
+                        statusLabel.updateContent("Could not reset active session approvals")
+                    }
+            }
         }
-        add(buttons)
-        add(statusLabel.apply {
-            font = Design.Typography.bodyMedium
-            foreground = Design.Colors.onSurfaceVariant
-            alignmentX = LEFT_ALIGNMENT
-        })
+        val resetPersistentApprovalsButton = JButton("Reset all persistent approvals...").apply {
+            addActionListener {
+                val choice = JOptionPane.showConfirmDialog(
+                    this@DiagnosticsPanel,
+                    "Restore all MCP approval policies to prompt-by-default? " +
+                        "This clears saved HTTP targets and all persistent approval bypasses.",
+                    "Reset persistent MCP approvals",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE,
+                )
+                if (choice == JOptionPane.OK_OPTION) {
+                    runCatching {
+                        config.resetPersistentApprovals()
+                        onPersistentApprovalsReset()
+                    }.onSuccess {
+                        auditLog.recordLocalEvent("persistent_approvals", "reset_to_prompt")
+                        statusLabel.updateContent("Persistent approvals reset to prompt-by-default")
+                        refresh()
+                    }.onFailure {
+                        statusLabel.updateContent("Could not reset persistent approvals")
+                    }
+                }
+            }
+        }
+        add(AdaptiveButtonPanel(listOf(resetSessionApprovalsButton, resetPersistentApprovalsButton)))
+        add(Box.createVerticalStrut(Design.Spacing.SM))
+
+        val refreshButton = JButton("Refresh").apply { addActionListener { refresh() } }
+        val copyDiagnosticsButton = JButton("Copy redacted diagnostics").apply {
+            addActionListener { copyToClipboard(diagnosticsArea.text, "Diagnostics copied") }
+        }
+        val copyAuditButton = JButton("Copy recent redacted audit").apply {
+            addActionListener {
+                val exported = auditLog.exportJsonLines(100)
+                if (exported.isEmpty()) statusLabel.updateContent("No audit records to copy")
+                else copyToClipboard(exported, "Recent redacted audit copied")
+            }
+        }
+        val clearAuditButton = JButton("Clear audit...").apply {
+            addActionListener {
+                val choice = JOptionPane.showConfirmDialog(
+                    this@DiagnosticsPanel,
+                    "Delete all persisted MCP audit records? This cannot be undone.",
+                    "Clear MCP audit",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE,
+                )
+                if (choice == JOptionPane.OK_OPTION) {
+                    auditLog.clear()
+                    statusLabel.updateContent("Audit records cleared")
+                    refresh()
+                }
+            }
+        }
+        add(AdaptiveButtonPanel(listOf(refreshButton, copyDiagnosticsButton, copyAuditButton, clearAuditButton)))
+        add(statusLabel)
     }
 
     private fun refresh() {
@@ -259,9 +244,9 @@ internal class DiagnosticsPanel(
         runCatching {
             Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(value), null)
         }.onSuccess {
-            statusLabel.text = success
+            statusLabel.updateContent(success)
         }.onFailure {
-            statusLabel.text = "Could not access the system clipboard"
+            statusLabel.updateContent("Could not access the system clipboard")
         }
     }
 }

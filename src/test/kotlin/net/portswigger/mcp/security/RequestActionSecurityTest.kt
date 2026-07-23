@@ -93,13 +93,14 @@ class RequestActionSecurityTest {
     @Test
     fun `Always Allow selection disables later request routing prompts`() = runBlocking {
         val queuedAction = slot<Runnable>()
+        val message = slot<String>()
         val options = slot<Array<String>>()
         mockkStatic(SwingUtilities::class)
         mockkObject(Dialogs)
         try {
             config.requireRequestActionApproval = true
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
-            every { Dialogs.showOptionDialog(any(), any(), capture(options), any(), any()) } returns 2
+            every { Dialogs.showOptionDialog(any(), capture(message), capture(options), any(), any()) } returns 2
 
             val approval = async(start = CoroutineStart.UNDISPATCHED) {
                 SwingRequestActionApprovalHandler().requestApproval(
@@ -118,6 +119,7 @@ class RequestActionSecurityTest {
             assertFalse(config.requireRequestActionApproval)
             assertTrue(options.captured.contains("Allow Once"))
             assertTrue(options.captured.contains("Always Allow"))
+            assertTrue(message.captured.contains("does not expire automatically"))
         } finally {
             unmockkObject(Dialogs)
             unmockkStatic(SwingUtilities::class)

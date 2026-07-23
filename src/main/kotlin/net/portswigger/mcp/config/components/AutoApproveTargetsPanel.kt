@@ -5,7 +5,6 @@ import net.portswigger.mcp.security.findBurpFrame
 import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.FlowLayout
 import java.awt.event.*
 import javax.swing.*
 import javax.swing.JOptionPane.*
@@ -40,20 +39,15 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
         add(Design.createSectionLabel("Auto-Approved HTTP Targets"))
         add(Box.createVerticalStrut(Design.Spacing.MD))
 
-        val descLabel = JLabel("Specify domains and hosts that can be accessed without approval.").apply {
-            alignmentX = LEFT_ALIGNMENT
-            font = Design.Typography.bodyMedium
-            foreground = Design.Colors.onSurfaceVariant
+        add(WrappingText("Specify domains and hosts that can be accessed without approval.").apply {
             border = BorderFactory.createEmptyBorder(0, 0, Design.Spacing.SM, 0)
-        }
-        val examplesLabel = JLabel("Examples: example.com, localhost:8080, *.api.com").apply {
-            alignmentX = LEFT_ALIGNMENT
-            font = Design.Typography.labelMedium
-            foreground = Design.Colors.onSurfaceVariant
+        })
+        add(WrappingText(
+            "Examples: example.com, localhost:8080, *.api.com",
+            WrappingTextStyle.LABEL_MEDIUM,
+        ).apply {
             border = BorderFactory.createEmptyBorder(0, 0, Design.Spacing.MD, 0)
-        }
-        add(descLabel)
-        add(examplesLabel)
+        })
 
         val listModel = DefaultListModel<String>()
         val targetsList = createTargetsList(listModel)
@@ -213,12 +207,6 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
     }
 
     private fun createButtonsPanel(targetsList: JList<String>, listModel: DefaultListModel<String>): JPanel {
-        val buttonsPanel = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, Design.Spacing.SM)).apply {
-            isOpaque = false
-            alignmentX = LEFT_ALIGNMENT
-            border = BorderFactory.createEmptyBorder(Design.Spacing.SM, 0, 0, 0)
-        }
-
         val addButton = Design.createFilledButton("Add").apply {
             addActionListener {
                 val input = Dialogs.showInputDialog(
@@ -262,11 +250,9 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
             }
         }
 
-        buttonsPanel.add(addButton)
-        buttonsPanel.add(removeButton)
-        buttonsPanel.add(clearButton)
-
-        return buttonsPanel
+        return AdaptiveButtonPanel(listOf(addButton, removeButton, clearButton)).apply {
+            border = BorderFactory.createEmptyBorder(Design.Spacing.SM, 0, 0, 0)
+        }
     }
 
     private fun updateTargetsList(listModel: DefaultListModel<String>) {
