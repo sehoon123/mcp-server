@@ -33,6 +33,7 @@ import net.portswigger.mcp.tools.SCANNER_ISSUE_ID_REGEX
 import net.portswigger.mcp.tools.ScannerIssueReadService
 import net.portswigger.mcp.tools.WebSocketMessageReadService
 import net.portswigger.mcp.tools.executeRegisteredResource
+import net.portswigger.mcp.tools.parseSiteMapId
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
@@ -606,14 +607,44 @@ private fun resourceError(uri: String, status: NativeResourceStatus, message: St
     )
 }
 
-private fun validProjectId(value: String): Boolean =
+internal fun validMcpProjectId(value: String): Boolean =
     value.length in 1..256 && value.none(Char::isISOControl)
+
+private fun validProjectId(value: String): Boolean = validMcpProjectId(value)
 
 private fun validProjectIdOrNull(value: String): String? = value.takeIf(::validProjectId)
 
 private fun String.canonicalNonNegativeInt(): Int? {
     val parsed = toIntOrNull()?.takeIf { it >= 0 } ?: return null
     return parsed.takeIf { it.toString() == this }
+}
+
+internal fun canonicalHttpMcpReference(projectId: String, reference: HttpMessageReference): String {
+    require(validMcpProjectId(projectId)) { "projectId is invalid" }
+    require(reference.id.length in 1..128 && reference.id.none(Char::isISOControl)) {
+        "HTTP reference ID is invalid"
+    }
+    val source = when (reference.source) {
+        HttpMessageSource.PROXY -> "proxy".also { require(reference.id.canonicalNonNegativeInt() != null) }
+        HttpMessageSource.SITE_MAP -> "site_map".also {
+            val parsed = requireNotNull(parseSiteMapId(reference.id)) { "Site Map reference ID is invalid" }
+            require(reference.id.startsWith("sitemap_${parsed.index}_")) { "Site Map reference ID is noncanonical" }
+        }
+        HttpMessageSource.ORGANIZER -> "organizer".also { require(reference.id.canonicalNonNegativeInt() != null) }
+    }
+    return canonicalResourceUri("http", listOf(projectId, source, reference.id))
+}
+
+internal fun canonicalWebSocketMcpReference(projectId: String, id: Int): String {
+    require(validMcpProjectId(projectId)) { "projectId is invalid" }
+    require(id >= 0) { "WebSocket reference ID is invalid" }
+    return canonicalResourceUri("websocket", listOf(projectId, id.toString()))
+}
+
+internal fun canonicalScannerIssueMcpReference(projectId: String, id: String): String {
+    require(validMcpProjectId(projectId)) { "projectId is invalid" }
+    require(id.matches(SCANNER_ISSUE_ID_REGEX)) { "Scanner issue ID is invalid" }
+    return canonicalResourceUri("scanner-issue", listOf(projectId, id))
 }
 
 private fun canonicalResourceUri(authority: String, segments: List<String>): String = buildString {

@@ -168,6 +168,14 @@ Reusable prompts are `analyze_http_without_sending`, `compare_http_references`, 
 prompts do not read project data themselves, and each workflow explicitly prohibits hidden request sending, routing,
 or mutation. Both native Streamable HTTP clients and the embedded stdio proxy preserve these protocol features.
 
+Starting with v4.4.1, right-click exactly one Proxy history, Site Map, Organizer, WebSocket history, or Professional
+Scanner issue item and choose **Copy MCP reference**. The official Montoya context-menu provider copies only the
+canonical project-scoped `burp://` reference; it does not copy raw traffic, an endpoint, a bearer token, or a local
+path. Potentially expensive fallback source matching and Scanner issue hashing run on a bounded background worker
+rather than Burp's event dispatch thread, and project transitions or ambiguous matches fail closed. Resource URIs remain
+scoped by the MCP server connection, so users with multiple Burp servers should use the reference with the originating
+configured server. No instance identifier was added to the stable v4 URI templates.
+
 ### v4.2 transport lifecycle and approval controls
 
 Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,

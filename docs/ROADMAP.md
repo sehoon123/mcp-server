@@ -175,11 +175,19 @@ Implemented foundation in v4.4.0:
 - Return only the first bounded content slice and direct clients to the existing tools for additional byte pagination.
 - Relay resources unchanged through the embedded stdio compatibility proxy.
 
+Implemented in v4.4.1:
+
+- An official Montoya context-menu provider copies one canonical project-scoped HTTP, WebSocket, or Professional
+  Scanner resource reference without copying raw traffic, credentials, endpoints, or local paths.
+- Directly exposed Proxy, Organizer, and WebSocket source IDs are read without scanning. Fallback source matching and
+  Scanner issue hashing run on one bounded background worker; project transitions, queue pressure, unsupported contexts,
+  and ambiguous matches fail closed.
+- Existing v4 URI templates remain unchanged. The MCP connection/configured server name remains the resource namespace;
+  a URI-level instance label is deferred until a real multi-server collision demonstrates that a migration is needed.
+
 Remaining work:
 
-- Add official Montoya context-menu actions that copy project-scoped MCP references without copying raw traffic.
-- Add an instance label only after defining a migration-safe URI form that prevents confusion across multiple Burp
-  instances.
+- Validate context-menu behavior and timing against 100,000-record live Site Map and WebSocket histories.
 - Evaluate resource subscriptions and list-change notifications only for explicitly selected, policy-safe records.
 
 ### 7. Add reusable prompts for common workflows
@@ -270,7 +278,7 @@ Remaining work:
 | 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
 | 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds and advisory warm-search hints | Medium |
 | 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |
-| 9 | Resources and reusable prompts | MCP-native fixed/templates and passive prompts implemented in v4.4.0; subscriptions and client UX remain | Medium |
+| 9 | Resources and reusable prompts | Native resources/prompts implemented in v4.4.0 and safe context-menu reference copy in v4.4.1; subscriptions remain | Medium |
 
 ## Design constraints
 
