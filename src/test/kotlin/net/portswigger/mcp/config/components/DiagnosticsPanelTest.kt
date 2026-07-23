@@ -32,6 +32,17 @@ class DiagnosticsPanelTest {
                 lastError = "Bearer secret-token at /home/user/error.log",
                 maxHttpCalls = 64,
                 maxSessions = 32,
+                activeEventStreams = 1,
+                openedEventStreams = 7,
+                closedEventStreams = 6,
+                reopenedEventStreams = 3,
+                livenessPingsSent = 20,
+                livenessResponses = 18,
+                livenessTimeouts = 1,
+                livenessErrors = 1,
+                heartbeatFailures = 2,
+                sessionDeleteRequests = 8,
+                pressureEvictions = 9,
             ),
             readOnlyMode = true,
             auditEnabled = true,
@@ -48,6 +59,9 @@ class DiagnosticsPanelTest {
         assertTrue(text.contains("State: running"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))
+        assertTrue(text.contains("Event streams: 1 active, 7 opened, 6 closed, 3 reopened"))
+        assertTrue(text.contains("Liveness: pings=20, responses=18, timeouts=1, errors=1, heartbeat-failures=2"))
+        assertTrue(text.contains("Session cleanup: DELETE=8, pressure-evictions=9, idle-evictions=1"))
         assertTrue(text.contains("auth=4"))
         assertTrue(text.contains("Emergency read-only: enabled"))
         assertTrue(text.contains("12/250 retained"))

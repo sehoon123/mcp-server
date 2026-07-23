@@ -24,7 +24,7 @@ class McpConfigTest {
                 val key = firstArg<String>()
                 storage[key] as? Boolean ?: when (key) {
                     "enabled" -> true
-                    "requireHttpRequestApproval", "requireRequestActionApproval" -> true
+                    "requireHttpRequestApproval", "requireRequestActionApproval", "requireScopeChangeApproval" -> true
                     else -> false
                 }
             }
@@ -300,10 +300,12 @@ class McpConfigTest {
     fun `new safety settings have secure defaults when absent`() {
         every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns null
         every { persistedObject.getBoolean("auditLoggingEnabled") } returns null
+        every { persistedObject.getBoolean("requireScopeChangeApproval") } returns null
         every { persistedObject.getInteger("auditRetentionEntries") } returns null
 
         assertFalse(config.emergencyReadOnlyMode)
         assertTrue(config.auditLoggingEnabled)
+        assertTrue(config.requireScopeChangeApproval)
         assertEquals(250, config.auditRetentionEntries)
     }
 
@@ -394,6 +396,22 @@ class McpConfigTest {
         config.requireRequestActionApproval = true
 
         assertEquals(2, notificationCount)
+    }
+
+    @Test
+    fun `scope change approval defaults to enabled persists and notifies on changes`() {
+        var notificationCount = 0
+        config.addScopeChangeApprovalChangeListener { notificationCount++ }
+
+        assertTrue(config.requireScopeChangeApproval)
+        config.requireScopeChangeApproval = false
+        config.requireScopeChangeApproval = false
+        config.requireScopeChangeApproval = true
+
+        assertTrue(config.requireScopeChangeApproval)
+        assertEquals(2, notificationCount)
+        verify { persistedObject.setBoolean("requireScopeChangeApproval", false) }
+        verify { persistedObject.setBoolean("requireScopeChangeApproval", true) }
     }
 
     @Test

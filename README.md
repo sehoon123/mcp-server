@@ -3,8 +3,8 @@
 Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 
 This fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern **Streamable HTTP**
-transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoint retains the protocol's optional SSE
-channel for server-initiated messages. The deprecated two-endpoint HTTP+SSE server has been removed.
+transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoint retains Streamable HTTP's optional
+`GET /mcp` event stream for server-initiated messages. The deprecated two-endpoint HTTP+SSE server has been removed.
 
 ## Distribution and architecture
 
@@ -24,6 +24,18 @@ stdio-only MCP client ──> embedded proxy ─────> Burp /mcp
 The proxy is extracted automatically only for clients that require stdio. It communicates with Burp through
 Streamable HTTP, so users do not need to download or install a second component.
 
+### Transport terminology and lifecycle
+
+The optional `GET /mcp` response uses the SSE media format **inside Streamable HTTP**. It is not the obsolete legacy
+SSE transport, which used a long-lived `/sse` endpoint plus a separate `/messages` endpoint; both legacy paths return
+`404`. Clients can use `POST /mcp` alone for ordinary calls, while a compliant event stream enables progress,
+notifications, sampling, elicitation, and other server-initiated protocol messages.
+
+Native HTTP clients should reuse a session and terminate it with authenticated `DELETE /mcp` when they shut down. The
+embedded stdio proxy does this automatically on graceful EOF or process shutdown, with a bounded retry for transient
+termination failures. An abrupt process kill cannot run graceful cleanup, so the server retains bounded idle,
+client-liveness, and capacity-pressure safeguards.
+
 ## Features
 
 - Single Streamable HTTP endpoint at `/mcp`
@@ -38,7 +50,8 @@ Streamable HTTP, so users do not need to download or install a second component.
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
 - Project and user configuration tools with credential filtering
-- Live redacted diagnostics, a bounded persistent audit trail, and an emergency read-only switch
+- Live redacted diagnostics including event-stream, liveness, explicit-termination, and pressure-eviction counters;
+  a bounded persistent audit trail; and an emergency read-only switch
 - URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
 
@@ -107,6 +120,13 @@ structured result. Correction-required validation, output-limit, and Burp failur
 approval, disabled, and unavailable outcomes remain non-protocol structured outcomes. Malformed MCP arguments that
 cannot be deserialized still use the protocol-level tool error path.
 
+### v4.2 transport lifecycle and scope approvals
+
+Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,
+best-effort session termination on graceful EOF, while the server exposes value-free event-stream, liveness, DELETE,
+and pressure-eviction diagnostics. Target scope include/exclude reviews also add **Always Allow** backed by a single
+local boolean and an MCP-tab control for restoring prompts; no URL, project ID, or client value is persisted.
+
 ## Build and install
 
 ### Install a release
@@ -161,9 +181,10 @@ Open the **MCP** tab in Burp:
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
-- Configure approval requirements for outbound HTTP requests, stable-ID request actions, and access to sensitive Burp data, including Site Map and Collaborator items.
-- Enable configuration-editing tools only when they are required. Configuration changes and other global-state mutations still require explicit **Allow Once / Deny** approval.
-- Use **Diagnostics and Safety** to inspect listener/session/admission counters and verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
+- Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
+- Target scope include/exclude dialogs offer **Allow Once / Always Allow / Deny**; re-enable `Require approval for Target scope changes` to restore prompts. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
+- Enable configuration-editing tools only when they are required.
+- Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
 - Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
 
 The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
@@ -172,8 +193,10 @@ support a remote listener; do not weaken the bind or use an unauthenticated forw
 ### Diagnostics, audit, and emergency read-only mode
 
 The diagnostics view reports only operational metadata: listener state and endpoint, the production protocol target,
-active/peak HTTP calls, pending/active sessions, request and rejection counters, idle evictions, last activity, a safe
-last-error summary, and the embedded proxy version/commit/SHA-256 verification state. **Copy redacted diagnostics**
+active/peak HTTP calls, pending/active sessions, event-stream opens/closes/reopens, liveness ping outcomes, heartbeat
+failures, explicit session termination, pressure/idle evictions, request and rejection counters, last activity, a safe last-error
+summary, and the embedded proxy version/commit/SHA-256 verification state. Counters reset when the listener starts and
+use fixed-cardinality atomic storage, not per-client records. **Copy redacted diagnostics**
 never includes the bearer token, message content, header values, client-provided identifiers, or local file paths.
 
 Persistent audit logging is enabled by default and retains 250 records; the UI allows 50–1,000, with a fixed 30-day
@@ -306,8 +329,11 @@ values are not logged.
 ## Scope, comparison, and focused Scanner audits
 
 Use `check_scope` for a bounded read of up to 32 explicit URLs or stable HTTP references. `update_scope` combines include
-and exclude operations through `operation: "include" | "exclude"`; it normalizes every URL, validates the project and
-all references first, and then always opens an **Allow Once / Deny** review. Scope mutation is verified after each URL.
+and exclude operations through `operation: "include" | "exclude"`; it normalizes every URL and validates the project
+and all references first. Its review offers **Allow Once**, **Always Allow**, and **Deny**. Always Allow applies only to
+future Target scope include/exclude prompts and persists no URL or project value; restore prompts with `Require approval
+for Target scope changes` in the MCP tab. Validation, project rechecks, mutation serialization, post-change verification,
+and uncertain-result handling remain active even when prompts are disabled. Scope mutation is verified after each URL.
 `executionState: "uncertain"` means a partial change may exist and must not be retried automatically.
 
 `compare_http_messages` compares 2–8 Proxy, Site Map, or Organizer references. It returns bounded inspected-byte hashes,
@@ -490,7 +516,9 @@ packaged proxy checksum, backs up the existing client configuration as `*.burp-m
 proxy files atomically with owner-only POSIX permissions where supported. Claude Desktop requires its environment value
 in local configuration, so that file and its backup contain the token in plaintext; do not share either file. Restart
 Claude Desktop after installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as
-migration aliases, but the proxy still uses authenticated Streamable HTTP at `/mcp`.
+migration aliases, but the proxy still uses authenticated Streamable HTTP at `/mcp`. Graceful stdio EOF and normal
+proxy process shutdown send authenticated `DELETE /mcp`; ambiguous in-flight call failures do not terminate work that
+Burp may still be executing.
 
 ### mcporter
 
@@ -617,9 +645,9 @@ until restarted. A `401 Unauthorized` after rotation almost always means one sid
 - `Server not initialized` from a hand-written HTTP request means the endpoint is reachable but the request did not
   perform the MCP initialization handshake.
 - `MCP session capacity is full` usually means a client repeatedly initialized sessions without terminating or reusing
-  them. For mcporter, use `"lifecycle": "keep-alive"`. The server also reclaims the least-recently-used inactive session
-  whose optional SSE channel has disconnected when capacity is under pressure; active calls and open streams are never
-  displaced.
+  them. For mcporter, use `"lifecycle": "keep-alive"`; native clients should send `DELETE /mcp` during graceful
+  shutdown. The server also reclaims the least-recently-used inactive session whose optional Streamable HTTP event
+  stream has disconnected when capacity is under pressure; active calls and open streams are never displaced.
 - Keep only one copy of the Burp MCP extension enabled to avoid a port conflict on `9876`.
 - Native HTTP clients do not use `mcp-proxy-all.jar`; stdio-only clients use the copy extracted by the extension.
 - `127.0.0.1` refers to the client's own host. A client inside a container or separate VM cannot reach Burp through

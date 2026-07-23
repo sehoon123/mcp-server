@@ -33,6 +33,13 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
             storage.setBoolean("requireRequestActionApproval", value)
             if (previous != value) notifyRequestActionApprovalChanged()
         }
+    var requireScopeChangeApproval: Boolean
+        get() = storage.getBoolean("requireScopeChangeApproval") ?: true
+        set(value) {
+            val previous = requireScopeChangeApproval
+            storage.setBoolean("requireScopeChangeApproval", value)
+            if (previous != value) notifyScopeChangeApprovalChanged()
+        }
     var requireDataAccessApproval by storage.boolean(true)
     var emergencyReadOnlyMode by storage.boolean(false)
     var auditLoggingEnabled by storage.boolean(true)
@@ -142,6 +149,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
     private val targetsChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val dataAccessChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val requestActionApprovalChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
+    private val scopeChangeApprovalChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
 
     var autoApproveTargets: String
         get() = _autoApproveTargets
@@ -262,6 +270,24 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
         }
     }
 
+    fun addScopeChangeApprovalChangeListener(listener: () -> Unit): ListenerHandle {
+        val registration = ListenerRegistration(listener)
+        scopeChangeApprovalChangeListeners.add(registration)
+        return ListenerHandle { scopeChangeApprovalChangeListeners.remove(registration) }
+    }
+
+    private fun notifyScopeChangeApprovalChanged() {
+        cleanupStaleListeners(scopeChangeApprovalChangeListeners)
+        val listeners = scopeChangeApprovalChangeListeners.mapNotNull { it.listener.get() }
+        listeners.forEach { listener ->
+            try {
+                listener()
+            } catch (e: Exception) {
+                logging.logToError("Scope change approval listener failed: ${safeExceptionSummary(e)}")
+            }
+        }
+    }
+
     private fun cleanupStaleListeners(listenerList: CopyOnWriteArrayList<ListenerRegistration>) {
         val staleListeners = listenerList.filter { it.listener.get() == null }
         listenerList.removeAll(staleListeners)
@@ -271,6 +297,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
         targetsChangeListeners.clear()
         dataAccessChangeListeners.clear()
         requestActionApprovalChangeListeners.clear()
+        scopeChangeApprovalChangeListeners.clear()
     }
 }
 

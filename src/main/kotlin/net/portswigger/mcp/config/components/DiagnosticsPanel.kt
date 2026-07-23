@@ -232,6 +232,19 @@ internal fun formatMcpDiagnostics(
         "Sessions: ${diagnostics.activeSessions} active + ${diagnostics.pendingSessions} pending / ${diagnostics.maxSessions}"
     )
     appendLine(
+        "Event streams: ${diagnostics.activeEventStreams} active, ${diagnostics.openedEventStreams} opened, " +
+            "${diagnostics.closedEventStreams} closed, ${diagnostics.reopenedEventStreams} reopened"
+    )
+    appendLine(
+        "Liveness: pings=${diagnostics.livenessPingsSent}, responses=${diagnostics.livenessResponses}, " +
+            "timeouts=${diagnostics.livenessTimeouts}, errors=${diagnostics.livenessErrors}, " +
+            "heartbeat-failures=${diagnostics.heartbeatFailures}"
+    )
+    appendLine(
+        "Session cleanup: DELETE=${diagnostics.sessionDeleteRequests}, " +
+            "pressure-evictions=${diagnostics.pressureEvictions}, idle-evictions=${diagnostics.idleEvictions}"
+    )
+    appendLine(
         "Totals: ${diagnostics.totalRequests} requests, ${diagnostics.initializedSessions} initialized sessions, " +
             "${diagnostics.idleEvictions} idle evictions"
     )

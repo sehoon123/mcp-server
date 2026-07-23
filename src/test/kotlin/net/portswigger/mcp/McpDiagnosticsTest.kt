@@ -18,6 +18,16 @@ class McpDiagnosticsTest {
         repeat(3) { metrics.onRequest() }
         repeat(2) { metrics.onCallStarted() }
         metrics.onCallFinished()
+        repeat(2) { metrics.onEventStreamOpened() }
+        metrics.onEventStreamClosed()
+        metrics.onEventStreamReopened()
+        repeat(3) { metrics.onLivenessPingSent() }
+        metrics.onLivenessResponse()
+        metrics.onLivenessTimeout()
+        metrics.onLivenessError()
+        metrics.onHeartbeatFailure()
+        metrics.onSessionDeleteRequest()
+        metrics.onPressureEvicted()
         metrics.updateSessions(pending = 2, active = 3)
         repeat(3) { metrics.onSessionInitialized() }
         metrics.onIdleEvicted(2)
@@ -36,6 +46,17 @@ class McpDiagnosticsTest {
         assertEquals(clock.millis(), snapshot.lastActivityEpochMillis)
         assertEquals(1, snapshot.activeHttpCalls)
         assertEquals(2, snapshot.peakHttpCalls)
+        assertEquals(1, snapshot.activeEventStreams)
+        assertEquals(2, snapshot.openedEventStreams)
+        assertEquals(1, snapshot.closedEventStreams)
+        assertEquals(1, snapshot.reopenedEventStreams)
+        assertEquals(3, snapshot.livenessPingsSent)
+        assertEquals(1, snapshot.livenessResponses)
+        assertEquals(1, snapshot.livenessTimeouts)
+        assertEquals(1, snapshot.livenessErrors)
+        assertEquals(1, snapshot.heartbeatFailures)
+        assertEquals(1, snapshot.sessionDeleteRequests)
+        assertEquals(1, snapshot.pressureEvictions)
         assertEquals(2, snapshot.pendingSessions)
         assertEquals(3, snapshot.activeSessions)
         assertEquals(3, snapshot.totalRequests)
@@ -50,18 +71,21 @@ class McpDiagnosticsTest {
     }
 
     @Test
-    fun `stop and failure clear live counts without erasing totals`() {
+    fun `stop and failure clear live counts while listener restart resets totals`() {
         val metrics = McpRuntimeMetrics("dev", 64, 32, clock)
         metrics.markStarting(null)
         metrics.markRunning()
         metrics.onRequest()
         metrics.onCallStarted()
+        metrics.onEventStreamOpened()
         metrics.updateSessions(1, 1)
         metrics.markFailed("IllegalStateException: safe failure")
 
         val failed = metrics.snapshot()
         assertEquals("failed", failed.state)
         assertEquals(0, failed.activeHttpCalls)
+        assertEquals(0, failed.activeEventStreams)
+        assertEquals(1, failed.openedEventStreams)
         assertEquals(0, failed.pendingSessions)
         assertEquals(0, failed.activeSessions)
         assertEquals(1, failed.totalRequests)
@@ -69,5 +93,21 @@ class McpDiagnosticsTest {
 
         metrics.markStopped()
         assertEquals("stopped", metrics.snapshot().state)
+
+        metrics.markStarting(null)
+        val restarted = metrics.snapshot()
+        assertEquals("starting", restarted.state)
+        assertEquals(0, restarted.totalRequests)
+        assertEquals(0, restarted.openedEventStreams)
+        assertEquals(0, restarted.closedEventStreams)
+        assertEquals(0, restarted.reopenedEventStreams)
+        assertEquals(0, restarted.livenessPingsSent)
+        assertEquals(0, restarted.livenessResponses)
+        assertEquals(0, restarted.livenessTimeouts)
+        assertEquals(0, restarted.livenessErrors)
+        assertEquals(0, restarted.heartbeatFailures)
+        assertEquals(0, restarted.sessionDeleteRequests)
+        assertEquals(0, restarted.pressureEvictions)
+        assertNull(restarted.lastError)
     }
 }

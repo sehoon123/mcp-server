@@ -8,7 +8,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.JsonSchemaMetadata
-import net.portswigger.mcp.security.SensitiveActionSecurity
+import net.portswigger.mcp.security.ScopeActionSecurity
+import net.portswigger.mcp.security.ScopeChangeApprovalOperation
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.net.IDN
 import java.net.URI
@@ -129,7 +130,7 @@ data class UpdateScopeResult(
 
 internal class ScopeToolService(
     private val api: MontoyaApi,
-    config: McpConfig,
+    private val config: McpConfig,
     private val metadataIndex: HttpMetadataIndex,
 ) {
     private val resolver = HttpMessageResolver(api, config)
@@ -266,11 +267,16 @@ internal class ScopeToolService(
             }
         }.trimEnd()
         val approved = try {
-            SensitiveActionSecurity.checkPermission(
+            ScopeActionSecurity.checkPermission(
                 action = "${input.operation.name.lowercase()} ${indexesToChange.size} URL(s) ${input.operation.preposition()} Burp Target scope",
                 summary = "Project: ${prepared.projectId}\nScope changes: ${indexesToChange.size}",
                 reviewContent = review,
+                config = config,
                 api = api,
+                operation = when (input.operation) {
+                    ScopeUpdateOperation.INCLUDE -> ScopeChangeApprovalOperation.INCLUDE
+                    ScopeUpdateOperation.EXCLUDE -> ScopeChangeApprovalOperation.EXCLUDE
+                },
             )
         } catch (e: CancellationException) {
             throw e

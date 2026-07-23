@@ -22,6 +22,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowScannerIssuesCheckBox: JCheckBox
     private lateinit var alwaysAllowCollaboratorInteractionsCheckBox: JCheckBox
     private lateinit var requestActionApprovalCheckBox: JCheckBox
+    private lateinit var scopeChangeApprovalCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -70,6 +71,12 @@ class ServerConfigurationPanel(
             "Require approval for request routing actions", config.requireRequestActionApproval
         ) { config.requireRequestActionApproval = it }
         add(requestActionApprovalCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        scopeChangeApprovalCheckBox = createStandardCheckBox(
+            "Require approval for Target scope changes", config.requireScopeChangeApproval
+        ) { config.requireScopeChangeApproval = it }
+        add(scopeChangeApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val dataAccessApprovalCheckBox = createDataAccessApprovalCheckBox()
@@ -186,6 +193,12 @@ class ServerConfigurationPanel(
     fun updateRequestActionApprovalCheckbox() {
         SwingUtilities.invokeLater {
             requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+        }
+    }
+
+    fun updateScopeChangeApprovalCheckbox() {
+        SwingUtilities.invokeLater {
+            scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
         }
     }
 
