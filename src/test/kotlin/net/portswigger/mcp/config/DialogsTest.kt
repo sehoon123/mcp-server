@@ -43,7 +43,15 @@ class DialogsTest {
             assertEquals(options.toList(), buttons.map(JButton::getText))
             assertEquals(options.size, layout.rows)
             assertEquals(1, layout.columns)
-            assertEquals(Design.Colors.primary, buttons[3].foreground)
+            assertEquals(Design.Colors.primary, buttons[1].foreground)
+            assertEquals(Design.Colors.warning, buttons[2].foreground)
+            assertEquals(Design.Colors.warning, buttons[3].foreground)
+            assertTrue(buttons[2].accessibleContext.accessibleDescription.contains("Persistent approval"))
+            assertEquals(Design.Colors.error, buttons.last().foreground)
+
+            buttons.forEach(JButton::updateUI)
+            assertEquals(Design.Colors.warning, buttons[2].foreground)
+            assertEquals(Design.Colors.warning, buttons[3].foreground)
             assertEquals(Design.Colors.error, buttons.last().foreground)
 
             buttons[3].doClick()

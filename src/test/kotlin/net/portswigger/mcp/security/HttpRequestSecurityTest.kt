@@ -130,11 +130,12 @@ class HttpRequestSecurityTest {
     @Test
     fun `Always Allow Host remains persistent after the session option is inserted`() = runBlocking {
         val queuedAction = slot<Runnable>()
+        val message = slot<String>()
         mockkStatic(SwingUtilities::class)
         mockkObject(Dialogs)
         try {
             every { SwingUtilities.invokeLater(capture(queuedAction)) } returns Unit
-            every { Dialogs.showOptionDialog(any(), any(), any(), any(), any()) } returns 2
+            every { Dialogs.showOptionDialog(any(), capture(message), any(), any(), any()) } returns 2
             val approval = async(start = CoroutineStart.UNDISPATCHED) {
                 SwingUserApprovalHandler().requestApproval("example.com", 443, config)
             }
@@ -142,6 +143,7 @@ class HttpRequestSecurityTest {
 
             assertTrue(approval.await())
             assertEquals(listOf("example.com"), config.getAutoApproveTargetsList())
+            assertTrue(message.captured.contains("do not expire automatically"))
         } finally {
             unmockkObject(Dialogs)
             unmockkStatic(SwingUtilities::class)

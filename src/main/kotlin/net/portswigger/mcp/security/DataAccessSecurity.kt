@@ -36,6 +36,10 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                 "Allow for This Session applies only to $accessTypeName and expires when this MCP session ends or " +
                     "session approvals are reset."
             )
+            appendLine("Allow Once applies only to this read.")
+            appendLine(
+                "Always Allow $accessTypeName is stored in MCP settings and does not expire automatically."
+            )
             appendLine("Choose how you would like to respond:")
         }
         val result = SwingApprovalGate.showOption {

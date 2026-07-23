@@ -194,6 +194,7 @@ Load the resulting JAR in Burp through **Extensions → Installed → Add → Ja
 Open the **MCP** tab in Burp:
 
 - Enable or stop the MCP server and confirm the loaded extension version shown under the MCP heading.
+- The settings surface tracks the available Burp viewport width, wraps explanatory text, and stacks action buttons when needed. Styled buttons, links, and the server toggle retain visible keyboard focus and support Enter/Space; Escape safely closes MCP dialogs. Persistent approval choices use warning styling and state that they do not expire automatically.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.

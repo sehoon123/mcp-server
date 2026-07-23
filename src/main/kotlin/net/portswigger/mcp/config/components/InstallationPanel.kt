@@ -63,19 +63,9 @@ class InstallationPanel(
         add(manualInstallPanel)
     }
 
-    private fun createButtonRow(): JPanel {
-        val buttonRow = JPanel(FlowLayout(FlowLayout.LEFT, Design.Spacing.SM, Design.Spacing.SM)).apply {
-            alignmentX = LEFT_ALIGNMENT
-            isOpaque = false
-        }
-
-        providers.forEach { provider ->
-            val button = createProviderButton(provider)
-            buttonRow.add(button)
-        }
-
-        return buttonRow
-    }
+    private fun createButtonRow(): JPanel = AdaptiveButtonPanel(
+        providers.map(::createProviderButton),
+    )
 
     private fun createProviderButton(provider: Provider): JButton {
         return Design.createFilledButton(provider.installButtonText).apply {

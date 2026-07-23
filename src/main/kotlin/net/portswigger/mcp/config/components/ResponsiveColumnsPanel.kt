@@ -5,16 +5,21 @@ import java.awt.BorderLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.BorderFactory
-import javax.swing.BoxLayout
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.UIManager
+import kotlin.math.roundToInt
 
 class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPanel: JScrollPane) : JPanel() {
-    private val minWidthForTwoColumns = 900
-    private val minWidthForLargePadding = 700
+    private val minWidthForTwoColumns: Int
+        get() = scaledBreakpoint(1_120)
+    private val minWidthForLargePadding: Int
+        get() = scaledBreakpoint(720)
     private var lastLayout = Layout.SINGLE_COLUMN
     private var lastPaddingSize = PaddingSize.SMALL
     private var isInitialized = false
+
+    internal val activeLayout: Layout get() = lastLayout
 
     enum class Layout { SINGLE_COLUMN, TWO_COLUMNS }
     enum class PaddingSize { SMALL, LARGE }
@@ -32,7 +37,6 @@ class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPan
     }
 
     override fun doLayout() {
-        super.doLayout()
         val currentLayout = if (width >= minWidthForTwoColumns) Layout.TWO_COLUMNS else Layout.SINGLE_COLUMN
         val currentPaddingSize = if (width >= minWidthForLargePadding) PaddingSize.LARGE else PaddingSize.SMALL
 
@@ -41,6 +45,7 @@ class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPan
             lastPaddingSize = currentPaddingSize
             updateLayout()
         }
+        super.doLayout()
     }
 
     private fun updateLayout() {
@@ -76,30 +81,23 @@ class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPan
 
             Layout.SINGLE_COLUMN -> {
                 layout = BorderLayout()
-                val singleColumnPanel = JPanel().apply {
-                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                    background = Design.Colors.surface
-                }
-
                 val headerWrapper = JPanel(BorderLayout()).apply {
                     isOpaque = false
                     border = BorderFactory.createEmptyBorder(padding, padding, Design.Spacing.MD, padding)
                     add(leftPanel, BorderLayout.CENTER)
                 }
 
-                singleColumnPanel.add(headerWrapper)
-
-                val scrollWrapper = JPanel(BorderLayout()).apply {
-                    isOpaque = false
-                    add(rightPanel, BorderLayout.CENTER)
-                }
-                singleColumnPanel.add(scrollWrapper)
-
-                add(singleColumnPanel, BorderLayout.CENTER)
+                add(headerWrapper, BorderLayout.NORTH)
+                add(rightPanel, BorderLayout.CENTER)
             }
         }
 
         revalidate()
         repaint()
+    }
+
+    private fun scaledBreakpoint(baseWidth: Int): Int {
+        val fontSize = UIManager.getFont("Label.font")?.size2D ?: 14f
+        return (baseWidth * (fontSize / 14f).coerceAtLeast(1f)).roundToInt()
     }
 }

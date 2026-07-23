@@ -37,9 +37,10 @@ internal class SwingScopeActionApprovalHandler : ScopeActionApprovalHandler {
                 "Allow for This Session permits later include and exclude changes only until this MCP session ends " +
                     "or session approvals are reset."
             )
+            appendLine("Allow Once applies only to this Target scope change.")
             append(
-                "Always Allow disables future include and exclude prompts until " +
-                    "Require approval for Target scope changes is re-enabled in MCP settings."
+                "Always Allow is stored in MCP settings, does not expire automatically, and disables future include " +
+                    "and exclude prompts until Require approval for Target scope changes is re-enabled."
             )
         }
         val result = SwingApprovalGate.showOption {

@@ -2,7 +2,6 @@ package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.McpConfig
-import java.awt.Dimension
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.GridBagConstraints
@@ -19,6 +18,7 @@ class AdvancedOptionsPanel(
     private val portField: JTextField,
     private val reinstallNotice: WarningLabel
 ) : JPanel() {
+    private val tokenStatus = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -51,25 +51,21 @@ class AdvancedOptionsPanel(
         )
         add(formPanel)
         add(createVerticalStrut(Design.Spacing.SM))
-        add(JLabel("The server accepts only numeric loopback binds and requires a per-installation bearer token.").apply {
-            font = Design.Typography.bodyMedium
-            foreground = Design.Colors.onSurfaceVariant
-            alignmentX = LEFT_ALIGNMENT
-        })
+        add(WrappingText(
+            "The server accepts only numeric loopback binds and requires a per-installation bearer token."
+        ))
         add(createVerticalStrut(Design.Spacing.SM))
-        add(JButton("Copy local bearer token").apply {
-            alignmentX = LEFT_ALIGNMENT
+
+        val copyTokenButton = JButton("Copy local bearer token").apply {
             addActionListener {
                 copyTokenToClipboard(config.localBearerToken).onSuccess {
-                    text = "Bearer token copied (treat clipboard as sensitive)"
+                    tokenStatus.updateContent("Bearer token copied; treat the clipboard as sensitive")
                 }.onFailure {
-                    text = "Could not access the system clipboard"
+                    tokenStatus.updateContent("Could not access the system clipboard")
                 }
             }
-        })
-        add(createVerticalStrut(Design.Spacing.SM))
-        add(JButton("Rotate local bearer token...").apply {
-            alignmentX = LEFT_ALIGNMENT
+        }
+        val rotateTokenButton = JButton("Rotate local bearer token...").apply {
             addActionListener {
                 val confirmed = JOptionPane.showConfirmDialog(
                     this@AdvancedOptionsPanel,
@@ -83,13 +79,16 @@ class AdvancedOptionsPanel(
                     val token = config.rotateLocalBearerToken()
                     reinstallNotice.isVisible = true
                     copyTokenToClipboard(token).onSuccess {
-                        text = "Token rotated and copied; restart server and update clients"
+                        tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
                     }.onFailure {
-                        text = "Token rotated; restart server and update clients"
+                        tokenStatus.updateContent("Token rotated; restart the server and update clients")
                     }
                 }
             }
-        })
+        }
+        add(AdaptiveButtonPanel(listOf(copyTokenButton, rotateTokenButton)))
+        add(createVerticalStrut(Design.Spacing.SM))
+        add(tokenStatus)
     }
 
     private fun copyTokenToClipboard(token: String): Result<Unit> = runCatching {
@@ -131,6 +130,7 @@ class AdvancedOptionsPanel(
             formPanel.add(JLabel(labelText).apply {
                 font = Design.Typography.bodyLarge
                 foreground = Design.Colors.onSurface
+                labelFor = field
             }, gbc)
 
             gbc.gridx = 1
@@ -139,7 +139,6 @@ class AdvancedOptionsPanel(
             gbc.insets = Insets(Design.Spacing.SM, 0, Design.Spacing.SM, 0)
 
             if (field is JTextField) {
-                field.preferredSize = Dimension(200, 32)
                 field.font = Design.Typography.bodyLarge
             }
 

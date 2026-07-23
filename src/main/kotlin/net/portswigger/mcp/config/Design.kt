@@ -1,11 +1,20 @@
 package net.portswigger.mcp.config
 
 import java.awt.*
+import java.awt.event.ActionEvent
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
+import javax.accessibility.AccessibleAction
+import javax.accessibility.AccessibleContext
+import javax.accessibility.AccessibleRole
+import javax.accessibility.AccessibleState
 import javax.swing.*
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -72,10 +81,29 @@ object Design {
         )
     }
 
+    private const val ENTER_BINDING_MARKER = "burp-mcp-enter-binding"
+
+    internal fun enableKeyboardActivation(button: AbstractButton) {
+        fun installEnterBinding() {
+            button.getInputMap(JComponent.WHEN_FOCUSED).apply {
+                // Consume both phases so a root pane's safe default button cannot also handle Enter.
+                put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0, false), "pressed")
+                put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0, true), "released")
+            }
+        }
+
+        button.isFocusPainted = true
+        installEnterBinding()
+        if (button.getClientProperty(ENTER_BINDING_MARKER) != true) {
+            button.putClientProperty(ENTER_BINDING_MARKER, true)
+            button.addPropertyChangeListener("UI") { installEnterBinding() }
+        }
+    }
+
     private fun applyButtonBaseStyle(button: JButton, customSize: Dimension?) {
         button.apply {
             font = Typography.labelLarge
-            isFocusPainted = false
+            enableKeyboardActivation(this)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
             val textFitSize = calculateTextFitSize(this)
@@ -129,6 +157,31 @@ object Design {
         }
     }
 
+    internal fun createSemanticOutlinedButton(text: String, semanticColor: () -> Color): JButton {
+        return object : JButton(text) {
+            init {
+                updateColorsAndSizing()
+                applyButtonBaseStyle(this, null)
+            }
+
+            override fun updateUI() {
+                super.updateUI()
+                updateColorsAndSizing()
+                applyButtonBaseStyle(this, null)
+            }
+
+            private fun updateColorsAndSizing() {
+                val color = semanticColor()
+                background = Colors.surface
+                foreground = color
+                border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(color, 1),
+                    BorderFactory.createEmptyBorder(Spacing.SM + 1, Spacing.LG - 1, Spacing.SM + 1, Spacing.LG - 1),
+                )
+            }
+        }
+    }
+
     fun createTextButton(text: String, customSize: Dimension? = null): JButton {
         return object : JButton(text) {
             init {
@@ -175,7 +228,7 @@ object Design {
     }
 }
 
-class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) -> Unit) : JComponent() {
+class ToggleSwitch(isOn: Boolean, private val onToggle: (Boolean) -> Unit) : JComponent() {
 
     companion object {
         private const val TRACK_WIDTH = 44
@@ -191,6 +244,8 @@ class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) ->
         private const val COMPONENT_HEIGHT = TRACK_HEIGHT + (SPARKLE_MARGIN * 2)
     }
 
+    private var initialized = false
+    private var isOn = isOn
     private var animationProgress = if (isOn) 1.0f else 0.0f
     private var animationTimer: Timer? = null
     private var sparkles = mutableListOf<Sparkle>()
@@ -210,29 +265,42 @@ class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) ->
     )
 
     init {
-        preferredSize = Dimension(COMPONENT_WIDTH, COMPONENT_HEIGHT)
+        initialized = true
+        updateSizing()
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        isOpaque = false
+        isFocusable = true
+        border = null
+        toolTipText = "Enable or disable the MCP server"
 
         addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent?) {
-                e?.let { event ->
-                    val toggleBounds = Rectangle(
-                        SPARKLE_MARGIN,
-                        SPARKLE_MARGIN,
-                        TRACK_WIDTH,
-                        TRACK_HEIGHT
-                    )
-                    if (toggleBounds.contains(event.point)) {
-                        toggle()
-                    }
+                if (isEnabled && e != null) {
+                    requestFocusInWindow()
+                    val scale = uiScale()
+                    val point = Point((e.x / scale).roundToInt(), (e.y / scale).roundToInt())
+                    val toggleBounds = Rectangle(SPARKLE_MARGIN, SPARKLE_MARGIN, TRACK_WIDTH, TRACK_HEIGHT)
+                    if (toggleBounds.contains(point)) toggle()
                 }
             }
         })
+        addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent?) = repaint()
+            override fun focusLost(e: FocusEvent?) = repaint()
+        })
+        val keyboardToggle = object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) {
+                if (isEnabled) toggle()
+            }
+        }
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, 0, true), "toggle")
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0, true), "toggle")
+        actionMap.put("toggle", keyboardToggle)
     }
 
     fun setState(newState: Boolean, animate: Boolean = true) {
         if (isOn != newState) {
-            isOn = newState
+            updateState(newState)
             if (animate) {
                 animateToState()
             } else {
@@ -243,9 +311,21 @@ class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) ->
     }
 
     private fun toggle() {
-        isOn = !isOn
+        updateState(!isOn)
         onToggle(isOn)
         animateToState()
+    }
+
+    private fun updateState(newState: Boolean) {
+        val oldState = isOn
+        isOn = newState
+        val oldAccessibleState = AccessibleState.CHECKED.takeIf { oldState }
+        val newAccessibleState = AccessibleState.CHECKED.takeIf { newState }
+        accessibleContext?.firePropertyChange(
+            AccessibleContext.ACCESSIBLE_STATE_PROPERTY,
+            oldAccessibleState,
+            newAccessibleState,
+        )
     }
 
     private fun animateToState() {
@@ -351,13 +431,27 @@ class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) ->
     }
 
     override fun paintComponent(g: Graphics) {
-        super.paintComponent(g)
-
         val g2 = g.create() as Graphics2D
+        g2.scale(uiScale().toDouble(), uiScale().toDouble())
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        if (!isEnabled) {
+            g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.55f)
+        }
 
         val trackX = SPARKLE_MARGIN.toFloat()
         val trackY = SPARKLE_MARGIN.toFloat()
+
+        if (hasFocus()) {
+            g2.color = UIManager.getColor("Component.focusColor") ?: Design.Colors.primary
+            g2.stroke = BasicStroke(2f)
+            g2.draw(createRoundRect(
+                trackX - 3,
+                trackY - 3,
+                TRACK_WIDTH + 6f,
+                TRACK_HEIGHT + 6f,
+                TRACK_HEIGHT + 6f,
+            ))
+        }
 
         g2.color = if (isOn) Design.Colors.primary else Design.Colors.outline
         g2.fill(createRoundRect(trackX, trackY, TRACK_WIDTH.toFloat(), TRACK_HEIGHT.toFloat(), TRACK_HEIGHT.toFloat()))
@@ -428,7 +522,50 @@ class ToggleSwitch(private var isOn: Boolean, private val onToggle: (Boolean) ->
 
     override fun updateUI() {
         super.updateUI()
+        isOpaque = false
+        border = null
+        if (initialized) updateSizing()
         repaint() // Repaint to use updated theme colors
+    }
+
+    private fun updateSizing() {
+        val scale = uiScale()
+        val scaledSize = Dimension(
+            (COMPONENT_WIDTH * scale).roundToInt(),
+            (COMPONENT_HEIGHT * scale).roundToInt(),
+        )
+        preferredSize = scaledSize
+        minimumSize = scaledSize
+        maximumSize = scaledSize
+    }
+
+    private fun uiScale(): Float =
+        (Design.Typography.bodyMedium.size2D / 14f).coerceAtLeast(1f)
+
+    override fun getAccessibleContext(): AccessibleContext {
+        if (accessibleContext == null) accessibleContext = AccessibleToggleSwitch()
+        return accessibleContext
+    }
+
+    protected inner class AccessibleToggleSwitch : AccessibleJComponent(), AccessibleAction {
+        override fun getAccessibleRole(): AccessibleRole = AccessibleRole.TOGGLE_BUTTON
+
+        override fun getAccessibleStateSet() = super.getAccessibleStateSet().apply {
+            if (isOn) add(AccessibleState.CHECKED)
+        }
+
+        override fun getAccessibleAction(): AccessibleAction = this
+
+        override fun getAccessibleActionCount(): Int = 1
+
+        override fun getAccessibleActionDescription(index: Int): String? =
+            "toggle".takeIf { index == 0 }
+
+        override fun doAccessibleAction(index: Int): Boolean {
+            if (index != 0 || !isEnabled) return false
+            toggle()
+            return true
+        }
     }
 
     private fun createRoundRect(

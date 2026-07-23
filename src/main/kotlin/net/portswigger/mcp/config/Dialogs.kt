@@ -3,6 +3,8 @@ package net.portswigger.mcp.config
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.ui.editor.EditorOptions
+import net.portswigger.mcp.config.components.WrappingText
+import net.portswigger.mcp.config.components.WrappingTextStyle
 import java.awt.*
 import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
@@ -93,11 +95,11 @@ object Dialogs {
             else -> null
         }
 
-        val messageLabel = JLabel(wrapText(message)).apply {
-            font = Design.Typography.bodyLarge
-            foreground = Design.Colors.onSurface
-            horizontalAlignment = SwingConstants.CENTER
-        }
+        val messageLabel = WrappingText(
+            wrapText(message),
+            WrappingTextStyle.PRIMARY_BODY_LARGE,
+            fallbackMaxWidth = 560,
+        )
 
         val contentPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -125,8 +127,10 @@ object Dialogs {
         contentPanel.add(okButton)
 
         dialog.contentPane = contentPanel
+        dialog.rootPane.defaultButton = okButton
         dialog.pack()
         dialog.setLocationRelativeTo(parent)
+        SwingUtilities.invokeLater { okButton.requestFocusInWindow() }
         dialog.isVisible = true
     }
 
@@ -136,11 +140,11 @@ object Dialogs {
         val dialog = createDialog(parent)
         var result = JOptionPane.CANCEL_OPTION
 
-        val messageLabel = JLabel(message).apply {
-            font = Design.Typography.bodyLarge
-            foreground = Design.Colors.onSurface
-            horizontalAlignment = SwingConstants.CENTER
-        }
+        val messageLabel = WrappingText(
+            message,
+            WrappingTextStyle.PRIMARY_BODY_LARGE,
+            fallbackMaxWidth = 560,
+        )
 
         val contentPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -156,6 +160,7 @@ object Dialogs {
             background = Design.Colors.surface
             alignmentX = Component.CENTER_ALIGNMENT
         }
+        var safeDefaultButton: JButton? = null
 
         when (optionType) {
             JOptionPane.YES_NO_OPTION -> {
@@ -173,6 +178,7 @@ object Dialogs {
                 }
                 buttonPanel.add(noButton)
                 buttonPanel.add(yesButton)
+                safeDefaultButton = noButton
             }
 
             JOptionPane.OK_CANCEL_OPTION -> {
@@ -190,14 +196,19 @@ object Dialogs {
                 }
                 buttonPanel.add(cancelButton)
                 buttonPanel.add(okButton)
+                safeDefaultButton = cancelButton
             }
         }
 
         contentPanel.add(buttonPanel)
 
         dialog.contentPane = contentPanel
+        dialog.rootPane.defaultButton = safeDefaultButton
         dialog.pack()
         dialog.setLocationRelativeTo(parent)
+        safeDefaultButton?.let { button ->
+            SwingUtilities.invokeLater { button.requestFocusInWindow() }
+        }
         dialog.isVisible = true
 
         return result
@@ -209,10 +220,11 @@ object Dialogs {
         val dialog = createDialog(parent)
         var result: String? = null
 
-        val messageLabel = JLabel(message).apply {
-            font = Design.Typography.bodyLarge
-            foreground = Design.Colors.onSurface
-        }
+        val messageLabel = WrappingText(
+            message,
+            WrappingTextStyle.PRIMARY_BODY_LARGE,
+            fallbackMaxWidth = 560,
+        )
 
         val inputField = JTextField(20).apply {
             font = Design.Typography.bodyLarge
@@ -276,6 +288,7 @@ object Dialogs {
         contentPanel.add(buttonPanel)
 
         dialog.contentPane = contentPanel
+        dialog.rootPane.defaultButton = okButton
         dialog.pack()
         dialog.setLocationRelativeTo(parent)
 
@@ -297,18 +310,13 @@ object Dialogs {
         val buttons = options.mapIndexed { index, option ->
             val button = when {
                 index == 0 -> Design.createFilledButton(option)
-                index == options.lastIndex -> Design.createOutlinedButton(option).apply {
-                    foreground = Design.Colors.error
-                    border = BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(Design.Colors.error, 1),
-                        BorderFactory.createEmptyBorder(
-                            Design.Spacing.SM + 1,
-                            Design.Spacing.LG - 1,
-                            Design.Spacing.SM + 1,
-                            Design.Spacing.LG - 1,
-                        ),
-                    )
-                }
+                index == options.lastIndex ->
+                    Design.createSemanticOutlinedButton(option) { Design.Colors.error }
+                option.startsWith("Always Allow") ->
+                    Design.createSemanticOutlinedButton(option) { Design.Colors.warning }.apply {
+                        accessibleContext.accessibleDescription =
+                            "Persistent approval; remains enabled until reset in MCP settings"
+                    }
                 else -> Design.createOutlinedButton(option)
             }
             button.apply {
@@ -381,6 +389,7 @@ object Dialogs {
         val contentPanel = JPanel().apply {
             background = Design.Colors.surface
         }
+        var denialButton: JButton? = null
 
         if (!requestContent.isNullOrBlank()) {
             contentPanel.layout = BorderLayout()
@@ -439,6 +448,7 @@ object Dialogs {
                 result = index
                 dialog.dispose()
             }
+            denialButton = buttonPanel.components.filterIsInstance<JButton>().lastOrNull()
             val rightContentWidth = maxOf(messageScrollPane.preferredSize.width, buttonPanel.preferredSize.width)
             val rightPanelWidth = rightContentWidth + Design.Spacing.LG + Design.Spacing.XL
             val rightPanelHeight = maxOf(
@@ -476,10 +486,12 @@ object Dialogs {
                 result = index
                 dialog.dispose()
             }
+            denialButton = buttonPanel.components.filterIsInstance<JButton>().lastOrNull()
             contentPanel.add(buttonPanel)
         }
 
         dialog.contentPane = contentPanel
+        dialog.rootPane.defaultButton = denialButton
         dialog.pack()
 
         if (parent != null && parent.isDisplayable) {
@@ -496,6 +508,9 @@ object Dialogs {
             )
         }
 
+        denialButton?.let { button ->
+            SwingUtilities.invokeLater { button.requestFocusInWindow() }
+        }
         activeOptionDialog.set(dialog)
         try {
             dialog.isVisible = true
