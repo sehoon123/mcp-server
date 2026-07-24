@@ -41,14 +41,18 @@ v4.6.0 treats a detected Burp project transition as a session reset boundary:
 2. the raw project ID is not retained in session state, diagnostics, or audit;
 3. when the digest changes, all pending and active sessions are detached, event streams are cancelled, memory-only
    approvals are cleared, and transport cleanup is attempted within the existing two-second shutdown bound;
-4. a late initialization callback from a detached session cannot reactivate it; and
-5. a request carrying an old session ID cannot reacquire the detached session, while fresh initialization can bind to
+4. an initialized Scanner task service detaches extension-owned audit records and queues at most one best-effort cleanup
+   attempt for each nonterminal task;
+5. a late initialization callback from a detached session cannot reactivate it; and
+6. a request carrying an old session ID cannot reacquire the detached session, while fresh initialization can bind to
    the current project.
 
 This request-bound guard complements, but does not replace, the project and stable-ID checks performed by every tool and
-resource read. It does not undo an already dispatched Burp operation; cancellation and uncertainty continue to follow the
-operation outcome policy. Montoya `2026.7` does not expose a complete project-lifecycle event, so v4 does not claim
-immediate asynchronous detection while no MCP request is being admitted. Because wire subscriptions remain disabled, an
+resource read. It does not undo arbitrary already-dispatched Burp operations. Extension-owned Scanner audits are the
+narrow lifecycle exception: their existing project-bound ownership permits one best-effort cleanup attempt after their
+records are detached. Cancellation and uncertainty continue to follow the operation outcome policy. Montoya `2026.7`
+does not expose a complete project-lifecycle event, so v4 does not claim immediate asynchronous detection while no MCP
+request is being admitted. Because wire subscriptions remain disabled, an
 idle event stream has no project-data update channel to leak through. A future subscription implementation needs an
 authoritative lifecycle signal or a separately reviewed bounded observer before enabling delivery.
 

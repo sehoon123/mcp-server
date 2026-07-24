@@ -19,9 +19,15 @@ import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.SensitiveActionSecurity
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.security.SecureRandom
+import java.time.Duration
 import java.time.Instant
 import java.util.HexFormat
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_ACTIVE_SCANNER_AUDITS = 8
@@ -35,7 +41,36 @@ private const val DEFAULT_SCANNER_TASK_ISSUE_LIMIT = 25
 private const val MAX_SCANNER_TASK_ISSUE_LIMIT = 50
 private const val MAX_SCANNER_TASK_ID_CHARS = 128
 private const val MAX_SCANNER_STATUS_MESSAGE_CHARS = 512
+private const val SCANNER_CLEANUP_SHUTDOWN_MILLIS = 2_000L
 private val SCANNER_TASK_ID_PATTERN = Regex("scanner_audit_[0-9a-f]{32}")
+
+internal data class ScannerAuditRetentionPolicy(
+    val unpublishedTaskRetention: Duration = Duration.ofMinutes(5),
+    val idleTaskRetention: Duration = Duration.ofHours(6),
+    val maximumTaskLifetime: Duration = Duration.ofHours(24),
+    val terminalRecordRetention: Duration = Duration.ofHours(1),
+    val sweepInterval: Duration = Duration.ofMinutes(1),
+) {
+    init {
+        listOf(
+            unpublishedTaskRetention,
+            idleTaskRetention,
+            maximumTaskLifetime,
+            terminalRecordRetention,
+            sweepInterval,
+        ).forEach { require(!it.isZero && !it.isNegative) { "Scanner retention durations must be positive" } }
+        require(maximumTaskLifetime >= idleTaskRetention) {
+            "Scanner maximum task lifetime must not be shorter than its idle retention"
+        }
+    }
+}
+
+private fun newScannerCleanupExecutor(): ScheduledExecutorService {
+    val threadNumber = AtomicInteger()
+    return Executors.newScheduledThreadPool(MAX_ACTIVE_SCANNER_AUDITS) { task ->
+        Thread(task, "burp-mcp-scanner-cleanup-${threadNumber.incrementAndGet()}").apply { isDaemon = true }
+    }
+}
 
 @Serializable
 data class ScannerAuditTarget(
@@ -191,11 +226,38 @@ data class ScannerAuditResult(
     val error: String? = null,
 )
 
-internal class ScannerAuditService(private val api: MontoyaApi) {
+internal class ScannerAuditService(
+    private val api: MontoyaApi,
+    private val clock: () -> Instant = { Instant.now() },
+    private val ticker: () -> Long = System::nanoTime,
+    private val retention: ScannerAuditRetentionPolicy = ScannerAuditRetentionPolicy(),
+    cleanupExecutor: ScheduledExecutorService? = newScannerCleanupExecutor(),
+) {
     private val records = ConcurrentHashMap<String, ScannerAuditRecord>()
     private val startMutex = Mutex()
     private val random = SecureRandom()
     private val observedProjectId = AtomicReference<String?>()
+    private val cleanupReservations = AtomicInteger()
+    private val cleanupExecutor = cleanupExecutor
+    private val cleanupLifecycle = Any()
+    @Volatile
+    private var closed = false
+
+    init {
+        val intervalMillis = retention.sweepInterval.toMillis().coerceAtLeast(1L)
+        cleanupExecutor?.scheduleWithFixedDelay(
+            {
+                try {
+                    cleanupExpired()
+                } catch (_: Exception) {
+                    runCatching { api.logging().logToError("MCP Scanner cleanup failed") }
+                }
+            },
+            intervalMillis,
+            intervalMillis,
+            TimeUnit.MILLISECONDS,
+        )
+    }
 
     suspend fun start(input: StartScannerAuditFromIds, config: McpConfig): ScannerAuditResult {
         val targetLimit = when (input.mode) {
@@ -435,13 +497,13 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         return startMutex.withLock {
             callContext.ensureActive()
             refreshAndTrimRecords()
-            if (records.values.count { !it.lastState.isTerminal() } >= MAX_ACTIVE_SCANNER_AUDITS) {
+            if (records.values.count { !it.lastState.isTerminal() } + cleanupReservations.get() >= MAX_ACTIVE_SCANNER_AUDITS) {
                 return@withLock scannerAuditError(
                     ScannerAuditToolStatus.CAPACITY_EXCEEDED,
                     ScannerAuditActionState.NOT_STARTED,
                     input.projectId,
                     input.mode,
-                    "at most $MAX_ACTIVE_SCANNER_AUDITS MCP-started Scanner audits may be active",
+                    "at most $MAX_ACTIVE_SCANNER_AUDITS MCP-started Scanner audits may be active or awaiting confirmed cleanup",
                 )
             }
             val currentProjectId = try {
@@ -529,13 +591,15 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 )
             }
 
+            val startedTick = ticker()
             val record = ScannerAuditRecord(
                 taskId = taskId,
                 projectId = input.projectId,
                 mode = input.mode,
                 audit = audit,
                 targets = targetSummaries,
-                startedAt = Instant.now(),
+                startedAt = clock(),
+                startedTick = startedTick,
             )
             records[taskId] = record
 
@@ -550,20 +614,16 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                         )
                     }
                 }
-                record.lastState = ScannerAuditTaskState.RUNNING
+                record.updateState(ScannerAuditTaskState.RUNNING, ticker())
             } catch (e: CancellationException) {
-                record.lastState = ScannerAuditTaskState.UNKNOWN
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
                 auditScanner(input.mode, prepared.size, taskId, "target submission cancelled")
-                val deleted = try {
-                    audit.delete()
-                    true
-                } catch (_: Exception) {
-                    false
-                }
+                val deleted = cleanupOwnedAuditOnce(record)
                 if (deleted) records.remove(taskId, record)
                 throw e
             } catch (e: Exception) {
-                record.lastState = ScannerAuditTaskState.UNKNOWN
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "target submission uncertain")
                 return@withLock record.toResult(
                     status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
@@ -575,6 +635,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 )
             }
 
+            record.markPublished(ticker())
             auditScanner(input.mode, prepared.size, taskId, "started")
             record.toResult(
                 status = ScannerAuditToolStatus.OK,
@@ -595,11 +656,11 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 error = "issueLimit must be between 0 and $MAX_SCANNER_TASK_ISSUE_LIMIT",
             )
         }
-        val record = records[input.taskId] ?: return scannerAuditError(
+        val record = claimRecord(input.taskId) ?: return scannerAuditError(
             ScannerAuditToolStatus.NOT_FOUND,
             ScannerAuditActionState.NOT_STARTED,
             input.projectId,
-            error = "Scanner audit task was not found; only tasks started by this extension instance are available",
+            error = "Scanner audit task was not found; only current retained tasks started by this extension instance are available",
         )
         if (record.projectId != input.projectId) {
             return scannerAuditError(
@@ -628,7 +689,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         val errorCount = runCatchingPreservingCancellation { record.audit.errorCount() }
             .onFailure { errors += "error count unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
-        record.lastState = classifyTaskState(statusMessage, record.lastState)
+        record.updateState(classifyTaskState(statusMessage, record.lastState), ticker())
         record.lastStatusMessage = statusMessage
         record.lastAuditedInsertionPointCount = auditedInsertionPointCount
         record.lastRequestCount = requestCount
@@ -704,11 +765,11 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
     suspend fun cancel(input: CancelScannerAudit): ScannerAuditResult {
         val validation = validateTaskInput(input.projectId, input.taskId)
         if (validation != null) return validation
-        val record = records[input.taskId] ?: return scannerAuditError(
+        val record = claimRecord(input.taskId) ?: return scannerAuditError(
             ScannerAuditToolStatus.NOT_FOUND,
             ScannerAuditActionState.NOT_STARTED,
             input.projectId,
-            error = "Scanner audit task was not found; only tasks started by this extension instance are available",
+            error = "Scanner audit task was not found; only current retained tasks started by this extension instance are available",
         )
         if (record.projectId != input.projectId) {
             return scannerAuditError(
@@ -770,18 +831,26 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             )
         }
         currentCoroutineContext().ensureActive()
+        if (!record.claimCleanup()) {
+            record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+            return record.toResult(
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                ScannerAuditActionState.UNCERTAIN,
+                error = uncertainExecutionError("Scanner audit cleanup was already attempted"),
+            )
+        }
         return try {
             record.audit.delete()
-            record.lastState = ScannerAuditTaskState.CANCELLED
-            record.cancelledAt = Instant.now()
+            record.updateState(ScannerAuditTaskState.CANCELLED, ticker())
+            record.cancelledAt = clock()
             auditScanner(record.mode, record.targets.size, record.taskId, "cancelled")
             record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
         } catch (e: CancellationException) {
-            record.lastState = ScannerAuditTaskState.UNKNOWN
+            record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted")
             throw e
         } catch (e: Exception) {
-            record.lastState = ScannerAuditTaskState.UNKNOWN
+            record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation uncertain")
             record.toResult(
                 ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
@@ -836,13 +905,64 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         val previous = observedProjectId.getAndSet(currentProjectId)
         if (previous == null || previous == currentProjectId) return
 
-        records.values.filter { it.projectId != currentProjectId }.forEach { record ->
-            records.remove(record.taskId, record)
-            if (!record.lastState.isTerminal()) runCatching { record.audit.delete() }
+        detachRecords { it.projectId != currentProjectId }
+            .forEach { (record, reserved) -> enqueueCleanup(record, "project transition", reserved) }
+    }
+
+    /** Detaches every retained task synchronously at the authenticated project boundary. */
+    fun resetForProjectBoundary() {
+        observedProjectId.set(null)
+        detachRecords { true }
+            .forEach { (record, reserved) -> enqueueCleanup(record, "project transition", reserved) }
+    }
+
+    private fun detachRecords(
+        predicate: (ScannerAuditRecord) -> Boolean,
+    ): List<Pair<ScannerAuditRecord, Boolean>> = buildList {
+        records.values.forEach { record ->
+            if (!predicate(record)) return@forEach
+            val reserved = reserveCleanupSlot(record)
+            if (records.remove(record.taskId, record) || reserved) add(record to reserved)
         }
     }
 
+    private fun claimRecord(taskId: String): ScannerAuditRecord? {
+        val now = ticker()
+        var expired: Triple<ScannerAuditRecord, ScannerRecordExpiration, Boolean>? = null
+        val retained = records.computeIfPresent(taskId) { _, record ->
+            val reason = record.expirationReason(now, retention)
+            if (reason != null) {
+                expired = Triple(record, reason, reserveCleanupSlot(record))
+                null
+            } else {
+                record.markObserved(now)
+                record
+            }
+        }
+        expired?.let { (record, reason, reserved) -> enqueueCleanup(record, reason.outcome, reserved) }
+        return retained
+    }
+
+    internal fun cleanupExpired(): Int {
+        val now = ticker()
+        val expired = ArrayList<Triple<ScannerAuditRecord, ScannerRecordExpiration, Boolean>>()
+        records.keys.toList().forEach { taskId ->
+            records.computeIfPresent(taskId) { _, record ->
+                val reason = record.expirationReason(now, retention)
+                if (reason != null) {
+                    expired += Triple(record, reason, reserveCleanupSlot(record))
+                    null
+                } else {
+                    record
+                }
+            }
+        }
+        expired.forEach { (record, reason, reserved) -> enqueueCleanup(record, reason.outcome, reserved) }
+        return expired.size
+    }
+
     private fun refreshAndTrimRecords() {
+        cleanupExpired()
         records.values.forEach { record ->
             if (!record.lastState.isTerminal()) {
                 val status = runCatchingPreservingCancellation {
@@ -850,7 +970,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 }.getOrNull()
                 if (status != null) {
                     record.lastStatusMessage = status
-                    record.lastState = classifyTaskState(status, record.lastState)
+                    record.updateState(classifyTaskState(status, record.lastState), ticker())
                 }
             }
         }
@@ -858,6 +978,63 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         val removable = records.values.filter { it.lastState.isTerminal() }.sortedBy { it.startedAt }
         val removeCount = (records.size - MAX_RETAINED_SCANNER_AUDITS + 1).coerceAtLeast(0)
         removable.take(removeCount).forEach { records.remove(it.taskId, it) }
+    }
+
+    private fun reserveCleanupSlot(record: ScannerAuditRecord): Boolean {
+        if (record.lastState.isTerminal() || !record.reserveCleanup()) return false
+        cleanupReservations.incrementAndGet()
+        return true
+    }
+
+    private fun enqueueCleanup(record: ScannerAuditRecord, reason: String, slotReserved: Boolean = false) {
+        if (record.lastState.isTerminal()) {
+            if (slotReserved) cleanupReservations.decrementAndGet()
+            return
+        }
+        if (!slotReserved && !reserveCleanupSlot(record)) return
+        val mode = record.mode
+        val targetCount = record.targets.size
+        val taskId = record.taskId
+        if (!record.claimCleanup()) {
+            auditScanner(mode, targetCount, taskId, "$reason cleanup unresolved")
+            return
+        }
+        val audit = record.audit
+        val cleanup = Runnable {
+            val completed = try {
+                audit.delete()
+                true
+            } catch (_: Exception) {
+                false
+            }
+            if (completed) cleanupReservations.decrementAndGet()
+            val outcome = if (completed) "$reason cleanup completed" else "$reason cleanup unresolved"
+            auditScanner(mode, targetCount, taskId, outcome)
+        }
+        val scheduled = synchronized(cleanupLifecycle) {
+            val executor = cleanupExecutor
+            if (executor == null || closed) {
+                false
+            } else {
+                try {
+                    executor.execute(cleanup)
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+        }
+        if (!scheduled) cleanup.run()
+    }
+
+    private fun cleanupOwnedAuditOnce(record: ScannerAuditRecord): Boolean {
+        if (!record.claimCleanup()) return false
+        return try {
+            record.audit.delete()
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun nextTaskId(): String {
@@ -870,10 +1047,19 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
 
     /** Cancels extension-owned work during extension unload and releases all retained handles. */
     fun close() {
-        val owned = records.values.toList()
-        records.clear()
-        owned.filterNot { it.lastState.isTerminal() }.forEach { record ->
-            runCatching { record.audit.delete() }
+        detachRecords { true }
+            .forEach { (record, reserved) -> enqueueCleanup(record, "extension shutdown", reserved) }
+        val executor = synchronized(cleanupLifecycle) {
+            closed = true
+            cleanupExecutor?.also { it.shutdown() }
+        } ?: return
+        try {
+            if (!executor.awaitTermination(SCANNER_CLEANUP_SHUTDOWN_MILLIS, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow()
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            executor.shutdownNow()
         }
     }
 
@@ -952,6 +1138,13 @@ private fun buildScannerReview(
     )
 }
 
+private enum class ScannerRecordExpiration(val outcome: String) {
+    UNPUBLISHED("unreturned task expired"),
+    IDLE("idle task expired"),
+    MAXIMUM_LIFETIME("maximum lifetime expired"),
+    TERMINAL("terminal record expired"),
+}
+
 private class ScannerAuditRecord(
     val taskId: String,
     val projectId: String,
@@ -959,7 +1152,16 @@ private class ScannerAuditRecord(
     val audit: Audit,
     val targets: List<ScannerAuditTargetSummary>,
     val startedAt: Instant,
+    private val startedTick: Long,
 ) {
+    private val cleanupClaimed = AtomicBoolean()
+    private val cleanupReserved = AtomicBoolean()
+    @Volatile
+    private var published = false
+    @Volatile
+    private var lastObservedTick = startedTick
+    @Volatile
+    private var terminalTick: Long? = null
     @Volatile
     var lastState: ScannerAuditTaskState = ScannerAuditTaskState.STARTING
     @Volatile
@@ -974,6 +1176,48 @@ private class ScannerAuditRecord(
     var lastIssueCount: Int? = null
     @Volatile
     var cancelledAt: Instant? = null
+
+    fun markPublished(now: Long) {
+        lastObservedTick = now
+        published = true
+    }
+
+    fun markObserved(now: Long) {
+        lastObservedTick = now
+    }
+
+    @Synchronized
+    fun updateState(state: ScannerAuditTaskState, now: Long) {
+        lastState = state
+        if (state.isTerminal()) {
+            if (terminalTick == null) terminalTick = now
+        } else {
+            terminalTick = null
+        }
+    }
+
+    fun expirationReason(now: Long, policy: ScannerAuditRetentionPolicy): ScannerRecordExpiration? {
+        if (lastState.isTerminal()) {
+            val terminalSince = terminalTick ?: return null
+            return ScannerRecordExpiration.TERMINAL.takeIf {
+                retentionElapsed(now, terminalSince, policy.terminalRecordRetention)
+            }
+        }
+        if (!published && retentionElapsed(now, startedTick, policy.unpublishedTaskRetention)) {
+            return ScannerRecordExpiration.UNPUBLISHED
+        }
+        if (retentionElapsed(now, startedTick, policy.maximumTaskLifetime)) {
+            return ScannerRecordExpiration.MAXIMUM_LIFETIME
+        }
+        if (published && retentionElapsed(now, lastObservedTick, policy.idleTaskRetention)) {
+            return ScannerRecordExpiration.IDLE
+        }
+        return null
+    }
+
+    fun claimCleanup(): Boolean = cleanupClaimed.compareAndSet(false, true)
+
+    fun reserveCleanup(): Boolean = cleanupReserved.compareAndSet(false, true)
 
     fun toResult(
         status: ScannerAuditToolStatus,
@@ -1023,8 +1267,11 @@ private fun ScannerAuditMode.builtInConfiguration(): BuiltInAuditConfiguration =
     ScannerAuditMode.ACTIVE -> BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS
 }
 
+private fun retentionElapsed(now: Long, since: Long, duration: Duration): Boolean =
+    now - since >= duration.toNanos()
+
 private fun classifyTaskState(message: String?, previous: ScannerAuditTaskState): ScannerAuditTaskState {
-    if (previous == ScannerAuditTaskState.CANCELLED) return previous
+    if (previous.isTerminal()) return previous
     val normalized = message?.trim()?.lowercase().orEmpty()
     return when {
         normalized.isEmpty() -> previous.takeIf { it != ScannerAuditTaskState.STARTING } ?: ScannerAuditTaskState.UNKNOWN

@@ -444,7 +444,11 @@ Burp approval. Task IDs are random, project-bound, retained only by this extensi
 cannot address unrelated Burp tasks. Some Burp runtimes do not expose issue objects while an audit is live; in that
 case status and counters still return `status: "ok"` with `issuesUnavailable: true` and a bounded warning. If start or
 cancellation returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID and Burp
-Scanner UI first.
+Scanner UI first. A bounded one-minute sweeper detaches an unreturned task record after five minutes, a published task
+after six hours without a status/cancel call, every task after 24 hours, and an observed terminal record after one hour.
+Status and cancel calls renew only the inactivity lease. Expiration and detected project transitions make at most one
+best-effort deletion attempt, so an ambiguous failed deletion is not retried automatically. An unresolved cleanup keeps
+one of the eight owned-task capacity slots reserved until the extension is reloaded rather than hiding a possible orphan.
 
 ## Collaborator polling
 
