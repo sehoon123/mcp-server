@@ -18,6 +18,10 @@ internal class ToolServices(private val api: MontoyaApi) {
     val scannerAudits: ScannerAuditService get() = scannerAuditsDelegate.value
     val httpMetadataIndex: HttpMetadataIndex get() = httpMetadataIndexDelegate.value
 
+    fun resetForProjectBoundary() {
+        if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.resetForProjectBoundary()
+    }
+
     fun close() {
         if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.close()
         if (collaboratorDelegate.isInitialized()) collaboratorDelegate.value.close()

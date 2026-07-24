@@ -692,14 +692,14 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
-            description = "Starts a focused Professional Scanner audit from existing project-scoped HTTP references. Passive mode requires responses and sends no target traffic. Active mode requires explicit semantic insertionPoints for every target and rejects out-of-scope requests. This operation always requires Burp approval. actionState=uncertain means a task may exist and must not be started again automatically.",
+            description = "Starts a focused Professional Scanner audit from existing project-scoped HTTP references. Passive mode requires responses and sends no target traffic. Active mode requires explicit semantic insertionPoints for every target and rejects out-of-scope requests. This operation always requires Burp approval. Retained tasks expire after 6 hours without a status/cancel call and after 24 hours overall. actionState=uncertain means a task may exist and must not be started again automatically.",
             annotations = SCANNER_START_TOOL_ANNOTATIONS,
         ) {
             services.scannerAudits.start(this, config)
         }
 
         mcpStructuredTool<GetScannerAudit, ScannerAuditResult>(
-            description = "Returns status, insertion-point/request/error counts, and bounded stable issue summaries for a Scanner audit started by this extension instance. Burp exposes a textual task status, so taskState is a conservative normalized interpretation and statusMessage remains authoritative. issuesUnavailable=true is a nonfatal warning when the current Burp runtime cannot expose live task issues.",
+            description = "Returns status, insertion-point/request/error counts, and bounded stable issue summaries for a Scanner audit started by this extension instance. A retained-task status call refreshes its 6-hour inactivity lease; every task still has a 24-hour maximum lifetime. Burp exposes a textual task status, so taskState is a conservative normalized interpretation and statusMessage remains authoritative. issuesUnavailable=true is a nonfatal warning when the current Burp runtime cannot expose live task issues.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
             services.scannerAudits.get(this, config)

@@ -28,6 +28,8 @@ import net.portswigger.mcp.security.SensitiveActionSecurity
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.Duration
+import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -47,6 +49,8 @@ class ScannerAuditToolsTest {
     private lateinit var originalSensitiveHandler: SensitiveActionApprovalHandler
     private lateinit var originalDataHandler: DataAccessApprovalHandler
     private val createdRanges = mutableListOf<Pair<Int, Int>>()
+    private var currentInstant = Instant.parse("2026-01-01T00:00:00Z")
+    private var currentTick = 0L
 
     @BeforeEach
     fun setUp() {
@@ -69,12 +73,20 @@ class ScannerAuditToolsTest {
             mockk(relaxed = true)
         }
         config = config(requireDataApproval = false)
-        service = ScannerAuditService(api)
+        currentInstant = Instant.parse("2026-01-01T00:00:00Z")
+        currentTick = 0L
+        service = ScannerAuditService(
+            api,
+            clock = { currentInstant },
+            ticker = { currentTick },
+            cleanupExecutor = null,
+        )
         SensitiveActionSecurity.approvalHandler = approvalHandler(true)
     }
 
     @AfterEach
     fun tearDown() {
+        service.close()
         SensitiveActionSecurity.approvalHandler = originalSensitiveHandler
         DataAccessSecurity.approvalHandler = originalDataHandler
         unmockkStatic(AuditConfiguration::class)
@@ -253,6 +265,136 @@ class ScannerAuditToolsTest {
         val result = service.get(GetScannerAudit("second-project", started.taskId!!), config)
 
         assertEquals(ScannerAuditToolStatus.NOT_FOUND, result.status)
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `inactive published task expires and is deleted once`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.delete() } just runs
+
+        val started = service.start(passiveInput(1), config)
+        advance(Duration.ofHours(6).plusNanos(1))
+
+        assertEquals(1, service.cleanupExpired())
+        val expired = service.get(GetScannerAudit("project-123", started.taskId!!), config)
+        assertEquals(ScannerAuditToolStatus.NOT_FOUND, expired.status)
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `status observation renews idle retention but not maximum lifetime`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.statusMessage() } returns "Running"
+        every { audit.insertionPointCount() } returns 0
+        every { audit.requestCount() } returns 1
+        every { audit.errorCount() } returns 0
+        every { audit.delete() } just runs
+
+        val started = service.start(passiveInput(1), config)
+        repeat(4) {
+            advance(Duration.ofHours(5))
+            val current = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
+            assertEquals(ScannerAuditTaskState.RUNNING, current.taskState)
+            assertEquals(0, service.cleanupExpired())
+        }
+
+        advance(Duration.ofHours(4).plusNanos(1))
+        assertEquals(1, service.cleanupExpired())
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `terminal task record expires without deleting the completed Burp audit`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.statusMessage() } returns "Finished"
+        every { audit.insertionPointCount() } returns 0
+        every { audit.requestCount() } returns 1
+        every { audit.errorCount() } returns 0
+
+        val started = service.start(passiveInput(1), config)
+        val finished = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
+        assertEquals(ScannerAuditTaskState.FINISHED, finished.taskState)
+
+        advance(Duration.ofHours(1).plusNanos(1))
+        assertEquals(1, service.cleanupExpired())
+        val expired = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
+        assertEquals(ScannerAuditToolStatus.NOT_FOUND, expired.status)
+        verify(exactly = 0) { audit.delete() }
+    }
+
+    @Test
+    fun `unreturned cancelled task record expires without retrying ambiguous cleanup`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } throws CancellationException("cancelled")
+        every { audit.delete() } throws IllegalStateException("delete outcome unknown")
+
+        assertFailsWith<CancellationException> { service.start(passiveInput(1), config) }
+        advance(Duration.ofMinutes(5).plusNanos(1))
+
+        assertEquals(1, service.cleanupExpired())
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `unresolved cleanup reservations continue to enforce the active task cap`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audits = List(8) {
+            mockk<Audit>().also { audit ->
+                every { audit.addRequestResponse(any()) } just runs
+                every { audit.delete() } throws IllegalStateException("delete outcome unknown")
+            }
+        }
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returnsMany audits
+
+        repeat(8) {
+            val started = service.start(passiveInput(1), config)
+            assertEquals(ScannerAuditToolStatus.OK, started.status)
+        }
+        service.resetForProjectBoundary()
+
+        val blocked = service.start(passiveInput(1), config)
+        assertEquals(ScannerAuditToolStatus.CAPACITY_EXCEEDED, blocked.status)
+        audits.forEach { audit -> verify(exactly = 1) { audit.delete() } }
+        verify(exactly = 8) { scanner.startAudit(configuration) }
+    }
+
+    @Test
+    fun `authenticated project boundary detaches Scanner tasks before cleanup`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.delete() } just runs
+
+        val started = service.start(passiveInput(1), config)
+        service.resetForProjectBoundary()
+
+        val detached = service.get(GetScannerAudit("project-123", started.taskId!!), config)
+        assertEquals(ScannerAuditToolStatus.NOT_FOUND, detached.status)
         verify(exactly = 1) { audit.delete() }
     }
 
@@ -440,6 +582,11 @@ class ScannerAuditToolsTest {
         assertEquals(false, result.issuesAccessDenied)
         coVerify(exactly = 0) { dataApproval.requestDataAccess(any(), any()) }
         verify(exactly = 0) { audit.issues() }
+    }
+
+    private fun advance(duration: Duration) {
+        currentInstant = currentInstant.plus(duration)
+        currentTick += duration.toNanos()
     }
 
     private fun passiveInput(id: Int) = StartScannerAuditFromIds(

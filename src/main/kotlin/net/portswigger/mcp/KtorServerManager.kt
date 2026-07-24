@@ -121,6 +121,7 @@ internal fun Application.configureMcpHttpEndpoint(
     sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
     sseClientLivenessTimeoutMillis: Long = MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS,
     projectIdProvider: (() -> String)? = null,
+    onProjectBoundary: () -> Unit = {},
 ) {
     require(maxSessions > 0) { "maxSessions must be positive" }
     require(sseHeartbeatMillis > 0) { "sseHeartbeatMillis must be positive" }
@@ -188,7 +189,14 @@ internal fun Application.configureMcpHttpEndpoint(
         sessionApprovals,
     )
     val projectGuard = projectIdProvider?.let { provider ->
-        McpProjectEpochGuard(provider, sessions::resetForProjectBoundary)
+        McpProjectEpochGuard(provider) {
+            sessions.resetForProjectBoundary()
+            try {
+                onProjectBoundary()
+            } catch (_: Exception) {
+                // Session authority is already revoked; auxiliary owned-work cleanup must not reopen the boundary.
+            }
+        }
     }
     val activeCalls = java.util.concurrent.atomic.AtomicInteger()
     intercept(ApplicationCallPipeline.Call) {
@@ -1022,6 +1030,7 @@ class KtorServerManager internal constructor(
                         metrics,
                         sessionApprovals = sessionApprovals,
                         projectIdProvider = projectIdProvider,
+                        onProjectBoundary = toolServices::resetForProjectBoundary,
                     )
                 }
                 server = newEngine

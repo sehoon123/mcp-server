@@ -243,6 +243,14 @@ Implemented in v4.6.0:
   target submission checks cancellation between bounded targets and attempts to delete an extension-owned task whose ID
   was never returned; an interrupted explicit Scanner cancellation leaves the retained task state unknown.
 
+Implemented after v4.6.0:
+
+- A fixed one-minute Scanner cleanup sweep expires unreturned records after five minutes, published tasks after six hours
+  without a status/cancel call, all tasks after 24 hours, and observed terminal records after one hour. Cleanup detaches
+  state before one best-effort delete, never retries an ambiguous delete, and also runs at the authenticated project
+  boundary and extension shutdown. An unresolved cleanup continues to consume one of eight fixed owned-task slots until
+  extension reload, preventing repeated cleanup ambiguity from creating unbounded Burp work.
+
 Remaining work:
 
 - Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
