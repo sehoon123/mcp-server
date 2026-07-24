@@ -3,7 +3,7 @@
 **Status date:** 2026-07-24
 
 Version 5 is reserved for the first production release that adopts the modern, per-request MCP protocol era. The current
-production release is v4.5.0 on stable protocol `2025-11-25`. A draft or an SDK branch is not sufficient authority for a
+production release is v4.6.0 on stable protocol `2025-11-25`. A draft or an SDK branch is not sufficient authority for a
 stable v5 release.
 
 ## PM transition decision
@@ -46,19 +46,19 @@ Upstream references:
 ## Montoya integration lane
 
 Montoya is a separate product-runtime decision, not evidence that the MCP wire is ready. Public v4.5.0 was compiled
-against Montoya `2025.10`; unreleased main now uses `2026.7` as its compile/test baseline. The published `2026.7` API adds
+against Montoya `2025.10`; v4.6.0 uses `2026.7` as its compile/test baseline. The published `2026.7` API adds
 a Professional-only HTTP request execution engine with an explicit `RequestExecutionLifetime.cancel()` lifecycle. That
 API does not replace MCP discovery, per-request metadata, conformance, client support, or the sessionless approval design.
 
 The initial isolated spike at exact v4.5.0 commit `d477d08fe5c23b9b3b94a8b075cd7c234d0dd03e` passed all 408 tests. The
-unreleased baseline update subsequently passed all 426 tests and produced an extension JAR byte-identical to the
+v4.6.0 baseline update subsequently passed all 426 tests and produced an extension JAR byte-identical to the
 `2025.10` build. Montoya remains compile-only and the extension does not yet call a `2026.7`-only method, so this pin alone
 does not raise the minimum runtime or claim value from the new execution engine.
 
 The remaining sequence is deliberately small:
 
 1. use `2026.7` as the source-compatibility baseline — completed;
-2. have the candidate exercised in the intended Burp runtime before the next public release;
+2. exercise the exact release bytes in the intended Burp runtime and record any defect;
 3. keep `RequestExecutionEngine` opt-in and Professional-only unless request-bound cancellation provides concrete value;
 4. if that API is adopted, update the minimum Burp version and test its fallback separately from the MCP wire migration;
 5. build the first modern-wire alpha on the now-tested `2026.7` compile baseline without simultaneously introducing the
@@ -139,16 +139,16 @@ The following constraints carry into v5:
 8. Retain the remaining scale, context-menu, and multi-client soak work as RC gates rather than displacing the current
    feature/security work.
 
-The schema-preserving foundation for item 3 is implemented after v4.5.0: existing mutation families retain their public
+The schema-preserving foundation for item 3 is implemented in v4.6.0: existing mutation families retain their public
 status fields while sharing bounded reconciliation guidance for uncertain execution, treating timeouts reported by Burp's
 synchronous execution API after dispatch as uncertain, and preserving cancellation exceptions. Scanner target submission now checks cancellation between bounded
 targets and attempts to remove an unreturned extension-owned task. This does not close the wire-cancellation gate, add a
 new public timeout discriminator, or imply cancellation support in Burp APIs that expose no lifetime handle.
 
-The item 4 baseline update is implemented after v4.5.0. All 426 tests pass and the extension JAR is byte-identical because
+The item 4 baseline update is implemented in v4.6.0. All 426 tests pass and the extension JAR is byte-identical because
 no `2026.7`-only method is used; runtime validation remains a release check rather than a blocker for source work.
 
-The item 5 v4 foundation is also implemented after v4.5.0. Request admission keeps only a digest of the current project
+The item 5 v4 foundation is also implemented in v4.6.0. Request admission keeps only a digest of the current project
 ID and treats a detected transition as a hard session boundary, clearing streams and memory-only approvals before a new
 session proceeds. Stable resource subscriptions remain disabled: SDK `0.14.0` has unbounded, non-validating internal
 subscription admission and no selective project-generation cleanup hook. This request-bound reset is not evidence of

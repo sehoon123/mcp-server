@@ -228,7 +228,7 @@ Implemented in v4.5.0:
   stages when a progress token is supplied. Their bounded loops check cooperative cancellation between record batches;
   internal snapshot retries cannot regress or multiply stages.
 
-Implemented after v4.5.0 (unreleased):
+Implemented in v4.6.0:
 
 - Existing HTTP action, Scope, Scanner, configuration, control, and editor result schemas share one bounded, redacted
   reconciliation message whenever execution is uncertain. A timeout reported by Burp's synchronous execution API after
@@ -242,8 +242,8 @@ Remaining work:
 
 - Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
   cancellation lifecycle; SDK `0.14.0` does not currently do so.
-- Montoya `2026.7` is now the unreleased compile/test baseline and produces byte-identical extension code because no new
-  method is called. Evaluate its Professional-only request-execution lifetime and explicit `cancel()` handle separately;
+- Montoya `2026.7` is the v4.6.0 compile/test baseline and produces byte-identical extension code because no new method
+  is called. Evaluate its Professional-only request-execution lifetime and explicit `cancel()` handle separately;
   using that API would require a reviewed minimum-Burp change and runtime fallback. Other Burp operations still require
   their own explicit cancellation lifecycle.
 - Use stable MCP tasks for operations that outlive a single HTTP request after the protocol, SDK, and supported clients
@@ -254,7 +254,7 @@ Remaining work:
 
 ### 9. Notify clients when capabilities change
 
-Implemented after v4.5.0 (unreleased):
+Implemented in v4.6.0:
 
 - [PROJECT_BOUND_NOTIFICATIONS.md](PROJECT_BOUND_NOTIFICATIONS.md) records the Stage A decision and SDK `0.14.0`
   constraints. The v4 catalog is immutable for a listener lifetime, so tools/resources/prompts correctly keep
@@ -317,20 +317,17 @@ Remaining work:
 - Add saved, scoped history queries and optional notifications instead of model-side polling.
 - Provide import/export of MCP settings with secrets excluded by default.
 
-## Current post-v4.5 execution order
+## Current post-v4.6 execution order
 
-This is the active PM order while the modern protocol gates remain closed:
+The approval baseline, schema-preserving outcome normalization, Montoya `2026.7` compile baseline, and v4 project-session
+boundary are complete. While the modern protocol gates remain closed, the active order is:
 
-1. Define the sessionless approval baseline and normalize cancellation, timeout, partial-completion, and uncertain results.
-2. Adopt Montoya `2026.7` as the compile-only baseline after the compatibility spike and byte-identity check; evaluate
-   its new Professional request engine separately.
-3. Design policy-safe list changes and project-bound resource subscriptions that close on project transition.
-4. Start the modern-wire alpha as soon as a released official SDK supplies the server transport; do not create a parallel
+1. Start the modern-wire alpha as soon as a released official SDK supplies the server transport; do not create a parallel
    raw JSON-RPC dispatcher while that implementation is absent.
-5. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
-6. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
-7. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
-8. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
+2. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
+3. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
+4. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
+5. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
 
 See [V5_READINESS.md](V5_READINESS.md) for release gates and
 [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the sessionless authorization decision.
