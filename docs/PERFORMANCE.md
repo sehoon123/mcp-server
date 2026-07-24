@@ -403,12 +403,13 @@ not prove the EDT was continuously responsive. Queue delay also includes unrelat
 machine suspend/resume. The watchdog is therefore a correlation aid rather than a method profiler or standalone Burp
 performance benchmark.
 
-An isolated Burp Community 2026.6 process provided a live instrumentation check. Before an intentional synthetic stall,
-439 completed probes reported no threshold crossings or errors. A one-off test agent then queued a bounded 1,200 ms
-sleep on that disposable process's EDT. The later snapshot reported 656 samples, two coalesced attempts, one crossing in
-each threshold bucket, a 1,042 ms maximum, and zero errors. A thread dump at 346 seconds showed 93.75 ms of watchdog
-thread CPU time. This validates detection, coalescing, and low scheduler activity in that run; the injected stall is not
-a Burp workload benchmark or evidence for large-project latency.
+An isolated Burp Community 2026.6 process on JetBrains Runtime 21.0.10 provided a live instrumentation check. Before
+an intentional synthetic stall, 439 completed probes reported no threshold crossings or errors. A one-off test
+agent then queued a bounded 1,200 ms sleep on that disposable process's EDT. The later snapshot reported 656 samples,
+two coalesced attempts, one crossing in each threshold bucket, a 1,042 ms maximum, and zero errors. At 346 seconds, a
+thread dump attributed 93.75 ms of CPU time to the watchdog thread. This validates detection, coalescing, and low
+scheduler activity in that run. The injected stall is not a Burp workload benchmark or evidence for large-project
+latency.
 
 ## Diagnostics and audit overhead
 
