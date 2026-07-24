@@ -47,7 +47,7 @@ Unreleased v4 hardening now treats a detected Burp project transition as a sessi
 
 This request-bound guard complements, but does not replace, the project and stable-ID checks performed by every tool and
 resource read. It does not undo an already dispatched Burp operation; cancellation and uncertainty continue to follow the
-operation outcome policy. Montoya `2025.10` does not expose a complete project-lifecycle event, so v4 does not claim
+operation outcome policy. Montoya `2026.7` does not expose a complete project-lifecycle event, so v4 does not claim
 immediate asynchronous detection while no MCP request is being admitted. Because wire subscriptions remain disabled, an
 idle event stream has no project-data update channel to leak through. A future subscription implementation needs an
 authoritative lifecycle signal or a separately reviewed bounded observer before enabling delivery.

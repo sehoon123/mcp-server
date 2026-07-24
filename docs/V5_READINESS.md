@@ -45,25 +45,24 @@ Upstream references:
 
 ## Montoya integration lane
 
-Montoya is a separate product-runtime decision, not evidence that the MCP wire is ready. The production extension remains
-compiled against Montoya `2025.10`. Compared with that pin, the published `2026.7` API exposes typed/table HotKey
-registration and an HTTP request execution engine with an explicit `RequestExecutionLifetime.cancel()` lifecycle. The
-request engine was introduced in `2026.7` and is Professional-only. These APIs do not replace MCP discovery, per-request
-metadata, conformance, client support, or the sessionless approval design.
+Montoya is a separate product-runtime decision, not evidence that the MCP wire is ready. Public v4.5.0 was compiled
+against Montoya `2025.10`; unreleased main now uses `2026.7` as its compile/test baseline. The published `2026.7` API adds
+a Professional-only HTTP request execution engine with an explicit `RequestExecutionLifetime.cancel()` lifecycle. That
+API does not replace MCP discovery, per-request metadata, conformance, client support, or the sessionless approval design.
 
-An isolated version-catalog-only spike at exact v4.5.0 commit
-`d477d08fe5c23b9b3b94a8b075cd7c234d0dd03e` compiled against `2026.7` and passed all 408 tests. Its extension JAR stayed
-byte-identical because Montoya is compile-only and no new API was used. This proves source compatibility only; it does not
-prove matching Burp runtime behavior, minimum-platform compatibility, or value from the new APIs.
+The initial isolated spike at exact v4.5.0 commit `d477d08fe5c23b9b3b94a8b075cd7c234d0dd03e` passed all 408 tests. The
+unreleased baseline update subsequently passed all 426 tests and produced an extension JAR byte-identical to the
+`2025.10` build. Montoya remains compile-only and the extension does not yet call a `2026.7`-only method, so this pin alone
+does not raise the minimum runtime or claim value from the new execution engine.
 
-The safe sequence is:
+The remaining sequence is deliberately small:
 
-1. compile and test the unchanged v4 code against `2026.7` in an isolated worktree — completed for source compatibility;
-2. live-test a private build on matching Burp Community and Professional runtimes;
-3. quantify the minimum supported Burp-version change and BApp compatibility impact;
-4. build the first modern-wire alpha against the known `2025.10` baseline so transport defects are attributable;
-5. add `2026.7` in a later private alpha only if its cancellation or HotKey APIs provide concrete reviewed value;
-6. merge the dependency and minimum-version change only after both tracks pass independently.
+1. use `2026.7` as the source-compatibility baseline — completed;
+2. have the candidate exercised in the intended Burp runtime before the next public release;
+3. keep `RequestExecutionEngine` opt-in and Professional-only unless request-bound cancellation provides concrete value;
+4. if that API is adopted, update the minimum Burp version and test its fallback separately from the MCP wire migration;
+5. build the first modern-wire alpha on the now-tested `2026.7` compile baseline without simultaneously introducing the
+   new execution engine.
 
 No high-risk feature becomes approved merely because a newer Montoya API exposes it.
 
@@ -130,8 +129,8 @@ The following constraints carry into v5:
 2. Use [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) as the security baseline and keep modern transient grants disabled.
 3. Normalize cancellation, timeout, partial-completion, and uncertain structured results without claiming unsupported
    wire cancellation.
-4. Run the isolated Montoya `2026.7` compile/test spike, but do not change the production dependency or minimum Burp
-   version without separate live evidence.
+4. Adopt Montoya `2026.7` as a compile-only baseline after source, test, and byte-identity checks; keep new API usage and
+   any minimum-Burp change separate.
 5. Design project-bound list changes and subscriptions so a project transition closes stale delivery before new-project
    data can appear — design completed in [PROJECT_BOUND_NOTIFICATIONS.md](PROJECT_BOUND_NOTIFICATIONS.md); enablement
    remains blocked on bounded SDK lifecycle support.
@@ -146,6 +145,9 @@ synchronous execution API after dispatch as uncertain, and preserving cancellati
 targets and attempts to remove an unreturned extension-owned task. This does not close the wire-cancellation gate, add a
 new public timeout discriminator, or imply cancellation support in Burp APIs that expose no lifetime handle.
 
+The item 4 baseline update is implemented after v4.5.0. All 426 tests pass and the extension JAR is byte-identical because
+no `2026.7`-only method is used; runtime validation remains a release check rather than a blocker for source work.
+
 The item 5 v4 foundation is also implemented after v4.5.0. Request admission keeps only a digest of the current project
 ID and treats a detected transition as a hard session boundary, clearing streams and memory-only approvals before a new
 session proceeds. Stable resource subscriptions remain disabled: SDK `0.14.0` has unbounded, non-validating internal
@@ -155,7 +157,8 @@ immediate asynchronous project observation and does not open the modern subscrip
 ### Stage B — private v5 candidate after SDK support exists
 
 1. Build from an exact released SDK version and a published protocol revision.
-2. Build the first modern-wire alpha against Montoya `2025.10` to isolate the transport migration.
+2. Build the first modern-wire alpha against the tested Montoya `2026.7` compile baseline without adopting its new
+   request engine in the same change.
 3. Implement mandatory discovery, per-request metadata, mirrored-header validation, modern errors, result discriminators,
    and cache metadata.
 4. Remove GET, DELETE, session IDs, session registries, idle/pressure eviction, and legacy handshake behavior from the
@@ -166,7 +169,7 @@ immediate asynchronous project observation and does not open the modern subscrip
    where cancellation is safe.
 7. Keep resource subscriptions disabled unless their project/source policy and bounded notification lifecycle are proven.
 8. Run modern conformance with no whole-scenario expected-failure entry.
-9. Evaluate a later private alpha on Montoya `2026.7`; do not combine the two migrations in the first diagnostic build.
+9. Evaluate the Professional-only request engine in a later alpha only if it improves request-bound cancellation.
 
 ### Stage C — interoperability and migration
 

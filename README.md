@@ -146,8 +146,8 @@ same 3 fixed resources plus 7 templates and 4 prompts. The fixed JSON resources 
 
 - `burp://diagnostics` — secret-free aggregate listener, session, liveness, and approval counters;
 - `burp://project/summary` — the current opaque project ID, with local project names and paths omitted; and
-- `burp://scope/summary` — project binding and MCP scope policy, explicitly noting that Montoya 2025.10 cannot
-  enumerate configured scope rules.
+- `burp://scope/summary` — project binding and MCP scope policy, explicitly noting that Montoya cannot enumerate
+  configured scope rules.
 
 Parameterized resources use project-scoped stable IDs returned by the existing searches:
 

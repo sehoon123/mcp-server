@@ -7,7 +7,7 @@ shadow = "9.6.0"
 # Runtime Dependencies
 kotlinx-serialization = "1.11.0"
 mcp-sdk = "0.14.0"
-burp-montoya = "2025.10"
+burp-montoya = "2026.7"
 
 # Test Dependencies
 mockk = "1.14.6"
