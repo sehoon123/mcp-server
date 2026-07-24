@@ -365,6 +365,8 @@ internal class HttpMessageActionService(
             applyPatch(resolved.request, input.patch)
         } catch (e: IllegalArgumentException) {
             return invalidArgument(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e.message.orEmpty())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
         }
@@ -384,6 +386,8 @@ internal class HttpMessageActionService(
                 .withHttpMode(input.httpMode.toMontoyaMode(patched.request))
                 .withRedirectionMode(input.redirection.toMontoyaRedirectionMode())
                 .withResponseTimeout(timeout.toLong())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
         }
@@ -403,10 +407,13 @@ internal class HttpMessageActionService(
             return uncertain(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched, e)
         }
 
+        currentCoroutineContext().ensureActive()
         val recorded = recordHttpResponseInSiteMap(api, response, input.projectId)
         var summaryError: String? = recorded.warning
         val responseSummary = try {
             response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val message = "request completed but its response preview could not be created: ${safeException(e)}"
             summaryError = listOfNotNull(summaryError, message).joinToString("; ")
@@ -546,6 +553,8 @@ internal class HttpMessageActionService(
             applyPatch(resolved.request, patch)
         } catch (e: IllegalArgumentException) {
             return invalidArgument(projectId, ref, destination, e.message.orEmpty())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(projectId, ref, destination, e)
         }
@@ -553,6 +562,8 @@ internal class HttpMessageActionService(
             insertionPointSelectors?.let { prepareInsertionPoints(patched.request, it) }
         } catch (e: IllegalArgumentException) {
             return invalidArgument(projectId, ref, destination, e.message.orEmpty())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(projectId, ref, destination, e)
         }
@@ -620,6 +631,8 @@ internal class HttpMessageActionService(
     ): HttpMessageActionResult? {
         val currentProjectId = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, ref, destination, e)
         }
@@ -1086,7 +1099,7 @@ private fun uncertain(
     requestBytes = patched.requestBytes,
     tabName = tabName,
     insertionPointCount = insertionPointCount,
-    error = safeException(error),
+    error = uncertainExecutionError("Burp may have completed the request action", error),
 )
 
 private fun safeException(error: Exception): String = safeExceptionSummary(error)

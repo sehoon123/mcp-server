@@ -192,6 +192,12 @@ A client must also keep the optional `GET /mcp` stream connected to receive prog
 the same final structured result. Scan/content limits and continuation cursors remain the explicit non-cancellation
 partial-completion mechanism.
 
+State-changing HTTP, Scope, Scanner, configuration, control, and editor tools preserve their existing result schemas:
+execution is not-started, completed, or uncertain. Every uncertain result carries bounded redacted guidance not to retry
+automatically and to reconcile Burp state first; this includes a timeout reported by Burp's synchronous execution API
+after dispatch or a partial multi-target mutation. Coroutine cancellation is propagated instead of being reformatted as a result. Scanner target submission also
+checks cancellation between bounded targets and attempts to delete a task whose ID was not returned to the caller.
+
 ### v4.2 transport lifecycle and approval controls
 
 Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,

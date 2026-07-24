@@ -139,6 +139,12 @@ The following constraints carry into v5:
 8. Retain the remaining scale, context-menu, and multi-client soak work as RC gates rather than displacing the current
    feature/security work.
 
+The schema-preserving foundation for item 3 is implemented after v4.5.0: existing mutation families retain their public
+status fields while sharing bounded reconciliation guidance for uncertain execution, treating timeouts reported by Burp's
+synchronous execution API after dispatch as uncertain, and preserving cancellation exceptions. Scanner target submission now checks cancellation between bounded
+targets and attempts to remove an unreturned extension-owned task. This does not close the wire-cancellation gate, add a
+new public timeout discriminator, or imply cancellation support in Burp APIs that expose no lifetime handle.
+
 ### Stage B — private v5 candidate after SDK support exists
 
 1. Build from an exact released SDK version and a published protocol revision.

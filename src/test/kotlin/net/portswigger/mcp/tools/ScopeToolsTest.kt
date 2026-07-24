@@ -9,6 +9,7 @@ import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.scope.Scope
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.ScopeActionApprovalHandler
@@ -251,6 +252,28 @@ class ScopeToolsTest {
         assertEquals(1, result.changedCount)
         assertEquals(1, result.errorTargetIndex)
         assertTrue(result.error.orEmpty().contains("partially"))
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+    }
+
+    @Test
+    fun `scope mutation cancellation propagates and releases the metadata barrier`() = runBlocking {
+        val url = "https://cancel.example.test/"
+        every { scope.isInScope(url) } returnsMany listOf(false, false)
+        every { scope.includeInScope(url) } throws CancellationException("cancelled")
+        ScopeActionSecurity.approvalHandler = approvalHandler(true)
+
+        assertFailsWith<CancellationException> {
+            service.update(
+                UpdateScope(
+                    "project-123",
+                    ScopeUpdateOperation.INCLUDE,
+                    listOf(ScopeTarget(url = url)),
+                )
+            )
+        }
+
+        verify(exactly = 1) { scope.includeInScope(url) }
+        assertEquals("project-123", metadataIndex.observeCurrentProject())
     }
 
     @Test

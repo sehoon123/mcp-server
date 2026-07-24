@@ -17,6 +17,7 @@ import burp.api.montoya.scanner.Scanner
 import burp.api.montoya.scanner.audit.Audit
 import burp.api.montoya.scope.Scope
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -170,7 +172,35 @@ class ScannerAuditToolsTest {
         assertEquals(ScannerAuditToolStatus.EXECUTION_UNCERTAIN, result.status)
         assertEquals(ScannerAuditActionState.UNCERTAIN, result.actionState)
         assertNull(result.taskId)
-        assertTrue(result.error.orEmpty().contains("must not", ignoreCase = true).not())
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+    }
+
+    @Test
+    fun `Scanner start cancellation is propagated instead of becoming execution uncertain`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } throws CancellationException("cancelled")
+
+        assertFailsWith<CancellationException> { service.start(passiveInput(1), config) }
+        verify(exactly = 1) { scanner.startAudit(configuration) }
+    }
+
+    @Test
+    fun `target submission cancellation deletes the unreturned task and propagates`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } throws CancellationException("cancelled")
+        every { audit.delete() } just runs
+
+        assertFailsWith<CancellationException> { service.start(passiveInput(1), config) }
+        service.close()
+
+        verify(exactly = 1) { audit.addRequestResponse(any()) }
+        verify(exactly = 1) { audit.delete() }
     }
 
     @Test
@@ -201,6 +231,7 @@ class ScannerAuditToolsTest {
         assertEquals(ScannerAuditActionState.UNCERTAIN, result.actionState)
         assertNotNull(result.taskId)
         assertEquals(ScannerAuditTaskState.UNKNOWN, result.taskState)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
 
         val cancelled = service.cancel(CancelScannerAudit("project-123", result.taskId!!))
         assertEquals(ScannerAuditToolStatus.OK, cancelled.status)
@@ -313,6 +344,49 @@ class ScannerAuditToolsTest {
         assertTrue(result.issuesUnavailable)
         assertTrue(result.error.orEmpty().contains("unsupported", ignoreCase = true))
         assertEquals(10, result.requestCount)
+    }
+
+    @Test
+    fun `task status probing preserves cancellation`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.statusMessage() } throws CancellationException("cancelled")
+
+        val started = service.start(passiveInput(1), config)
+
+        assertFailsWith<CancellationException> {
+            service.get(GetScannerAudit("project-123", started.taskId!!), config)
+        }
+        verify(exactly = 1) { audit.statusMessage() }
+    }
+
+    @Test
+    fun `Scanner cancellation interruption propagates and leaves task state unknown`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.delete() } throws CancellationException("cancelled")
+        every { audit.statusMessage() } returns "unknown"
+        every { audit.insertionPointCount() } returns 0
+        every { audit.requestCount() } returns 0
+        every { audit.errorCount() } returns 0
+
+        val started = service.start(passiveInput(1), config)
+
+        assertFailsWith<CancellationException> {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!))
+        }
+        val current = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
+
+        assertEquals(ScannerAuditTaskState.UNKNOWN, current.taskState)
+        verify(exactly = 1) { audit.delete() }
     }
 
     @Test

@@ -228,6 +228,16 @@ Implemented in v4.5.0:
   stages when a progress token is supplied. Their bounded loops check cooperative cancellation between record batches;
   internal snapshot retries cannot regress or multiply stages.
 
+Implemented after v4.5.0 (unreleased):
+
+- Existing HTTP action, Scope, Scanner, configuration, control, and editor result schemas share one bounded, redacted
+  reconciliation message whenever execution is uncertain. A timeout reported by Burp's synchronous execution API after
+  an action crosses its execution boundary remains uncertain and non-retryable; ordinary preparation failures remain
+  not-started.
+- Cancellation exceptions are rethrown rather than converted to denial, Burp error, uncertainty, or completion. Scanner
+  target submission checks cancellation between bounded targets and attempts to delete an extension-owned task whose ID
+  was never returned; an interrupted explicit Scanner cancellation leaves the retained task state unknown.
+
 Remaining work:
 
 - Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
@@ -237,7 +247,9 @@ Remaining work:
   operations still require their own explicit cancellation lifecycle.
 - Use stable MCP tasks for operations that outlive a single HTTP request after the protocol, SDK, and supported clients
   agree on the task lifecycle.
-- Distinguish cancellation from timeout and partial completion consistently across every structured result.
+- Version any new public cancellation, timeout, or partial-completion discriminator through a separately approved schema
+  migration; the current schema-preserving foundation uses cancellation propagation plus not-started/completed/uncertain
+  execution state and explicit non-retryable reconciliation guidance.
 
 ### 9. Notify clients when capabilities change
 
