@@ -43,6 +43,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertIs
 
 class McpServerIntegrationTest {
@@ -461,15 +462,89 @@ class McpServerIntegrationTest {
     }
 
     @Test
-    fun `project summary fails closed when the Burp project changes during the read`() = runBlocking {
-        client.connectToServer("http://127.0.0.1:${testPort}/mcp")
+    fun `project summary fails closed when the Burp project changes during the read`() {
         every { api.project().id() } returnsMany listOf("project-before", "project-after")
 
-        val result = client.readResource(PROJECT_SUMMARY_RESOURCE_URI).singleTextResourceJson()
+        val result = currentProjectSummary(api)
 
-        assertEquals("project_mismatch", result["status"]?.jsonPrimitive?.content)
-        assertEquals("project-after", result["projectId"]?.jsonPrimitive?.content)
+        assertEquals(NativeResourceStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("project-after", result.projectId)
         assertFalse(result.toString().contains("integration-project"))
+    }
+
+    @Test
+    fun `authenticated admission fails closed when the project binding is unavailable`() {
+        val projectObservations = AtomicInteger()
+        every { api.project().id() } answers {
+            projectObservations.incrementAndGet()
+            throw IllegalStateException("sensitive-provider-detail")
+        }
+        val body =
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"unavailable-project-test","version":"1.0"}}}"""
+        fun request(authenticated: Boolean): java.net.http.HttpRequest {
+            val builder = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI("http://127.0.0.1:${testPort}/mcp"))
+                .timeout(Duration.ofSeconds(5))
+                .header("Mcp-Protocol-Version", "2025-11-25")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+            if (authenticated) builder.header("Authorization", "Bearer $testBearerToken")
+            return builder.build()
+        }
+        val httpClient = java.net.http.HttpClient.newHttpClient()
+
+        val unauthorized = httpClient.send(
+            request(authenticated = false),
+            java.net.http.HttpResponse.BodyHandlers.ofString(),
+        )
+        assertEquals(401, unauthorized.statusCode(), unauthorized.body())
+        assertEquals(0, projectObservations.get())
+
+        val response = httpClient.send(
+            request(authenticated = true),
+            java.net.http.HttpResponse.BodyHandlers.ofString(),
+        )
+        assertEquals(503, response.statusCode(), response.body())
+        assertEquals("1", response.headers().firstValue("Retry-After").orElse(null))
+        assertTrue(response.body().contains("Burp project binding is unavailable"))
+        assertFalse(response.body().contains("sensitive-provider-detail"))
+        assertEquals(1, projectObservations.get())
+        assertEquals(0, serverManager.diagnostics().activeSessions)
+    }
+
+    @Test
+    fun `project transition revokes the old session before a new project can be read`() = runBlocking {
+        val currentProject = AtomicReference("integration-project")
+        every { api.project().id() } answers { currentProject.get() }
+        client.connectToServer("http://127.0.0.1:${testPort}/mcp")
+        assertEquals(
+            "integration-project",
+            client.readResource(PROJECT_SUMMARY_RESOURCE_URI)
+                .singleTextResourceJson()["projectId"]?.jsonPrimitive?.content,
+        )
+
+        currentProject.set("replacement-project")
+        val staleFailure = runCatching {
+            client.readResource(PROJECT_SUMMARY_RESOURCE_URI)
+        }.exceptionOrNull()
+
+        assertNotNull(staleFailure)
+        assertFalse(staleFailure?.message.orEmpty().contains("replacement-project"))
+        assertEquals(0, serverManager.diagnostics().activeSessions)
+        runCatching { client.close() }
+
+        val replacement = TestStreamableHttpMcpClient(
+            mapOf("Authorization" to "Bearer $testBearerToken")
+        )
+        try {
+            replacement.connectToServer("http://127.0.0.1:${testPort}/mcp")
+            val project = replacement.readResource(PROJECT_SUMMARY_RESOURCE_URI).singleTextResourceJson()
+            assertEquals("ok", project["status"]?.jsonPrimitive?.content)
+            assertEquals("replacement-project", project["projectId"]?.jsonPrimitive?.content)
+        } finally {
+            replacement.close()
+        }
     }
 
     @Test
@@ -698,11 +773,66 @@ class McpServerIntegrationTest {
     }
 
     @Test
+    fun `resource subscription stays unavailable when a client ignores the advertised capability`() {
+        val httpClient = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(2))
+            .build()
+        val endpoint = java.net.URI("http://127.0.0.1:${testPort}/mcp")
+        fun post(sessionId: String?, body: String): java.net.http.HttpResponse<String> {
+            val builder = java.net.http.HttpRequest.newBuilder(endpoint)
+                .timeout(Duration.ofSeconds(5))
+                .header("Authorization", "Bearer $testBearerToken")
+                .header("Mcp-Protocol-Version", "2025-11-25")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+            if (sessionId != null) builder.header("Mcp-Session-Id", sessionId)
+            return httpClient.send(
+                builder.POST(java.net.http.HttpRequest.BodyPublishers.ofString(body)).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(),
+            )
+        }
+
+        val initialize = post(
+            null,
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"subscription-negative-test","version":"1.0"}}}""",
+        )
+        assertEquals(200, initialize.statusCode(), initialize.body())
+        val sessionId = initialize.headers().firstValue("Mcp-Session-Id").orElseThrow()
+        assertTrue(
+            post(sessionId, """{"jsonrpc":"2.0","method":"notifications/initialized"}""").statusCode() in
+                setOf(200, 202)
+        )
+
+        val subscribe = post(
+            sessionId,
+            """{"jsonrpc":"2.0","id":2,"method":"resources/subscribe","params":{"uri":"burp://unregistered/value"}}""",
+        )
+        assertEquals(200, subscribe.statusCode(), subscribe.body())
+        assertEquals(
+            -32601,
+            Json.parseToJsonElement(subscribe.body()).jsonObject["error"]?.jsonObject
+                ?.get("code")?.jsonPrimitive?.content?.toInt(),
+        )
+
+        val deleted = java.net.http.HttpRequest.newBuilder(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Authorization", "Bearer $testBearerToken")
+            .header("Mcp-Protocol-Version", "2025-11-25")
+            .header("Mcp-Session-Id", sessionId)
+            .header("Accept", "application/json, text/event-stream")
+            .DELETE()
+            .build()
+            .let { httpClient.send(it, java.net.http.HttpResponse.BodyHandlers.ofString()) }
+        assertTrue(deleted.statusCode() in setOf(200, 202), deleted.body())
+    }
+
+    @Test
     fun `native resources and prompts are advertised without changing the tool catalog`() = runBlocking {
         client.connectToServer("http://127.0.0.1:${testPort}/mcp")
 
         val toolsBefore = client.listTools().map { it.name }
         val capabilities = requireNotNull(client.serverCapabilities())
+        assertEquals(false, capabilities.tools?.listChanged)
         assertNotNull(capabilities.resources)
         assertEquals(false, capabilities.resources?.listChanged)
         assertEquals(false, capabilities.resources?.subscribe)

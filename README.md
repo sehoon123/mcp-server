@@ -132,9 +132,11 @@ active. Project-data grants remain source-specific (for example, Site Map does n
 
 Session approval state is a fixed enum set attached to the bounded 32-session registry. It stores no URL, target,
 header, body, project identifier, or client-provided value and is removed on authenticated `DELETE /mcp`, idle expiry,
-capacity eviction, listener restart, or Burp shutdown. **Reset active session approvals** clears all current grants
-without cancelling operations that have already started. **Reset all persistent approvals...** restores outbound HTTP,
-routing, Scope, and project-data policies to prompt-by-default and removes saved HTTP approval targets.
+capacity eviction, a project transition detected at request admission, listener restart, or Burp shutdown. A project
+transition also closes the old MCP sessions before a newly initialized session can use the current project. **Reset
+active session approvals** clears all current grants without cancelling operations that have already started. **Reset all
+persistent approvals...** restores outbound HTTP, routing, Scope, and project-data policies to prompt-by-default and
+removes saved HTTP approval targets.
 
 ### v4.4 native resources and prompts
 
@@ -162,7 +164,9 @@ burp://scanner-issue/{projectId}/{id}/{field}/{evidenceIndex}
 HTTP, WebSocket, and Scanner resources reuse the existing source approval checks on every read, including memory-only
 session grants, and revalidate the current project and stable ID before returning bounded content. Message and evidence
 resources return the first 32 KiB slice by default; use the corresponding detail tool when further byte pagination is
-required. URIs must be canonical, and resource subscriptions/list-change notifications are not advertised.
+required. URIs must be canonical. Resource subscriptions and list-change notifications remain unadvertised because the
+catalog is fixed for a listener lifetime and Kotlin SDK `0.14.0` does not expose bounded, project-aware subscription
+admission or selective invalidation. See [PROJECT_BOUND_NOTIFICATIONS.md](docs/PROJECT_BOUND_NOTIFICATIONS.md).
 
 Reusable prompts are `analyze_http_without_sending`, `compare_http_references`, and
 `review_auth_session_handling`; Professional also provides `summarize_scanner_issue`. Prompt arguments are bounded,

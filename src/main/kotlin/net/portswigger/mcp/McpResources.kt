@@ -530,7 +530,7 @@ private suspend fun Server.secureResourceRead(
     execute = execute,
 )
 
-private fun currentProjectSummary(api: MontoyaApi): ProjectSummaryResource {
+internal fun currentProjectSummary(api: MontoyaApi): ProjectSummaryResource {
     val projectId = api.project().id()
     if (!validProjectId(projectId)) {
         return ProjectSummaryResource(

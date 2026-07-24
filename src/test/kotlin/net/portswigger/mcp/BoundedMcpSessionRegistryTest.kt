@@ -4,12 +4,15 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import net.portswigger.mcp.security.McpSessionApproval
 import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.McpSessionApprovalSummary
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -217,6 +220,66 @@ class BoundedMcpSessionRegistryTest {
 
         assertNull(registry.reserve(transport()))
         registry.closeAll()
+    }
+
+    @Test
+    fun `project boundary closes active and pending sessions and rejects late activation`() = runBlocking {
+        val activeTransport = transport()
+        val pendingTransport = transport()
+        val replacementTransport = transport()
+        val approvals = McpSessionApprovalRegistry(maxSessions = 2)
+        val metrics = McpRuntimeMetrics("test", maxHttpCalls = 64, maxSessions = 2)
+        val registry = BoundedMcpSessionRegistry(
+            maxSessions = 2,
+            idleMillis = 60_000,
+            runtimeMetrics = metrics,
+            sessionApprovals = approvals,
+        )
+        val active = assertNotNull(registry.reserve(activeTransport)).pending
+        registry.activate(active, "old-project-session")
+        assertNotNull(approvals.contextFor("old-project-session")).grant(McpSessionApproval.SITE_MAP)
+        val stream = Job()
+        assertTrue(active.registerStream(stream))
+        val pending = assertNotNull(registry.reserve(pendingTransport)).pending
+
+        registry.resetForProjectBoundary()
+        registry.activate(pending, "late-old-project-session")
+
+        assertTrue(stream.isCancelled)
+        assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
+        assertEquals(0, metrics.snapshot().pendingSessions)
+        assertEquals(0, metrics.snapshot().activeSessions)
+        coVerify(exactly = 1) { activeTransport.close() }
+        coVerify(exactly = 1) { pendingTransport.close() }
+
+        val replacement = assertNotNull(registry.reserve(replacementTransport)).pending
+        registry.activate(replacement, "new-project-session")
+        assertEquals(1, metrics.snapshot().activeSessions)
+        registry.closeAll()
+        coVerify(exactly = 1) { replacementTransport.close() }
+    }
+
+    @Test
+    fun `project boundary attempts every transport cleanup concurrently`() = runBlocking {
+        val cleanupStarted = AtomicInteger()
+        val allCleanupStarted = CompletableDeferred<Unit>()
+        fun blockingTransport() = mockk<StreamableHttpServerTransport>().also { transport ->
+            coEvery { transport.close() } coAnswers {
+                if (cleanupStarted.incrementAndGet() == 2) allCleanupStarted.complete(Unit)
+                allCleanupStarted.await()
+            }
+        }
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
+        val first = blockingTransport()
+        val second = blockingTransport()
+        assertNotNull(registry.reserve(first))
+        assertNotNull(registry.reserve(second))
+
+        withTimeout(1_000) { registry.resetForProjectBoundary() }
+
+        assertEquals(2, cleanupStarted.get())
+        coVerify(exactly = 1) { first.close() }
+        coVerify(exactly = 1) { second.close() }
     }
 
     @Test
