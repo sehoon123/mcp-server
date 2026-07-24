@@ -35,7 +35,7 @@ not be a safe compatibility fix.
 
 ## v4 project boundary
 
-Unreleased v4 hardening now treats a detected Burp project transition as a session reset boundary:
+v4.6.0 treats a detected Burp project transition as a session reset boundary:
 
 1. authenticated non-OPTIONS MCP requests compare a fixed-size SHA-256 digest of the current opaque project ID;
 2. the raw project ID is not retained in session state, diagnostics, or audit;
