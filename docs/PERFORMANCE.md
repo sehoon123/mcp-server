@@ -12,6 +12,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Graceful Streamable HTTP client close retained server sessions | 20 connect/close cycles retained 20 sessions; explicit DELETE retained 0 | Terminate the proxy's HTTP session and close the MCP server during lifecycle transitions |
 | P0 | Ephemeral native clients could exhaust all 32 sessions after disconnecting their optional SSE streams without DELETE | Repeated mcporter commands eventually returned `MCP session capacity is full` | Prefer one keep-alive client session and displace only the least-recently-used inactive disconnected-stream session under capacity pressure |
 | P0 | CIO wrapped an occupied listener in `JobCancellationException` | A real occupied-port regression reached `BindException` only after two cancellation causes | Recognize the bounded cause chain, report the numeric endpoint conflict, and verify retry after cleanup |
+| P1 | Live EDT stalls lacked bounded in-product evidence | External menu timings could not attribute later UI stalls or quantify long blocked intervals | Sample queue delay with one coalescing probe and fixed diagnostic buckets |
 | P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | Linux lifecycle tests passed, but on Windows/Burp 29 primed streams closed with a normal FIN remained active after 35 seconds and exhausted all 32 session slots | Prove stream liveness with core MCP pings and idempotently detach only the GET stream's registry/admission leases on timeout; never cancel POST work |
 | P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
 | P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
@@ -387,6 +388,28 @@ compiled `normalizeHttpContent` implementation. After warm-up, the median of nin
 Latency is effectively neutral for the header-only synthetic case and about 5% lower for the large-body case; the
 reliable gain is fewer temporary strings and substantially lower allocation. Both paths produced identical output,
 including byte-for-byte preservation of body text.
+
+## Swing EDT queue-delay watchdog
+
+One daemon scheduler samples Swing queue delay every 500 ms. It posts at most one no-op probe to the event queue; while
+that probe is pending, later attempts increment one coalesced counter instead of allocating more queued work. Completed
+probes update only fixed-cardinality atomics: sample count, delays of at least 100 ms, 250 ms, and one second, maximum
+delay, coalesced attempts, and probe errors. The scheduler is stopped on extension unload.
+
+The counters are available in the local diagnostics UI and its redacted clipboard export. They retain no component,
+event, thread, project, client, request, or traffic value. Live experiments should compare counter deltas before and
+after the bounded operation under test. A stall that begins and ends between probes can be missed, so zero crossings do
+not prove the EDT was continuously responsive. Queue delay also includes unrelated Burp UI work, JVM pauses, and
+machine suspend/resume. The watchdog is therefore a correlation aid rather than a method profiler or standalone Burp
+performance benchmark.
+
+An isolated Burp Community 2026.6 process on JetBrains Runtime 21.0.10 provided a live instrumentation check. Before
+an intentional synthetic stall, 439 completed probes reported no threshold crossings or errors. A one-off test
+agent then queued a bounded 1,200 ms sleep on that disposable process's EDT. The later snapshot reported 656 samples,
+two coalesced attempts, one crossing in each threshold bucket, a 1,042 ms maximum, and zero errors. At 346 seconds, a
+thread dump attributed 93.75 ms of CPU time to the watchdog thread. This validates detection, coalescing, and low
+scheduler activity in that run. The injected stall is not a Burp workload benchmark or evidence for large-project
+latency.
 
 ## Diagnostics and audit overhead
 

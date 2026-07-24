@@ -1,5 +1,6 @@
 package net.portswigger.mcp.config.components
 
+import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.config.DEFAULT_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.Design
@@ -36,6 +37,7 @@ internal class DiagnosticsPanel(
     private val proxyVerified: Boolean,
     private val clearSessionApprovals: () -> Int = { 0 },
     private val onPersistentApprovalsReset: () -> Unit = {},
+    private val edtWatchdogProvider: () -> EdtWatchdogSnapshot = { EdtWatchdogSnapshot() },
 ) : JPanel() {
     private val diagnosticsArea = JTextArea(13, 64)
     private val statusLabel = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
@@ -233,6 +235,7 @@ internal class DiagnosticsPanel(
                 ),
                 proxyProvenance = proxyProvenance,
                 proxyVerified = proxyVerified,
+                edtWatchdog = edtWatchdogProvider(),
             )
         }.getOrElse { error ->
             "Diagnostics unavailable: ${error::class.simpleName ?: "Exception"}"
@@ -259,6 +262,7 @@ internal fun formatMcpDiagnostics(
     auditRetention: Int = DEFAULT_AUDIT_RETENTION_ENTRIES,
     proxyProvenance: ProxyProvenance?,
     proxyVerified: Boolean,
+    edtWatchdog: EdtWatchdogSnapshot = EdtWatchdogSnapshot(),
 ): String = buildString {
     appendLine("State: ${diagnostics.state}")
     appendLine("Endpoint: ${diagnostics.endpoint ?: "not bound"}")
@@ -266,6 +270,14 @@ internal fun formatMcpDiagnostics(
     appendLine("Protocol target: ${diagnostics.protocolVersion}")
     appendLine("Started: ${diagnostics.startedAtEpochMillis.asInstantOrNever()}")
     appendLine("Last MCP activity: ${diagnostics.lastActivityEpochMillis.asInstantOrNever()}")
+    appendLine(
+        "Swing EDT delay: samples=${edtWatchdog.samples}, " +
+            "coalesced=${edtWatchdog.coalescedProbes}, " +
+            ">=100ms=${edtWatchdog.delaysAtLeast100Millis}, " +
+            ">=250ms=${edtWatchdog.delaysAtLeast250Millis}, " +
+            ">=1s=${edtWatchdog.delaysAtLeast1Second}, " +
+            "max=${edtWatchdog.maxDelayMillis}ms, errors=${edtWatchdog.errors}",
+    )
     appendLine("HTTP calls: ${diagnostics.activeHttpCalls}/${diagnostics.maxHttpCalls} active, peak ${diagnostics.peakHttpCalls}")
     appendLine(
         "Sessions: ${diagnostics.activeSessions} active + ${diagnostics.pendingSessions} pending / ${diagnostics.maxSessions}"

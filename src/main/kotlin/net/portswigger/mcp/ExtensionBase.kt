@@ -19,6 +19,7 @@ class ExtensionBase : BurpExtension {
         val extensionStorage = api.persistence().extensionData()
         val config = McpConfig(extensionStorage, api.logging())
         val auditLog = PersistentMcpAuditLog(extensionStorage, config, api.logging())
+        val edtWatchdog = EdtWatchdog()
         val serverManager = KtorServerManager(api, auditLog)
 
         val proxyJarManager = ProxyJarManager(api.logging())
@@ -44,6 +45,7 @@ class ExtensionBase : BurpExtension {
             proxyProvenance = proxyProvenance,
             proxyVerified = proxyVerified,
             clearSessionApprovals = serverManager::clearSessionApprovals,
+            edtWatchdogProvider = edtWatchdog::snapshot,
         )
 
         configUi.onEnabledToggled { enabled ->
@@ -65,6 +67,7 @@ class ExtensionBase : BurpExtension {
         val referenceMenuRegistration = api.userInterface().registerContextMenuItemsProvider(referenceMenuProvider)
 
         api.extension().registerUnloadingHandler {
+            edtWatchdog.close()
             runCatching { referenceMenuRegistration.deregister() }
             referenceMenuProvider.close()
             serverManager.shutdown()
@@ -72,6 +75,7 @@ class ExtensionBase : BurpExtension {
             auditLog.close()
             config.cleanup()
         }
+        edtWatchdog.start()
 
         if (config.enabled) {
             serverManager.start(config) { state ->

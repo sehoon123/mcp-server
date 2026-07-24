@@ -4,6 +4,7 @@ import io.ktor.util.network.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.McpServerStartupException
 import net.portswigger.mcp.ServerState
@@ -31,6 +32,7 @@ class ConfigUi internal constructor(
     private val proxyProvenance: ProxyProvenance?,
     private val proxyVerified: Boolean,
     private val clearSessionApprovals: () -> Int,
+    private val edtWatchdogProvider: () -> EdtWatchdogSnapshot = { EdtWatchdogSnapshot() },
 ) {
     constructor(config: McpConfig, providers: List<Provider>) : this(
         config = config,
@@ -121,6 +123,7 @@ class ConfigUi internal constructor(
             proxyVerified = proxyVerified,
             clearSessionApprovals = clearSessionApprovals,
             onPersistentApprovalsReset = serverConfigurationPanel::updatePersistentApprovalControls,
+            edtWatchdogProvider = edtWatchdogProvider,
         )
 
         installationPanel = InstallationPanel(
