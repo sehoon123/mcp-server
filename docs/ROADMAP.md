@@ -133,11 +133,16 @@ Implemented for v4.1:
 - Utility, configuration, and editor fields and error summaries have explicit output bounds. Invalid oversized input is
   rejected before the operation or side effect begins.
 
+Implemented after v4.6.0:
+
+- Configuration-export filtering recursively redacts exact normalized API-key, secret, token, Cookie, authorization,
+  certificate, and private-key fields. It also handles common sensitive `name`/`value` header forms, raw header lines,
+  nested containers, and PEM material while preserving unrelated settings and failing closed on malformed JSON.
+
 Remaining work:
 
 - Extend common retry metadata to older structured result families where it adds information beyond their existing
   status, execution-state, and error fields without breaking stable schemas.
-- Expand recursive credential filtering and test common API-key, cookie, certificate, and authorization formats.
 
 ### 5. Make the embedded proxy reproducible
 

@@ -51,7 +51,7 @@ client-liveness, and capacity-pressure safeguards.
 - Explicit Target scope checks/updates and bounded HTTP message comparison from stable references
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
-- Project and user configuration tools with credential filtering
+- Project and user configuration tools with recursive API-key, token, Cookie, authorization, and certificate/private-key filtering
 - Live redacted diagnostics including event-stream, liveness, explicit-termination, and pressure-eviction counters;
   a bounded persistent audit trail; and an emergency read-only switch
 - URL/Base64 utilities and random data generation
