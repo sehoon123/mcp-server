@@ -13,6 +13,7 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P0 | Ephemeral native clients could exhaust all 32 sessions after disconnecting their optional SSE streams without DELETE | Repeated mcporter commands eventually returned `MCP session capacity is full` | Prefer one keep-alive client session and displace only the least-recently-used inactive disconnected-stream session under capacity pressure |
 | P0 | CIO wrapped an occupied listener in `JobCancellationException` | A real occupied-port regression reached `BindException` only after two cancellation causes | Recognize the bounded cause chain, report the numeric endpoint conflict, and verify retry after cleanup |
 | P1 | Live EDT stalls lacked bounded in-product evidence | External menu timings could not attribute later UI stalls or quantify long blocked intervals | Sample queue delay with one coalescing probe and fixed diagnostic buckets |
+| P1 | Logically bounded Site Map calls still scaled with the complete source size | At 10k/50k/100k records, a 50-record search scanned 50 records but its p50 rose from 7.944 to 73.323 ms; whole-process allocation upper bounds rose from 18.132 to 161.171 MiB/call | Isolate Montoya returned-list materialization before changing positional stable IDs, correctness checks, or public bounds |
 | P1 | A disconnected optional GET SSE stream could retain a concurrent HTTP slot | Linux lifecycle tests passed, but on Windows/Burp 29 primed streams closed with a normal FIN remained active after 35 seconds and exhausted all 32 session slots | Prove stream liveness with core MCP pings and idempotently detach only the GET stream's registry/admission leases on timeout; never cancel POST work |
 | P1 | Extension startup read and allocated the complete embedded proxy JAR even when unchanged | The v2.1.0 `mcp-proxy-all.jar` is 14,739,644 bytes | Read trusted checksum metadata first, stream-verify the existing file, and stream the nested JAR only when extraction is required |
 | P1 | Legacy result-size limits were applied after full message conversion and JSON serialization | Large request/response bodies were converted before a 5,000-character mid-JSON cut | Return summary-first complete records with bounded single-field previews and explicit page truncation metadata |
@@ -317,7 +318,8 @@ uses typed fingerprint framing and shared normalized MIME names, and avoids copy
 aggregate first computes exact key counts and then allocates detailed counters only for the at most 100 returned
 services and 200 returned paths. Allocation-free ASCII classifiers replace per-segment regex matchers, and path-prefix
 construction scans only the requested one to four segments. These figures are local regression evidence, not Burp
-Suite latency claims; an actual large-history Burp JFR/soak run remains required.
+Suite latency claims. The isolated live Site Map run below now supplies one real-Burp scale point; equivalent Proxy,
+Organizer, WebSocket, Professional Scanner, and long-duration soak evidence remains required.
 
 A second one-off Java 21/JFR probe exercised metadata search over a synthetic 100,000-record Proxy list with concrete
 primitive source-ID and host methods. The selected host occurred at the 5,000th newest position, the index was already
@@ -345,6 +347,115 @@ Individual detail and action tools do not trust aggregate cache entries: their e
 Burp object and validate the project and stable or opaque Site Map identity immediately before use. Search likewise
 uses cache entries only as advisory field-selection hints and builds every returned reference from the current source
 item.
+
+## Isolated live Site Map scale run
+
+On 2026-07-24, an isolated Burp Suite Community 2026.6 temporary project was exercised with the real Montoya and MCP
+paths on Windows 11. The JVM was JetBrains Runtime OpenJDK 21.0.10 on an AMD Ryzen 7 9800X3D host with 16 logical
+processors and 32 GiB of physical memory. The client ran on the same host through WSL1. The candidate was built from
+commit `276a662`, retained `serverInfo.version=4.4.1`, protocol `2025-11-25`, and the 19-tool Community catalog.
+
+The candidate JAR SHA-256 was
+`5f5801d0bcb0e0c2d0114af5e574db6d8fd6d9b631aae737bdff53a2a2e2a7ed`. The query-free fixture JAR SHA-256 was
+`3201ec0f5d65c28eba3469c1326e980c07d9af6c9e2dd78f1b3728ed58bac28e`. It added bounded synthetic request/response
+pairs across 100 HTTP services, up to 100,000 records, inside the real isolated Burp process. Burp's task execution
+engine was paused and project-data approval and audit were disabled only in this disposable benchmark. MCP observed
+exactly 10,000, 50,000, and 100,000 Site Map records at the respective stages. This is evidence about these extension
+paths with this synthetic data shape, not a general Burp Suite product benchmark or a representative real-project
+traffic mix.
+
+### Latency with JFR enabled
+
+The primary latency run used Native Memory Tracking in summary mode and phase-specific JFR recordings. Each repeated
+row reports p50/p95 milliseconds; the cold attack-surface row is one call per stage.
+
+| Operation | Calls/stage | 10k | 50k | 100k |
+|---|---:|---:|---:|---:|
+| Cold attack-surface rebuild | 1 | 120.126 | 57.577 | 145.429 |
+| Warm attack-surface summary | 20 | 10.418 / 20.924 | 28.955 / 40.175 | 77.120 / 96.535 |
+| Recent search | 20 | 7.944 / 13.688 | 23.865 / 47.945 | 73.323 / 106.941 |
+| Bounded miss search | 10 | 13.289 / 35.284 | 27.895 / 32.158 | 65.730 / 116.242 |
+| Stable-ID metadata read | 20 | 4.958 / 13.544 | 24.395 / 45.213 | 57.316 / 73.517 |
+| Canonical resource read | 10 | 8.788 / 26.684 | 23.016 / 98.052 | 75.201 / 123.891 |
+
+The recent search returned and logically scanned exactly 50 records at every stage. The miss inspected 10,000 records;
+10k exhausted the source, while 50k and 100k reported `scanLimitReached=true`. The attack-surface index retained and
+aggregated exactly 5,000 body-free records, reporting 5,000, 45,000, and 95,000 omitted records. Those logical scan,
+retention, and output bounds held even though wall-clock cost grew with the total Site Map size. The non-monotonic
+single cold value at 50k is not treated as a trend; JIT, GC, Burp background work, and one-sample variance remain in the
+measurement.
+
+### Whole-process allocation upper bound
+
+A separate fresh process repeated the stages without the latency JFR phases. `com.sun.management.ThreadMXBean` sampled
+the sum of allocated bytes for live threads immediately before and after each group. Dividing the group delta by its
+call count gives the following **whole-process upper bounds**, in MiB per call:
+
+| Operation | 10k | 50k | 100k |
+|---|---:|---:|---:|
+| Cold attack-surface rebuild | 69.901 | 131.118 | 210.356 |
+| Warm attack-surface summary | 19.479 | 82.660 | 161.784 |
+| Recent search | 18.132 | 81.990 | 161.171 |
+| Bounded miss search | 30.508 | 94.353 | 173.538 |
+| Stable-ID metadata read | 16.135 | 79.977 | 159.164 |
+| Canonical resource read | 16.157 | 79.978 | 159.162 |
+
+The idle snapshot-delta medians were only 211,520, 216,572, and 202,608 bytes at 10k, 50k, and 100k. Nevertheless, the
+operation values are not extension-only allocation: they include MCP transport, Burp, the fixture, and the allocation
+snapshot request itself. Allocation from a thread that terminates between snapshots can also be missed. The figures are
+therefore whole-process deltas with an explicit coverage caveat, not exact per-tool allocation.
+
+JFR's `ObjectAllocationSample.weight` was unsuitable as an exact fallback. A 5.152-second 100k idle recording contained
+only nine allocation-sample events but reported 1,698.484 MiB of weighted allocation. In the 100k bounded-miss phase,
+weighted all-JVM allocation was 15,358.905 MiB, while stacks containing extension frames accounted for 23.052 MiB and
+`SiteMapSourceView.candidate` was the largest such frame at 21.467 MiB. The 22 JFR recordings are used only for
+qualitative attribution, GC, CPU, and resident-set context.
+
+### Whole-process memory and sampled EDT responsiveness
+
+| Site Map records | Settled working set | Settled private bytes | Post-GC heap used |
+|---:|---:|---:|---:|
+| 1,000 | 1.002 GiB | 1.042 GiB | not sampled |
+| 10,000 | 1.049 GiB | 1.097 GiB | 304.390 MiB |
+| 50,000 | 1.453 GiB | 1.485 GiB | 361.025 MiB |
+| 100,000 | 2.016 GiB | 2.035 GiB | 432.398 MiB |
+
+At 100k after an explicit GC, working set and private bytes were 1.999 and 2.017 GiB. Every value covers the complete
+Burp JVM, Montoya storage, Swing UI, fixture, extension, transport, and instrumentation; none is an extension retained-
+heap measurement.
+
+After the 100k MCP workload, the redacted diagnostic snapshot reported 929 completed EDT probes, zero coalesced attempts,
+zero crossings at 100 ms, 250 ms, or one second, a 1 ms maximum, and zero errors. This is sampled correlation evidence,
+not proof of continuous responsiveness. The same snapshot ended with zero active or pending MCP sessions, three
+initialized sessions, three authenticated DELETE requests, and no capacity rejection. The benchmark bearer and the
+fixture's traffic marker were absent from the copied diagnostics.
+
+### Returned-list attribution and remaining UI blocker
+
+Source review explains why logical scan bounds alone do not bound source acquisition:
+
+- `search_http_messages` obtains one complete `api.siteMap().requestResponses()` list before constructing its bounded
+  `SiteMapSourceView`;
+- stable-ID tool reads and HTTP resource reads lazily obtain one complete list per resolution batch before positional
+  identity validation; and
+- an attack-surface refresh obtains one complete list before retaining only the newest 5,000 metadata records.
+
+The scale pattern is therefore consistent with complete Montoya returned-list materialization followed by bounded
+extension work. It does not yet separate Burp-side wrapper creation from extension-side list traversal and transport
+allocation. An API-only live probe is required before optimization. In particular, switching to a filtered lookup cannot
+silently discard the original list index embedded in current Site Map stable IDs or weaken reorder/removal detection.
+
+No 100k context-menu latency or **Copy MCP reference** result was accepted. Exact foreground window handle and owning
+process checks repeatedly reached the correct isolated Burp window, but built-in Site Map activation failed inside
+Burp's tab-selection code because its tab container was null. The same failure reproduced in a fresh zero-record
+control before the MCP suite tab was registered, and in the prior 100k run. Command-palette selection, palette closure,
+and input that might have reached another Burp process were explicitly rejected as evidence. The separate non-large-
+project run remains valid at 30 menu opens (33.803 ms median, 34.1425 ms p95, 34.7665 ms maximum) and 10 fallback actions
+(51.2274 ms median, 51.6868 ms p95, 52.0382 ms maximum), but those values are not promoted to a 100k claim.
+
+This closes only the Community Site Map latency/allocation/memory portion of the large-project gate. Proxy history,
+Organizer, WebSocket history, Professional Scanner, an API-only source-acquisition probe, successful 100k context-menu
+navigation, and long-duration multi-client soak remain open.
 
 ## Stable-ID lookup and action hot paths
 
