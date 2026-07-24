@@ -154,7 +154,7 @@ jobs:
             resources-list resources-read-text resources-templates-read \
             prompts-list prompts-get-simple prompts-get-with-args \
             dns-rebinding-protection server-sse-multiple-streams; do
-            npx --yes @modelcontextprotocol/conformance@0.1.11 server \
+            npx --yes @modelcontextprotocol/conformance@0.1.16 server \
               --url http://127.0.0.1:19877/mcp --scenario "$scenario" --verbose || status=1
           done
           npx --yes @modelcontextprotocol/conformance@0.2.0-alpha.9 server \

@@ -732,8 +732,8 @@ tool names and JSON schemas are derived from those types. Implement `Paginated` 
 
 CI also runs the official MCP conformance scenarios for initialization, ping, tool discovery, DNS-rebinding
 protection, and multiple Streamable HTTP SSE streams. Integration tests negotiate `2025-03-26`, `2025-06-18`, and
-`2025-11-25`; the draft SEP-2575 stateless scenario has a stale-sensitive expected-failure baseline until the pinned
-production SDK supports that lifecycle.
+`2025-11-25`; the modern per-request scenario has a stale-sensitive expected-failure baseline until the protocol and
+pinned production SDK support that lifecycle.
 
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the runtime analysis and measurements, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for proposed security, protocol, and tool improvements.
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for runtime analysis, [docs/ROADMAP.md](docs/ROADMAP.md) for proposed
+improvements, and [docs/V5_READINESS.md](docs/V5_READINESS.md) for the modern-protocol release gates.
