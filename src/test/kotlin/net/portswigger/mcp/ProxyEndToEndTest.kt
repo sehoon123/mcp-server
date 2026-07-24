@@ -61,6 +61,7 @@ class ProxyEndToEndTest {
         every { persistedObject.setBoolean(any(), any()) } returns Unit
         every { persistedObject.setString(any(), any()) } returns Unit
         every { persistedObject.setInteger(any(), any()) } returns Unit
+        every { api.project().id() } returns "proxy-e2e-project"
     }
 
     private val mockLogging = mockk<Logging>().apply {
@@ -194,8 +195,6 @@ class ProxyEndToEndTest {
 
     @Test
     fun `proxy should transparently preserve native resources and prompts`() = runBlocking {
-        every { api.project().id() } returns "proxy-resource-project"
-
         assertEquals(
             setOf(DIAGNOSTICS_RESOURCE_URI, PROJECT_SUMMARY_RESOURCE_URI, SCOPE_SUMMARY_RESOURCE_URI),
             client.listResources().map { it.uri }.toSet(),
@@ -213,11 +212,11 @@ class ProxyEndToEndTest {
         )
         val project = Json.parseToJsonElement(projectContent.text).jsonObject
         assertEquals("ok", project["status"]?.jsonPrimitive?.content)
-        assertEquals("proxy-resource-project", project["projectId"]?.jsonPrimitive?.content)
+        assertEquals("proxy-e2e-project", project["projectId"]?.jsonPrimitive?.content)
 
         val prompt = client.getPrompt(
             "analyze_http_without_sending",
-            mapOf("httpReference" to "burp://http/proxy-resource-project/proxy/42"),
+            mapOf("httpReference" to "burp://http/proxy-e2e-project/proxy/42"),
         )
         val promptText = assertInstanceOf(TextContent::class.java, prompt.messages.single().content).text
         assertTrue(promptText.contains("Do not send traffic"))

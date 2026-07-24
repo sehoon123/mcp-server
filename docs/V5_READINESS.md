@@ -133,7 +133,8 @@ The following constraints carry into v5:
 4. Run the isolated Montoya `2026.7` compile/test spike, but do not change the production dependency or minimum Burp
    version without separate live evidence.
 5. Design project-bound list changes and subscriptions so a project transition closes stale delivery before new-project
-   data can appear.
+   data can appear — design completed in [PROJECT_BOUND_NOTIFICATIONS.md](PROJECT_BOUND_NOTIFICATIONS.md); enablement
+   remains blocked on bounded SDK lifecycle support.
 6. Validate resource/prompt rendering, discovery, restart behavior, and protocol fallback across supported clients.
 7. Track Kotlin SDK server transport, cancellation, request-ID, task, and CIO shutdown work upstream.
 8. Retain the remaining scale, context-menu, and multi-client soak work as RC gates rather than displacing the current
@@ -144,6 +145,12 @@ status fields while sharing bounded reconciliation guidance for uncertain execut
 synchronous execution API after dispatch as uncertain, and preserving cancellation exceptions. Scanner target submission now checks cancellation between bounded
 targets and attempts to remove an unreturned extension-owned task. This does not close the wire-cancellation gate, add a
 new public timeout discriminator, or imply cancellation support in Burp APIs that expose no lifetime handle.
+
+The item 5 v4 foundation is also implemented after v4.5.0. Request admission keeps only a digest of the current project
+ID and treats a detected transition as a hard session boundary, clearing streams and memory-only approvals before a new
+session proceeds. Stable resource subscriptions remain disabled: SDK `0.14.0` has unbounded, non-validating internal
+subscription admission and no selective project-generation cleanup hook. This request-bound reset is not evidence of
+immediate asynchronous project observation and does not open the modern subscription gate.
 
 ### Stage B — private v5 candidate after SDK support exists
 

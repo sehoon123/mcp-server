@@ -253,9 +253,26 @@ Remaining work:
 
 ### 9. Notify clients when capabilities change
 
-- Advertise `tools.listChanged` when configuration or Burp edition changes the available tool set.
-- Emit resource-list changes only after policy or data changes relevant to the connected client.
-- Re-negotiate or request a client restart when a change cannot safely be represented in-session.
+Implemented after v4.5.0 (unreleased):
+
+- [PROJECT_BOUND_NOTIFICATIONS.md](PROJECT_BOUND_NOTIFICATIONS.md) records the Stage A decision and SDK `0.14.0`
+  constraints. The v4 catalog is immutable for a listener lifetime, so tools/resources/prompts correctly keep
+  `listChanged=false`; a listener restart requires reconnect and rediscovery.
+- Resource subscriptions remain disabled. SDK `0.14.0` accepts arbitrary subscription URIs into unbounded per-session
+  state and exposes no project-generation admission or selective invalidation hook; adding a parallel raw dispatcher is
+  not approved.
+- Authenticated request admission retains only a fixed-size project-ID digest. A detected transition detaches pending and
+  active MCP sessions, cancels event streams, clears memory-only approvals, rejects late activation, and completes
+  bounded transport cleanup before a new-project request proceeds.
+
+Remaining work:
+
+- Enable list changes only if an actual in-listener catalog change is introduced and supported clients prove
+  rediscovery behavior.
+- Enable resource subscriptions only after a released SDK or separately approved transport supplies bounded URI
+  validation, request-bound disconnect cleanup, project-generation invalidation, and coalesced bounded delivery.
+- Add an authoritative project-lifecycle event or separately reviewed bounded observer before claiming immediate stale
+  delivery shutdown while no MCP request is being admitted.
 
 ### 10. Add protocol diagnostics
 

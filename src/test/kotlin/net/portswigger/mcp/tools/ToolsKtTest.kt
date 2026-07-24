@@ -42,6 +42,7 @@ import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.RequestActionApprovalHandler
 import net.portswigger.mcp.security.RequestActionSecurity
 import net.portswigger.mcp.security.SensitiveActionApprovalHandler
@@ -63,7 +64,9 @@ class ToolsKtTest {
         mapOf("Authorization" to "Bearer $testBearerToken")
     )
     private val api = mockk<MontoyaApi>(relaxed = true)
-    private val serverManager = KtorServerManager(api)
+    // Tool-contract fixtures deliberately replace their mocked project after the client connects. Project-bound
+    // session lifecycle is covered by McpServerIntegrationTest and McpProjectEpochGuardTest instead.
+    private val serverManager = KtorServerManager(api, NoOpMcpAuditSink, projectIdProvider = null)
     private val testPort = findAvailablePort()
     private var serverStarted = false
     private val config: McpConfig

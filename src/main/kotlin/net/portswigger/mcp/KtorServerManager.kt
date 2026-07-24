@@ -53,8 +53,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.portswigger.mcp.config.ConfigValidation
@@ -116,6 +120,7 @@ internal fun Application.configureMcpHttpEndpoint(
     sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(maxSessions),
     sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
     sseClientLivenessTimeoutMillis: Long = MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS,
+    projectIdProvider: (() -> String)? = null,
 ) {
     require(maxSessions > 0) { "maxSessions must be positive" }
     require(sseHeartbeatMillis > 0) { "sseHeartbeatMillis must be positive" }
@@ -176,6 +181,15 @@ internal fun Application.configureMcpHttpEndpoint(
         }
     }
 
+    val sessions = BoundedMcpSessionRegistry(
+        maxSessions,
+        MCP_SESSION_IDLE_MILLIS,
+        runtimeMetrics,
+        sessionApprovals,
+    )
+    val projectGuard = projectIdProvider?.let { provider ->
+        McpProjectEpochGuard(provider, sessions::resetForProjectBoundary)
+    }
     val activeCalls = java.util.concurrent.atomic.AtomicInteger()
     intercept(ApplicationCallPipeline.Call) {
         if (context.request.path() != MCP_PATH) {
@@ -202,18 +216,24 @@ internal fun Application.configureMcpHttpEndpoint(
         context.attributes.put(MCP_HTTP_CALL_LEASE_KEY, callLease)
         runtimeMetrics?.onCallStarted()
         try {
+            // Keep project observation inside the 64-call lease; transition cleanup may take the bounded two seconds.
+            if (context.request.httpMethod != HttpMethod.Options &&
+                projectGuard?.align() == McpProjectBindingStatus.UNAVAILABLE
+            ) {
+                context.response.header(HttpHeaders.RetryAfter, "1")
+                context.rejectMcp(
+                    HttpStatusCode.ServiceUnavailable,
+                    RPCError.ErrorCode.CONNECTION_CLOSED,
+                    "Burp project binding is unavailable",
+                )
+                finish()
+                return@intercept
+            }
             proceed()
         } finally {
             callLease.close()
         }
     }
-
-    val sessions = BoundedMcpSessionRegistry(
-        maxSessions,
-        MCP_SESSION_IDLE_MILLIS,
-        runtimeMetrics,
-        sessionApprovals,
-    )
     monitor.subscribe(ApplicationStopping) {
         runtimeMetrics?.markStopping()
         runBlocking {
@@ -246,6 +266,7 @@ internal fun Application.configureMcpHttpEndpoint(
                     context.response.header(HttpHeaders.WWWAuthenticate, "Bearer")
                     context.respondText("Unauthorized", status = HttpStatusCode.Unauthorized)
                     finish()
+                    return@intercept
                 }
             }
 
@@ -531,6 +552,58 @@ private suspend fun ApplicationCall.rejectMcp(status: HttpStatusCode, code: Int,
     )
 }
 
+internal enum class McpProjectBindingStatus {
+    READY,
+    TRANSITIONED,
+    UNAVAILABLE,
+}
+
+/**
+ * Retains only a fixed-size digest of the observed Burp project ID.
+ *
+ * Alignment is serialized with stale-session cleanup, so a request for a new project cannot pass this boundary until
+ * every old session has been detached, its event streams have been cancelled, and its approvals have been revoked.
+ */
+internal class McpProjectEpochGuard(
+    private val projectIdProvider: () -> String,
+    private val resetSessions: suspend () -> Unit,
+) {
+    private val lock = Mutex()
+    private var projectFingerprint: ByteArray? = null
+
+    suspend fun align(): McpProjectBindingStatus = lock.withLock {
+        val currentFingerprint = try {
+            projectIdProvider()
+                .takeIf(::validMcpProjectId)
+                ?.toByteArray(Charsets.UTF_8)
+                ?.let { MessageDigest.getInstance("SHA-256").digest(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+        if (currentFingerprint == null) {
+            if (projectFingerprint != null) resetSessions()
+            projectFingerprint = null
+            return@withLock McpProjectBindingStatus.UNAVAILABLE
+        }
+
+        val previous = projectFingerprint
+        if (previous == null) {
+            projectFingerprint = currentFingerprint
+            return@withLock McpProjectBindingStatus.READY
+        }
+        if (MessageDigest.isEqual(previous, currentFingerprint)) {
+            return@withLock McpProjectBindingStatus.READY
+        }
+
+        resetSessions()
+        projectFingerprint = currentFingerprint
+        McpProjectBindingStatus.TRANSITIONED
+    }
+}
+
 internal data class McpSessionReservation(
     val pending: ManagedMcpSession,
     val displaced: ManagedMcpSession? = null,
@@ -575,7 +648,9 @@ internal class BoundedMcpSessionRegistry(
 
     fun activate(entry: ManagedMcpSession, sessionId: String) {
         val accepted = synchronized(lock) {
-            if (closed || sessionId.isBlank() || sessionId.length > 128 || sessions.containsKey(sessionId)) {
+            if (closed || entry !in entries || sessionId.isBlank() || sessionId.length > 128 ||
+                sessions.containsKey(sessionId)
+            ) {
                 false
             } else if (!sessionApprovals.activate(sessionId)) {
                 false
@@ -672,6 +747,45 @@ internal class BoundedMcpSessionRegistry(
                 throw e
             } catch (_: Exception) {
                 // Idle cleanup is best-effort; the slot is already reclaimed and no request can reacquire this entry.
+            }
+        }
+    }
+
+    /**
+     * Detaches all pending and active sessions without closing the registry itself.
+     *
+     * A Burp project transition is a hard authority boundary: old event streams and memory-only approvals must
+     * disappear before a new-project request can be admitted. Wire resource subscriptions remain disabled.
+     */
+    suspend fun resetForProjectBoundary() {
+        val stale = synchronized(lock) {
+            if (closed) return
+            val snapshot = entries.toList()
+            sessions.clear()
+            sessionApprovals.clearSessions()
+            entries.clear()
+            updateMetricsLocked()
+            snapshot
+        }
+        stale.forEach { entry ->
+            entry.cancelStreams()
+            entry.releaseSlot()
+        }
+        withContext(NonCancellable) {
+            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) {
+                supervisorScope {
+                    stale.map { entry ->
+                        launch {
+                            try {
+                                entry.closeTransport()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                // Entries are detached and streams are closed; transport cleanup is best-effort.
+                            }
+                        }
+                    }.joinAll()
+                }
             }
         }
     }
@@ -838,6 +952,7 @@ internal class ManagedMcpSessionLease(
 class KtorServerManager internal constructor(
     private val api: MontoyaApi,
     private val auditSink: McpAuditSink,
+    private val projectIdProvider: (() -> String)? = { api.project().id() },
 ) : ServerManager {
 
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
@@ -874,6 +989,8 @@ class KtorServerManager internal constructor(
                 val newMcpServer = Server(
                     serverInfo = Implementation("burp-suite", serverVersion),
                     options = ServerOptions(
+                        // Catalogs are immutable for one listener lifetime. SDK 0.14.0 subscriptions lack bounded,
+                        // project-aware admission; see docs/PROJECT_BOUND_NOTIFICATIONS.md.
                         capabilities = ServerCapabilities(
                             tools = ServerCapabilities.Tools(listChanged = false),
                             resources = ServerCapabilities.Resources(listChanged = false, subscribe = false),
@@ -904,6 +1021,7 @@ class KtorServerManager internal constructor(
                         config.localBearerToken,
                         metrics,
                         sessionApprovals = sessionApprovals,
+                        projectIdProvider = projectIdProvider,
                     )
                 }
                 server = newEngine

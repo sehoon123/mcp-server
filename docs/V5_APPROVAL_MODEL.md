@@ -64,7 +64,8 @@ primitive.
 
 ## Project transitions, subscriptions, and tasks
 
-Project or source continuity must be explicit rather than inferred from a connection:
+Project or source continuity must be explicit rather than inferred from a connection. The stable/v4 SDK findings and
+notification gate are recorded in [PROJECT_BOUND_NOTIFICATIONS.md](PROJECT_BOUND_NOTIFICATIONS.md):
 
 - a resource read repeats its current-project and stable-ID checks every time;
 - a subscription is bound internally to the project generation observed when its listen request starts;
