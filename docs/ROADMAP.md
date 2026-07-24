@@ -242,9 +242,10 @@ Remaining work:
 
 - Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
   cancellation lifecycle; SDK `0.14.0` does not currently do so.
-- Evaluate Montoya `2026.7`'s request-execution lifetime and explicit `cancel()` handle in an isolated matching Burp
-  runtime; do not raise the production dependency or minimum Burp version until compatibility is proven. Other Burp
-  operations still require their own explicit cancellation lifecycle.
+- Montoya `2026.7` is now the unreleased compile/test baseline and produces byte-identical extension code because no new
+  method is called. Evaluate its Professional-only request-execution lifetime and explicit `cancel()` handle separately;
+  using that API would require a reviewed minimum-Burp change and runtime fallback. Other Burp operations still require
+  their own explicit cancellation lifecycle.
 - Use stable MCP tasks for operations that outlive a single HTTP request after the protocol, SDK, and supported clients
   agree on the task lifecycle.
 - Version any new public cancellation, timeout, or partial-completion discriminator through a separately approved schema
@@ -321,12 +322,15 @@ Remaining work:
 This is the active PM order while the modern protocol gates remain closed:
 
 1. Define the sessionless approval baseline and normalize cancellation, timeout, partial-completion, and uncertain results.
-2. Run the isolated Montoya `2026.7` compatibility spike without changing the production dependency.
+2. Adopt Montoya `2026.7` as the compile-only baseline after the compatibility spike and byte-identity check; evaluate
+   its new Professional request engine separately.
 3. Design policy-safe list changes and project-bound resource subscriptions that close on project transition.
-4. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
-5. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
-6. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
-7. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
+4. Start the modern-wire alpha as soon as a released official SDK supplies the server transport; do not create a parallel
+   raw JSON-RPC dispatcher while that implementation is absent.
+5. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
+6. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
+7. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
+8. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
 
 See [V5_READINESS.md](V5_READINESS.md) for release gates and
 [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the sessionless authorization decision.
