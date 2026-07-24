@@ -169,6 +169,11 @@ class McpServerIntegrationTest {
         assertEquals(401, send("Bearer incorrect-token").statusCode())
         assertNotEquals(401, send("Bearer $testBearerToken").statusCode())
 
+        // The response body can arrive just before the server's request-admission finally releases the call lease.
+        val cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (serverManager.diagnostics().activeHttpCalls != 0 && System.nanoTime() < cleanupDeadline) {
+            Thread.sleep(25)
+        }
         val diagnostics = serverManager.diagnostics()
         assertEquals("running", diagnostics.state)
         assertEquals("http://127.0.0.1:${testPort}/mcp", diagnostics.endpoint)
