@@ -185,6 +185,11 @@ Implemented in v4.4.1:
 - Existing v4 URI templates remain unchanged. The MCP connection/configured server name remains the resource namespace;
   a URI-level instance label is deferred until a real multi-server collision demonstrates that a migration is needed.
 
+Implemented after v4.4.1:
+
+- One extension-lifetime Swing EDT watchdog samples queue delay every 500 ms with at most one pending runnable. It exposes
+  only fixed delay buckets, a maximum, coalesced probes, and an error count through redacted diagnostics.
+
 Remaining work:
 
 - Validate context-menu behavior and timing against 100,000-record live Site Map and WebSocket histories.

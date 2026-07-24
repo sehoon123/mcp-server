@@ -1,5 +1,6 @@
 package net.portswigger.mcp.config.components
 
+import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.providers.ProxyProvenance
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -56,12 +57,23 @@ class DiagnosticsPanelTest {
                 sha256 = "ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82",
             ),
             proxyVerified = true,
+            edtWatchdog = EdtWatchdogSnapshot(
+                samples = 100,
+                coalescedProbes = 3,
+                delaysAtLeast100Millis = 7,
+                delaysAtLeast250Millis = 2,
+                delaysAtLeast1Second = 1,
+                maxDelayMillis = 1_250,
+            ),
         )
 
         assertTrue(text.contains("State: running"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))
         assertTrue(text.contains("Session approvals: 5 grants across 2 active sessions"))
+        assertTrue(
+            text.contains("Swing EDT delay: samples=100, coalesced=3, >=100ms=7, >=250ms=2, >=1s=1, max=1250ms, errors=0")
+        )
         assertTrue(text.contains("Event streams: 1 active, 7 opened, 6 closed, 3 reopened"))
         assertTrue(text.contains("Liveness: pings=20, responses=18, timeouts=1, errors=1, heartbeat-failures=2"))
         assertTrue(text.contains("Session cleanup: DELETE=8, pressure-evictions=9, idle-evictions=1"))
