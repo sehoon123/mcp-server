@@ -15,7 +15,7 @@ stable v5 release.
 | Conformance | Released modern server suite with stable expectations | `0.1.16` is the stable legacy suite; modern checks remain in the `0.2.0-alpha.9` line and repository main | Blocked |
 | Clients | Stable releases from the supported client matrix | TypeScript SDK v2 is beta and still has open modern-era compatibility issues; other supported clients require explicit verification | Blocked |
 | Approval lifecycle | A safe replacement for connection-scoped grants | The modern protocol removes protocol sessions; client identity metadata is self-reported and cannot authorize or key approval state | Design required |
-| Burp scale | Measured behavior on large live projects | Synthetic probes exist, but live 10k/50k/100k histories and issue sets are not yet complete | Open |
+| Burp scale | Measured behavior on large live projects | Real isolated Community Site Map paths are measured at 10k/50k/100k with synthetic data; Proxy, Organizer, WebSocket, Professional Scanner, context-menu, and soak evidence remain open | Partial |
 
 Upstream references:
 
@@ -25,6 +25,23 @@ Upstream references:
 - [Kotlin SDK 2026-07-28 tracker](https://github.com/modelcontextprotocol/kotlin-sdk/issues/842)
 - [Kotlin SDK stateless tracker](https://github.com/modelcontextprotocol/kotlin-sdk/issues/815)
 - [Kotlin SDK request-metadata and discovery types PR](https://github.com/modelcontextprotocol/kotlin-sdk/pull/893)
+
+### Partial Burp-scale evidence
+
+The Community Site Map portion of this gate now has a real isolated Burp 2026.6 run at 10,000, 50,000, and 100,000
+synthetic bounded request/response records. MCP revalidated each source count. The run includes JFR-enabled latency,
+separate whole-process allocation upper bounds, working set/private bytes, post-GC heap context, and sampled EDT
+watchdog diagnostics. At 100k, the recent search still returned and logically scanned 50 records, but its p50 was
+73.323 ms and its whole-process allocation upper bound was 161.171 MiB/call. The pattern is consistent with acquiring a
+complete Montoya Site Map returned list before bounded extension processing; an API-only probe is still needed for
+precise attribution.
+
+The 100k context-menu sub-gate is not complete. Exact process/window targeting reached the isolated Burp instance, but
+built-in Site Map activation repeatedly failed in Burp's internal tab-selection path, including a fresh zero-record
+control before the MCP suite tab was registered. No menu-open latency, Copy action latency, or copied URI from that
+100k UI route was accepted. Proxy history, Organizer, WebSocket history, Professional Scanner, and long-duration
+multi-client soak are also unmeasured. See [PERFORMANCE.md](PERFORMANCE.md#isolated-live-site-map-scale-run) for the
+measurements, instrumentation limits, hashes, and non-generalization rules.
 
 ## Expected modern wire changes
 
@@ -69,8 +86,10 @@ The following constraints carry into v5:
 ### Stage A — production hardening while gates are closed
 
 1. Keep v4 on stable `2025-11-25` and update its stable conformance runner without changing runtime behavior.
-2. Complete client/session soak tests, cancellation/disconnect tests, and live 10k/50k/100k Burp measurements.
-3. Validate context-menu fallback timing and fail-closed behavior at the same live scales.
+2. Complete client/session soak tests, cancellation/disconnect tests, and the remaining Proxy, Organizer, WebSocket,
+   and Professional Scanner 10k/50k/100k measurements.
+3. Resolve or safely bypass the isolated Burp Site Map navigation failure, then validate context-menu fallback timing
+   and fail-closed behavior at the same live scales.
 4. Track Kotlin SDK server transport, cancellation, request-ID, and CIO shutdown work upstream.
 5. Validate resource/prompt rendering and discovery across the supported clients.
 
