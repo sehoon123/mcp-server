@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test
 import java.net.ServerSocket
 import java.time.Duration
 import java.time.ZonedDateTime
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -272,6 +273,144 @@ class McpServerIntegrationTest {
         val diagnostics = serverManager.diagnostics()
         assertEquals(0, diagnostics.activeHttpCalls)
         assertEquals(0, diagnostics.activeSessions)
+    }
+
+    @Test
+    fun `bounded HTTP search returns JSON without a stream and fixed progress on an attached stream`() {
+        every { persistedObject.getBoolean("_alwaysAllowHttpHistory") } returns true
+        every { api.proxy().history() } returns emptyList()
+
+        val httpClient = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(2))
+            .build()
+        val endpoint = java.net.URI("http://127.0.0.1:${testPort}/mcp")
+
+        fun requestBuilder() = java.net.http.HttpRequest.newBuilder(endpoint)
+            .timeout(Duration.ofSeconds(5))
+            .header("Authorization", "Bearer $testBearerToken")
+            .header("Mcp-Protocol-Version", "2025-11-25")
+
+        fun post(sessionId: String?, body: String): java.net.http.HttpResponse<String> {
+            val builder = requestBuilder()
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+            if (sessionId != null) builder.header("Mcp-Session-Id", sessionId)
+            return httpClient.send(
+                builder.POST(java.net.http.HttpRequest.BodyPublishers.ofString(body)).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(),
+            )
+        }
+
+        fun initialize(clientName: String): String {
+            val response = post(
+                null,
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"$clientName","version":"1.0"}}}""",
+            )
+            assertEquals(200, response.statusCode(), response.body())
+            val sessionId = response.headers().firstValue("Mcp-Session-Id").orElseThrow()
+            val initialized = post(
+                sessionId,
+                """{"jsonrpc":"2.0","method":"notifications/initialized"}""",
+            )
+            assertTrue(initialized.statusCode() in setOf(200, 202), initialized.body())
+            return sessionId
+        }
+
+        fun delete(sessionId: String) {
+            val response = httpClient.send(
+                requestBuilder()
+                    .header("Mcp-Session-Id", sessionId)
+                    .header("Accept", "application/json, text/event-stream")
+                    .DELETE()
+                    .build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(),
+            )
+            assertTrue(response.statusCode() in setOf(200, 202), response.body())
+        }
+
+        val postOnlySession = initialize("post-only-progress-test")
+        val postOnly = post(
+            postOnlySession,
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_http_messages","arguments":{},"_meta":{"progressToken":"post-only-progress"}}}""",
+        )
+        assertEquals(200, postOnly.statusCode(), postOnly.body())
+        assertTrue(
+            postOnly.headers().firstValue("Content-Type").orElse("").startsWith("application/json"),
+            postOnly.headers().map().toString(),
+        )
+        assertFalse(postOnly.body().contains("notifications/progress"))
+        val postOnlyJson = Json.parseToJsonElement(postOnly.body()).jsonObject
+        assertEquals(
+            "ok",
+            postOnlyJson["result"]?.jsonObject
+                ?.get("structuredContent")?.jsonObject
+                ?.get("status")?.jsonPrimitive?.content,
+        )
+        delete(postOnlySession)
+
+        val progressSession = initialize("stream-progress-test")
+        val stream = httpClient.sendAsync(
+            requestBuilder()
+                .header("Mcp-Session-Id", progressSession)
+                .header("Accept", "text/event-stream")
+                .GET()
+                .build(),
+            java.net.http.HttpResponse.BodyHandlers.ofInputStream(),
+        ).get(5, TimeUnit.SECONDS)
+        assertEquals(200, stream.statusCode())
+
+        val progressEvents = CopyOnWriteArrayList<Triple<Double, Double?, String?>>()
+        val reader = stream.body().bufferedReader()
+        val readerFuture = CompletableFuture.runAsync {
+            while (progressEvents.size < 6) {
+                val line = reader.readLine() ?: break
+                if (!line.startsWith("data:")) continue
+                val payload = runCatching {
+                    Json.parseToJsonElement(line.removePrefix("data:").trim()).jsonObject
+                }.getOrNull() ?: continue
+                if (payload["method"]?.jsonPrimitive?.content != "notifications/progress") continue
+                val params = payload["params"]?.jsonObject ?: continue
+                progressEvents += Triple(
+                    params["progress"]?.jsonPrimitive?.content?.toDouble() ?: continue,
+                    params["total"]?.jsonPrimitive?.content?.toDouble(),
+                    params["message"]?.jsonPrimitive?.content,
+                )
+            }
+        }
+
+        val progressCall = post(
+            progressSession,
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_http_messages","arguments":{},"_meta":{"progressToken":"bounded-search-progress"}}}""",
+        )
+        assertEquals(200, progressCall.statusCode(), progressCall.body())
+        assertEquals(
+            "ok",
+            Json.parseToJsonElement(progressCall.body()).jsonObject["result"]?.jsonObject
+                ?.get("structuredContent")?.jsonObject
+                ?.get("status")?.jsonPrimitive?.content,
+        )
+
+        readerFuture.get(5, TimeUnit.SECONDS)
+        assertEquals((0..5).map(Int::toDouble), progressEvents.map { it.first })
+        assertTrue(progressEvents.all { it.second == 5.0 })
+        assertEquals(
+            listOf(
+                "Validating HTTP search",
+                "Authorizing HTTP history sources",
+                "Preparing HTTP search snapshot",
+                "Scanning bounded HTTP history",
+                "Finalizing HTTP search",
+                "HTTP search completed",
+            ),
+            progressEvents.map { it.third },
+        )
+        val progressText = progressEvents.joinToString("|") { it.third.orEmpty() }
+        assertFalse(progressText.contains("integration-project"))
+        assertFalse(progressText.contains(testBearerToken))
+        assertFalse(progressText.contains("bounded-search-progress"))
+
+        delete(progressSession)
+        stream.body().close()
     }
 
     @Test

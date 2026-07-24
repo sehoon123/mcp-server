@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.organizer.OrganizerItem
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
@@ -207,6 +208,17 @@ private class ExpectedSearchError(
     override val message: String,
 ) : Exception(message)
 
+private enum class HttpSearchProgressStage(val message: String) {
+    VALIDATING("Validating HTTP search"),
+    AUTHORIZING("Authorizing HTTP history sources"),
+    PREPARING("Preparing HTTP search snapshot"),
+    SCANNING("Scanning bounded HTTP history"),
+    FINALIZING("Finalizing HTTP search"),
+    COMPLETED("HTTP search completed"),
+}
+
+private val HTTP_SEARCH_PROGRESS_MESSAGES = HttpSearchProgressStage.entries.map(HttpSearchProgressStage::message)
+
 internal class HttpMessageSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
@@ -226,7 +238,12 @@ internal class HttpMessageSearchService(
         require(maxTextBytes > 0) { "maxTextBytes must be positive" }
     }
 
-    suspend fun search(input: SearchHttpMessages): SearchHttpMessagesResult {
+    suspend fun search(
+        input: SearchHttpMessages,
+        reportProgress: ToolProgressReporter = NO_TOOL_PROGRESS_REPORTER,
+    ): SearchHttpMessagesResult {
+        val progress = FixedStageProgress(HTTP_SEARCH_PROGRESS_MESSAGES, reportProgress)
+        progress.report(HttpSearchProgressStage.VALIDATING.ordinal)
         val cursor = try {
             input.cursor?.let(::decodeCursor)
         } catch (e: ExpectedSearchError) {
@@ -262,6 +279,7 @@ internal class HttpMessageSearchService(
             )
         }
 
+        progress.report(HttpSearchProgressStage.AUTHORIZING.ordinal)
         for (source in query.sources) {
             if (!checkAccess(source)) {
                 return searchError(
@@ -271,6 +289,7 @@ internal class HttpMessageSearchService(
             }
         }
 
+        progress.report(HttpSearchProgressStage.PREPARING.ordinal)
         val projectId = currentProjectId()
         if (cursor != null && cursor.projectId != projectId) {
             return searchError(
@@ -297,6 +316,7 @@ internal class HttpMessageSearchService(
             null
         }
 
+        progress.report(HttpSearchProgressStage.SCANNING.ordinal)
         var result = try {
             executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints))
         } catch (e: ExpectedSearchError) {
@@ -324,6 +344,7 @@ internal class HttpMessageSearchService(
             }
         }
 
+        progress.report(HttpSearchProgressStage.FINALIZING.ordinal)
         val finalProjectId = currentProjectId()
         if (finalProjectId != projectId) {
             return searchError(
@@ -332,6 +353,7 @@ internal class HttpMessageSearchService(
                 finalProjectId,
             )
         }
+        progress.report(HttpSearchProgressStage.COMPLETED.ordinal)
         return result
     }
 
@@ -616,6 +638,8 @@ internal class HttpMessageSearchService(
         }
         return try {
             cursorJson.decodeFromString<HttpSearchCursor>(payload.toString(StandardCharsets.UTF_8))
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             throw ExpectedSearchError(HttpMessageSearchStatus.INVALID_CURSOR, "cursor payload is invalid")
         }

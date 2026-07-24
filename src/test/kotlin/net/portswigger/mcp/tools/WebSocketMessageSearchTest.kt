@@ -12,6 +12,7 @@ import burp.api.montoya.websocket.Direction
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -24,6 +25,7 @@ import java.time.ZonedDateTime
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -58,6 +60,33 @@ class WebSocketMessageSearchTest {
     @AfterEach
     fun tearDown() {
         DataAccessSecurity.approvalHandler = originalApprovalHandler
+    }
+
+    @Test
+    fun `search reports fixed monotonic progress without project values`() = runBlocking {
+        val events = mutableListOf<Triple<Double, Double?, String?>>()
+
+        val result = service.search(
+            SearchWebsocketMessages(projectId = currentProjectId),
+        ) { progress, total, message -> events += Triple(progress, total, message) }
+
+        assertEquals(WebSocketSearchStatus.OK, result.status)
+        assertEquals((0..5).map(Int::toDouble), events.map { it.first })
+        assertTrue(events.all { it.second == 5.0 })
+        assertEquals("Validating WebSocket search", events.first().third)
+        assertEquals("WebSocket search completed", events.last().third)
+        assertTrue(events.none { it.third.orEmpty().contains(currentProjectId) })
+    }
+
+    @Test
+    fun `search progress cancellation propagates before WebSocket history acquisition`() = runBlocking {
+        assertFailsWith<CancellationException> {
+            service.search(SearchWebsocketMessages(projectId = currentProjectId)) { progress, _, _ ->
+                if (progress == 2.0) throw CancellationException("client cancelled")
+            }
+        }
+
+        verify(exactly = 0) { proxy.webSocketHistory() }
     }
 
     @Test
@@ -287,9 +316,13 @@ class WebSocketMessageSearchTest {
             override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig) = false
         }
 
-        val result = service.search(SearchWebsocketMessages(projectId = currentProjectId))
+        val events = mutableListOf<Double>()
+        val result = service.search(SearchWebsocketMessages(projectId = currentProjectId)) { progress, _, _ ->
+            events += progress
+        }
 
         assertEquals(WebSocketSearchStatus.ACCESS_DENIED, result.status)
+        assertEquals(listOf(0.0, 1.0), events)
         assertTrue(result.items.isEmpty())
         verify(exactly = 0) { proxy.webSocketHistory() }
     }
@@ -303,9 +336,13 @@ class WebSocketMessageSearchTest {
         }
         records += item
 
-        val result = service.search(SearchWebsocketMessages(projectId = "project-ws"))
+        val events = mutableListOf<Double>()
+        val result = service.search(SearchWebsocketMessages(projectId = "project-ws")) { progress, _, _ ->
+            events += progress
+        }
 
         assertEquals(WebSocketSearchStatus.PROJECT_MISMATCH, result.status)
+        assertEquals((0..4).map(Int::toDouble), events)
         assertTrue(result.items.isEmpty())
         assertEquals("project-after", result.projectId)
     }
