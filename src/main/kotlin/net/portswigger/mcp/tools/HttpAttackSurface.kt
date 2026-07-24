@@ -142,13 +142,30 @@ data class HttpAttackSurfaceResult(
     val error: String? = null,
 )
 
+private enum class AttackSurfaceProgressStage(val message: String) {
+    VALIDATING("Validating attack-surface request"),
+    AUTHORIZING("Authorizing HTTP metadata sources"),
+    REFRESHING("Refreshing bounded HTTP metadata"),
+    AGGREGATING("Aggregating bounded attack-surface metadata"),
+    VERIFYING("Verifying attack-surface snapshot"),
+    COMPLETED("Attack-surface summary completed"),
+}
+
+private val ATTACK_SURFACE_PROGRESS_MESSAGES =
+    AttackSurfaceProgressStage.entries.map(AttackSurfaceProgressStage::message)
+
 internal class HttpAttackSurfaceService(
     private val api: MontoyaApi,
     private val config: McpConfig,
     private val index: HttpMetadataIndex,
     private val beforeSnapshotValidation: suspend (attempt: Int) -> Unit = {},
 ) {
-    suspend fun summarize(input: SummarizeHttpAttackSurface): HttpAttackSurfaceResult {
+    suspend fun summarize(
+        input: SummarizeHttpAttackSurface,
+        reportProgress: ToolProgressReporter = NO_TOOL_PROGRESS_REPORTER,
+    ): HttpAttackSurfaceResult {
+        val progress = FixedStageProgress(ATTACK_SURFACE_PROGRESS_MESSAGES, reportProgress)
+        progress.report(AttackSurfaceProgressStage.VALIDATING.ordinal)
         val normalized = normalize(input) ?: return invalidResult(input)
         val currentProjectId = try {
             index.observeCurrentProject()
@@ -178,6 +195,7 @@ internal class HttpAttackSurfaceService(
             )
         }
 
+        progress.report(AttackSurfaceProgressStage.AUTHORIZING.ordinal)
         for (source in normalized.sources) {
             val allowed = try {
                 DataAccessSecurity.checkDataAccessPermission(source.toDataAccessType(), config)
@@ -208,6 +226,7 @@ internal class HttpAttackSurfaceService(
             }
         }
 
+        progress.report(AttackSurfaceProgressStage.REFRESHING.ordinal)
         for (attempt in 0 until MAX_ATTACK_SURFACE_SNAPSHOT_ATTEMPTS) {
             val snapshot = try {
                 index.snapshot(input.projectId, normalized.sources)
@@ -236,7 +255,9 @@ internal class HttpAttackSurfaceService(
                 )
             }
 
+            progress.report(AttackSurfaceProgressStage.AGGREGATING.ordinal)
             val result = aggregate(snapshot, normalized)
+            progress.report(AttackSurfaceProgressStage.VERIFYING.ordinal)
             val snapshotIsCurrent = try {
                 beforeSnapshotValidation(attempt)
                 index.isSnapshotCurrent(snapshot)
@@ -264,7 +285,10 @@ internal class HttpAttackSurfaceService(
                     error = "Burp could not verify the HTTP metadata snapshot: ${safeExceptionSummary(e)}",
                 )
             }
-            if (snapshotIsCurrent) return result
+            if (snapshotIsCurrent) {
+                progress.report(AttackSurfaceProgressStage.COMPLETED.ordinal)
+                return result
+            }
         }
 
         return emptyResult(

@@ -125,6 +125,18 @@ private data class WebSocketSearchCursor(
     val lastAnchor: String?,
 )
 
+private enum class WebSocketSearchProgressStage(val message: String) {
+    VALIDATING("Validating WebSocket search"),
+    AUTHORIZING("Authorizing WebSocket history"),
+    LOADING("Loading WebSocket history snapshot"),
+    SCANNING("Scanning bounded WebSocket history"),
+    FINALIZING("Finalizing WebSocket search"),
+    COMPLETED("WebSocket search completed"),
+}
+
+private val WEBSOCKET_SEARCH_PROGRESS_MESSAGES =
+    WebSocketSearchProgressStage.entries.map(WebSocketSearchProgressStage::message)
+
 internal class WebSocketMessageSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
@@ -149,7 +161,12 @@ internal class WebSocketMessageSearchService(
         }
     }
 
-    suspend fun search(input: SearchWebsocketMessages): SearchWebsocketMessagesResult {
+    suspend fun search(
+        input: SearchWebsocketMessages,
+        reportProgress: ToolProgressReporter = NO_TOOL_PROGRESS_REPORTER,
+    ): SearchWebsocketMessagesResult {
+        val progress = FixedStageProgress(WEBSOCKET_SEARCH_PROGRESS_MESSAGES, reportProgress)
+        progress.report(WebSocketSearchProgressStage.VALIDATING.ordinal)
         val boundedInputProject = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS)
         val limit = input.limit ?: DEFAULT_WEBSOCKET_SEARCH_LIMIT
         if (!validProjectId(input.projectId) || limit !in 1..MAX_WEBSOCKET_SEARCH_LIMIT) {
@@ -161,6 +178,8 @@ internal class WebSocketMessageSearchService(
         } else {
             try {
                 decodeCursor(input.cursor)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return invalidCursor(boundedInputProject, e)
             }
@@ -189,8 +208,11 @@ internal class WebSocketMessageSearchService(
             return invalidArgument(boundedInputProject, e)
         }
 
+        progress.report(WebSocketSearchProgressStage.AUTHORIZING.ordinal)
         val expectedProjectId = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(boundedInputProject, e)
         }
@@ -213,13 +235,18 @@ internal class WebSocketMessageSearchService(
             )
         }
 
+        progress.report(WebSocketSearchProgressStage.LOADING.ordinal)
         val records = try {
             api.proxy().webSocketHistory().toList()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
         val projectAfterAccess = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
@@ -235,10 +262,13 @@ internal class WebSocketMessageSearchService(
                 projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
                 error = e.message.orEmpty().take(512),
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
 
+        progress.report(WebSocketSearchProgressStage.SCANNING.ordinal)
         var itemIndex = snapshot.itemIndex
         val items = ArrayList<WebSocketHistorySummary>(limit)
         var scanned = 0
@@ -285,8 +315,11 @@ internal class WebSocketMessageSearchService(
             return burpError(expectedProjectId, e)
         }
 
+        progress.report(WebSocketSearchProgressStage.FINALIZING.ordinal)
         val finalProjectId = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
@@ -298,10 +331,13 @@ internal class WebSocketMessageSearchService(
         val nextCursor = if (hasMore) {
             try {
                 encodeCursor(snapshot.copy(itemIndex = itemIndex))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return burpError(expectedProjectId, e)
             }
         } else null
+        progress.report(WebSocketSearchProgressStage.COMPLETED.ordinal)
         return SearchWebsocketMessagesResult(
             status = WebSocketSearchStatus.OK,
             projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),

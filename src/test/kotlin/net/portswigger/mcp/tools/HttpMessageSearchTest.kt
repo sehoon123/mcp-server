@@ -17,6 +17,7 @@ import burp.api.montoya.sitemap.SiteMap
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
@@ -25,6 +26,7 @@ import java.time.ZonedDateTime
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -57,6 +59,34 @@ class HttpMessageSearchTest {
             config,
             cursorSecret = ByteArray(32) { 7 },
         )
+    }
+
+    @Test
+    fun `search reports only fixed monotonic stages without project or filter values`() = runBlocking {
+        val events = mutableListOf<Triple<Double, Double?, String?>>()
+
+        val result = service.search(
+            SearchHttpMessages(host = "sensitive.example"),
+        ) { progress, total, message -> events += Triple(progress, total, message) }
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals((0..5).map(Int::toDouble), events.map { it.first })
+        assertTrue(events.all { it.second == 5.0 })
+        assertEquals("Validating HTTP search", events.first().third)
+        assertEquals("HTTP search completed", events.last().third)
+        assertTrue(events.none { it.third.orEmpty().contains("sensitive.example") })
+        assertTrue(events.none { it.third.orEmpty().contains("project-123") })
+    }
+
+    @Test
+    fun `search progress cancellation stops before history acquisition`() = runBlocking {
+        assertFailsWith<CancellationException> {
+            service.search(SearchHttpMessages()) { progress, _, _ ->
+                if (progress == 3.0) throw CancellationException("client cancelled")
+            }
+        }
+
+        verify(exactly = 0) { proxy.history() }
     }
 
     @Test
@@ -325,11 +355,19 @@ class HttpMessageSearchTest {
 
     @Test
     fun `regex rejects unsafe or conflicting predicates before history access`() = runBlocking {
-        val conflicting = service.search(SearchHttpMessages(text = "literal", regex = "safe"))
-        val unsafe = service.search(SearchHttpMessages(regex = "(a+)+"))
+        val conflictingProgress = mutableListOf<Double>()
+        val conflicting = service.search(SearchHttpMessages(text = "literal", regex = "safe")) { progress, _, _ ->
+            conflictingProgress += progress
+        }
+        val unsafeProgress = mutableListOf<Double>()
+        val unsafe = service.search(SearchHttpMessages(regex = "(a+)+")) { progress, _, _ ->
+            unsafeProgress += progress
+        }
 
         assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, conflicting.status)
         assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, unsafe.status)
+        assertEquals(listOf(0.0), conflictingProgress)
+        assertEquals(listOf(0.0), unsafeProgress)
         verify(exactly = 0) { proxy.history() }
     }
 

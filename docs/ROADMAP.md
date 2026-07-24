@@ -216,12 +216,23 @@ Remaining work:
 
 Long-running operations should not look like hung calls.
 
-- Collaborator long polling emits progress, propagates cancellation, limits concurrent waits, and bounds interaction
-  metadata/details. Extend progress to large history searches and other preparation work where it is materially useful.
-- Focused Scanner work is asynchronous in Burp and exposes extension-owned start/get/cancel lifecycle tools. Propagate
-  cancellation to additional Burp APIs when Montoya provides explicit cancellation handles.
-- Use MCP tasks for operations that outlive a single HTTP request.
-- Distinguish cancellation from timeout and partial completion.
+Implemented:
+
+- Collaborator long polling emits progress, propagates coroutine cancellation, limits concurrent waits, and bounds
+  interaction metadata/details.
+- HTTP history search, WebSocket history search, and attack-surface preparation emit six monotonic, value-free fixed
+  stages when a progress token is supplied. Their bounded loops check cooperative cancellation between record batches;
+  internal snapshot retries cannot regress or multiply stages.
+- Focused Scanner work is asynchronous in Burp and exposes extension-owned start/get/cancel lifecycle tools.
+
+Remaining work:
+
+- Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
+  cancellation lifecycle; SDK `0.14.0` does not currently do so.
+- Propagate cancellation to additional Burp APIs when Montoya provides explicit cancellation handles.
+- Use stable MCP tasks for operations that outlive a single HTTP request after the protocol, SDK, and supported clients
+  agree on the task lifecycle.
+- Distinguish cancellation from timeout and partial completion consistently across every structured result.
 
 ### 9. Notify clients when capabilities change
 

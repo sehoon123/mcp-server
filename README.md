@@ -44,6 +44,7 @@ client-liveness, and capacity-pressure safeguards.
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
+- Fixed-stage MCP progress and cooperative cancellation checks for bounded HTTP/WebSocket searches and attack-surface preparation
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
@@ -175,6 +176,21 @@ path. Potentially expensive fallback source matching and Scanner issue hashing r
 rather than Burp's event dispatch thread, and project transitions or ambiguous matches fail closed. Resource URIs remain
 scoped by the MCP server connection, so users with multiple Burp servers should use the reference with the originating
 configured server. No instance identifier was added to the stable v4 URI templates.
+
+### Bounded operation progress and cancellation
+
+`search_http_messages`, `summarize_http_attack_surface`, and `search_websocket_messages` emit six monotonic fixed-stage
+progress notifications when the caller supplies an MCP progress token. Stage messages describe only validation,
+approval, bounded snapshot preparation, scanning or aggregation, final verification, and completion; they contain no
+project ID, filter, target, traffic, or credential value. Retries caused by an internal snapshot revalidation do not
+regress or multiply progress stages.
+
+The bounded scan and metadata-refresh loops cooperatively check coroutine cancellation between small record batches.
+Cancellation propagates without returning a misleading partial success. Kotlin SDK `0.14.0` does not yet connect an
+incoming `notifications/cancelled` message to the active server handler, so v4 does not claim that wire-level path.
+A client must also keep the optional `GET /mcp` stream connected to receive progress; a POST-only client still receives
+the same final structured result. Scan/content limits and continuation cursors remain the explicit non-cancellation
+partial-completion mechanism.
 
 ### v4.2 transport lifecycle and approval controls
 

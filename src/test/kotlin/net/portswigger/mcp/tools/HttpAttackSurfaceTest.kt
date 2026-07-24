@@ -13,6 +13,7 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -49,6 +51,33 @@ class HttpAttackSurfaceTest {
         config = McpConfig(storage, logging)
         index = HttpMetadataIndex(api, maxRecordsPerSource = 20, nanoTime = { nowNanos })
         service = HttpAttackSurfaceService(api, config, index)
+    }
+
+    @Test
+    fun `summary reports fixed monotonic progress without project values`() = runBlocking {
+        val events = mutableListOf<Triple<Double, Double?, String?>>()
+
+        val result = service.summarize(
+            SummarizeHttpAttackSurface(projectId = projectId),
+        ) { progress, total, message -> events += Triple(progress, total, message) }
+
+        assertEquals(HttpAttackSurfaceStatus.OK, result.status)
+        assertEquals((0..5).map(Int::toDouble), events.map { it.first })
+        assertTrue(events.all { it.second == 5.0 })
+        assertEquals("Validating attack-surface request", events.first().third)
+        assertEquals("Attack-surface summary completed", events.last().third)
+        assertTrue(events.none { it.third.orEmpty().contains(projectId) })
+    }
+
+    @Test
+    fun `summary progress cancellation propagates after bounded snapshot preparation`() = runBlocking {
+        assertFailsWith<CancellationException> {
+            service.summarize(SummarizeHttpAttackSurface(projectId = projectId)) { progress, _, _ ->
+                if (progress == 3.0) throw CancellationException("client cancelled")
+            }
+        }
+
+        verify(exactly = 1) { proxy.history() }
     }
 
     @Test
@@ -226,9 +255,13 @@ class HttpAttackSurfaceTest {
             }
         }
 
-        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+        val events = mutableListOf<Double>()
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId)) { progress, _, _ ->
+            events += progress
+        }
 
         assertEquals(HttpAttackSurfaceStatus.OK, result.status)
+        assertEquals((0..5).map(Int::toDouble), events)
         assertEquals(1, invalidations)
         assertEquals(MetadataIndexRefresh.REBUILT, result.sources.single().refresh)
         verify(exactly = 2) { proxy.history() }
@@ -241,9 +274,13 @@ class HttpAttackSurfaceTest {
             index.invalidate()
         }
 
-        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+        val events = mutableListOf<Double>()
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId)) { progress, _, _ ->
+            events += progress
+        }
 
         assertEquals(HttpAttackSurfaceStatus.BURP_ERROR, result.status)
+        assertEquals((0..4).map(Int::toDouble), events)
         assertTrue(result.error.orEmpty().contains("changed repeatedly"))
         assertTrue(result.sources.isEmpty())
         verify(exactly = 2) { proxy.history() }
@@ -262,14 +299,16 @@ class HttpAttackSurfaceTest {
 
     @Test
     fun `invalid duplicate sources are rejected before project or history access`() = runBlocking {
+        val events = mutableListOf<Double>()
         val result = service.summarize(
             SummarizeHttpAttackSurface(
                 projectId = projectId,
                 sources = listOf(HttpMessageSource.PROXY, HttpMessageSource.PROXY),
             )
-        )
+        ) { progress, _, _ -> events += progress }
 
         assertEquals(HttpAttackSurfaceStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(listOf(0.0), events)
         verify(exactly = 0) { api.project() }
         verify(exactly = 0) { api.proxy() }
     }

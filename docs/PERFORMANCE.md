@@ -156,6 +156,14 @@ Safe removal requires reliable client DELETE, a deliberate weaker eviction polic
 transport, or a future protocol/SDK transition. The draft transport that removes GET and protocol sessions cannot be
 backported unchanged to the negotiated `2025-11-25` protocol.
 
+HTTP history search, WebSocket history search, and attack-surface preparation now use six operation-defined progress
+stages rather than per-record updates. This fixes notification cardinality regardless of source size, keeps every message
+free of project/filter/traffic values, and prevents a bounded snapshot retry from regressing or duplicating stages.
+HTTP and WebSocket scans check coroutine cancellation every 64 records; metadata refresh does the same, while
+attack-surface aggregation checks every 256 records. A cancellation is propagated rather than converted into a partial
+success. The SDK `0.14.0` limitation remains: incoming `notifications/cancelled` is not wired to the active server
+handler, and a POST-only client has no server-initiated delivery stream for progress.
+
 CIO reports an occupied startup connector through cancellation wrappers whose bounded cause chain ends in
 `BindException`. Startup now recognizes that specific root cause and reports only the numeric local endpoint and that
 it is already in use; no credential, path, or raw coroutine diagnostic is retained. Closing the MCP server may also

@@ -728,18 +728,26 @@ internal fun Server.registerTools(
         }
     }
 
-    mcpStructuredTool<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
+    mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. With a progress token, fixed stages cover validation, approval, snapshot preparation, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageSearchService.search(this)
+    ) { input ->
+        StructuredToolResponse(
+            httpMessageSearchService.search(input) { progress, total, message ->
+                reportProgress(progress, total, message)
+            }
+        )
     }
 
-    mcpStructuredTool<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
-        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records, strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit.",
+    mcpStructuredToolWithContext<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
+        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records, strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit. With a progress token, fixed stages cover validation, approval, bounded index refresh, aggregation, and snapshot verification; coroutine cancellation is checked during refresh and aggregation.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        httpAttackSurfaceService.summarize(this)
+    ) { input ->
+        StructuredToolResponse(
+            httpAttackSurfaceService.summarize(input) { progress, total, message ->
+                reportProgress(progress, total, message)
+            }
+        )
     }
 
     mcpStructuredTool<CheckScope, CheckScopeResult>(
@@ -784,11 +792,15 @@ internal fun Server.registerTools(
         httpMessageActionService.route(this)
     }
 
-    mcpStructuredTool<SearchWebsocketMessages, SearchWebsocketMessagesResult>(
-        description = "Searches project-bound Proxy WebSocket history with signed snapshot cursors. Filters include connection ID, direction, listener port, and one conservatively safe payload regex. Results are bounded to 50 summaries, 10,000 scanned records, and 32 MiB of regex-inspected payload data. Continue with only projectId, cursor set to the returned nextCursor, and optional limit.",
+    mcpStructuredToolWithContext<SearchWebsocketMessages, SearchWebsocketMessagesResult>(
+        description = "Searches project-bound Proxy WebSocket history with signed snapshot cursors. Filters include connection ID, direction, listener port, and one conservatively safe payload regex. Results are bounded to 50 summaries, 10,000 scanned records, and 32 MiB of regex-inspected payload data. With a progress token, fixed stages cover validation, approval, snapshot loading, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Continue with only projectId, cursor set to the returned nextCursor, and optional limit.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        webSocketMessageSearchService.search(this)
+    ) { input ->
+        StructuredToolResponse(
+            webSocketMessageSearchService.search(input) { progress, total, message ->
+                reportProgress(progress, total, message)
+            }
+        )
     }
 
     mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(
