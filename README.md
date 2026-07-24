@@ -752,4 +752,5 @@ protection, and multiple Streamable HTTP SSE streams. Integration tests negotiat
 pinned production SDK support that lifecycle.
 
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for runtime analysis, [docs/ROADMAP.md](docs/ROADMAP.md) for proposed
-improvements, and [docs/V5_READINESS.md](docs/V5_READINESS.md) for the modern-protocol release gates.
+improvements, [docs/V5_READINESS.md](docs/V5_READINESS.md) for the modern-protocol release gates, and
+[docs/V5_APPROVAL_MODEL.md](docs/V5_APPROVAL_MODEL.md) for the fail-safe sessionless approval baseline.

@@ -232,7 +232,9 @@ Remaining work:
 
 - Connect wire-level `notifications/cancelled` to active handlers when the Kotlin SDK exposes the original request and
   cancellation lifecycle; SDK `0.14.0` does not currently do so.
-- Propagate cancellation to additional Burp APIs when Montoya provides explicit cancellation handles.
+- Evaluate Montoya `2026.7`'s request-execution lifetime and explicit `cancel()` handle in an isolated matching Burp
+  runtime; do not raise the production dependency or minimum Burp version until compatibility is proven. Other Burp
+  operations still require their own explicit cancellation lifecycle.
 - Use stable MCP tasks for operations that outlive a single HTTP request after the protocol, SDK, and supported clients
   agree on the task lifecycle.
 - Distinguish cancellation from timeout and partial completion consistently across every structured result.
@@ -285,6 +287,21 @@ Remaining work:
 - Add saved, scoped history queries and optional notifications instead of model-side polling.
 - Provide import/export of MCP settings with secrets excluded by default.
 
+## Current post-v4.5 execution order
+
+This is the active PM order while the modern protocol gates remain closed:
+
+1. Define the sessionless approval baseline and normalize cancellation, timeout, partial-completion, and uncertain results.
+2. Run the isolated Montoya `2026.7` compatibility spike without changing the production dependency.
+3. Design policy-safe list changes and project-bound resource subscriptions that close on project transition.
+4. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
+5. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
+6. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
+7. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
+
+See [V5_READINESS.md](V5_READINESS.md) for release gates and
+[V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the sessionless authorization decision.
+
 ## Suggested implementation order
 
 | Order | Change | Benefit | Risk/effort |
@@ -304,8 +321,8 @@ Remaining work:
 Version 5 is reserved for the modern per-request MCP era. The proposed `2026-07-28` protocol is still a draft, Kotlin
 SDK server support is not released, modern conformance remains prerelease, and connection-scoped approval grants need a
 safe sessionless replacement. Continue v4 production hardening while those gates are open; do not ship a partial raw
-transport fork merely to claim draft compatibility. See [V5_READINESS.md](V5_READINESS.md) for the gate matrix,
-migration decisions, and staged release criteria.
+transport fork merely to claim draft compatibility. See [V5_READINESS.md](V5_READINESS.md) for the gate matrix and staged
+release criteria, and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the fail-safe modern approval baseline.
 
 ## Design constraints
 

@@ -3,8 +3,24 @@
 **Status date:** 2026-07-24
 
 Version 5 is reserved for the first production release that adopts the modern, per-request MCP protocol era. The current
-production release remains on stable protocol `2025-11-25`. A draft or an SDK branch is not sufficient authority for a
+production release is v4.5.0 on stable protocol `2025-11-25`. A draft or an SDK branch is not sufficient authority for a
 stable v5 release.
+
+## PM transition decision
+
+The migration is gate-driven, not date-driven. Publication of a revision named `2026-07-28` would satisfy only the
+protocol gate; it would not by itself authorize a production migration. The current decision is **NO-GO for a production
+v5 endpoint** and **GO for Stage A design, compatibility spikes, and v4 hardening**.
+
+| Release stage | Entry condition | Exposure |
+| --- | --- | --- |
+| Stage A — now | Upstream gates are still open | v4 production changes and isolated, non-production spikes only |
+| Private v5 alpha | Stable protocol plus a released official Kotlin modern server transport and the approval baseline | Private branch/build; no compatibility claim |
+| v5 beta/RC | Modern conformance passes without a whole-scenario waiver and the supported client matrix works | Explicit prerelease only |
+| Stable v5 | Every release gate below plus a 14-day RC period with no unresolved P0/P1 defect | Annotated `v5.0.0` and public production release |
+
+Production main remains on the v4 compatibility line until the private candidate proves that moving it is safer than a
+separate modern line. A partial raw JSON-RPC implementation is not an acceptable shortcut.
 
 ## Current gate status
 
@@ -14,7 +30,7 @@ stable v5 release.
 | Kotlin SDK | Released server transport for the modern wire | Kotlin SDK `0.14.0` is latest; issue #815 is open and PR #893 adds core types only, explicitly excluding server admission, dispatch, HTTP, subscriptions, and lifecycle | Blocked |
 | Conformance | Released modern server suite with stable expectations | `0.1.16` is the stable legacy suite; modern checks remain in the `0.2.0-alpha.9` line and repository main | Blocked |
 | Clients | Stable releases from the supported client matrix | TypeScript SDK v2 is beta and still has open modern-era compatibility issues; other supported clients require explicit verification | Blocked |
-| Approval lifecycle | A safe replacement for connection-scoped grants | The modern protocol removes protocol sessions; client identity metadata is self-reported and cannot authorize or key approval state | Design required |
+| Approval lifecycle | A safe replacement for connection-scoped grants | [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) defines a fail-safe no-session-grant baseline; implementation and client evidence remain open | Partial |
 | Burp scale | Measured behavior on large live projects | Real isolated Community Site Map paths are measured at 10k/50k/100k with synthetic data; Proxy, Organizer, WebSocket, Professional Scanner, context-menu, and soak evidence remain open | Partial |
 
 Upstream references:
@@ -25,6 +41,31 @@ Upstream references:
 - [Kotlin SDK 2026-07-28 tracker](https://github.com/modelcontextprotocol/kotlin-sdk/issues/842)
 - [Kotlin SDK stateless tracker](https://github.com/modelcontextprotocol/kotlin-sdk/issues/815)
 - [Kotlin SDK request-metadata and discovery types PR](https://github.com/modelcontextprotocol/kotlin-sdk/pull/893)
+- [Montoya API 2026.7 release](https://github.com/PortSwigger/burp-extensions-montoya-api/releases/tag/2026.7)
+
+## Montoya integration lane
+
+Montoya is a separate product-runtime decision, not evidence that the MCP wire is ready. The production extension remains
+compiled against Montoya `2025.10`. Compared with that pin, the published `2026.7` API exposes typed/table HotKey
+registration and an HTTP request execution engine with an explicit `RequestExecutionLifetime.cancel()` lifecycle. The
+request engine was introduced in `2026.7` and is Professional-only. These APIs do not replace MCP discovery, per-request
+metadata, conformance, client support, or the sessionless approval design.
+
+An isolated version-catalog-only spike at exact v4.5.0 commit
+`d477d08fe5c23b9b3b94a8b075cd7c234d0dd03e` compiled against `2026.7` and passed all 408 tests. Its extension JAR stayed
+byte-identical because Montoya is compile-only and no new API was used. This proves source compatibility only; it does not
+prove matching Burp runtime behavior, minimum-platform compatibility, or value from the new APIs.
+
+The safe sequence is:
+
+1. compile and test the unchanged v4 code against `2026.7` in an isolated worktree — completed for source compatibility;
+2. live-test a private build on matching Burp Community and Professional runtimes;
+3. quantify the minimum supported Burp-version change and BApp compatibility impact;
+4. build the first modern-wire alpha against the known `2025.10` baseline so transport defects are attributable;
+5. add `2026.7` in a later private alpha only if its cancellation or HotKey APIs provide concrete reviewed value;
+6. merge the dependency and minimum-version change only after both tracks pass independently.
+
+No high-risk feature becomes approved merely because a newer Montoya API exposes it.
 
 ### Partial Burp-scale evidence
 
@@ -86,32 +127,43 @@ The following constraints carry into v5:
 ### Stage A — production hardening while gates are closed
 
 1. Keep v4 on stable `2025-11-25` and update its stable conformance runner without changing runtime behavior.
-2. Complete client/session soak tests, cancellation/disconnect tests, and the remaining Proxy, Organizer, WebSocket,
-   and Professional Scanner 10k/50k/100k measurements.
-3. Resolve or safely bypass the isolated Burp Site Map navigation failure, then validate context-menu fallback timing
-   and fail-closed behavior at the same live scales.
-4. Track Kotlin SDK server transport, cancellation, request-ID, and CIO shutdown work upstream.
-5. Validate resource/prompt rendering and discovery across the supported clients.
+2. Use [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) as the security baseline and keep modern transient grants disabled.
+3. Normalize cancellation, timeout, partial-completion, and uncertain structured results without claiming unsupported
+   wire cancellation.
+4. Run the isolated Montoya `2026.7` compile/test spike, but do not change the production dependency or minimum Burp
+   version without separate live evidence.
+5. Design project-bound list changes and subscriptions so a project transition closes stale delivery before new-project
+   data can appear.
+6. Validate resource/prompt rendering, discovery, restart behavior, and protocol fallback across supported clients.
+7. Track Kotlin SDK server transport, cancellation, request-ID, task, and CIO shutdown work upstream.
+8. Retain the remaining scale, context-menu, and multi-client soak work as RC gates rather than displacing the current
+   feature/security work.
 
 ### Stage B — private v5 candidate after SDK support exists
 
 1. Build from an exact released SDK version and a published protocol revision.
-2. Implement mandatory discovery, per-request metadata, mirrored-header validation, modern errors, result discriminators,
+2. Build the first modern-wire alpha against Montoya `2025.10` to isolate the transport migration.
+3. Implement mandatory discovery, per-request metadata, mirrored-header validation, modern errors, result discriminators,
    and cache metadata.
-3. Remove GET, DELETE, session IDs, session registries, idle/pressure eviction, and legacy handshake behavior from the
+4. Remove GET, DELETE, session IDs, session registries, idle/pressure eviction, and legacy handshake behavior from the
    modern endpoint.
-4. Bind each HTTP response stream directly to its request coroutine so disconnect cancellation reaches bounded Burp work
+5. Apply the no-transient-grant approval baseline and prove that connection, stdio process, request ID, and self-reported
+   client metadata cannot carry authority between requests.
+6. Bind each HTTP response stream directly to its request coroutine so disconnect cancellation reaches bounded Burp work
    where cancellation is safe.
-5. Keep resource subscriptions disabled unless their project/source policy and bounded notification lifecycle are proven.
-6. Run modern conformance with no whole-scenario expected-failure entry.
+7. Keep resource subscriptions disabled unless their project/source policy and bounded notification lifecycle are proven.
+8. Run modern conformance with no whole-scenario expected-failure entry.
+9. Evaluate a later private alpha on Montoya `2026.7`; do not combine the two migrations in the first diagnostic build.
 
 ### Stage C — interoperability and migration
 
 1. Verify the exact tools/resources/templates/prompts surface against every supported client.
 2. Decide, from measured client support, whether v5 is modern-only or dual-era. Dual-era support is not assumed: it
    increases admission, approval, audit, and shutdown complexity.
-3. Publish explicit v4-to-v5 migration guidance. v4 remains the compatibility line for legacy clients.
-4. Repeat live Burp Professional and Community validation with release-candidate bytes.
+3. Decide whether the Montoya baseline changes, using separate transport and runtime evidence plus the minimum supported
+   Burp-version impact.
+4. Publish explicit v4-to-v5 migration guidance. v4 remains the compatibility line for legacy clients.
+5. Repeat live Burp Professional and Community validation with release-candidate bytes.
 
 ### Stage D — stable release gate
 
@@ -121,6 +173,8 @@ A stable `v5.0.0` tag may be created only when all of the following are true:
 - modern conformance passes without a whole-scenario baseline;
 - at least the supported native HTTP client and embedded stdio proxy pass the release matrix;
 - cancellation, progress, approval, audit, and shutdown behavior have bounded live evidence;
+- the release candidate completes at least 14 days with no unresolved P0/P1 defect;
+- any Montoya/minimum-Burp change has independent Community and Professional compatibility evidence;
 - 10k/50k/100k measurements have no unreviewed EDT or memory regression;
 - two clean exact-commit JAR/SBOM builds are byte-identical;
 - OSV, Dependabot, archive inspection, checksums, and provenance pass;
