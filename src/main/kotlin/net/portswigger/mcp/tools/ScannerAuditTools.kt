@@ -251,6 +251,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             currentCoroutineContext().ensureActive()
             val size = try {
                 scannerRequestBytes(message)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return scannerAuditError(
                     ScannerAuditToolStatus.INVALID_ARGUMENT,
@@ -336,6 +338,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                             e.message.orEmpty(),
                             index,
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         return scannerAuditError(
                             ScannerAuditToolStatus.BURP_ERROR,
@@ -373,6 +377,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 )
                 message.envelope ?: try {
                     HttpRequestResponse.httpRequestResponse(message.request, response)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     return scannerAuditError(
                         ScannerAuditToolStatus.BURP_ERROR,
@@ -424,8 +430,10 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             )
         }
 
-        currentCoroutineContext().ensureActive()
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         return startMutex.withLock {
+            callContext.ensureActive()
             refreshAndTrimRecords()
             if (records.values.count { !it.lastState.isTerminal() } >= MAX_ACTIVE_SCANNER_AUDITS) {
                 return@withLock scannerAuditError(
@@ -438,6 +446,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             }
             val currentProjectId = try {
                 api.project().id()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return@withLock scannerAuditError(
                     ScannerAuditToolStatus.BURP_ERROR,
@@ -458,8 +468,11 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 )
             }
             prepared.forEachIndexed { index, target ->
+                callContext.ensureActive()
                 val stillInScope = try {
                     api.scope().isInScope(target.message.request.url())
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     return@withLock scannerAuditError(
                         ScannerAuditToolStatus.BURP_ERROR,
@@ -485,6 +498,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             val taskId = nextTaskId()
             val configuration = try {
                 AuditConfiguration.auditConfiguration(input.mode.builtInConfiguration())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return@withLock scannerAuditError(
                     ScannerAuditToolStatus.BURP_ERROR,
@@ -494,8 +509,12 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                     "Burp could not prepare the Scanner audit configuration: ${safeScannerAuditException(e)}",
                 )
             }
+            callContext.ensureActive()
             val audit: Audit = try {
                 api.scanner().startAudit(configuration)
+            } catch (e: CancellationException) {
+                auditScanner(input.mode, prepared.size, null, "start cancelled")
+                throw e
             } catch (e: Exception) {
                 auditScanner(input.mode, prepared.size, null, "start execution uncertain")
                 return@withLock scannerAuditError(
@@ -503,7 +522,10 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                     ScannerAuditActionState.UNCERTAIN,
                     input.projectId,
                     input.mode,
-                    "Burp may have started the Scanner audit but did not return a task handle: ${safeScannerAuditException(e)}",
+                    uncertainExecutionError(
+                        "Burp may have started the Scanner audit but did not return a task handle",
+                        e,
+                    ),
                 )
             }
 
@@ -519,6 +541,7 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
 
             try {
                 prepared.forEach { target ->
+                    callContext.ensureActive()
                     when (input.mode) {
                         ScannerAuditMode.PASSIVE -> audit.addRequestResponse(requireNotNull(target.requestResponse))
                         ScannerAuditMode.ACTIVE -> audit.addRequest(
@@ -528,14 +551,27 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                     }
                 }
                 record.lastState = ScannerAuditTaskState.RUNNING
+            } catch (e: CancellationException) {
+                record.lastState = ScannerAuditTaskState.UNKNOWN
+                auditScanner(input.mode, prepared.size, taskId, "target submission cancelled")
+                val deleted = try {
+                    audit.delete()
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+                if (deleted) records.remove(taskId, record)
+                throw e
             } catch (e: Exception) {
                 record.lastState = ScannerAuditTaskState.UNKNOWN
                 auditScanner(input.mode, prepared.size, taskId, "target submission uncertain")
                 return@withLock record.toResult(
                     status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
                     actionState = ScannerAuditActionState.UNCERTAIN,
-                    error = "Scanner audit started, but one or more targets may not have been submitted: " +
-                        safeScannerAuditException(e),
+                    error = uncertainExecutionError(
+                        "Scanner audit started, but one or more targets may not have been submitted",
+                        e,
+                    ),
                 )
             }
 
@@ -578,16 +614,18 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
             return record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
         }
         val errors = ArrayList<String>(4)
-        val statusMessage = runCatching { record.audit.statusMessage().take(MAX_SCANNER_STATUS_MESSAGE_CHARS) }
+        val statusMessage = runCatchingPreservingCancellation {
+            record.audit.statusMessage().take(MAX_SCANNER_STATUS_MESSAGE_CHARS)
+        }
             .onFailure { errors += "status unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
-        val auditedInsertionPointCount = runCatching { record.audit.insertionPointCount() }
+        val auditedInsertionPointCount = runCatchingPreservingCancellation { record.audit.insertionPointCount() }
             .onFailure { errors += "insertion-point count unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
-        val requestCount = runCatching { record.audit.requestCount() }
+        val requestCount = runCatchingPreservingCancellation { record.audit.requestCount() }
             .onFailure { errors += "request count unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
-        val errorCount = runCatching { record.audit.errorCount() }
+        val errorCount = runCatchingPreservingCancellation { record.audit.errorCount() }
             .onFailure { errors += "error count unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
         record.lastState = classifyTaskState(statusMessage, record.lastState)
@@ -609,6 +647,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         val issuePermissionDenied = issueLimit > 0 && !issuesAllowed
         val projectBeforeIssues = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             errors += "project recheck failed: ${safeScannerAuditException(e)}"
             null
@@ -710,6 +750,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         currentCoroutineContext().ensureActive()
         val currentProjectId = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return record.toResult(
                 ScannerAuditToolStatus.BURP_ERROR,
@@ -727,19 +769,24 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
                 "Burp project changed before Scanner cancellation",
             )
         }
+        currentCoroutineContext().ensureActive()
         return try {
             record.audit.delete()
             record.lastState = ScannerAuditTaskState.CANCELLED
             record.cancelledAt = Instant.now()
             auditScanner(record.mode, record.targets.size, record.taskId, "cancelled")
             record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+        } catch (e: CancellationException) {
+            record.lastState = ScannerAuditTaskState.UNKNOWN
+            auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted")
+            throw e
         } catch (e: Exception) {
             record.lastState = ScannerAuditTaskState.UNKNOWN
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation uncertain")
             record.toResult(
                 ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
                 ScannerAuditActionState.UNCERTAIN,
-                error = "Scanner audit may have been cancelled: ${safeScannerAuditException(e)}",
+                error = uncertainExecutionError("Scanner audit may have been cancelled", e),
             )
         }
     }
@@ -763,6 +810,8 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
         }
         val currentProjectId = try {
             api.project().id()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return scannerAuditError(
                 ScannerAuditToolStatus.BURP_ERROR,
@@ -796,7 +845,9 @@ internal class ScannerAuditService(private val api: MontoyaApi) {
     private fun refreshAndTrimRecords() {
         records.values.forEach { record ->
             if (!record.lastState.isTerminal()) {
-                val status = runCatching { record.audit.statusMessage().take(MAX_SCANNER_STATUS_MESSAGE_CHARS) }.getOrNull()
+                val status = runCatchingPreservingCancellation {
+                    record.audit.statusMessage().take(MAX_SCANNER_STATUS_MESSAGE_CHARS)
+                }.getOrNull()
                 if (status != null) {
                     record.lastStatusMessage = status
                     record.lastState = classifyTaskState(status, record.lastState)

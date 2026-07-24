@@ -645,9 +645,10 @@ internal fun Server.registerTools(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val error = standardToolException(
-                "Configuration may have been partially applied; do not retry automatically",
+            val error = uncertainExecutionError(
+                "Configuration may have been partially applied",
                 e,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
             )
             return@mcpStructuredToolWithContext StructuredToolResponse(
                 SetBurpOptionsResult(
@@ -881,9 +882,10 @@ internal fun Server.registerTools(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val error = standardToolException(
-                "Burp control state may have changed; do not retry automatically",
+            val error = uncertainExecutionError(
+                "Burp control state may have changed",
                 e,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
             )
             return@mcpStructuredToolWithContext StructuredToolResponse(
                 SetBurpControlStateResult(
@@ -1112,9 +1114,10 @@ internal fun Server.registerTools(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val error = standardToolException(
-                "Active editor text may have changed; do not retry automatically",
+            val error = uncertainExecutionError(
+                "Active editor text may have changed",
                 e,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
             )
             return@mcpStructuredToolWithContext StructuredToolResponse(
                 SetActiveEditorContentsResult(
@@ -1159,6 +1162,8 @@ internal fun recordHttpResponseInSiteMap(
     if (response == null) return SiteMapRecordResult(recorded = false)
     try {
         api.siteMap().add(response)
+    } catch (e: CancellationException) {
+        throw e
     } catch (_: Exception) {
         // The request may already have changed server state. Never turn a local recording failure into a retryable tool error.
         runCatching {
@@ -1199,6 +1204,8 @@ internal fun recordHttpResponseInSiteMap(
                 )
             }
         }
+    } catch (e: CancellationException) {
+        throw e
     } catch (_: Exception) {
         val warning = "request was recorded, but its stable Site Map reference could not be created"
         runCatching { api.logging().logToError("MCP $warning") }

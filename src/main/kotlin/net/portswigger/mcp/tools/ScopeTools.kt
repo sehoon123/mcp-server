@@ -379,6 +379,9 @@ internal class ScopeToolService(
                         "Burp did not report the requested scope state after applying the update",
                     )
                 }
+            } catch (e: CancellationException) {
+                auditScope(input.operation, indexesToChange.size, changedCount, "cancelled during mutation")
+                throw e
             } catch (e: Exception) {
                 if (!mutationAttempted && changedCount == 0) {
                     return updateFailure(
@@ -551,7 +554,7 @@ internal class ScopeToolService(
         },
         changedCount = changedCount,
         errorTargetIndex = errorIndex,
-        error = error.take(512),
+        error = uncertainExecutionError(error),
     )
 
     private fun auditScope(

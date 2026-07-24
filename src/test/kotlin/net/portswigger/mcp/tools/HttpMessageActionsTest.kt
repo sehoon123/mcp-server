@@ -672,6 +672,7 @@ class HttpMessageActionsTest {
 
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
         assertTrue(result.error.orEmpty().contains("UI unavailable"))
         verify(exactly = 1) { intruder.sendToIntruder(fixture.request) }
     }

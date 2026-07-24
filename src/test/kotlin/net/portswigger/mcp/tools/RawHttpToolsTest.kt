@@ -16,6 +16,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.RequestActionApprovalHandler
@@ -23,7 +24,9 @@ import net.portswigger.mcp.security.RequestActionSecurity
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.net.SocketTimeoutException
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -95,7 +98,7 @@ class RawHttpToolsTest {
     }
 
     @Test
-    fun `raw send reports post-delivery exceptions as execution uncertain`() = runBlocking {
+    fun `raw send reports post-delivery timeouts as execution uncertain`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()
         every { RequestOptions.requestOptions() } returns options
@@ -104,7 +107,7 @@ class RawHttpToolsTest {
         every { options.withResponseTimeout(30_000) } returns options
         val http = mockk<Http>()
         every { api.http() } returns http
-        every { http.sendRequest(fixture.request, options) } throws IllegalStateException("secret /home/user/value")
+        every { http.sendRequest(fixture.request, options) } throws SocketTimeoutException("secret /home/user/value")
 
         val result = service.send(defaultHttp1Send())
 
@@ -112,6 +115,23 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
         assertTrue(result.error.orEmpty().contains("do not retry automatically"))
         assertTrue(!result.error.orEmpty().contains("/home/user/value"))
+        assertTrue(result.error.orEmpty().contains("SocketTimeoutException"))
+    }
+
+    @Test
+    fun `raw send never converts execution cancellation into an uncertain result`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } throws CancellationException("cancelled")
+
+        assertFailsWith<CancellationException> { service.send(defaultHttp1Send()) }
+        verify(exactly = 1) { http.sendRequest(fixture.request, options) }
     }
 
     @Test
