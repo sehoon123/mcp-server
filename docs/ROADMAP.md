@@ -216,14 +216,17 @@ Remaining work:
 
 Long-running operations should not look like hung calls.
 
-Implemented:
+Implemented before v4.5.0:
 
 - Collaborator long polling emits progress, propagates coroutine cancellation, limits concurrent waits, and bounds
   interaction metadata/details.
+- Focused Scanner work is asynchronous in Burp and exposes extension-owned start/get/cancel lifecycle tools.
+
+Implemented in v4.5.0:
+
 - HTTP history search, WebSocket history search, and attack-surface preparation emit six monotonic, value-free fixed
   stages when a progress token is supplied. Their bounded loops check cooperative cancellation between record batches;
   internal snapshot retries cannot regress or multiply stages.
-- Focused Scanner work is asynchronous in Burp and exposes extension-owned start/get/cancel lifecycle tools.
 
 Remaining work:
 
