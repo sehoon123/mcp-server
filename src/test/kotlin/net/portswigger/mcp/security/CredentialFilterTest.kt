@@ -306,6 +306,100 @@ class CredentialFilterTest {
     }
 
     @Test
+    fun `nested API keys tokens cookies and certificate material are recursively redacted`() {
+        val input = """
+        {
+            "auth": {
+                "api-key": "api-secret",
+                "client_secret": { "value": "client-secret", "version": 2 },
+                "tokens": ["access-secret", { "refresh_token": "refresh-secret" }]
+            },
+            "cookies": [
+                { "name": "session", "value": "cookie-secret", "secure": true }
+            ],
+            "tls": {
+                "client-certificates": [
+                    { "certificate_data": "certificate-secret", "private_key": "private-secret" }
+                ]
+            },
+            "optional": { "password": null },
+            "literal": { "password": "null" }
+        }
+        """.trimIndent()
+
+        val filtered = filterConfigCredentials(input)
+        listOf(
+            "api-secret",
+            "client-secret",
+            "access-secret",
+            "refresh-secret",
+            "cookie-secret",
+            "certificate-secret",
+            "private-secret",
+        ).forEach { secret -> Assertions.assertFalse(filtered.contains(secret), secret) }
+
+        val parsed = Json.parseToJsonElement(filtered).jsonObject
+        Assertions.assertEquals("*****", parsed["auth"]!!.jsonObject["api-key"]!!.jsonPrimitive.content)
+        Assertions.assertEquals(JsonNull, parsed["optional"]!!.jsonObject["password"])
+        Assertions.assertEquals("*****", parsed["literal"]!!.jsonObject["password"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `sensitive name value header forms and raw header lines are redacted`() {
+        val input = """
+        {
+            "headers": [
+                { "name": "Authorization", "value": "Bearer auth-secret" },
+                { "header_name": "X-API-Key", "header_value": "header-secret" },
+                { "name": "X-Auth-Token", "value": "auth-token-secret" },
+                { "key": "Proxy-Authorization", "values": ["proxy-secret"] },
+                { "name": "User-Agent", "value": "safe-agent" }
+            ],
+            "raw": [
+                "Cookie: session=raw-cookie-secret",
+                "Set-Cookie: response-cookie-secret",
+                "Host: example.test"
+            ]
+        }
+        """.trimIndent()
+
+        val parsed = Json.parseToJsonElement(filterConfigCredentials(input)).jsonObject
+        val headers = parsed["headers"]!!.jsonArray
+        Assertions.assertEquals("*****", headers[0].jsonObject["value"]!!.jsonPrimitive.content)
+        Assertions.assertEquals("*****", headers[1].jsonObject["header_value"]!!.jsonPrimitive.content)
+        Assertions.assertEquals("*****", headers[2].jsonObject["value"]!!.jsonPrimitive.content)
+        Assertions.assertEquals("*****", headers[3].jsonObject["values"]!!.jsonArray.single().jsonPrimitive.content)
+        Assertions.assertEquals("safe-agent", headers[4].jsonObject["value"]!!.jsonPrimitive.content)
+        val raw = parsed["raw"]!!.jsonArray.map { it.jsonPrimitive.content }
+        Assertions.assertEquals("Cookie: *****", raw[0])
+        Assertions.assertEquals("Set-Cookie: *****", raw[1])
+        Assertions.assertEquals("Host: example.test", raw[2])
+    }
+
+    @Test
+    fun `private material markers are redacted even below an otherwise generic key`() {
+        val input = """{"blob":"-----BEGIN PRIVATE KEY-----\\nprivate-secret","other":"public"}"""
+        val parsed = Json.parseToJsonElement(filterConfigCredentials(input)).jsonObject
+        Assertions.assertEquals("*****", parsed["blob"]!!.jsonPrimitive.content)
+        Assertions.assertEquals("public", parsed["other"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `exact normalized matching preserves unrelated key value settings`() {
+        val input = """
+        {
+            "token_handling_rule": "preserve-me",
+            "certificate_validation_enabled": true,
+            "entry": { "key": "timeout", "value": "5000" }
+        }
+        """.trimIndent()
+        val parsed = Json.parseToJsonElement(filterConfigCredentials(input)).jsonObject
+        Assertions.assertEquals("preserve-me", parsed["token_handling_rule"]!!.jsonPrimitive.content)
+        Assertions.assertTrue(parsed["certificate_validation_enabled"]!!.jsonPrimitive.boolean)
+        Assertions.assertEquals("5000", parsed["entry"]!!.jsonObject["value"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `test security filter with username but no password on user_options`() {
         config.filterConfigCredentials = true
         val jsonWithUsernameOnly = get_user_options_with_customizable_field("testuser", "")
