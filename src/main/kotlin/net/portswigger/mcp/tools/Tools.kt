@@ -261,14 +261,14 @@ internal fun Server.registerTools(
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
     mcpStructuredTool<SendRawHttpRequest, RawHttpActionResult>(
-        description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. executionState=uncertain means the request may have been sent and must not be retried automatically.",
+        description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. On success the exchange is recorded to Site Map (not Proxy history) and the result includes recordedInSiteMap and a recordedRef you can pass to get_http_message, compare_http_messages, send_http_request_from_id, or route_http_message_from_id; find it later with search_http_messages using sources=[\"site_map\"], since the default search source is Proxy only. executionState=uncertain means the request may have been sent and must not be retried automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         rawHttpActionService.send(this)
     }
 
     mcpStructuredTool<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Routes exactly one bounded raw HTTP/1.1 or HTTP/2 request to one Repeater, Intruder, or Organizer destination after request-routing approval. HTTP/2 Intruder routing is rejected until verified. executionState=uncertain means the tab or item may already exist and must not be retried automatically.",
+        description = "Routes exactly one bounded raw HTTP/1.1 or HTTP/2 request to one Repeater, Intruder, or Organizer destination after request-routing approval. This only opens the tab or Organizer item; it does not send the request or record anything in Proxy history or Site Map. HTTP/2 Intruder routing is rejected until verified. executionState=uncertain means the tab or item may already exist and must not be retried automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) {
         rawHttpActionService.route(this)
@@ -678,7 +678,7 @@ internal fun Server.registerTools(
         val scannerIssueReadService = ScannerIssueReadService(api, config)
         val collaboratorToolService = services.collaborator
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
-            description = "Reads Scanner issues. Existing offset/count calls retain their legacy text format with a 512 KiB safety cap. Set cursorMode=true, or supply severity/confidence/host/name filters, for bounded compact summaries with a signed project-bound snapshot cursor; cursor mode never serializes complete evidence messages.",
+            description = "Reads Scanner issues for the current Burp project; unlike most other tools here, this call takes no projectId (the returned projectId field simply reports which project was read). Legacy mode (the default: no cursorMode and no severity/confidence/host/name filter) returns full-fidelity issues as a plain-text block in the tool result's text field, not as JSON, bounded to 512 KiB; when there are no matching issues that text is the literal string 'Reached end of items'. Set cursorMode=true, or supply severity/confidence/host/name filters, to switch to bounded compact JSON summaries with a signed project-bound snapshot cursor; cursor mode never serializes complete evidence messages. For a single known issue ID, use get_scanner_issue_by_id instead, which does require projectId.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             scannerIssueSearchService.get(input)
@@ -692,7 +692,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
-            description = "Starts a focused Professional Scanner audit from existing project-scoped HTTP references. Passive mode requires responses and sends no target traffic. Active mode requires explicit semantic insertionPoints for every target and rejects out-of-scope requests. This operation always requires Burp approval. Retained tasks expire after 6 hours without a status/cancel call and after 24 hours overall. actionState=uncertain means a task may exist and must not be started again automatically.",
+            description = "Starts a focused Professional Scanner audit from existing project-scoped HTTP references. Passive mode requires responses, sends no target traffic, and accepts up to 16 targets. Active mode requires explicit semantic insertionPoints for every target, rejects out-of-scope requests, and accepts at most 4 targets even though the targets array schema allows up to 16; submitting 5-16 targets in active mode is rejected with invalid_argument. This operation always requires Burp approval. Retained tasks expire after 6 hours without a status/cancel call and after 24 hours overall. actionState=uncertain means a task may exist and must not be started again automatically.",
             annotations = SCANNER_START_TOOL_ANNOTATIONS,
         ) {
             services.scannerAudits.start(this, config)
@@ -730,7 +730,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. With a progress token, fixed stages cover validation, approval, snapshot preparation, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Note: requests issued directly via send_raw_http_request or replayed via send_http_request_from_id are recorded to Site Map, not Proxy history, so they will not appear unless sources includes \"site_map\". Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. With a progress token, fixed stages cover validation, approval, snapshot preparation, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         StructuredToolResponse(
@@ -741,7 +741,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
-        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records, strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit. With a progress token, fixed stages cover validation, approval, bounded index refresh, aggregation, and snapshot verification; coroutine cancellation is checked during refresh and aggregation.",
+        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records only, so, like search_http_messages, it misses requests recorded only to Site Map (e.g. from send_raw_http_request) unless sources includes \"site_map\"; it strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit. status=burp_error with a message about HTTP metadata changing is a transient condition (e.g. immediately after update_scope or set_burp_options) and the call should simply be retried. With a progress token, fixed stages cover validation, approval, bounded index refresh, aggregation, and snapshot verification; coroutine cancellation is checked during refresh and aggregation.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         StructuredToolResponse(
@@ -752,14 +752,14 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredTool<CheckScope, CheckScopeResult>(
-        description = "Checks whether up to 32 explicit URLs or project-scoped HTTP message references are currently in Burp Target scope. This tool never changes scope. Each target must contain exactly one of url or ref.",
+        description = "Checks whether up to 32 explicit URLs or project-scoped HTTP message references are currently in Burp Target scope. This tool never changes scope. Each target's schema requires exactly one of url or ref via a oneOf constraint; supplying both or neither is rejected before approval.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) {
         scopeToolService.check(this)
     }
 
     mcpStructuredTool<UpdateScope, UpdateScopeResult>(
-        description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. All targets are validated before approval unless the user has explicitly selected Always Allow for Target scope changes. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
+        description = "Includes or excludes up to 16 normalized URLs or project-scoped HTTP message references in Burp Target scope. Each target's schema requires exactly one of url or ref via a oneOf constraint. All targets are validated before approval unless the user has explicitly selected Always Allow for Target scope changes. executionState=uncertain means some scope changes may already exist and the call must not be retried automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
     ) {
         scopeToolService.update(this)
@@ -913,7 +913,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetActiveEditorContents, GetActiveEditorContentsResult>(
-        description = "Returns a bounded preview of the active editor after explicit approval with typed availability, approval, and retry state.",
+        description = "Returns a bounded preview of the 'active editor', defined as whichever Burp Suite text-area component currently holds keyboard focus in the Burp window (for example a Repeater request/response pane, an Intruder payload editor, or Decoder input the user last clicked into) - not a fixed tool or tab. Returns status=not_available with no error if no such editor is currently focused. Requires explicit approval with typed availability, approval, and retry state.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { _ ->
         val deniedMessage = "Active editor access denied by Burp Suite"
@@ -995,7 +995,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SetActiveEditorContents, SetActiveEditorContentsResult>(
-        description = "Sets bounded active-editor text after explicit approval. Returns typed execution state; uncertain means the edit may have occurred and must not be retried automatically.",
+        description = "Overwrites the text of the same 'active editor' described in get_active_editor_contents - whichever Burp Suite text-area component currently holds keyboard focus in the Burp window - after explicit approval. Returns status=not_available if no editor is currently focused, or if the focused editor is read-only. Returns typed execution state; uncertain means the edit may have occurred and must not be retried automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         if (input.text.length > MAX_EDITOR_CONTENT_CHARS) {

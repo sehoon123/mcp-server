@@ -7,6 +7,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.JsonSchemaExactlyOneOf
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.ScopeActionSecurity
 import net.portswigger.mcp.security.ScopeChangeApprovalOperation
@@ -18,11 +19,12 @@ private const val MAX_SCOPE_CHECK_TARGETS = 32
 private const val MAX_SCOPE_UPDATE_TARGETS = 16
 private const val MAX_SCOPE_URL_CHARS = 2_048
 
+@JsonSchemaExactlyOneOf("url", "ref")
 @Serializable
 data class ScopeTarget(
-    @JsonSchemaMetadata(description = "Absolute HTTP(S) URL; supply exactly one of url or ref.", minLength = 1, maxLength = 2048)
+    @JsonSchemaMetadata(description = "Absolute HTTP(S) URL; the schema requires exactly one of url or ref.", minLength = 1, maxLength = 2048)
     val url: String? = null,
-    @JsonSchemaMetadata(description = "Stable message reference; supply exactly one of url or ref.")
+    @JsonSchemaMetadata(description = "Stable message reference; the schema requires exactly one of url or ref.")
     val ref: HttpMessageReference? = null,
 )
 

@@ -35,6 +35,24 @@ annotation class JsonSchemaMetadata(
     val defaultJson: String = "",
 )
 
+/**
+ * Marks a serializable class whose generated JSON Schema must require exactly one of the
+ * named sibling properties to be present. This is emitted as a standard `oneOf` constraint
+ * over per-property `required` alternatives (`oneOf: [{required: [a]}, {required: [b]}]`),
+ * which JSON Schema satisfies only when exactly one alternative matches - i.e. exactly one
+ * of the named properties is present.
+ *
+ * This only takes effect where the annotated class is used as a *nested* schema, for example
+ * as a `List<T>` item type or a nested object property. The MCP Kotlin SDK's `ToolSchema` has
+ * a fixed shape (`type`/`properties`/`required`/`defs`) with no slot for root-level schema
+ * combinators, so applying this annotation to a tool's own top-level input class has no
+ * effect; such constraints must remain documented in field descriptions instead.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@SerialInfo
+@Target(AnnotationTarget.CLASS)
+annotation class JsonSchemaExactlyOneOf(vararg val properties: String)
+
 fun getJsonSchemaForProperty(kType: kotlin.reflect.KType): JsonElement {
     return when (kType.classifier) {
         String::class ->
@@ -132,6 +150,7 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
                     if (!isElementOptional(index)) add(getElementName(index))
                 }
             }
+            val exactlyOneOf = annotations.filterIsInstance<JsonSchemaExactlyOneOf>().singleOrNull()
             JsonObject(
                 buildMap {
                     put("type", JsonPrimitive("object"))
@@ -140,6 +159,22 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
                         put("required", JsonArray(required.map(::JsonPrimitive)))
                     }
                     put("additionalProperties", JsonPrimitive(false))
+                    if (exactlyOneOf != null) {
+                        require(exactlyOneOf.properties.size >= 2) {
+                            "JsonSchemaExactlyOneOf on $serialName must name at least two properties"
+                        }
+                        require(exactlyOneOf.properties.all(properties::containsKey)) {
+                            "JsonSchemaExactlyOneOf on $serialName names a property that is not declared on the class"
+                        }
+                        put(
+                            "oneOf",
+                            JsonArray(
+                                exactlyOneOf.properties.map { name ->
+                                    JsonObject(mapOf("required" to JsonArray(listOf(JsonPrimitive(name)))))
+                                }
+                            ),
+                        )
+                    }
                 }
             )
         }
