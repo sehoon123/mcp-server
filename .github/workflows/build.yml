@@ -33,7 +33,7 @@ jobs:
         with:
           validate-wrappers: true
 
-      - uses: actions/setup-node@6044e13b5c32a023e951b88d7a2ccf1e73f63219 # v6.3.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
           cache: npm
