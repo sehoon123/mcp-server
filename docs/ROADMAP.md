@@ -1,4 +1,4 @@
-# Burp MCP capability roadmap
+# Independent MCP Bridge capability roadmap
 
 This document records implemented capabilities and the long-range backlog. The canonical near-term version sequence,
 release blockers, and milestone gates are in [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md); that active roadmap
@@ -11,7 +11,7 @@ New tools should remain explicit, scoped, auditable, bounded, and safe to invoke
 - One stateful Streamable HTTP endpoint: `/mcp`
 - No deprecated two-endpoint HTTP+SSE route
 - Native HTTP clients connect directly
-- Stdio-only clients use the proxy embedded in `burp-mcp-all.jar`
+- Stdio-only clients use the proxy embedded in `independent-mcp-bridge-all.jar`
 - The proxy relays JSON-RPC methods and parameters supported by the pinned SDK, restores sessions after Burp restarts,
   never retries ambiguous arbitrary requests, and sends bounded best-effort DELETE on graceful stdio shutdown
 - Numeric-loopback binding, constant-time per-installation bearer authentication, and Host/Origin validation are mandatory
@@ -378,4 +378,4 @@ release criteria, and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the fail-
 - Treat `executionState=uncertain` as potentially completed and require explicit user reconciliation before another attempt.
 - Preserve stable identifiers and explicit scope across every operation.
 - Prefer Montoya APIs and MCP SDK capabilities over custom protocols.
-- Keep the default installation to one `burp-mcp-all.jar` file.
+- Keep the default installation to one `independent-mcp-bridge-all.jar` file.

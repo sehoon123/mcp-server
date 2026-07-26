@@ -20,7 +20,7 @@ class ProviderAtomicWriteTest {
         atomicWritePrivate(target, "new".toByteArray(), createBackup = true)
 
         assertEquals("new", target.readText())
-        assertEquals("old", directory.resolve("client.json.burp-mcp.bak").readText())
+        assertEquals("old", directory.resolve("client.json.independent-mcp-bridge.bak").readText())
         runCatching { Files.getPosixFilePermissions(target) }.getOrNull()?.let { permissions ->
             assertEquals(
                 setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),

@@ -3,7 +3,7 @@
 - **Status:** Stage A design baseline; not implemented in the production endpoint
 - **Decision date:** 2026-07-24
 
-This document defines the security baseline for approvals if Burp MCP adopts a modern, per-request MCP revision. It does
+This document defines the security baseline for approvals if Independent MCP Bridge adopts a modern, per-request MCP revision. It does
 not change the v4 production endpoint. The current `2025-11-25` implementation remains stateful and keeps its existing
 bounded session grants until a separately validated v5 migration.
 

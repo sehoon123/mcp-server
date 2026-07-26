@@ -2,6 +2,7 @@ package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.DEFAULT_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.MAX_AUDIT_RETENTION_ENTRIES
@@ -266,7 +267,7 @@ internal fun formatMcpDiagnostics(
 ): String = buildString {
     appendLine("State: ${diagnostics.state}")
     appendLine("Endpoint: ${diagnostics.endpoint ?: "not bound"}")
-    appendLine("Server: burp-suite ${diagnostics.serverVersion}")
+    appendLine("Server: ${ProductIdentity.MCP_SERVER_NAME} ${diagnostics.serverVersion}")
     appendLine("Protocol target: ${diagnostics.protocolVersion}")
     appendLine("Started: ${diagnostics.startedAtEpochMillis.asInstantOrNever()}")
     appendLine("Last MCP activity: ${diagnostics.lastActivityEpochMillis.asInstantOrNever()}")

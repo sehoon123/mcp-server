@@ -14,6 +14,14 @@ class ClaudeDesktopProviderTest {
     private val provider = ClaudeDesktopProvider(mockk(relaxed = true), mockk(relaxed = true))
 
     @Test
+    fun `installer uses the independent client entry without claiming the legacy key`() {
+        assertEquals("burp-independent", provider.serverName)
+        assertTrue(provider.confirmationText!!.contains("'burp-independent' entry"))
+        assertTrue(provider.confirmationText!!.contains("existing 'burp' entry is left untouched"))
+        assertTrue(provider.confirmationText!!.contains("INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"))
+    }
+
+    @Test
     fun `windowsCandidatePaths includes traditional path first`(@TempDir home: Path) {
         val paths = provider.windowsCandidatePaths(home.toString())
 

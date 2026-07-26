@@ -2,6 +2,7 @@ package net.portswigger.mcp.providers
 
 import burp.api.montoya.logging.Logging
 import kotlinx.serialization.json.*
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.ConfigValidation
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.io.File
@@ -44,7 +45,7 @@ interface Provider {
     fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation?
 }
 
-private const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "BURP_MCP_BEARER_TOKEN"
+private const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
 
 internal fun streamableHttpEndpoint(host: String, port: Int): String {
     val normalized = requireNotNull(ConfigValidation.normalizeLoopbackHost(host)) {
@@ -73,8 +74,8 @@ internal fun atomicWritePrivate(path: Path, bytes: ByteArray, createBackup: Bool
     require(!Files.isSymbolicLink(absolute)) { "Refusing to replace a symlinked destination" }
 
     if (createBackup && Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
-        val backup = absolute.resolveSibling("${absolute.fileName}.burp-mcp.bak")
-        val backupTemp = Files.createTempFile(parent, ".burp-mcp-backup-", ".tmp")
+        val backup = absolute.resolveSibling("${absolute.fileName}.independent-mcp-bridge.bak")
+        val backupTemp = Files.createTempFile(parent, ".independent-mcp-bridge-backup-", ".tmp")
         try {
             Files.copy(absolute, backupTemp, StandardCopyOption.REPLACE_EXISTING)
             forceFile(backupTemp)
@@ -86,7 +87,7 @@ internal fun atomicWritePrivate(path: Path, bytes: ByteArray, createBackup: Bool
         }
     }
 
-    val temp = Files.createTempFile(parent, ".burp-mcp-write-", ".tmp")
+    val temp = Files.createTempFile(parent, ".independent-mcp-bridge-write-", ".tmp")
     try {
         setOwnerOnlyPermissions(temp)
         FileChannel.open(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { channel ->
@@ -140,16 +141,16 @@ internal fun setOwnerOnlyPermissions(path: Path) {
 class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarManager: ProxyJarManager) : Provider {
 
     private val claudeConfigFileName = "claude_desktop_config.json"
-    private val serverName = "burp"
+    internal val serverName = ProductIdentity.CLIENT_CONFIGURATION_NAME
 
     override val name = "Claude Desktop"
     override val installButtonText = "Install to $name"
     override val confirmationText =
         "Install to $name?\n\n" +
-            "The existing 'burp' entry will be replaced with:\n" +
+            "The '$serverName' entry will be added or replaced; an existing 'burp' entry is left untouched:\n" +
             "- command: the Java runtime currently used by Burp\n" +
             "- args: the verified embedded proxy, current /mcp endpoint, and bearer-token environment option\n" +
-            "- env: BURP_MCP_BEARER_TOKEN (sensitive)\n\n" +
+            "- env: INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN (sensitive)\n\n" +
             "The current $claudeConfigFileName will be backed up before an atomic update."
 
     override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation = ProviderInstallOperation {
@@ -191,7 +192,9 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
             createBackup = true,
         )
 
-        logging.logToOutput("Installed Burp MCP Server to Claude Desktop config with an atomic owner-only update")
+        logging.logToOutput(
+            "Installed ${ProductIdentity.PRODUCT_NAME} as '$serverName' with an atomic owner-only update"
+        )
 
         "Installation successful. Updated command and proxy args for $mcpUrl; " +
             "the bearer environment value was replaced (redacted), and a backup was created. " +

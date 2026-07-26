@@ -30,7 +30,7 @@ cd mcp-server
 
 Build outputs:
 
-- Extension: `build/libs/burp-mcp-all.jar`
+- Extension: `build/libs/independent-mcp-bridge-all.jar`
 - Test report: `build/reports/tests/test/index.html`
 - CycloneDX SBOM: `build/reports/compliance/bom.cdx.json`
 
@@ -48,12 +48,13 @@ Run one test class while iterating:
 
 ### Load the extension in Burp
 
-1. Build `build/libs/burp-mcp-all.jar`.
+1. Build `build/libs/independent-mcp-bridge-all.jar`.
 2. In Burp, open **Extensions → Installed → Add → Java**.
-3. Select the JAR and open the **MCP** suite tab.
+3. Select the JAR and open the **MCP Bridge** suite tab.
 4. Keep the listener on a numeric loopback address. Do not relax the binding policy to make a container or remote host
    work; remote access needs a separate authentication, authorization, and TLS design.
-5. Copy the bearer token from the MCP tab into the test client without placing it in source, command history, logs, or
+5. Copy the bearer token from the MCP Bridge tab into the test client without placing it in source, command history,
+   logs, or
    screenshots.
 6. Disable any other copy of the extension before testing to avoid a listener-port conflict.
 
@@ -351,6 +352,28 @@ editions:
 
 Record the Burp version, edition, OS, JAR SHA-256, commit SHA, client/version, and scenario result.
 
+## Updating dependencies and integrity metadata
+
+Runtime and test dependency versions belong in `gradle/libs.versions.toml`. Gradle resolves only locked versions from
+`gradle.lockfile` and verifies downloaded artifacts/plugins against `gradle/verification-metadata.xml`. The wrapper
+distribution checksum is pinned in `gradle/wrapper/gradle-wrapper.properties`. Conformance npm dependencies are locked
+in `.github/conformance/package-lock.json` and installed with lifecycle scripts disabled.
+
+Update these files only from a clean checkout on a trusted network:
+
+```bash
+./gradlew dependencies --write-locks
+./gradlew --write-verification-metadata sha256 testClasses embedProxyJar generateSbom
+npm install --package-lock-only --ignore-scripts --prefix .github/conformance
+npm ci --ignore-scripts --prefix .github/conformance
+npm audit --audit-level=high --package-lock-only --prefix .github/conformance
+```
+
+Review every changed coordinate, repository, checksum, license mapping, npm integrity value, and transitive dependency.
+Do not accept a generated verification diff merely because Gradle or npm produced it. After review, verify from an empty
+Gradle/npm cache and run the full build. The pinned conformance versions currently have the narrow moderate advisory
+waiver documented in `.github/conformance/README.md`; any high or critical finding is release blocking.
+
 ## Updating the embedded proxy
 
 The proxy is maintained in the companion `sehoon123/mcp-proxy` fork. Never replace `libs/mcp-proxy-all.jar` without
@@ -363,7 +386,7 @@ checkout:
 set -euo pipefail
 proxy=../mcp-proxy
 test -z "$(git -C "$proxy" status --porcelain --untracked-files=all)"
-test "$(git -C "$proxy" remote get-url origin)" = "https://github.com/sehoon123/mcp-proxy.git"
+test "$(git -C "$proxy" remote get-url origin | sed 's/\.git$//')" = "https://github.com/sehoon123/mcp-proxy"
 git -C "$proxy" rev-parse HEAD
 ./scripts/update-proxy.sh "$proxy"
 ./gradlew verifyProxyJar embedProxyJar generateSbom
@@ -373,14 +396,19 @@ Required review:
 
 - the proxy checkout has no tracked or untracked changes;
 - origin is the approved companion repository;
-- the recorded full SHA is immutable and reviewed;
+- the recorded full SHA equals the freshly resolved public `refs/heads/main` tip and is reviewed;
 - proxy tests passed before the binary was copied;
 - source metadata, runtime component list, version, and JAR hash changed together;
 - the extension package embeds exactly the verified JAR and provenance text;
 - release builds use a fresh detached checkout or worktree rather than relying only on developer discipline.
 
-The helper script currently records `HEAD`; release automation must independently reject a dirty proxy checkout so a
-locally modified binary cannot be attributed to an otherwise clean commit.
+The helper serializes updates with an exclusive lock, rejects any origin other than the approved companion fork,
+requires local `HEAD` to equal a freshly resolved public `refs/heads/main`, rejects tracked or untracked changes before
+and after the build, verifies that neither local nor remote identity moved, validates the nested manifest/legal/runtime
+report, builds without cache, and replaces the JAR/source metadata with rollback on a catchable interruption. A hard
+process or host failure may leave `libs/.proxy-update.lock` and a deliberately unusable partial pair; inspect the staged
+files, restore both tracked files from Git, and remove the lock only after no updater is running. Release review must
+still confirm the recorded commit and reproduce the resulting checksum from a fresh detached checkout.
 
 ## Documentation and compatibility
 
@@ -399,7 +427,8 @@ or version claims change.
 - `docs/VULNERABILITY_REPORT.md`: release-specific, point-in-time dependency review
 
 Do not copy a previous release's vulnerability report or production-version statement without updating its version,
-commit, date, dependencies, and evidence.
+source-commit marker, date, dependencies, and evidence. The immutable draft workflow injects the resolved commit only
+into the staged report to avoid a self-referential source commit.
 
 ## Definition of done
 

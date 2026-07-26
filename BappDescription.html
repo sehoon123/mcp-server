@@ -1,4 +1,10 @@
 <p>
+	<strong>Independent MCP Bridge is an unofficial independent fork. It is not published or supported by
+	PortSwigger.</strong> Source and support are provided by
+	<a href="https://github.com/sehoon123/mcp-server">sehoon123/mcp-server</a>.
+</p>
+
+<p>
 	Integrates Burp Suite with AI clients using the Model Context Protocol (MCP). This extension exposes Burp
 	functionality through an MCP server, enabling AI assistants to perform security testing tasks, analyze traffic, and
 	interact with Burp tools programmatically.
@@ -43,7 +49,7 @@
 
 <h2>Usage</h2>
 <ol>
-	<li>Navigate to the "MCP" tab, confirm the displayed extension version, and enable the MCP server. An occupied local
+	<li>Navigate to the "MCP Bridge" tab, confirm the displayed extension version, and enable the MCP server. An occupied local
 		port is reported as an endpoint conflict rather than an internal coroutine cancellation.</li>
 	<li>Configure security settings including auto-approve targets and configuration editing permissions. Copy the local
 		bearer token under Advanced Options for native HTTP clients. Use Diagnostics and Safety to inspect redacted runtime
@@ -55,4 +61,7 @@
 	<li>Right-click one supported Burp history or issue item and choose <strong>Copy MCP reference</strong>, or interact through your AI client using the available MCP tools, resources, and prompts.</li>
 </ol>
 
-<p><br>Copyright &copy; 2025-2026 PortSwigger Ltd.</p>
+<p>
+	<br>Copyright &copy; 2025-2026 PortSwigger Ltd. for the upstream work.<br>
+	Copyright &copy; 2026 SH Jung for independent modifications.
+</p>

@@ -5,7 +5,7 @@ release gate, not a description of PortSwigger's process and not evidence that e
 version sequence and implementation milestones are tracked in
 [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md).
 
-The checked-in `release-draft.yml` currently builds or updates a **draft only**. Publication needs a separate protected
+The checked-in `release-draft.yml` currently creates a one-shot **draft only**. Publication needs a separate protected
 job that revalidates the immutable source, artifacts, and attestation. A successful local build is not a release.
 
 ## Release principles
@@ -72,7 +72,9 @@ For `X.Y.Z`, update and reconcile:
 - `BappManifest.bmf`: monotonically increasing `SerialVersion`
 - release title/tag: `vX.Y.Z`
 - release notes and compatibility statements
-- `docs/VULNERABILITY_REPORT.md`: version, date, commit, dependencies, and results
+- `docs/VULNERABILITY_REPORT.md`: version, date, reviewed source-commit marker, dependencies, and results; the immutable
+  draft replaces that single marker in the staged asset with the resolved commit (a source file cannot contain its own
+  commit SHA without creating a self-reference)
 - any document that calls a different version “current production”
 
 The JAR `Implementation-Version` is generated from the Gradle version. Verify it from the candidate bytes rather than
@@ -105,12 +107,16 @@ git show --no-patch --show-signature vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-If signed tags are not yet available, use an annotated protected tag and document the temporary limitation. Once a tag
-is pushed, do not move it. A failed candidate is corrected under a new version.
+The draft workflow fails closed unless GitHub reports the annotated tag signature as valid and the tagger email matches
+the reviewed maintainer identity. Once a tag is pushed, do not move it. A failed candidate is corrected under a new
+version.
 
-A workflow-dispatch input must be a 40-character full SHA, never `main` or another movable branch. Resolve it once in a
-read-only identity job and pass that output to every checkout. Matrix and package jobs must not independently resolve a
-movable ref.
+Before signing, add and review `docs/releases/<version>.md` as specified by `docs/releases/README.md`. Trigger the
+workflow at the candidate tag itself (select the tag as the workflow ref, or dispatch the API call with `ref` set to the
+tag), and provide the same tag and its 40-character peeled commit SHA as inputs. This equality is required because GitHub
+OIDC provenance binds the source repository digest to the workflow's `GITHUB_SHA`. Never dispatch from `main` while
+asking the workflow to build another commit. The read-only identity job resolves the SHA once and passes it to every
+checkout; matrix and package jobs must not independently resolve a movable ref.
 
 ## Target workflow architecture
 
@@ -141,7 +147,9 @@ movable ref.
 - record JDK, Gradle, OS/container digest, and resolved dependency metadata.
 
 Two builds in one workspace detect accidental nondeterminism but do not detect a consistently compromised dependency or
-mutable runner. Independent jobs and verified inputs are required for release-grade reproducibility.
+mutable runner. Independent jobs and verified inputs are required for release-grade reproducibility. The isolated jobs
+run inside the reviewed `eclipse-temurin` JDK 21 image pinned by OCI manifest-list digest in the workflow; changing that
+digest is a release-input update requiring platform-specific digest and JDK-version review.
 
 ### Job D — artifact/legal validation (`contents: read`)
 
@@ -204,16 +212,21 @@ identified detached verification metadata whose format cannot be self-referentia
 
 | Asset | Requirement |
 | --- | --- |
-| `burp-mcp-all.jar` | Reproducible extension containing the verified proxy and required legal entries |
+| `independent-mcp-bridge-all.jar` | Reproducible extension containing the verified proxy and required legal entries |
 | `bom.cdx.json` | CycloneDX 1.6 with exact versions, hashes, explicit licenses, and dependency relationships |
 | `SHA256SUMS` | Hash of every other distributed asset except explicitly identified detached verification metadata |
 | `LICENSE` | Complete project GPL license |
+| `NOTICE.md` | Distributor, upstream copyright, trademark, and no-endorsement notice |
 | `THIRD_PARTY_NOTICES.md` | Component/source/license index; not a replacement for license texts |
-| third-party license/NOTICE bundle | Full applicable Apache/MIT texts and required upstream NOTICE content |
+| `Apache-2.0.txt`, `MIT-SLF4J.txt` | Reviewed third-party license texts and attribution |
+| `runtime-licenses.properties` | Exact reviewed runtime `group:name` to SPDX mapping used to generate the SBOM |
 | `FORK_NOTICE.md` | Independent-fork identity, upstream base, modification/distributor notice |
+| `CORRESPONDING_SOURCE.md` | Durable exact source instructions for server and embedded proxy |
+| `independent-mcp-bridge-X.Y.Z-source.tar.gz` | Exact tagged extension source archive |
+| `MIGRATION_V4_8.md` | New UUID/name/client-key migration and side-by-side warning |
 | `VULNERABILITY_REPORT.md` | Release-specific point-in-time review naming version and commit |
-| corresponding-source bundle or instructions | Durable exact source for server and embedded proxy, including build scripts |
-| provenance/attestation | Verifiable binding between artifacts, workflow, repository, and source SHA |
+| `SOURCE_IDENTITY.json`, `RELEASE_NOTES.md` | Tag, full SHA, artifact digests, migration, and reviewed change range |
+| `provenance.intoto.jsonl` | Verifiable binding between staged artifacts, workflow, repository, and source SHA |
 
 GitHub's automatically generated server source archive does not by itself contain the companion proxy's corresponding
 source. Include a source bundle or durable exact instructions that cover both repositories and the embedded binary.
@@ -234,19 +247,19 @@ A local reproducibility check keeps the first outputs outside `build/`:
 ```bash
 tmp=$(mktemp -d)
 ./gradlew clean embedProxyJar generateSbom --no-build-cache
-cp build/libs/burp-mcp-all.jar "$tmp/first.jar"
+cp build/libs/independent-mcp-bridge-all.jar "$tmp/first.jar"
 cp build/reports/compliance/bom.cdx.json "$tmp/first-bom.json"
 ./gradlew clean embedProxyJar generateSbom --no-build-cache
-cmp "$tmp/first.jar" build/libs/burp-mcp-all.jar
+cmp "$tmp/first.jar" build/libs/independent-mcp-bridge-all.jar
 cmp "$tmp/first-bom.json" build/reports/compliance/bom.cdx.json
 ```
 
 Inspect identity and archive policy:
 
 ```bash
-unzip -p build/libs/burp-mcp-all.jar META-INF/MANIFEST.MF
-jar tf build/libs/burp-mcp-all.jar | sort
-sha256sum build/libs/burp-mcp-all.jar build/reports/compliance/bom.cdx.json
+unzip -p build/libs/independent-mcp-bridge-all.jar META-INF/MANIFEST.MF
+jar tf build/libs/independent-mcp-bridge-all.jar | sort
+sha256sum build/libs/independent-mcp-bridge-all.jar build/reports/compliance/bom.cdx.json
 ```
 
 Local matching builds are useful preflight evidence only. The protected workflow remains authoritative.
@@ -287,13 +300,10 @@ Release notes must include:
 - instructions for checksum and attestation verification;
 - known limitations that remain acceptable for this release.
 
-When generating changes from a checkout that already has the current tag, exclude it explicitly:
-
-```bash
-git describe --tags --abbrev=0 --exclude='vX.Y.Z' HEAD
-```
-
-Validate that the selected previous tag is an ancestor of the candidate.
+The draft workflow selects the nearest strict-SemVer tag on first-parent history that has a published, non-draft GitHub
+release, records it in the notes, validates ancestry, and rejects an empty change range. The reviewed compatibility, security/approval,
+and known-limitations sections come from the exact tagged `docs/releases/<version>.md` fragment; generated source,
+workflow, change-range, verification, and digest data cannot be replaced by free-form dispatch input.
 
 ## Consumer verification
 
@@ -304,7 +314,7 @@ Example after the target attestation workflow is implemented:
 
 ```bash
 sha256sum -c SHA256SUMS
-gh attestation verify burp-mcp-all.jar --repo sehoon123/mcp-server
+gh attestation verify independent-mcp-bridge-all.jar --repo sehoon123/mcp-server
 gh attestation verify bom.cdx.json --repo sehoon123/mcp-server
 ```
 
@@ -328,20 +338,25 @@ Also document how to verify the protected tag signature and compare the attested
 - retain the old checksum/provenance evidence so previous downloads remain identifiable;
 - notify users when the defect affects security, compatibility, or binary identity.
 
-## Current workflow migration
+## Current workflow status
 
-Until the checked-in workflows are split into the target jobs above:
+`release-draft.yml` now requires one full 40-character source SHA, checks out that SHA without persisted credentials in
+every source job, runs the client/conformance matrices, compares JAR and SBOM bytes from two isolated builders, stages
+an exact legal/source asset allowlist, and passes only downloaded bytes to the OIDC/repository-write draft job. The draft
+job runs no project code, revalidates checksums and source identity, creates an attestation bundle, fails if the release
+already exists, and never uses `--clobber`.
 
-- pass only an immutable full SHA as `target_ref`;
-- manually confirm every matrix/package checkout resolved to that SHA;
-- do not treat a same-job double build as independent reproducibility;
-- do not publish a draft unless all required legal/source assets have been added and checksummed;
-- recognize that the package job currently combines build execution with repository-write/OIDC permissions;
-- recognize that `release-draft.yml` does not publish and there is no automated publication-time revalidation;
-- do not use the manually built and later corrected v4.7.0 publication as evidence that the target release process ran.
+This is only the immutable **draft** half of the target process. Stable publication remains blocked until:
 
-The migration is complete only when build/test jobs are credential-free, the source identity is immutable across every
-job, legal/source bundles are enforced, and a protected minimal publish job verifies the exact draft bytes.
+- the repository's `release-draft` and future publication environments are externally configured with required
+  reviewers and least-privilege branch/tag rules;
+- the checked-in Gradle/npm locks and verification metadata are independently reviewed for the candidate;
+- protected exact-byte Community and Professional smoke evidence is produced and attested;
+- a minimal protected publish workflow independently downloads the draft, validates the tag, exact allowlist,
+  attestations, tester identity, and smoke-record JAR digest, then publishes without rebuilding or replacing assets; and
+- a clean unauthenticated post-publication verification is archived.
+
+Do not use the manually built and later corrected v4.7.0 publication as evidence that the target process ran.
 
 ## Final release checklist
 

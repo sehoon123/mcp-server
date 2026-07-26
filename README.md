@@ -1,8 +1,13 @@
-# Burp Suite MCP Server Extension
+# Independent MCP Bridge
 
 Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 
-This fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern **Streamable HTTP**
+> **Unofficial independent fork:** this project is maintained and distributed by
+> [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
+> Source and support belong to this repository, not to PortSwigger.
+
+This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
+**Streamable HTTP**
 transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoint retains Streamable HTTP's optional
 `GET /mcp` event stream for server-initiated messages. The deprecated two-endpoint HTTP+SSE server has been removed.
 
@@ -11,10 +16,10 @@ transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoi
 End users install one file:
 
 ```text
-burp-mcp-all.jar
+independent-mcp-bridge-all.jar
 ```
 
-The extension contains both the Burp MCP server and an embedded stdio compatibility proxy:
+The extension contains both the Independent MCP Bridge server and an embedded stdio compatibility proxy:
 
 ```text
 Streamable HTTP client ───────────────────────> Burp /mcp
@@ -207,19 +212,23 @@ checks cancellation between bounded targets and attempts to delete a task whose 
 Version 4.2 keeps the 26/19 tool catalog and all tool inputs stable. The embedded stdio proxy now performs bounded,
 best-effort session termination on graceful EOF, while the server exposes value-free event-stream, liveness, DELETE,
 and pressure-eviction diagnostics. Target scope include/exclude reviews also add **Always Allow** backed by a single
-local boolean and an MCP-tab control for restoring prompts; no URL, project ID, or client value is persisted. The MCP
-tab additionally provides an explicit, unchecked-by-default **Always allow all outbound HTTP requests** control for
+local boolean and an MCP Bridge-tab control for restoring prompts; no URL, project ID, or client value is persisted.
+The MCP Bridge tab additionally provides an explicit, unchecked-by-default **Always allow all outbound HTTP requests** control for
 users who intentionally want to disable per-target request prompts.
 
 ## Build and install
 
 ### Install a release
 
-Download [`burp-mcp-all.jar`](https://github.com/sehoon123/mcp-server/releases/latest/download/burp-mcp-all.jar)
-and its [`SHA256SUMS`](https://github.com/sehoon123/mcp-server/releases/latest/download/SHA256SUMS) file from the
-latest release. Releases also include a CycloneDX SBOM, [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), the
-[`LICENSE`](LICENSE), and the point-in-time [`vulnerability report`](docs/VULNERABILITY_REPORT.md). Install the JAR
-through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR.
+Starting with v4.8, download `independent-mcp-bridge-all.jar` and `SHA256SUMS` from the matching entry on the
+[releases page](https://github.com/sehoon123/mcp-server/releases). Do not use a moving asset URL when verifying a
+candidate. Releases also include a CycloneDX SBOM, source archive, [`FORK_NOTICE.md`](FORK_NOTICE.md),
+[`NOTICE.md`](NOTICE.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md),
+[`CORRESPONDING_SOURCE.md`](CORRESPONDING_SOURCE.md), [`LICENSE`](LICENSE), and the point-in-time
+[`vulnerability report`](docs/VULNERABILITY_REPORT.md). Install the JAR
+through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR. Existing MCP Server users must
+follow the [v4.8 identity and side-by-side migration guide](docs/MIGRATION_V4_8.md); the new UUID does not overwrite the
+old extension.
 
 On systems with `sha256sum`, verify the download before installation:
 
@@ -240,7 +249,7 @@ cd mcp-server
 The resulting extension is:
 
 ```text
-build/libs/burp-mcp-all.jar
+build/libs/independent-mcp-bridge-all.jar
 build/reports/compliance/bom.cdx.json
 ```
 
@@ -259,9 +268,10 @@ Load the resulting JAR in Burp through **Extensions → Installed → Add → Ja
 
 ## Configure Burp
 
-Open the **MCP** tab in Burp:
+Open the **MCP Bridge** tab in Burp:
 
-- Enable or stop the MCP server and confirm the loaded extension version shown under the MCP heading.
+- Confirm the **Independent MCP Bridge** name, unofficial-fork notice, and loaded extension version before enabling
+  the server.
 - The settings surface tracks the available Burp viewport width, wraps explanatory text, and stacks action buttons when needed. Styled buttons, links, and the server toggle retain visible keyboard focus and support Enter/Space; Escape safely closes MCP dialogs. Persistent approval choices use warning styling and state that they do not expire automatically.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
@@ -412,7 +422,7 @@ show the exact resulting request and a normalized change summary when request-ac
 provides **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**. The session choice retains no
 request or target value and expires with that MCP session. Always Allow intentionally disables future routing and
 exact derived-request prompts until `Require approval for request routing and derived-request actions` is re-enabled in
-the MCP tab. Outbound-target approval remains independent. Audit
+the MCP Bridge tab. Outbound-target approval remains independent. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
 
@@ -423,7 +433,7 @@ and exclude operations through `operation: "include" | "exclude"`; it normalizes
 and all references first. Its review offers **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**.
 The session choice covers later include/exclude reviews only for that MCP session and stores no URL or project value.
 Always Allow applies only to future Target scope include/exclude prompts and persists no URL or project value; restore prompts with `Require approval
-for Target scope changes` in the MCP tab. Validation, project rechecks, mutation serialization, post-change verification,
+for Target scope changes` in the MCP Bridge tab. Validation, project rechecks, mutation serialization, post-change verification,
 and uncertain-result handling remain active even when prompts are disabled. Scope mutation is verified after each URL.
 `executionState: "uncertain"` means a partial change may exist and must not be retried automatically.
 
@@ -459,7 +469,7 @@ its interaction ID; optional `customData` follows Burp's 1–16 ASCII-alphanumer
 interaction-ID filter, `waitSeconds` from 0 to 120, up to 50 results, newest/oldest ordering, and text or base64 detail
 slices. At most four waits run concurrently. Polling emits MCP progress when the client supplies a progress token and
 propagates cancellation; returned metadata, per-field details, total detail bytes, and scanned interactions are bounded.
-Collaborator interaction reads use their own **Always allow** data-access option in the MCP tab.
+Collaborator interaction reads use their own **Always allow** data-access option in the MCP Bridge tab.
 
 ## Stable history access
 
@@ -499,8 +509,8 @@ signed project/query/snapshot cursor that is invalidated on MCP server restart.
 
 ### Before connecting
 
-1. Install only `burp-mcp-all.jar` as a Java extension in Burp.
-2. Open Burp's **MCP** tab and make sure **Enabled** is on.
+1. Install only `independent-mcp-bridge-all.jar` as a Java extension in Burp.
+2. Open Burp's **MCP Bridge** tab and make sure **Enabled** is on.
 3. Under **Advanced Options**, copy the local bearer token and configure the client as shown below.
 4. Keep Burp running while the MCP client is in use.
 
@@ -530,9 +540,9 @@ Claude Code supports Streamable HTTP directly, so it does not need the embedded 
 Add Burp for the current user:
 
 ```shell
-export BURP_MCP_BEARER_TOKEN='<token copied from Burp>'
-claude mcp add --transport http burp --scope user \
-  --header "Authorization: Bearer $BURP_MCP_BEARER_TOKEN" \
+export INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN='<token copied from Burp>'
+claude mcp add --transport http burp-independent --scope user \
+  --header "Authorization: Bearer $INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN" \
   http://127.0.0.1:9876/mcp
 claude mcp list
 ```
@@ -542,24 +552,25 @@ For a project-shared configuration, use `--scope project`. Claude creates `.mcp.
 ```json
 {
   "mcpServers": {
-    "burp": {
+    "burp-independent": {
       "type": "http",
       "url": "http://127.0.0.1:9876/mcp",
       "headers": {
-        "Authorization": "Bearer ${BURP_MCP_BEARER_TOKEN}"
+        "Authorization": "Bearer ${INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}"
       }
     }
   }
 }
 ```
 
-Claude Code expands `BURP_MCP_BEARER_TOKEN` from its environment. Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
+Claude Code expands `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` from its environment. Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
 project containing `.mcp.json`, review and approve the server when Claude asks whether to trust it.
 
 ### Claude Desktop and other stdio-only clients
 
-Use **Install to Claude Desktop** in Burp's MCP tab. The installer extracts the proxy already packaged inside
-`burp-mcp-all.jar` and adds a `burp` entry to Claude Desktop's configuration. You do **not** need to download,
+Use **Install to Claude Desktop** in Burp's **MCP Bridge** tab. The installer extracts the proxy already packaged
+inside `independent-mcp-bridge-all.jar` and adds a `burp-independent` entry to Claude Desktop's configuration. It
+leaves an existing `burp` entry untouched. You do **not** need to download,
 install, or update `mcp-proxy-all.jar` separately.
 
 The generated configuration is equivalent to:
@@ -567,7 +578,7 @@ The generated configuration is equivalent to:
 ```json
 {
   "mcpServers": {
-    "burp": {
+    "burp-independent": {
       "command": "<path to the Java executable used by Burp>",
       "args": [
         "-jar",
@@ -575,10 +586,10 @@ The generated configuration is equivalent to:
         "--mcp-url",
         "http://127.0.0.1:9876/mcp",
         "--bearer-token-env",
-        "BURP_MCP_BEARER_TOKEN"
+        "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
       ],
       "env": {
-        "BURP_MCP_BEARER_TOKEN": "<token installed by Burp>"
+        "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN": "<token installed by Burp>"
       }
     }
   }
@@ -590,18 +601,18 @@ A typical Windows installation resolves those placeholders to paths like:
 ```json
 {
   "mcpServers": {
-    "burp": {
+    "burp-independent": {
       "command": "C:\\Users\\<user>\\AppData\\Local\\BurpSuite\\jre\\bin\\java.exe",
       "args": [
         "-jar",
-        "C:\\Users\\<user>\\AppData\\Roaming\\BurpSuite\\mcp-proxy\\mcp-proxy-all.jar",
+        "C:\\Users\\<user>\\AppData\\Roaming\\BurpSuite\\independent-mcp-bridge\\proxy\\mcp-proxy-all.jar",
         "--mcp-url",
         "http://127.0.0.1:9876/mcp",
         "--bearer-token-env",
-        "BURP_MCP_BEARER_TOKEN"
+        "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
       ],
       "env": {
-        "BURP_MCP_BEARER_TOKEN": "<token installed by Burp>"
+        "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN": "<token installed by Burp>"
       }
     }
   }
@@ -609,7 +620,8 @@ A typical Windows installation resolves those placeholders to paths like:
 ```
 
 The actual Burp installation path can differ, so prefer the installer-generated values. The installer validates the
-packaged proxy checksum, backs up the existing client configuration as `*.burp-mcp.bak`, and replaces configuration and
+packaged proxy checksum, backs up the existing client configuration as `*.independent-mcp-bridge.bak`, and replaces
+configuration and
 proxy files atomically with owner-only POSIX permissions where supported. Claude Desktop requires its environment value
 in local configuration, so that file and its backup contain the token in plaintext; do not share either file. Restart
 Claude Desktop after installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as
@@ -622,11 +634,11 @@ Burp may still be executing.
 Register the native HTTP endpoint in the user-level mcporter configuration:
 
 ```shell
-export BURP_MCP_BEARER_TOKEN='<token copied from Burp>'
-mcporter config add burp http://127.0.0.1:9876/mcp --scope home \
-  --header 'Authorization=Bearer ${BURP_MCP_BEARER_TOKEN}'
-# Set the resulting burp entry's lifecycle to "keep-alive" as shown below.
-mcporter list burp --schema
+export INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN='<token copied from Burp>'
+mcporter config add burp-independent http://127.0.0.1:9876/mcp --scope home \
+  --header 'Authorization=Bearer ${INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}'
+# Set the resulting burp-independent entry's lifecycle to "keep-alive" as shown below.
+mcporter list burp-independent --schema
 ```
 
 For a repository-local configuration, use `--scope project`. The equivalent `config/mcporter.json` is:
@@ -634,11 +646,11 @@ For a repository-local configuration, use `--scope project`. The equivalent `con
 ```json
 {
   "mcpServers": {
-    "burp": {
+    "burp-independent": {
       "url": "http://127.0.0.1:9876/mcp",
       "lifecycle": "keep-alive",
       "headers": {
-        "Authorization": "Bearer ${BURP_MCP_BEARER_TOKEN}"
+        "Authorization": "Bearer ${INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}"
       }
     }
   }
@@ -651,12 +663,12 @@ versions close each ephemeral client without sending the optional HTTP `DELETE`,
 session per command until cleanup. Example tool call:
 
 ```shell
-mcporter call burp.search_http_messages \
+mcporter call burp-independent.search_http_messages \
   --args '{"sources":["proxy"],"newestFirst":true,"limit":5}' \
   --output json
 ```
 
-Burp may show a project-data or action approval dialog depending on the tool and MCP-tab policy.
+Burp may show a project-data or action approval dialog depending on the tool and MCP Bridge-tab policy.
 
 ### Visual Studio Code / GitHub Copilot
 
@@ -668,17 +680,17 @@ Palette for a user-level configuration:
   "inputs": [
     {
       "type": "promptString",
-      "id": "burp-mcp-token",
-      "description": "Burp MCP local bearer token",
+      "id": "independent-mcp-bridge-token",
+      "description": "Independent MCP Bridge local bearer token",
       "password": true
     }
   ],
   "servers": {
-    "burp": {
+    "burp-independent": {
       "type": "http",
       "url": "http://127.0.0.1:9876/mcp",
       "headers": {
-        "Authorization": "Bearer ${input:burp-mcp-token}"
+        "Authorization": "Bearer ${input:independent-mcp-bridge-token}"
       }
     }
   }
@@ -694,17 +706,17 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for a global con
 ```json
 {
   "mcpServers": {
-    "burp": {
+    "burp-independent": {
       "url": "http://127.0.0.1:9876/mcp",
       "headers": {
-        "Authorization": "Bearer ${env:BURP_MCP_BEARER_TOKEN}"
+        "Authorization": "Bearer ${env:INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}"
       }
     }
   }
 }
 ```
 
-Set `BURP_MCP_BEARER_TOKEN` in the environment that launches Cursor. Cursor recognizes this URL as a Streamable HTTP server.
+Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Cursor. Cursor recognizes this URL as a Streamable HTTP server.
 
 ### OpenAI Codex
 
@@ -712,18 +724,19 @@ Codex CLI and the Codex IDE extension share `~/.codex/config.toml`. Trusted proj
 `.codex/config.toml`:
 
 ```toml
-[mcp_servers.burp]
+[mcp_servers.burp-independent]
 url = "http://127.0.0.1:9876/mcp"
-bearer_token_env_var = "BURP_MCP_BEARER_TOKEN"
+bearer_token_env_var = "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
 enabled = true
 ```
 
-Set `BURP_MCP_BEARER_TOKEN` in the environment that launches Codex, then restart or reconnect Codex.
+Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Codex, then restart or reconnect Codex.
 
 ### Rotate or replace the token
 
-1. Stop using MCP clients, then choose **Rotate local bearer token...** under Burp **MCP → Advanced Options**.
-2. Stop and start the Burp MCP server so the listener begins requiring the new token.
+1. Stop using MCP clients, then choose **Rotate local bearer token...** under Burp
+   **MCP Bridge → Advanced Options**.
+2. Stop and start the Independent MCP Bridge server so the listener begins requiring the new token.
 3. Run **Install to Claude Desktop** again for the stdio configuration. For native clients, replace the environment,
    secret input, or header value shown above.
 4. Restart or reconnect every client. Delete obsolete installer backups after confirming the new configuration works.
@@ -745,7 +758,7 @@ until restarted. A `401 Unauthorized` after rotation almost always means one sid
   them. For mcporter, use `"lifecycle": "keep-alive"`; native clients should send `DELETE /mcp` during graceful
   shutdown. The server also reclaims the least-recently-used inactive session whose optional Streamable HTTP event
   stream has disconnected when capacity is under pressure; active calls and open streams are never displaced.
-- Keep only one copy of the Burp MCP extension enabled to avoid a port conflict on `9876`.
+- Keep only one copy of Independent MCP Bridge enabled to avoid a port conflict on `9876`.
 - Native HTTP clients do not use `mcp-proxy-all.jar`; stdio-only clients use the copy extracted by the extension.
 - `127.0.0.1` refers to the client's own host. A client inside a container or separate VM cannot reach Burp through
   that address; do not weaken the loopback binding without adding an authenticated remote-access design.

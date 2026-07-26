@@ -130,6 +130,21 @@ Acceptance criteria:
 
 ### Epic E — independent fork identity and legal distribution
 
+Implementation status (development branch):
+
+- selected **Independent MCP Bridge**, UUID `c0a454c4079c4cecb627d928a92f9555`, vendor `sehoon123`, and the
+  fork repository's source/support URLs;
+- updated BApp/JAR/runtime/UI/client identity and added `FORK_NOTICE.md`, `NOTICE.md`, corresponding-source guidance,
+  reviewed GPL/Apache/MIT material, and a v4.8 side-by-side migration guide;
+- packaging now installs collision-safe `META-INF/legal/` entries, verifies reviewed legal-text hashes, requires an
+  exact `group:name` license map, and rejects missing, stale, or malformed extension/proxy component records;
+- the embedded proxy has an independent nested manifest/legal/runtime report, and packaging rejects the legacy vendor
+  identity or any mismatch between the embedded report and source metadata;
+- exact candidate release staging includes the legal, source, migration, identity, checksum, and provenance assets.
+
+Remaining gate: publish the reviewed companion-proxy commit, rerun the source-guarded updater against that public commit,
+then complete independent legal/source review and exact-candidate Community/Professional UI confirmation before an RC.
+
 Required work:
 
 - choose and document the independent product name, BApp UUID, maintainer, vendor, source URL, and support URL;
@@ -152,6 +167,23 @@ Acceptance criteria:
 The existing Kotlin package namespace may remain for technical compatibility; it is not distributor branding.
 
 ### Epic F — immutable, least-privilege release pipeline
+
+Implementation status (development branch):
+
+- `release-draft.yml` now accepts only a full source SHA, requires the workflow itself to run at the same existing
+  signed annotated tag, checks authorized tagger/main ancestry, uses credential-free source jobs, runs pinned-lockfile
+  conformance clients, compares two isolated builders, stages an exact allowlist, and gives write/OIDC permissions only
+  to a no-checkout job that revalidates downloaded bytes and creates a one-shot non-clobbering draft;
+- previous-tag selection walks exact SemVer tags on first-parent history, release-note fragments are source-reviewed, the
+  change range cannot be empty, and every staged asset is bound to source/JAR/SBOM identity;
+- pinned CycloneDX 1.6 schemas plus a locked Ajv validator check the SBOM before the exact hash/dependency/license policy;
+- `build.yml` uses the same npm lockfile and uploads a staged, exact identity/legal asset set;
+- the Gradle wrapper distribution checksum, dependency locks, and artifact/plugin verification metadata are checked in
+  and must be reviewed with any dependency update.
+
+Remaining gate: protected tag/environment configuration, authenticated Dependabot evidence for the signed candidate,
+attested exact-byte Burp smoke evidence, the minimal protected publication workflow, and clean post-publication
+verification.
 
 Required work:
 

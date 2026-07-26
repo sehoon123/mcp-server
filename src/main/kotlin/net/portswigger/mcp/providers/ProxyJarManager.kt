@@ -34,14 +34,14 @@ class ProxyJarManager(
         private val COMMIT_PATTERN = Regex("(?m)^Commit: ([a-f0-9]{40})$")
         private val VERSION_PATTERN = Regex("(?m)^Version: ([0-9A-Za-z._-]{1,64})$")
 
-        private fun defaultProxyDirectory(): Path {
+        internal fun defaultProxyDirectory(): Path {
             val os = System.getProperty("os.name").lowercase()
             val home = System.getProperty("user.home")
 
             return when {
-                os.contains("win") -> Path.of(home, "AppData", "Roaming", "BurpSuite", "mcp-proxy")
-                os.contains("mac") || os.contains("darwin") -> Path.of(home, ".BurpSuite", "mcp-proxy")
-                os.contains("linux") || os.contains("unix") -> Path.of(home, ".BurpSuite", "mcp-proxy")
+                os.contains("win") -> Path.of(home, "AppData", "Roaming", "BurpSuite", "independent-mcp-bridge", "proxy")
+                os.contains("mac") || os.contains("darwin") -> Path.of(home, ".BurpSuite", "independent-mcp-bridge", "proxy")
+                os.contains("linux") || os.contains("unix") -> Path.of(home, ".BurpSuite", "independent-mcp-bridge", "proxy")
                 else -> throw RuntimeException("Unsupported OS: $os")
             }
         }

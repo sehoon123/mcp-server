@@ -1,0 +1,14 @@
+{
+  "name": "independent-mcp-bridge-conformance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned MCP conformance CLIs used by CI",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "ajv-formats-draft2019": "1.6.1",
+    "mcp-conformance-modern": "npm:@modelcontextprotocol/conformance@0.2.0-alpha.9",
+    "mcp-conformance-stable": "npm:@modelcontextprotocol/conformance@0.1.16"
+  }
+}

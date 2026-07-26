@@ -995,7 +995,7 @@ class KtorServerManager internal constructor(
                         "MCP server host must be 127.0.0.1 or ::1; non-loopback listeners are not supported"
                     )
                 val newMcpServer = Server(
-                    serverInfo = Implementation("burp-suite", serverVersion),
+                    serverInfo = Implementation(ProductIdentity.MCP_SERVER_NAME, serverVersion),
                     options = ServerOptions(
                         // Catalogs are immutable for one listener lifetime. SDK 0.14.0 subscriptions lack bounded,
                         // project-aware admission; see docs/PROJECT_BOUND_NOTIFICATIONS.md.

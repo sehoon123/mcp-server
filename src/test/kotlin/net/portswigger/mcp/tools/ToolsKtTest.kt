@@ -683,7 +683,7 @@ class ToolsKtTest {
                 )
 
                 delay(100)
-                result.expectTextContent("User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'")
+                result.expectTextContent("User has disabled configuration editing. They can enable it in Burp's MCP Bridge tab by selecting 'Enable tools that can edit your config'")
                 assertEquals("disabled", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
                 assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)

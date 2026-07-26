@@ -15,9 +15,17 @@ import kotlin.test.assertTrue
 
 class ProxyJarManagerTest {
     @Test
+    fun `default extraction path is isolated from the legacy proxy location`() {
+        val path = ProxyJarManager.defaultProxyDirectory()
+
+        assertEquals("independent-mcp-bridge", path.getName(path.nameCount - 2).toString())
+        assertEquals("proxy", path.fileName.toString())
+    }
+
+    @Test
     fun `packaged provenance is parsed from bounded metadata`(@TempDir proxyDirectory: Path) {
         val metadata = """
-            Source: https://github.com/sehoon123/mcp-proxy.git
+            Source: https://github.com/sehoon123/mcp-proxy
             Commit: f46c402adc54ee45aff9a0ffea371708d2b6b004
             Version: 2.1.0
             SHA-256: ef27202e253d8bc23b98aa2cd64bf3860dafb80d02e85468a8ff1ba7e8d47a82

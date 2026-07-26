@@ -3,6 +3,7 @@ package net.portswigger.mcp.config
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import io.mockk.*
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -12,10 +13,29 @@ import org.junit.jupiter.api.Test
 import java.awt.Container
 import javax.swing.JButton
 import javax.swing.JCheckBox
+import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.SwingUtilities
 
 class ConfigUiTest {
+    @Test
+    fun `UI identifies the independent fork and distributor boundary`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val ui = ConfigUi(config, emptyList())
+
+        try {
+            val labels = ui.component.descendants().filterIsInstance<JLabel>().map { it.text }.toSet()
+            assertTrue(ProductIdentity.PRODUCT_NAME in labels)
+            assertTrue(ProductIdentity.UNOFFICIAL_NOTICE in labels)
+        } finally {
+            ui.cleanup()
+        }
+    }
+
     @Test
     fun `version label is conspicuous and bounded`() {
         assertEquals("Extension version: 4.0.1", formatMcpVersionLabel("4.0.1"))

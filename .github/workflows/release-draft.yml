@@ -1,28 +1,119 @@
-name: Build draft release
+name: Build immutable draft release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: SemVer release tag (for example v4.0.1)
+        description: Exact SemVer tag matching gradle.properties (for example v4.8.0-rc.1)
         required: true
         type: string
-      target_ref:
-        description: Branch, tag, or commit to build
+      source_sha:
+        description: Immutable 40-character source commit SHA
         required: true
-        default: main
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: draft-release-${{ inputs.tag }}
+  group: immutable-draft-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  identity:
+    name: Resolve immutable release identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      version: ${{ steps.identity.outputs.version }}
+      previous_tag: ${{ steps.identity.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate source, tag, version, and manifest identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          REQUESTED_SHA: ${{ inputs.source_sha }}
+          AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$RELEASE_TAG" =~ $semver ]]
+          commit=$(git rev-parse HEAD)
+          [[ "$commit" == "$REQUESTED_SHA" ]]
+          # OIDC provenance is bound to the workflow ref and SHA, so dispatch must run at the candidate tag.
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
+          [[ "$GITHUB_SHA" == "$commit" ]]
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          version=$(grep -E '^version=' gradle.properties | cut -d= -f2-)
+          screen_version=$(grep -E '^ScreenVersion:' BappManifest.bmf | cut -d: -f2- | xargs)
+          uuid=$(grep -E '^Uuid:' BappManifest.bmf | cut -d: -f2- | xargs)
+          entry_point=$(grep -E '^EntryPoint:' BappManifest.bmf | cut -d: -f2- | xargs)
+          [[ "$RELEASE_TAG" == "v$version" ]]
+          [[ "$screen_version" == "$version" ]]
+          [[ "$uuid" == "c0a454c4079c4cecb627d928a92f9555" ]]
+          [[ "$entry_point" == "independent-mcp-bridge-all.jar" ]]
+
+          proxy_source=$(awk -F': ' '$1 == "Source" { print $2 }' libs/mcp-proxy-source.txt)
+          proxy_commit=$(awk -F': ' '$1 == "Commit" { print $2 }' libs/mcp-proxy-source.txt)
+          [[ "$proxy_source" == "https://github.com/sehoon123/mcp-proxy" ]]
+          [[ "$proxy_commit" =~ ^[a-f0-9]{40}$ ]]
+          public_proxy_commit=$(git ls-remote --exit-code "$proxy_source" refs/heads/main | awk 'NR == 1 { print $1 }')
+          [[ "$public_proxy_commit" == "$proxy_commit" ]]
+
+          remote_tags=$(git ls-remote --exit-code origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          [[ $(printf '%s\n' "$remote_tags" | wc -l) -eq 2 ]]
+          resolved=$(printf '%s\n' "$remote_tags" | awk '$2 ~ /\^\{\}$/ { print $1 }')
+          [[ "$resolved" == "$commit" ]]
+          [[ $(git cat-file -t "refs/tags/$RELEASE_TAG") == tag ]]
+          tag_object=$(git rev-parse "refs/tags/$RELEASE_TAG^{tag}")
+          tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")
+          jq -e --arg email "$AUTHORIZED_TAGGER_EMAIL" '
+            .verification.verified == true and
+            .verification.reason == "valid" and
+            .tagger.email == $email
+          ' <<< "$tag_json" >/dev/null
+
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          previous_tag=
+          while IFS= read -r ancestor; do
+            while IFS= read -r candidate; do
+              if [[ "$candidate" =~ $semver ]] &&
+                [[ $(gh release view "$candidate" --json isDraft --jq '.isDraft' 2>/dev/null || true) == false ]]; then
+                previous_tag=$candidate
+                break 2
+              fi
+            done < <(git tag --points-at "$ancestor" | LC_ALL=C sort -Vr)
+          done < <(git rev-list --first-parent "$commit^")
+          [[ -n "$previous_tag" ]]
+          git merge-base --is-ancestor "$previous_tag^{commit}" "$commit"
+          [[ $(git rev-list --count "$previous_tag^{commit}..$commit") -gt 0 ]]
+
+          {
+            echo "commit=$commit"
+            echo "version=$version"
+            echo "previous_tag=$previous_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate proxy update source guards
+        run: |
+          bash -n scripts/update-proxy.sh scripts/test-update-proxy-guards.sh
+          scripts/test-update-proxy-guards.sh
+
   client-matrix:
     name: Client matrix (${{ matrix.client }})
+    needs: identity
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -36,11 +127,11 @@ jobs:
               --tests net.portswigger.mcp.KtorServerManagerLifecycleTest
           - client: embedded-stdio-proxy
             tests: --tests net.portswigger.mcp.ProxyEndToEndTest
-
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.target_ref }}
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
 
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
@@ -54,24 +145,16 @@ jobs:
       - name: Run client integration tests
         run: ./gradlew test ${{ matrix.tests }}
 
-  package:
-    name: Reproducible package and draft
-    needs: client-matrix
+  conformance:
+    name: Pinned MCP conformance
+    needs: identity
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
 
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
@@ -85,42 +168,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: .github/conformance/package-lock.json
 
-      - name: Validate release identity
-        id: identity
-        shell: bash
+      - name: Install pinned conformance clients without lifecycle scripts
         run: |
-          set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          version=$(grep -E '^version=' gradle.properties | cut -d= -f2-)
-          screen_version=$(grep -E '^ScreenVersion:' BappManifest.bmf | cut -d: -f2- | xargs)
-          [[ "$RELEASE_TAG" == "v$version" ]]
-          [[ "$screen_version" == "$version" ]]
-          commit=$(git rev-parse HEAD)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          npm ci --ignore-scripts --prefix .github/conformance
+          npm audit --audit-level=high --package-lock-only --prefix .github/conformance
 
-          remote_tags=$(git ls-remote origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
-          if [[ -n "$remote_tags" ]]; then
-            resolved=$(printf '%s\n' "$remote_tags" | awk '$2 ~ /\^\{\}$/ {print $1; found=1} END {if (!found) print first} NR==1 {first=$1}')
-            [[ "$resolved" == "$commit" ]]
-          fi
-
-      - name: Validate helper scripts
-        run: bash -n scripts/update-proxy.sh
-
-      - name: First clean test and package
-        run: ./gradlew clean test embedProxyJar generateSbom --no-build-cache
-
-      - name: Preserve first build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp build/libs/burp-mcp-all.jar "$RUNNER_TEMP/burp-mcp-first.jar"
-          cp build/reports/compliance/bom.cdx.json "$RUNNER_TEMP/bom-first.cdx.json"
-          cp -a build/reports/tests "$RUNNER_TEMP/test-reports"
-
-      - name: Run official MCP conformance checks
+      - name: Run stateful and modern-protocol baseline scenarios
         shell: bash
         run: |
           set -uo pipefail
@@ -154,135 +210,460 @@ jobs:
             resources-list resources-read-text resources-templates-read \
             prompts-list prompts-get-simple prompts-get-with-args \
             dns-rebinding-protection server-sse-multiple-streams; do
-            npx --yes @modelcontextprotocol/conformance@0.1.16 server \
+            node .github/conformance/node_modules/mcp-conformance-stable/dist/index.js server \
               --url http://127.0.0.1:19877/mcp --scenario "$scenario" --verbose || status=1
           done
-          npx --yes @modelcontextprotocol/conformance@0.2.0-alpha.9 server \
+          node .github/conformance/node_modules/mcp-conformance-modern/dist/index.js server \
             --url http://127.0.0.1:19877/mcp --scenario server-stateless \
             --expected-failures .github/conformance-expected-failures.yml --verbose || status=1
           if [[ "$status" -ne 0 ]]; then cat "$server_log"; fi
           exit "$status"
 
-      - name: Second clean package and compare bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./gradlew clean embedProxyJar generateSbom --no-build-cache
-          cmp "$RUNNER_TEMP/burp-mcp-first.jar" build/libs/burp-mcp-all.jar
-          cmp "$RUNNER_TEMP/bom-first.cdx.json" build/reports/compliance/bom.cdx.json
+  isolated-build:
+    name: Isolated builder ${{ matrix.builder }}
+    needs: identity
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [a, b]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
 
-      - name: Stage and validate release assets
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          validate-wrappers: true
+          cache-disabled: true
+
+      - name: Clean test and package without build cache
+        run: ./gradlew clean test embedProxyJar generateSbom --no-build-cache
+
+      - name: Stage isolated build bytes
         shell: bash
-        env:
-          SOURCE_COMMIT: ${{ steps.identity.outputs.commit }}
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate-build"
+          cp build/libs/independent-mcp-bridge-all.jar "$RUNNER_TEMP/candidate-build/"
+          cp build/reports/compliance/bom.cdx.json "$RUNNER_TEMP/candidate-build/"
+
+      - name: Upload isolated build bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-build-${{ matrix.builder }}
+          path: ${{ runner.temp }}/candidate-build/
+          if-no-files-found: error
+          retention-days: 30
+
+  stage:
+    name: Compare builders and stage immutable assets
+    needs: [identity, client-matrix, conformance, isolated-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@6044e13b5c32a023e951b88d7a2ccf1e73f63219 # v6.3.0
+        with:
+          node-version: 24
+
+      - name: Install locked SBOM validator without lifecycle scripts
+        working-directory: .github/conformance
+        run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: candidate-build-*
+          path: ${{ runner.temp }}/isolated-builds
+
+      - name: Compare isolated bytes and create release asset set
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.identity.outputs.previous_tag }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          list_flat_files() {
+            local directory=$1 file
+            shopt -s nullglob dotglob
+            for file in "$directory"/*; do
+              [[ -f "$file" && ! -L "$file" ]] || { echo "Unexpected non-regular staged entry: $file" >&2; return 1; }
+              basename -- "$file"
+            done
+            shopt -u nullglob dotglob
+          }
+          builds="$RUNNER_TEMP/isolated-builds"
+          jar_name=independent-mcp-bridge-all.jar
+          bom_name=bom.cdx.json
+          cmp "$builds/candidate-build-a/$jar_name" "$builds/candidate-build-b/$jar_name"
+          cmp "$builds/candidate-build-a/$bom_name" "$builds/candidate-build-b/$bom_name"
+
+          grep -Fx "**Candidate version:** \`$VERSION\`<br>" docs/VULNERABILITY_REPORT.md >/dev/null
+          grep -Fx '**Source commit:** injected by immutable draft workflow; this development review is not release evidence<br>' docs/VULNERABILITY_REPORT.md >/dev/null
+          proxy_commit=$(awk -F': ' '$1 == "Commit" { print $2 }' libs/mcp-proxy-source.txt)
+          proxy_sha=$(awk -F': ' '$1 == "SHA-256" { print $2 }' libs/mcp-proxy-source.txt)
+          grep -Fx "**Embedded proxy candidate:** \`$proxy_commit\` / \`$proxy_sha\`" docs/VULNERABILITY_REPORT.md >/dev/null
+          grep -Fx "git checkout --detach $proxy_commit" CORRESPONDING_SOURCE.md >/dev/null
+
           stage="$RUNNER_TEMP/release-assets"
           mkdir -p "$stage"
-          cp build/libs/burp-mcp-all.jar "$stage/burp-mcp-all.jar"
-          cp build/reports/compliance/bom.cdx.json "$stage/bom.cdx.json"
-          cp LICENSE "$stage/LICENSE"
-          cp THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
+          cp "$builds/candidate-build-a/$jar_name" "$stage/$jar_name"
+          cp "$builds/candidate-build-a/$bom_name" "$stage/$bom_name"
+          cp LICENSE NOTICE.md FORK_NOTICE.md THIRD_PARTY_NOTICES.md CORRESPONDING_SOURCE.md "$stage/"
+          cp legal/licenses/Apache-2.0.txt legal/licenses/MIT-SLF4J.txt legal/runtime-licenses.properties "$stage/"
           cp docs/VULNERABILITY_REPORT.md "$stage/VULNERABILITY_REPORT.md"
+          cp docs/MIGRATION_V4_8.md "$stage/MIGRATION_V4_8.md"
+          VULNERABILITY_REPORT="$stage/VULNERABILITY_REPORT.md" python3 - <<'PY'
+          import os
+          from pathlib import Path
 
-          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6" and
-            ((.components | map(."bom-ref") | unique | length) == (.components | length))' \
-            "$stage/bom.cdx.json" >/dev/null
+          path = Path(os.environ["VULNERABILITY_REPORT"])
+          marker = "**Source commit:** injected by immutable draft workflow; this development review is not release evidence<br>"
+          text = path.read_text(encoding="utf-8")
+          assert text.count(marker) == 1, "vulnerability report source marker is missing or duplicated"
+          path.write_text(text.replace(marker, f"**Source commit:** `{os.environ['SOURCE_COMMIT']}`<br>"), encoding="utf-8")
+          PY
 
-          JAR_PATH="$stage/burp-mcp-all.jar" python3 - <<'PY'
+          git archive --format=tar --prefix="independent-mcp-bridge-$VERSION/" "$SOURCE_COMMIT" \
+            | gzip -n > "$stage/independent-mcp-bridge-$VERSION-source.tar.gz"
+
+          release_fragment="docs/releases/$VERSION.md"
+          test -s "$release_fragment"
+          RELEASE_FRAGMENT="$release_fragment" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lines = Path(os.environ["RELEASE_FRAGMENT"]).read_text(encoding="utf-8").splitlines()
+          headings = ["## Compatibility", "## Security and approval changes", "## Known limitations"]
+          positions = []
+          for heading in headings:
+              assert lines.count(heading) == 1, f"missing or duplicate release-note heading: {heading}"
+              positions.append(lines.index(heading))
+          assert positions == sorted(positions), "release-note headings are out of order"
+          for index, start in enumerate(positions):
+              end = positions[index + 1] if index + 1 < len(positions) else len(lines)
+              content = [line for line in lines[start + 1:end] if line.strip() and not line.startswith("## ")]
+              assert content, f"empty release-note section: {headings[index]}"
+          PY
+          if grep -Eiq '\b(TODO|TBD|CHANGEME)\b' "$release_fragment"; then
+            echo "Release-note fragment contains a placeholder" >&2
+            exit 1
+          fi
+          change_count=$(git rev-list --count "$PREVIOUS_TAG^{commit}..$SOURCE_COMMIT")
+          [[ "$change_count" -gt 0 ]]
+
+          jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
+          bom_sha=$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)
+          # shellcheck disable=SC2016
+          {
+            printf '# Independent MCP Bridge %s\n\n' "$VERSION"
+            printf '> Unofficial independent fork; not published or supported by PortSwigger.\n\n'
+            printf 'Source and support: https://github.com/sehoon123/mcp-server / https://github.com/sehoon123/mcp-server/issues\n\n'
+            printf -- '- Source commit: `%s`\n' "$SOURCE_COMMIT"
+            printf -- '- Previous release tag: `%s`\n' "$PREVIOUS_TAG"
+            printf -- '- Verified change count: `%s`\n\n' "$change_count"
+            printf 'Read [MIGRATION_V4_8.md](https://github.com/sehoon123/mcp-server/blob/%s/docs/MIGRATION_V4_8.md) before replacing an older MCP Server installation.\n\n' "$SOURCE_COMMIT"
+            printf '## Changes from %s\n\n' "$PREVIOUS_TAG"
+            git log --first-parent --pretty='- %s' "$PREVIOUS_TAG^{commit}..$SOURCE_COMMIT"
+            printf '\n'
+            cat "$release_fragment"
+            printf '\n## Verification summary\n\n'
+            printf -- '- Immutable draft run: %s\n' "$RUN_URL"
+            printf -- '- JDK: Temurin 21\n'
+            printf -- '- Two isolated no-build-cache JAR/SBOM builds compared byte-for-byte\n'
+            printf -- '- JAR SHA-256: `%s`\n' "$jar_sha"
+            printf -- '- SBOM SHA-256: `%s`\n\n' "$bom_sha"
+            printf 'Verify the downloaded bundle with `sha256sum -c SHA256SUMS` and verify GitHub artifact attestations against repository `sehoon123/mcp-server`.\n\n'
+            printf '## Candidate status\n\n'
+            printf 'This is a draft only. Publication still requires protected exact-byte Community and Professional smoke evidence, the seven-day RC window, and every gate in `docs/RELEASING.md`.\n'
+          } > "$stage/RELEASE_NOTES.md"
+
+          jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$VERSION" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg previousTag "$PREVIOUS_TAG" \
+            --arg workflowRun "$RUN_URL" \
+            --arg buildContainer "eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a" \
+            --arg jarSha256 "$jar_sha" \
+            --arg sbomSha256 "$bom_sha" \
+            '{tag:$tag,version:$version,sourceCommit:$sourceCommit,previousTag:$previousTag,workflowRun:$workflowRun,build:{container:$buildContainer},artifacts:{jarSha256:$jarSha256,sbomSha256:$sbomSha256}}' \
+            > "$stage/SOURCE_IDENTITY.json"
+
+          JAR_PATH="$stage/independent-mcp-bridge-all.jar" python3 - <<'PY'
+          import io
           import os
           from collections import Counter
           from zipfile import ZipFile
 
+          def manifest_attributes(raw):
+              logical = []
+              for line in raw.decode("utf-8").replace("\r\n", "\n").splitlines():
+                  if line.startswith(" ") and logical:
+                      logical[-1] += line[1:]
+                  elif line:
+                      logical.append(line)
+              return dict(line.split(": ", 1) for line in logical if ": " in line)
+
+          required = {
+              "META-INF/legal/GPL-3.0.txt",
+              "META-INF/legal/NOTICE.md",
+              "META-INF/legal/FORK_NOTICE.md",
+              "META-INF/legal/THIRD_PARTY_NOTICES.md",
+              "META-INF/legal/CORRESPONDING_SOURCE.md",
+              "META-INF/legal/licenses/Apache-2.0.txt",
+              "META-INF/legal/licenses/MIT-SLF4J.txt",
+              "META-INF/legal/runtime-licenses.properties",
+          }
           with ZipFile(os.environ["JAR_PATH"]) as archive:
               entries = archive.infolist()
               names = [entry.filename for entry in entries]
               duplicates = [name for name, count in Counter(names).items() if count > 1]
-              prohibited = (
-                  "io/netty/",
-                  "com/fasterxml/jackson/",
-                  "org/apache/logging/log4j/",
-                  "org/codehaus/plexus/",
+              prohibited = ("io/netty/", "com/fasterxml/jackson/", "org/apache/logging/log4j/", "org/codehaus/plexus/")
+              signatures = (".SF", ".RSA", ".DSA", ".EC")
+              manifest = manifest_attributes(archive.read("META-INF/MANIFEST.MF"))
+              nested_proxy = archive.read("mcp-proxy-all.jar")
+              proxy_metadata = dict(
+                  line.split(": ", 1)
+                  for line in archive.read("mcp-proxy-source.txt").decode("utf-8").splitlines()
+                  if ": " in line and not line.startswith("Runtime component:")
               )
-              signatures = tuple((".SF", ".RSA", ".DSA", ".EC"))
               assert not duplicates, duplicates
+              assert required.issubset(names), sorted(required.difference(names))
               assert not [name for name in names if name.startswith(prohibited)]
               assert not [name for name in names if name.upper().startswith("META-INF/") and name.upper().endswith(signatures)]
               assert len({entry.date_time for entry in entries}) == 1
+              assert manifest["Manifest-Version"] == "1.0"
+              assert manifest["Main-Class"] == "net.portswigger.mcp.ExtensionBase"
+              assert manifest["Multi-Release"] == "true"
+              assert manifest["Implementation-Title"] == "Independent MCP Bridge"
+              assert manifest["Implementation-Version"] == os.environ["VERSION"]
+              assert manifest["Implementation-Vendor"] == "sehoon123"
+              assert manifest["Implementation-Source"] == "https://github.com/sehoon123/mcp-server"
+              assert manifest["Implementation-Support"] == "https://github.com/sehoon123/mcp-server/issues"
+              assert manifest["Extension-UUID"] == "c0a454c4079c4cecb627d928a92f9555"
+              assert manifest["Fork-Status"] == "Unofficial independent fork; not supported by PortSwigger"
+          with ZipFile(io.BytesIO(nested_proxy)) as proxy:
+              proxy_manifest = manifest_attributes(proxy.read("META-INF/MANIFEST.MF"))
+              assert proxy_manifest["Manifest-Version"] == "1.0"
+              assert proxy_manifest["Main-Class"] == "net.portswigger.MainKt"
+              assert proxy_manifest["Multi-Release"] == "true"
+              assert proxy_manifest["Implementation-Title"] == "Independent MCP Bridge stdio proxy"
+              assert proxy_manifest["Implementation-Version"] == proxy_metadata["Version"]
+              assert proxy_manifest["Implementation-Vendor"] == "sehoon123"
+              assert proxy_manifest["Implementation-Source"] == "https://github.com/sehoon123/mcp-proxy"
+              assert proxy_manifest["Fork-Status"] == "Unofficial independent fork; not supported by PortSwigger"
           PY
 
           (
-            cd "$stage"
-            sha256sum \
-              burp-mcp-all.jar \
-              bom.cdx.json \
-              LICENSE \
-              THIRD_PARTY_NOTICES.md \
-              VULNERABILITY_REPORT.md > SHA256SUMS
+            cd .github/schemas
+            grep -E '^[a-f0-9]{64}  [^ ]+$' README.md | sha256sum -c -
           )
+          node .github/conformance/validate-sbom.mjs .github/schemas "$stage/bom.cdx.json"
+          proxy_dependency_refs=$(python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
 
-          previous_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          {
-            printf '# Burp MCP %s\n\n' "${RELEASE_TAG#v}"
-            printf "Reproducible draft built from commit \`%s\`.\n\n" "$SOURCE_COMMIT"
-            printf '## Changes\n\n'
-            if [[ -n "$previous_tag" ]]; then
-              git log --first-parent --pretty='- %s' "$previous_tag..HEAD"
-            else
-              git log -n 20 --first-parent --pretty='- %s'
-            fi
-            printf '\n## Verification\n\n'
-            printf -- '- Full tests and native HTTP/embedded stdio client matrix\n'
-            printf -- '- Official stateful MCP conformance scenarios\n'
-            printf -- '- Checked-in stateless expected-failure baseline\n'
-            printf -- '- Two clean no-build-cache JAR/SBOM builds compared byte-for-byte\n'
-            printf -- '- CycloneDX 1.6, archive-family, duplicate, signature, and timestamp checks\n\n'
-            printf 'This workflow creates a draft only. Verify the assets in Burp and push a matching annotated tag before publication.\n'
-          } > "$RUNNER_TEMP/release-notes.md"
+          pattern = re.compile(r"^Runtime component: ([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([^\\s]+) [a-f0-9]{64}$")
+          refs = []
+          for line in Path("libs/mcp-proxy-source.txt").read_text(encoding="utf-8").splitlines():
+              match = pattern.fullmatch(line)
+              if match:
+                  group, name, version = match.groups()
+                  refs.append(f"pkg:maven/{group}/{name}@{version}")
+          assert refs, "proxy dependency identity is empty"
+          print(json.dumps(sorted(set(refs)), separators=(",", ":")))
+          PY
+          )
+          jq -e --arg jar_sha "$jar_sha" --arg version "$VERSION" --argjson expected_proxy_deps "$proxy_dependency_refs" '
+            .bomFormat == "CycloneDX" and .specVersion == "1.6" and .version == 1 and
+            .metadata.component.name == "independent-mcp-bridge" and
+            .metadata.component.version == $version and
+            .metadata.component.hashes == [{"alg":"SHA-256","content":$jar_sha}] and
+            (.components | type == "array" and length > 0) and
+            (all(.components[];
+              (."bom-ref" | type == "string" and length > 0) and
+              (.purl == ."bom-ref") and
+              (.hashes | type == "array" and length == 1) and
+              (.hashes[0].alg == "SHA-256") and
+              (.hashes[0].content | test("^[a-f0-9]{64}$")) and
+              (.licenses | type == "array" and length == 1) and
+              (.licenses[0].license.id == "Apache-2.0" or
+               .licenses[0].license.id == "MIT" or
+               .licenses[0].license.id == "GPL-3.0-only")
+            )) and
+            ((.components | map(."bom-ref") | unique | length) == (.components | length)) and
+            (.components | map(."bom-ref") | sort) as $component_refs |
+            .metadata.component."bom-ref" as $root_ref |
+            (.components[] | select(.name == "independent-mcp-bridge-stdio-proxy") | ."bom-ref") as $proxy_ref |
+            (.dependencies | type == "array" and length == 2) and
+            ((.dependencies | map(.ref) | sort) == ([$root_ref, $proxy_ref] | sort)) and
+            (.dependencies[] | select(.ref == $root_ref) | .dependsOn) as $root_deps |
+            (.dependencies[] | select(.ref == $proxy_ref) | .dependsOn) as $proxy_deps |
+            ([.components[] |
+              select(any(.properties[]?; .name == "embeddedVia" and .value == "independent-mcp-bridge-stdio-proxy")) |
+              ."bom-ref"] | sort) as $proxy_only_refs |
+            (($root_deps | sort) == (($component_refs - $proxy_only_refs) | sort)) and
+            (($proxy_deps | sort) == ($expected_proxy_deps | sort)) and
+            (($root_deps | index($proxy_ref)) != null) and
+            (all(($root_deps + $proxy_deps)[]; . as $ref | ($component_refs | index($ref)) != null))
+          ' "$stage/bom.cdx.json" >/dev/null
 
-      - name: Attest release assets
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
-        with:
-          subject-path: |
-            ${{ runner.temp }}/release-assets/burp-mcp-all.jar
-            ${{ runner.temp }}/release-assets/bom.cdx.json
-            ${{ runner.temp }}/release-assets/LICENSE
-            ${{ runner.temp }}/release-assets/THIRD_PARTY_NOTICES.md
-            ${{ runner.temp }}/release-assets/VULNERABILITY_REPORT.md
-            ${{ runner.temp }}/release-assets/SHA256SUMS
+          checksum_tmp="$RUNNER_TEMP/SHA256SUMS"
+          (
+            cd "$stage"
+            while IFS= read -r name; do
+              [[ "$name" == SHA256SUMS ]] || sha256sum -- "$name"
+            done < <(list_flat_files "$stage" | LC_ALL=C sort)
+          ) > "$checksum_tmp"
+          mv "$checksum_tmp" "$stage/SHA256SUMS"
 
-      - name: Upload validated workflow artifact
+          expected=$(cat <<EOF
+          Apache-2.0.txt
+          CORRESPONDING_SOURCE.md
+          FORK_NOTICE.md
+          LICENSE
+          MIGRATION_V4_8.md
+          MIT-SLF4J.txt
+          NOTICE.md
+          RELEASE_NOTES.md
+          SHA256SUMS
+          SOURCE_IDENTITY.json
+          runtime-licenses.properties
+          THIRD_PARTY_NOTICES.md
+          VULNERABILITY_REPORT.md
+          bom.cdx.json
+          independent-mcp-bridge-$VERSION-source.tar.gz
+          independent-mcp-bridge-all.jar
+          EOF
+          )
+          actual=$(list_flat_files "$stage" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected" | sed 's/^          //' | LC_ALL=C sort) <(printf '%s\n' "$actual")
+
+      - name: Upload exact candidate bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ inputs.tag }}
+          name: release-candidate-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create or update draft release
-        shell: bash
+  draft:
+    name: Attest and create one-shot draft
+    needs: [identity, stage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-draft
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
+          path: ${{ runner.temp }}/release-assets
+
+      - name: Revalidate exact downloaded allowlist without running project code
         env:
-          SOURCE_COMMIT: ${{ steps.identity.outputs.commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.identity.outputs.previous_tag }}
+          EXPECTED_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXPECTED_BUILD_CONTAINER: eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a
+        shell: bash
+        run: |
+          set -euo pipefail
+          list_flat_files() {
+            local directory=$1 file
+            shopt -s nullglob dotglob
+            for file in "$directory"/*; do
+              [[ -f "$file" && ! -L "$file" ]] || { echo "Unexpected non-regular staged entry: $file" >&2; return 1; }
+              basename -- "$file"
+            done
+            shopt -u nullglob dotglob
+          }
+          stage="$RUNNER_TEMP/release-assets"
+          (cd "$stage" && sha256sum -c SHA256SUMS)
+          [[ $(jq -r '.tag' "$stage/SOURCE_IDENTITY.json") == "$RELEASE_TAG" ]]
+          [[ $(jq -r '.version' "$stage/SOURCE_IDENTITY.json") == "$VERSION" ]]
+          [[ $(jq -r '.sourceCommit' "$stage/SOURCE_IDENTITY.json") == "$SOURCE_COMMIT" ]]
+          [[ $(jq -r '.previousTag' "$stage/SOURCE_IDENTITY.json") == "$PREVIOUS_TAG" ]]
+          [[ $(jq -r '.workflowRun' "$stage/SOURCE_IDENTITY.json") == "$EXPECTED_RUN_URL" ]]
+          [[ $(jq -r '.build.container' "$stage/SOURCE_IDENTITY.json") == "$EXPECTED_BUILD_CONTAINER" ]]
+          [[ $(jq -r '.artifacts.jarSha256' "$stage/SOURCE_IDENTITY.json") == \
+            "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" ]]
+          [[ $(jq -r '.artifacts.sbomSha256' "$stage/SOURCE_IDENTITY.json") == \
+            "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" ]]
+          expected=$(awk '{print $2}' "$stage/SHA256SUMS"; printf '%s\n' SHA256SUMS)
+          actual=$(list_flat_files "$stage")
+          diff -u <(printf '%s\n' "$expected" | LC_ALL=C sort) <(printf '%s\n' "$actual" | LC_ALL=C sort)
+
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: '! gh release view "$RELEASE_TAG" >/dev/null 2>&1'
+
+      - name: Attest every staged subject
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/*
+
+      - name: Add the immutable attestation bundle and verify final allowlist
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          list_flat_files() {
+            local directory=$1 file
+            shopt -s nullglob dotglob
+            for file in "$directory"/*; do
+              [[ -f "$file" && ! -L "$file" ]] || { echo "Unexpected non-regular staged entry: $file" >&2; return 1; }
+              basename -- "$file"
+            done
+            shopt -u nullglob dotglob
+          }
+          stage="$RUNNER_TEMP/release-assets"
+          cp "$BUNDLE_PATH" "$stage/provenance.intoto.jsonl"
+          # Detached provenance cannot checksum or attest itself; every other asset and SHA256SUMS is attested.
+          expected=$(awk '{print $2}' "$stage/SHA256SUMS"; printf '%s\n' SHA256SUMS provenance.intoto.jsonl)
+          actual=$(list_flat_files "$stage")
+          diff -u <(printf '%s\n' "$expected" | LC_ALL=C sort) <(printf '%s\n' "$actual" | LC_ALL=C sort)
+          test -s "$stage/provenance.intoto.jsonl"
+
+      - name: Create draft without replacing any asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
+        shell: bash
         run: |
           set -euo pipefail
           stage="$RUNNER_TEMP/release-assets"
-          if release=$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish 2>/dev/null); then
-            [[ $(jq -r '.isDraft' <<<"$release") == true ]]
-            gh release edit "$RELEASE_TAG" \
-              --draft=true \
-              --target "$SOURCE_COMMIT" \
-              --title "$RELEASE_TAG" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
-          else
-            gh release create "$RELEASE_TAG" \
-              --draft \
-              --target "$SOURCE_COMMIT" \
-              --title "$RELEASE_TAG" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
-          fi
-          gh release upload "$RELEASE_TAG" "$stage"/* --clobber
-
-          # Draft releases have no tag ref yet, so GitHub's release-by-tag REST endpoint returns 404.
-          gh release view "$RELEASE_TAG" \
-            --json tagName,isDraft,isPrerelease,targetCommitish,assets \
-            --jq '{tag_name:.tagName,draft:.isDraft,prerelease:.isPrerelease,target_commitish:.targetCommitish,assets:[.assets[].name]}'
+          release_args=(
+            --draft
+            --verify-tag
+            --target "$SOURCE_COMMIT"
+            --title "Independent MCP Bridge $RELEASE_TAG"
+            --notes-file "$stage/RELEASE_NOTES.md"
+          )
+          tag_without_build=${RELEASE_TAG%%+*}
+          [[ "$tag_without_build" == *-* ]] && release_args+=(--prerelease)
+          gh release create "$RELEASE_TAG" "$stage"/* "${release_args[@]}"

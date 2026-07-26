@@ -36,7 +36,7 @@ import javax.swing.JMenuItem
 
 internal const val COPY_MCP_REFERENCE_LABEL = "Copy MCP reference"
 private const val COPY_MCP_REFERENCE_DESCRIPTION =
-    "Copies a project-scoped reference for use with this Burp MCP server. No raw traffic is copied."
+    "Copies a project-scoped reference for use with ${ProductIdentity.PRODUCT_NAME}. No raw traffic is copied."
 private const val COPY_MCP_REFERENCE_SUCCESS = "MCP reference copied"
 private const val COPY_MCP_REFERENCE_FAILURE =
     "MCP reference could not be copied. Run the corresponding MCP search to obtain a current stable reference."

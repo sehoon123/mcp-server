@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.TargetValidation
 import net.portswigger.mcp.schema.JsonSchemaMetadata
@@ -548,7 +549,7 @@ internal fun Server.registerTools(
     }
 
     val toolingDisabledMessage =
-        "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
+        "User has disabled configuration editing. They can enable it in Burp's ${ProductIdentity.SUITE_TAB_NAME} tab by selecting 'Enable tools that can edit your config'"
 
     mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
         description = "Imports bounded project- or user-level configuration JSON after explicit approval. Project JSON must contain top-level 'project_options'; user JSON must contain top-level 'user_options'. Returns typed execution state; uncertain means the configuration may be partially applied and must not be retried automatically.",

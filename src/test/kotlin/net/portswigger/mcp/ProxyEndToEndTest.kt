@@ -108,9 +108,9 @@ class ProxyEndToEndTest {
             "--mcp-url",
             "http://127.0.0.1:$testPort/mcp",
             "--bearer-token-env",
-            "BURP_MCP_BEARER_TOKEN"
+            "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
         ).apply {
-            environment()["BURP_MCP_BEARER_TOKEN"] = testBearerToken
+            environment()["INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"] = testBearerToken
         }.redirectError(ProcessBuilder.Redirect.INHERIT).start()
 
         client = TestStdioMcpClient()

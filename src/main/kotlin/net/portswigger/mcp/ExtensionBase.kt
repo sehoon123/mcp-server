@@ -14,7 +14,7 @@ import net.portswigger.mcp.security.safeExceptionSummary
 class ExtensionBase : BurpExtension {
 
     override fun initialize(api: MontoyaApi) {
-        api.extension().setName("Burp MCP Server")
+        api.extension().setName(ProductIdentity.EXTENSION_NAME)
 
         val extensionStorage = api.persistence().extensionData()
         val config = McpConfig(extensionStorage, api.logging())
@@ -62,7 +62,7 @@ class ExtensionBase : BurpExtension {
             }
         }
 
-        api.userInterface().registerSuiteTab("MCP", configUi.component)
+        api.userInterface().registerSuiteTab(ProductIdentity.SUITE_TAB_NAME, configUi.component)
         val referenceMenuProvider = McpReferenceContextMenuProvider(api)
         val referenceMenuRegistration = api.userInterface().registerContextMenuItemsProvider(referenceMenuProvider)
 

@@ -21,6 +21,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
@@ -31,12 +33,21 @@ jobs:
         with:
           validate-wrappers: true
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@6044e13b5c32a023e951b88d7a2ccf1e73f63219 # v6.3.0
         with:
-          node-version: 22
+          node-version: 24
+          cache: npm
+          cache-dependency-path: .github/conformance/package-lock.json
 
-      - name: Validate helper scripts
-        run: bash -n scripts/update-proxy.sh
+      - name: Install pinned conformance CLIs without lifecycle scripts
+        run: |
+          npm ci --ignore-scripts --prefix .github/conformance
+          npm audit --audit-level=high --package-lock-only --prefix .github/conformance
+
+      - name: Validate proxy update source guards
+        run: |
+          bash -n scripts/update-proxy.sh scripts/test-update-proxy-guards.sh
+          scripts/test-update-proxy-guards.sh
 
       - name: Run tests
         run: ./gradlew test
@@ -48,6 +59,7 @@ jobs:
           server_log="$RUNNER_TEMP/mcp-conformance-server.log"
           MCP_CONFORMANCE_PORT=19877 ./gradlew runConformanceServer --no-daemon >"$server_log" 2>&1 &
           server_pid=$!
+          # shellcheck disable=SC2317
           cleanup() {
             pkill -TERM -P "$server_pid" 2>/dev/null || true
             kill "$server_pid" 2>/dev/null || true
@@ -82,7 +94,7 @@ jobs:
             resources-list resources-read-text resources-templates-read \
             prompts-list prompts-get-simple prompts-get-with-args \
             dns-rebinding-protection server-sse-multiple-streams; do
-            npx --yes @modelcontextprotocol/conformance@0.1.16 server \
+            node .github/conformance/node_modules/mcp-conformance-stable/dist/index.js server \
               --url http://127.0.0.1:19877/mcp \
               --scenario "$scenario" \
               --verbose || status=1
@@ -90,7 +102,7 @@ jobs:
 
           # The modern per-request protocol is intentionally unsupported by the production SDK. Keep a
           # stale-sensitive expected-failure baseline so an SDK upgrade cannot silently change that status.
-          npx --yes @modelcontextprotocol/conformance@0.2.0-alpha.9 server \
+          node .github/conformance/node_modules/mcp-conformance-modern/dist/index.js server \
             --url http://127.0.0.1:19877/mcp \
             --scenario server-stateless \
             --expected-failures .github/conformance-expected-failures.yml \
@@ -104,6 +116,15 @@ jobs:
       - name: Build extension JAR and SBOM
         run: ./gradlew embedProxyJar generateSbom
 
+      - name: Validate CycloneDX 1.6 SBOM schema
+        shell: bash
+        run: |
+          (
+            cd .github/schemas
+            grep -E '^[a-f0-9]{64}  [^ ]+$' README.md | sha256sum -c -
+          )
+          node .github/conformance/validate-sbom.mjs .github/schemas build/reports/compliance/bom.cdx.json
+
       - name: Verify SBOM configuration-cache reuse
         shell: bash
         run: |
@@ -114,10 +135,10 @@ jobs:
       - name: Verify reproducible extension JAR and SBOM
         shell: bash
         run: |
-          cp build/libs/burp-mcp-all.jar "$RUNNER_TEMP/burp-mcp-first.jar"
+          cp build/libs/independent-mcp-bridge-all.jar "$RUNNER_TEMP/independent-mcp-bridge-first.jar"
           cp build/reports/compliance/bom.cdx.json "$RUNNER_TEMP/bom-first.cdx.json"
           ./gradlew embedProxyJar generateSbom --rerun-tasks
-          cmp "$RUNNER_TEMP/burp-mcp-first.jar" build/libs/burp-mcp-all.jar
+          cmp "$RUNNER_TEMP/independent-mcp-bridge-first.jar" build/libs/independent-mcp-bridge-all.jar
           cmp "$RUNNER_TEMP/bom-first.cdx.json" build/reports/compliance/bom.cdx.json
 
       - name: Upload test reports
@@ -128,31 +149,38 @@ jobs:
           path: build/reports/tests/
           retention-days: 7
 
+      - name: Stage and verify exact CI distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/ci-distribution"
+          mkdir -p "$stage/legal/licenses" "$stage/docs"
+          cp build/libs/independent-mcp-bridge-all.jar build/reports/compliance/bom.cdx.json "$stage/"
+          cp LICENSE NOTICE.md FORK_NOTICE.md THIRD_PARTY_NOTICES.md CORRESPONDING_SOURCE.md "$stage/"
+          cp legal/runtime-licenses.properties "$stage/legal/"
+          cp legal/licenses/Apache-2.0.txt legal/licenses/MIT-SLF4J.txt "$stage/legal/licenses/"
+          cp docs/VULNERABILITY_REPORT.md "$stage/docs/"
+          expected=$(cat <<'EOF'
+          CORRESPONDING_SOURCE.md
+          FORK_NOTICE.md
+          LICENSE
+          NOTICE.md
+          THIRD_PARTY_NOTICES.md
+          bom.cdx.json
+          docs/VULNERABILITY_REPORT.md
+          independent-mcp-bridge-all.jar
+          legal/licenses/Apache-2.0.txt
+          legal/licenses/MIT-SLF4J.txt
+          legal/runtime-licenses.properties
+          EOF
+          )
+          actual=$(cd "$stage" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected" | sed 's/^          //' | LC_ALL=C sort) <(printf '%s\n' "$actual")
+
       - name: Upload extension JAR
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: burp-mcp-extension
-          path: |
-            build/libs/burp-mcp-*.jar
-            build/reports/compliance/bom.cdx.json
-            LICENSE
-            THIRD_PARTY_NOTICES.md
-            docs/VULNERABILITY_REPORT.md
+          name: independent-mcp-bridge-extension
+          path: ${{ runner.temp }}/ci-distribution/
+          if-no-files-found: error
           retention-days: 30
-
-  dependency-submission:
-    name: Dependency Submission
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - uses: gradle/actions/dependency-submission@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0

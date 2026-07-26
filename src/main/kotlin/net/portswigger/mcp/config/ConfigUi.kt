@@ -7,6 +7,7 @@ import kotlinx.coroutines.launch
 import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.McpServerStartupException
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
 import net.portswigger.mcp.providers.ProxyProvenance
@@ -222,7 +223,7 @@ class ConfigUi internal constructor(
                     }
 
                     Dialogs.showMessageDialog(
-                        panel, "Failed to start Burp MCP Server: $friendlyMessage", ERROR_MESSAGE
+                        panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
                     )
                 }
             }
@@ -235,14 +236,20 @@ class ConfigUi internal constructor(
         val leftPanel = JPanel(GridBagLayout())
 
         val headerBox = createVerticalBox().apply {
-            add(JLabel("Burp MCP Server").apply {
+            add(JLabel(ProductIdentity.PRODUCT_NAME).apply {
                 font = Design.Typography.headlineMedium
                 foreground = Design.Colors.onSurface
                 alignmentX = CENTER_ALIGNMENT
             })
             add(createVerticalStrut(Design.Spacing.MD))
-            add(JLabel("Burp MCP Server exposes Burp tooling to AI clients.").apply {
+            add(JLabel("Exposes Burp tooling to AI clients through MCP.").apply {
                 font = Design.Typography.bodyLarge
+                foreground = Design.Colors.onSurfaceVariant
+                alignmentX = CENTER_ALIGNMENT
+            })
+            add(createVerticalStrut(Design.Spacing.SM))
+            add(JLabel(ProductIdentity.UNOFFICIAL_NOTICE).apply {
+                font = Design.Typography.labelMedium
                 foreground = Design.Colors.onSurfaceVariant
                 alignmentX = CENTER_ALIGNMENT
             })

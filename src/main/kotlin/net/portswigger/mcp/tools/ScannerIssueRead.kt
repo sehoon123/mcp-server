@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessType
 
@@ -28,7 +29,7 @@ internal class ScannerIssueReadService(
 ) {
     suspend fun read(input: GetScannerIssueById): ScannerIssueReadResult {
         val parsedId = requireNotNull(parseScannerIssueId(input.id)) {
-            "id must be a versioned Scanner issue ID returned by Burp MCP"
+            "id must be a versioned Scanner issue ID returned by ${ProductIdentity.PRODUCT_NAME}"
         }
         require(
             input.projectId.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS &&
