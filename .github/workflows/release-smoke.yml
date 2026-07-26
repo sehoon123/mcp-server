@@ -73,7 +73,7 @@ jobs:
           jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
             .draft == true and .tag_name == $tag and .target_commitish == $sha
           ' <<<"$release_json" >/dev/null
-          gh release download "$RELEASE_TAG" --dir "$stage"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$stage"
           [[ ! -L "$stage/SHA256SUMS" && -f "$stage/SHA256SUMS" ]]
           (cd "$stage" && sha256sum -c SHA256SUMS)
           [[ $(jq -r '.tag' "$stage/SOURCE_IDENTITY.json") == "$RELEASE_TAG" ]]

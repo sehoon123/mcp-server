@@ -90,7 +90,7 @@ jobs:
           while IFS= read -r ancestor; do
             while IFS= read -r candidate; do
               if [[ "$candidate" =~ $semver ]] &&
-                [[ $(gh release view "$candidate" --json isDraft --jq '.isDraft' 2>/dev/null || true) == false ]]; then
+                [[ $(gh release view "$candidate" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true) == false ]]; then
                 previous_tag=$candidate
                 break 2
               fi
@@ -617,7 +617,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-        run: '! gh release view "$RELEASE_TAG" >/dev/null 2>&1'
+        run: '! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1'
 
       - name: Attest every staged subject
         id: attest
@@ -658,6 +658,7 @@ jobs:
           set -euo pipefail
           stage="$RUNNER_TEMP/release-assets"
           release_args=(
+            --repo "$GITHUB_REPOSITORY"
             --draft
             --verify-tag
             --target "$SOURCE_COMMIT"

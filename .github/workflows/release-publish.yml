@@ -103,7 +103,7 @@ jobs:
 
           stage="$RUNNER_TEMP/release-assets"
           mkdir -p "$stage"
-          gh release download "$RELEASE_TAG" --dir "$stage"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$stage"
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
           done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
@@ -272,7 +272,7 @@ jobs:
 
           stage="$RUNNER_TEMP/release-assets"
           mkdir -p "$stage"
-          gh release download "$RELEASE_TAG" --dir "$stage"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$stage"
           [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 17 ]]
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
