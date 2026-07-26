@@ -188,18 +188,15 @@ internal class RawHttpActionService(
         val exchange = try {
             api.http().sendRequest(prepared.request, options)
         } catch (e: CancellationException) {
-            throw e
+            return uncertain(input.protocol, HttpMessageActionDestination.HTTP, target, prepared.requestBytes, null, e)
         } catch (e: Exception) {
             return uncertain(input.protocol, HttpMessageActionDestination.HTTP, target, prepared.requestBytes, null, e)
         }
 
-        currentCoroutineContext().ensureActive()
         val recording = recordHttpResponseInSiteMap(api, exchange, recordingProjectId)
         var warning: String? = recording.warning
         val response = try {
             exchange?.response()?.toActionSummary(bodyLimit, encoding)
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
             val previewWarning = "request completed but its response preview could not be created: ${safeExceptionSummary(e)}"
             warning = listOfNotNull(warning, previewWarning).joinToString("; ").take(512)
@@ -288,7 +285,7 @@ internal class RawHttpActionService(
                 RawHttpRouteDestination.ORGANIZER -> api.organizer().sendToOrganizer(prepared.request)
             }
         } catch (e: CancellationException) {
-            throw e
+            return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e)
         } catch (e: Exception) {
             return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e)
         }
@@ -471,5 +468,9 @@ private fun uncertain(
     target = target,
     requestBytes = requestBytes,
     tabName = tabName,
-    error = uncertainExecutionError("Burp may have completed the raw request action", error),
+    error = uncertainExecutionError(
+        "Burp may have completed the raw request action",
+        error,
+        preserveCancellation = false,
+    ),
 )

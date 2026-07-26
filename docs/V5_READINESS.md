@@ -1,9 +1,10 @@
 # v5 protocol readiness
 
-**Status date:** 2026-07-24
+**Status date:** 2026-07-26
 
 Version 5 is reserved for the first production release that adopts the modern, per-request MCP protocol era. The current
-production release is v4.6.0 on stable protocol `2025-11-25`. A draft or an SDK branch is not sufficient authority for a
+reviewed v4 baseline is v4.7.0 on stable protocol `2025-11-25`; the active hardening and release sequence is tracked in
+[NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md). A draft protocol or SDK branch is not sufficient authority for a
 stable v5 release.
 
 ## PM transition decision
@@ -183,17 +184,18 @@ immediate asynchronous project observation and does not open the modern subscrip
 
 ### Stage D — stable release gate
 
-A stable `v5.0.0` tag may be created only when all of the following are true:
+A stable `v5.0.0` release may be published only when all of the following are true:
 
 - the protocol revision and Kotlin SDK support are stable releases;
 - modern conformance passes without a whole-scenario baseline;
-- at least the supported native HTTP client and embedded stdio proxy pass the release matrix;
+- every supported client passes the release matrix, explicitly including native HTTP and the embedded stdio proxy;
 - cancellation, progress, approval, audit, and shutdown behavior have bounded live evidence;
 - the release candidate completes at least 14 days with no unresolved P0/P1 defect;
 - any Montoya/minimum-Burp change has independent Community and Professional compatibility evidence;
 - 10k/50k/100k measurements have no unreviewed EDT or memory regression;
 - two clean exact-commit JAR/SBOM builds are byte-identical;
 - OSV, Dependabot, archive inspection, checksums, and provenance pass;
-- a draft release is independently verified before the annotated tag and publication.
+- a protected annotated tag resolves to the exact candidate source, and the draft is independently verified before
+  publication.
 
 Until those gates close, v5 work is a readiness branch or prerelease candidate, not a production compatibility claim.

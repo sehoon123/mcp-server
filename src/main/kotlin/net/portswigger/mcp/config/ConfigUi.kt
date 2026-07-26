@@ -17,6 +17,7 @@ import net.portswigger.mcp.security.safeSingleLine
 import net.portswigger.mcp.Swing
 import net.portswigger.mcp.config.components.*
 import net.portswigger.mcp.providers.Provider
+import net.portswigger.mcp.providers.ProviderInstallConfig
 import java.awt.BorderLayout
 import java.awt.Component.CENTER_ALIGNMENT
 import java.awt.GridBagLayout
@@ -127,7 +128,10 @@ class ConfigUi internal constructor(
         )
 
         installationPanel = InstallationPanel(
-            config = config, providers = providers, reinstallNotice = reinstallNotice, parentComponent = panel
+            providers = providers,
+            reinstallNotice = reinstallNotice,
+            parentComponent = panel,
+            installConfigProvider = ::providerInstallSnapshot,
         )
 
         setupConfigListeners()
@@ -149,6 +153,23 @@ class ConfigUi internal constructor(
         if (::diagnosticsPanel.isInitialized) {
             diagnosticsPanel.cleanup()
         }
+        if (::installationPanel.isInitialized) {
+            installationPanel.cleanup()
+        }
+    }
+
+    private fun providerInstallSnapshot(): ProviderInstallConfig {
+        check(SwingUtilities.isEventDispatchThread()) { "provider configuration must be captured on the EDT" }
+        val hostText = hostField.text
+        val portText = portField.text
+        ConfigValidation.validateServerConfig(hostText, portText)?.let { error ->
+            throw IllegalArgumentException(error)
+        }
+        val host = requireNotNull(ConfigValidation.normalizeLoopbackHost(hostText)) {
+            "MCP endpoint host must be 127.0.0.1 or ::1"
+        }
+        val port = requireNotNull(portText.trim().toIntOrNull()) { "MCP endpoint port is invalid" }
+        return ProviderInstallConfig(host, port, config.localBearerToken)
     }
 
     fun onEnabledToggled(listener: (Boolean) -> Unit) {

@@ -1,7 +1,11 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.Annotations
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.HttpService
+import burp.api.montoya.http.message.HttpRequestResponse
+import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
@@ -12,6 +16,7 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import burp.api.montoya.sitemap.SiteMap
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
@@ -19,8 +24,6 @@ import net.portswigger.mcp.security.DataAccessType
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.security.MessageDigest
-import java.util.HexFormat
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -50,23 +53,30 @@ class ScannerIssueSearchTest {
     }
 
     @Test
-    fun `streamed Scanner issue identity preserves the established stable ID format`() {
+    fun `versioned Scanner identity uses bounded metadata without content getters`() {
         val issue = issue(7, "Identity", "example.test", AuditIssueSeverity.HIGH)
-        val canonical = listOf(
-            "7",
-            "Identity",
-            "https://example.test/7",
-            "example.test",
-            "443",
-            "true",
-            "HIGH",
-            "CERTAIN",
-            "detail-7",
-        ).joinToString("\u0000")
-        val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray())
-        val expected = "issue_" + HexFormat.of().formatHex(digest, 0, 16)
 
-        assertEquals(expected, issue.stableHistoryId())
+        val id = issue.stableHistoryId(123)
+
+        assertTrue(id.matches(Regex("issue_v2_3f_[0-9a-f]{32}")))
+        verify(exactly = 0) { issue.detail() }
+        verify(exactly = 0) { issue.remediation() }
+        verify(exactly = 0) { issue.requestResponses() }
+        verify(exactly = 0) { issue.collaboratorInteractions() }
+    }
+
+    @Test
+    fun `Scanner identity bounds long metadata and keeps locator separate`() {
+        val prefix = "a".repeat(512)
+        val first = issue(8, prefix + "one", "example.test", AuditIssueSeverity.HIGH)
+        val second = issue(8, prefix + "two", "example.test", AuditIssueSeverity.HIGH)
+
+        val firstId = first.stableHistoryId(0)
+        val secondId = second.stableHistoryId(1)
+
+        assertEquals(firstId.substringAfterLast('_'), secondId.substringAfterLast('_'))
+        assertTrue(firstId.startsWith("issue_v2_0_"))
+        assertTrue(secondId.startsWith("issue_v2_1_"))
     }
 
     @Test
@@ -105,8 +115,9 @@ class ScannerIssueSearchTest {
 
         assertEquals(ScannerIssuePageStatus.OK, result.output.status)
         assertEquals(listOf("New API finding", "Old API finding"), result.output.items.map { it.name })
-        assertTrue(result.output.items.all { it.evidenceCount == 0 })
+        assertTrue(result.output.items.all { it.evidenceCount == null })
         assertTrue(!result.output.legacyMode)
+        issues.forEach { issue -> verify(exactly = 0) { issue.requestResponses() } }
     }
 
     @Test
@@ -191,22 +202,98 @@ class ScannerIssueSearchTest {
 
         assertEquals(ScannerIssuePageStatus.ACCESS_DENIED, result.status)
         assertTrue(result.items.isEmpty())
+        assertEquals(null, result.projectId)
         verify(exactly = 0) { siteMap.issues() }
-        verify(exactly = 0) { project.id() }
+        verify(exactly = 1) { project.id() }
     }
 
     @Test
-    fun `legacy full issue text is capped and advertises truncation`() = runBlocking {
+    fun `project transition during Scanner approval prevents source access`() = runBlocking {
+        config = config(true)
+        service = ScannerIssueSearchService(api, config, ByteArray(32) { 7 })
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "other-project"
+                return true
+            }
+        }
+
+        val result = service.get(GetScannerIssues()).output
+
+        assertEquals(ScannerIssuePageStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.items.isEmpty())
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `project transition during Scanner materialization discards output`() = runBlocking {
+        val issue = issue(9, "Transition", "example.test", AuditIssueSeverity.HIGH)
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        every { issue.name() } answers {
+            currentProjectId = "other-project"
+            "Transition"
+        }
+        every { siteMap.issues() } returns listOf(issue)
+
+        val result = service.get(GetScannerIssues(count = 1, summariesOnly = true)).output
+
+        assertEquals(ScannerIssuePageStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
+    fun `legacy full issue text keeps complete JSON and stops after bounded truncation`() = runBlocking {
         val issue = issue(1, "Large", "example.test", AuditIssueSeverity.HIGH)
+        val unvisited = issue(2, "Unvisited", "later.example", AuditIssueSeverity.LOW)
         every { issue.detail() } returns "x".repeat(600 * 1024)
+        every { siteMap.issues() } returns listOf(issue, unvisited)
+
+        val result = service.get(GetScannerIssues(count = 2, summariesOnly = false))
+
+        assertEquals(ScannerIssuePageStatus.OK, result.output.status)
+        assertTrue(result.output.legacyTextTruncated)
+        assertEquals(1, result.output.returned)
+        assertEquals(1, result.output.scanned)
+        assertTrue(result.output.hasMore)
+        assertTrue(result.text.orEmpty().length <= 512 * 1024)
+        assertTrue(result.text.orEmpty().contains("output truncated"))
+        Json.parseToJsonElement(result.text.orEmpty().substringBefore("\n\n<Scanner issue output truncated"))
+        verify(exactly = 0) { unvisited.name() }
+        verify(exactly = 0) { unvisited.detail() }
+    }
+
+    @Test
+    fun `legacy evidence slices Montoya bytes before bounded text conversion`() = runBlocking {
+        val issue = issue(3, "Evidence", "example.test", AuditIssueSeverity.HIGH)
+        val evidence = mockk<HttpRequestResponse>()
+        val request = mockk<HttpRequest>()
+        val annotations = mockk<Annotations>()
+        val bytes = mockk<MontoyaByteArray>()
+        val selected = mockk<MontoyaByteArray>()
+        every { issue.requestResponses() } returns listOf(evidence)
+        every { evidence.request() } returns request
+        every { evidence.response() } returns null
+        every { evidence.annotations() } returns annotations
+        every { annotations.notes() } returns null
+        every { request.toByteArray() } returns bytes
+        every { bytes.length() } returns 128 * 1024
+        every { bytes.subArray(0, 16 * 1024) } returns selected
+        every { selected.toString() } returns "r".repeat(16 * 1024)
         every { siteMap.issues() } returns listOf(issue)
 
         val result = service.get(GetScannerIssues(count = 1, summariesOnly = false))
 
         assertEquals(ScannerIssuePageStatus.OK, result.output.status)
         assertTrue(result.output.legacyTextTruncated)
-        assertTrue(result.text.orEmpty().length <= 512 * 1024)
-        assertTrue(result.text.orEmpty().contains("output truncated"))
+        assertEquals(1, result.output.returned)
+        Json.parseToJsonElement(result.text.orEmpty().substringBefore("\n\n<Scanner issue output truncated"))
+        verify(exactly = 1) { bytes.subArray(0, 16 * 1024) }
+        verify(exactly = 0) { request.toString() }
     }
 
     @Test

@@ -279,6 +279,7 @@ internal class HttpMessageSearchService(
             )
         }
 
+        val projectId = currentProjectId()
         progress.report(HttpSearchProgressStage.AUTHORIZING.ordinal)
         for (source in query.sources) {
             if (!checkAccess(source)) {
@@ -288,9 +289,16 @@ internal class HttpMessageSearchService(
                 )
             }
         }
+        val projectAfterApproval = currentProjectId()
+        if (projectAfterApproval != projectId) {
+            return searchError(
+                HttpMessageSearchStatus.PROJECT_MISMATCH,
+                "Burp project changed during HTTP history approval",
+                projectAfterApproval,
+            )
+        }
 
         progress.report(HttpSearchProgressStage.PREPARING.ordinal)
-        val projectId = currentProjectId()
         if (cursor != null && cursor.projectId != projectId) {
             return searchError(
                 HttpMessageSearchStatus.PROJECT_MISMATCH,

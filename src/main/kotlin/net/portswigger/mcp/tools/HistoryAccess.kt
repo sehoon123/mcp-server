@@ -8,6 +8,9 @@ import burp.api.montoya.scanner.audit.issues.AuditIssue
 import burp.api.montoya.websocket.Direction
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.HexFormat
@@ -16,6 +19,8 @@ import kotlin.math.min
 internal const val DEFAULT_HISTORY_SLICE_BYTES = 32 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
 internal const val MAX_NOTES_CHARS = 2_000
+private const val SCANNER_IDENTITY_CHUNK_CHARS = 8 * 1024
+private const val SCANNER_TEXT_ENCODING_BUFFER_BYTES = 8 * 1024
 private val HTTP_MESSAGE_PARTS = setOf(
     "metadata",
     "request",
@@ -90,7 +95,8 @@ data class ScannerIssueSummary(
     val severity: String,
     val confidence: String,
     val definitionTypeIndex: Int,
-    val evidenceCount: Int,
+    /** Null because Montoya exposes evidence only as a potentially unbounded materialized list. */
+    val evidenceCount: Int? = null,
 )
 
 @Serializable
@@ -103,6 +109,9 @@ enum class HistoryReadStatus {
 
     @SerialName("not_found")
     NOT_FOUND,
+
+    @SerialName("scan_limit_reached")
+    SCAN_LIMIT_REACHED,
 
     @SerialName("project_mismatch")
     PROJECT_MISMATCH,
@@ -241,13 +250,13 @@ internal fun OrganizerItem.toHistorySummary(): OrganizerItemSummary {
     )
 }
 
-internal fun AuditIssue.toHistorySummary(): ScannerIssueSummary {
+internal fun AuditIssue.toHistorySummary(id: String = stableHistoryId()): ScannerIssueSummary {
     val service = httpService()
     val rawName = name()
     val rawBaseUrl = baseUrl()
     val rawHost = service?.host()
     return ScannerIssueSummary(
-        id = stableHistoryId(),
+        id = id,
         name = rawName?.take(512),
         nameTruncated = (rawName?.length ?: 0) > 512,
         baseUrl = rawBaseUrl?.take(MAX_HTTP_SEARCH_URL_CHARS),
@@ -259,30 +268,52 @@ internal fun AuditIssue.toHistorySummary(): ScannerIssueSummary {
         severity = severity().name,
         confidence = confidence().name,
         definitionTypeIndex = definition().typeIndex(),
-        evidenceCount = requestResponses().size,
+        evidenceCount = null,
     )
 }
 
-/** A deterministic ID scoped to the current Burp project and the issue's identity fields. */
-internal fun AuditIssue.stableHistoryId(): String {
+/**
+ * A versioned project-scoped ID. Site Map search results include their bounded snapshot index so
+ * they remain directly resolvable; other producers use the `x` locator and bounded lookup.
+ * The fingerprint intentionally excludes detail, remediation, and evidence content.
+ */
+internal fun AuditIssue.stableHistoryId(index: Int? = null): String {
+    require(index == null || index >= 0) { "Scanner issue index must be non-negative" }
+    val locator = index?.toString(36) ?: "x"
+    return "issue_v2_${locator}_${scannerIssueFingerprint()}"
+}
+
+internal fun AuditIssue.scannerIssueFingerprint(): String {
     val service = httpService()
+    val values = listOf(
+        definition().typeIndex().toString() to 32,
+        name().orEmpty() to 512,
+        baseUrl().orEmpty() to MAX_HTTP_SEARCH_URL_CHARS,
+        service?.host().orEmpty() to MAX_HTTP_SEARCH_HOST_CHARS,
+        service?.port()?.toString().orEmpty() to 16,
+        service?.secure()?.toString().orEmpty() to 8,
+        severity().name to 32,
+        confidence().name to 32,
+    )
     val digest = MessageDigest.getInstance("SHA-256")
-    sequenceOf(
-        definition().typeIndex().toString(),
-        name().orEmpty(),
-        baseUrl().orEmpty(),
-        service?.host().orEmpty(),
-        service?.port()?.toString().orEmpty(),
-        service?.secure()?.toString().orEmpty(),
-        severity().name,
-        confidence().name,
-        detail().orEmpty(),
-    ).forEachIndexed { index, value ->
-        if (index > 0) digest.update(0)
-        digest.update(value.toByteArray(Charsets.UTF_8))
+    values.forEachIndexed { valueIndex, (value, maxChars) ->
+        if (valueIndex > 0) digest.update(0)
+        digest.updateScannerIdentityValue(value.take(maxChars))
     }
     val identity = digest.digest()
-    return "issue_" + HexFormat.of().formatHex(identity, 0, 16)
+    return HexFormat.of().formatHex(identity, 0, 16)
+}
+
+private fun MessageDigest.updateScannerIdentityValue(value: String) {
+    var start = 0
+    while (start < value.length) {
+        var end = minOf(value.length, start + SCANNER_IDENTITY_CHUNK_CHARS)
+        if (end < value.length && end > start && value[end - 1].isHighSurrogate() && value[end].isLowSurrogate()) {
+            end--
+        }
+        update(value.substring(start, end).toByteArray(Charsets.UTF_8))
+        start = end
+    }
 }
 
 internal fun ProxyHttpRequestResponse.readPart(
@@ -421,9 +452,10 @@ internal fun AuditIssue.readField(
     offset: Int,
     limit: Int,
     encoding: String,
+    resolvedId: String = stableHistoryId(),
 ): ScannerIssueReadResult {
     val normalizedField = normalizeScannerIssueField(field)
-    val summary = toHistorySummary()
+    val summary = toHistorySummary(resolvedId)
     val id = summary.id
     if (normalizedField == "metadata") {
         return ScannerIssueReadResult(
@@ -434,9 +466,13 @@ internal fun AuditIssue.readField(
         )
     }
 
+    val textField = when (normalizedField) {
+        "detail" -> detail()
+        "remediation" -> remediation()
+        else -> null
+    }
     val content = when (normalizedField) {
-        "detail" -> detail()?.toByteArray(Charsets.UTF_8)?.toHistorySlice(offset, limit, encoding)
-        "remediation" -> remediation()?.toByteArray(Charsets.UTF_8)?.toHistorySlice(offset, limit, encoding)
+        "detail", "remediation" -> textField?.toHistorySlice(offset, limit, encoding)
         "evidence_request", "evidence_response" -> {
             val index = requireNotNull(evidenceIndex) { "evidenceIndex is required for $normalizedField" }
             val evidence = requestResponses()
@@ -563,6 +599,68 @@ internal fun MontoyaByteArray.toHistorySlice(offset: Int, limit: Int, encoding: 
         offsetBytes = offset,
         returnedBytes = returnedBytes,
         totalBytes = totalBytes,
+        hasMore = hasMore,
+        nextOffsetBytes = if (hasMore) end else null,
+    )
+}
+
+private fun String.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
+    val encoder = Charsets.UTF_8.newEncoder()
+        .onMalformedInput(CodingErrorAction.REPLACE)
+        .onUnmappableCharacter(CodingErrorAction.REPLACE)
+    val input = CharBuffer.wrap(this)
+    val output = ByteBuffer.allocate(SCANNER_TEXT_ENCODING_BUFFER_BYTES)
+    val selected = ByteArray(limit)
+    var selectedBytes = 0
+    var totalBytes = 0L
+    val requestedEnd = offset.toLong() + limit.toLong()
+
+    fun consumeOutput() {
+        output.flip()
+        val chunkBytes = output.remaining()
+        val chunkStart = totalBytes
+        val chunkEnd = chunkStart + chunkBytes
+        val overlapStart = maxOf(offset.toLong(), chunkStart)
+        val overlapEnd = minOf(requestedEnd, chunkEnd)
+        if (overlapStart < overlapEnd) {
+            output.position((overlapStart - chunkStart).toInt())
+            val copyBytes = (overlapEnd - overlapStart).toInt()
+            output.get(selected, selectedBytes, copyBytes)
+            selectedBytes += copyBytes
+        }
+        totalBytes = chunkEnd
+        output.clear()
+    }
+
+    while (true) {
+        val result = encoder.encode(input, output, true)
+        consumeOutput()
+        if (result.isUnderflow) break
+        if (result.isError) result.throwException()
+    }
+    while (true) {
+        val result = encoder.flush(output)
+        consumeOutput()
+        if (result.isUnderflow) break
+        if (result.isError) result.throwException()
+    }
+
+    require(totalBytes <= Int.MAX_VALUE) { "Scanner text field exceeds the supported byte length" }
+    require(offset.toLong() <= totalBytes) { "offset must not exceed totalBytes ($totalBytes)" }
+    val total = totalBytes.toInt()
+    val end = min(total.toLong(), requestedEnd).toInt()
+    val data = when (encoding) {
+        "text" -> String(selected, 0, selectedBytes, Charsets.UTF_8)
+        "base64" -> Base64.getEncoder().encodeToString(selected.copyOf(selectedBytes))
+        else -> error("Unsupported encoding: $encoding")
+    }
+    val hasMore = end < total
+    return HistoryContentSlice(
+        encoding = encoding,
+        data = data,
+        offsetBytes = offset,
+        returnedBytes = selectedBytes,
+        totalBytes = total,
         hasMore = hasMore,
         nextOffsetBytes = if (hasMore) end else null,
     )

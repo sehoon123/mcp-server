@@ -749,6 +749,29 @@ internal class ScannerAuditService(
             }
         }
 
+        val projectAfterIssues = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.BURP_ERROR,
+                ScannerAuditActionState.NOT_STARTED,
+                record.projectId,
+                record.mode,
+                "Burp could not recheck the project after reading Scanner audit issues: ${safeScannerAuditException(e)}",
+            )
+        }
+        if (projectAfterIssues != record.projectId) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.PROJECT_MISMATCH,
+                ScannerAuditActionState.NOT_STARTED,
+                projectAfterIssues,
+                record.mode,
+                "Burp project changed while Scanner audit issues were materialized",
+            )
+        }
+
         return record.toResult(
             status = if (errors.isEmpty()) ScannerAuditToolStatus.OK else ScannerAuditToolStatus.BURP_ERROR,
             actionState = ScannerAuditActionState.COMPLETED,

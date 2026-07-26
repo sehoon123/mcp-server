@@ -25,6 +25,43 @@ class SafeLoggingTest {
     }
 
     @Test
+    fun `sanitizers redact complete authorization cookie and query credentials`() {
+        val secret = "unique-credential-sentinel-0123456789"
+        val values = listOf(
+            "Authorization: Basic $secret",
+            "Authorization: Digest username=alice, response=$secret, nonce=quoted",
+            "Proxy-Authorization: Custom scheme=$secret extra=value",
+            "Cookie: session=$secret; preference=dark",
+            "Set-Cookie: session=$secret; HttpOnly; Secure",
+            "https://example.test/callback?access_token=$secret&state=public",
+            "client_secret=\"$secret with spaces\"",
+            "{\"Authorization\":\"Basic $secret\"}",
+            "{\"Proxy-Authorization\":\"Custom $secret\"}",
+            "{\"Cookie\":\"session=$secret\"}",
+            "{\"Set-Cookie\":\"session=$secret; HttpOnly\"}",
+            "{\"client_secret\":\"$secret with spaces\"}",
+        )
+
+        values.forEach { value ->
+            val singleLine = safeSingleLine(value)
+            val exception = safeExceptionSummary(IllegalStateException(value))
+            assertTrue(singleLine.contains("<redacted>"), value)
+            assertTrue(exception.contains("<redacted>"), value)
+            assertFalse(singleLine.contains(secret), value)
+            assertFalse(exception.contains(secret), value)
+        }
+    }
+
+    @Test
+    fun `single-line sanitizer bounds work before regex redaction`() {
+        val secret = "bounded-secret-sentinel"
+        val result = safeSingleLine("Authorization: Basic $secret " + "x".repeat(2 * 1024 * 1024))
+
+        assertFalse(result.contains(secret))
+        assertTrue(result.length <= 384)
+    }
+
+    @Test
     fun `single-line sanitizer redacts root-level absolute paths`() {
         val result = safeSingleLine("C:\\secret.txt and /secret.txt")
 

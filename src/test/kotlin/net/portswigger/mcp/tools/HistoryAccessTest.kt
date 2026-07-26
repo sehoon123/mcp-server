@@ -15,15 +15,15 @@ import kotlin.test.assertTrue
 
 class HistoryAccessTest {
     @Test
-    fun `scanner issue IDs are deterministic and scoped to identity fields`() {
+    fun `scanner issue IDs are deterministic and scoped to bounded metadata`() {
         val first = issue(detail = "first detail")
-        val equivalent = issue(detail = "first detail")
-        val changed = issue(detail = "changed detail")
+        val equivalent = issue(detail = "changed content")
+        val changed = issue(detail = "first detail", name = "Changed issue")
 
         val firstId = first.stableHistoryId()
         assertEquals(firstId, equivalent.stableHistoryId())
         assertNotEquals(firstId, changed.stableHistoryId())
-        assertTrue(firstId.matches(Regex("issue_[0-9a-f]{32}")))
+        assertTrue(firstId.matches(Regex("issue_v2_x_[0-9a-f]{32}")))
         assertEquals(firstId, first.toHistorySummary().id)
     }
 
@@ -42,13 +42,13 @@ class HistoryAccessTest {
         assertFailsWith<IllegalArgumentException> { normalizeHistoryEncoding("hex") }
     }
 
-    private fun issue(detail: String): AuditIssue {
+    private fun issue(detail: String, name: String = "Example issue"): AuditIssue {
         val issue = mockk<AuditIssue>()
         val service = mockk<HttpService>()
         val definition = mockk<AuditIssueDefinition>()
         every { issue.definition() } returns definition
         every { definition.typeIndex() } returns 0x1234
-        every { issue.name() } returns "Example issue"
+        every { issue.name() } returns name
         every { issue.baseUrl() } returns "https://example.test/path"
         every { issue.httpService() } returns service
         every { service.host() } returns "example.test"

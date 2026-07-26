@@ -112,6 +112,28 @@ class ScopeToolsTest {
     }
 
     @Test
+    fun `project transition during scope read discards target results`() = runBlocking {
+        val url = "https://example.test/"
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        every { scope.isInScope(url) } answers {
+            currentProjectId = "other-project"
+            true
+        }
+
+        val result = service.check(
+            CheckScope(
+                projectId = "project-123",
+                targets = listOf(ScopeTarget(url = url)),
+            )
+        )
+
+        assertEquals(ScopeToolStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.targets.isEmpty())
+    }
+
+    @Test
     fun `scope update denial performs no mutation`() = runBlocking {
         every { scope.isInScope("https://example.test/") } returns false
         metadataIndex.snapshot("project-123", listOf(HttpMessageSource.PROXY))
@@ -230,6 +252,72 @@ class ScopeToolsTest {
     }
 
     @Test
+    fun `project transition with denied scope approval returns mismatch`() = runBlocking {
+        val url = "https://denied-transition.example.test/"
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        every { scope.isInScope(url) } returns false
+        ScopeActionSecurity.approvalHandler = object : ScopeActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String,
+                summary: String,
+                reviewContent: String,
+                config: McpConfig,
+                api: MontoyaApi,
+            ): Boolean {
+                currentProjectId = "other-project"
+                return false
+            }
+        }
+
+        val result = service.update(
+            UpdateScope(
+                "project-123",
+                ScopeUpdateOperation.INCLUDE,
+                listOf(ScopeTarget(url = url)),
+            )
+        )
+
+        assertEquals(ScopeToolStatus.PROJECT_MISMATCH, result.status)
+        assertEquals(ProjectMutationExecutionState.NOT_STARTED, result.executionState)
+        assertEquals("other-project", result.projectId)
+        verify(exactly = 0) { scope.includeInScope(any()) }
+    }
+
+    @Test
+    fun `project transition after scope mutation is execution uncertain`() = runBlocking {
+        val url = "https://transition.example.test/"
+        var currentProjectId = "project-123"
+        var reads = 0
+        every { project.id() } answers { currentProjectId }
+        every { scope.isInScope(url) } answers {
+            reads++
+            if (reads < 3) {
+                false
+            } else {
+                currentProjectId = "other-project"
+                true
+            }
+        }
+        every { scope.includeInScope(url) } just runs
+        ScopeActionSecurity.approvalHandler = approvalHandler(true)
+
+        val result = service.update(
+            UpdateScope(
+                "project-123",
+                ScopeUpdateOperation.INCLUDE,
+                listOf(ScopeTarget(url = url)),
+            )
+        )
+
+        assertEquals(ScopeToolStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(ProjectMutationExecutionState.UNCERTAIN, result.executionState)
+        assertEquals(1, result.changedCount)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+        verify(exactly = 1) { scope.includeInScope(url) }
+    }
+
+    @Test
     fun `partial scope update fails closed as execution uncertain`() = runBlocking {
         val first = "https://one.example.test/"
         val second = "https://two.example.test/"
@@ -256,22 +344,23 @@ class ScopeToolsTest {
     }
 
     @Test
-    fun `scope mutation cancellation propagates and releases the metadata barrier`() = runBlocking {
+    fun `scope mutation cancellation after attempt is execution uncertain and releases metadata barrier`() = runBlocking {
         val url = "https://cancel.example.test/"
         every { scope.isInScope(url) } returnsMany listOf(false, false)
         every { scope.includeInScope(url) } throws CancellationException("cancelled")
         ScopeActionSecurity.approvalHandler = approvalHandler(true)
 
-        assertFailsWith<CancellationException> {
-            service.update(
-                UpdateScope(
-                    "project-123",
-                    ScopeUpdateOperation.INCLUDE,
-                    listOf(ScopeTarget(url = url)),
-                )
+        val result = service.update(
+            UpdateScope(
+                "project-123",
+                ScopeUpdateOperation.INCLUDE,
+                listOf(ScopeTarget(url = url)),
             )
-        }
+        )
 
+        assertEquals(ScopeToolStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(ProjectMutationExecutionState.UNCERTAIN, result.executionState)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
         verify(exactly = 1) { scope.includeInScope(url) }
         assertEquals("project-123", metadataIndex.observeCurrentProject())
     }

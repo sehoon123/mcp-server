@@ -7,6 +7,7 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.RedirectionMode
 import burp.api.montoya.http.RequestOptions
+import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
@@ -26,7 +27,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.net.SocketTimeoutException
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -119,7 +119,7 @@ class RawHttpToolsTest {
     }
 
     @Test
-    fun `raw send never converts execution cancellation into an uncertain result`() = runBlocking {
+    fun `raw send cancellation after transmission begins is execution uncertain`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()
         every { RequestOptions.requestOptions() } returns options
@@ -130,8 +130,34 @@ class RawHttpToolsTest {
         every { api.http() } returns http
         every { http.sendRequest(fixture.request, options) } throws CancellationException("cancelled")
 
-        assertFailsWith<CancellationException> { service.send(defaultHttp1Send()) }
+        val result = service.send(defaultHttp1Send())
+
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
         verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
+    fun `post-send automatic Site Map recording stays disabled at project boundary`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        val exchange = mockk<HttpRequestResponse>()
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } returns exchange
+
+        val result = service.send(defaultHttp1Send())
+
+        assertEquals(HttpMessageActionStatus.OK, result.status)
+        assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+        assertEquals(false, result.recordedInSiteMap)
+        assertTrue(result.error.orEmpty().contains("no project boundary was available"))
+        verify(exactly = 0) { api.siteMap() }
     }
 
     @Test

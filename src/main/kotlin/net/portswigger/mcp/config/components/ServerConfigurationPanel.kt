@@ -74,7 +74,7 @@ class ServerConfigurationPanel(
         add(createVerticalStrut(Design.Spacing.MD))
 
         requestActionApprovalCheckBox = createStandardCheckBox(
-            "Require approval for request routing actions", config.requireRequestActionApproval
+            "Require approval for request routing and derived-request actions", config.requireRequestActionApproval
         ) { config.requireRequestActionApproval = it }
         add(requestActionApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))

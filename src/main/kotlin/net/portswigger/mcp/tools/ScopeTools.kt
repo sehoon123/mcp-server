@@ -171,7 +171,7 @@ internal class ScopeToolService(
         }
 
         val results = ArrayList<ScopeTargetResult>(prepared.targets.size)
-        return try {
+        try {
             prepared.targets.forEach { target ->
                 currentCoroutineContext().ensureActive()
                 results += ScopeTargetResult(
@@ -181,11 +181,10 @@ internal class ScopeToolService(
                     inScope = api.scope().isInScope(target.url),
                 )
             }
-            CheckScopeResult(ScopeToolStatus.OK, prepared.projectId, results, error = null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            CheckScopeResult(
+            return CheckScopeResult(
                 status = ScopeToolStatus.BURP_ERROR,
                 projectId = prepared.projectId,
                 targets = results,
@@ -193,6 +192,27 @@ internal class ScopeToolService(
                 error = "Burp could not check Target scope: ${safeScopeException(e)}",
             )
         }
+        val projectAfterRead = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return CheckScopeResult(
+                ScopeToolStatus.BURP_ERROR,
+                prepared.projectId,
+                emptyList(),
+                error = "Burp could not recheck the project after reading scope: ${safeScopeException(e)}",
+            )
+        }
+        if (projectAfterRead != prepared.projectId) {
+            return CheckScopeResult(
+                ScopeToolStatus.PROJECT_MISMATCH,
+                projectAfterRead,
+                emptyList(),
+                error = "Burp project changed while Target scope was read",
+            )
+        }
+        return CheckScopeResult(ScopeToolStatus.OK, prepared.projectId, results, error = null)
     }
 
     suspend fun update(input: UpdateScope): UpdateScopeResult {
@@ -292,6 +312,30 @@ internal class ScopeToolService(
                 "Burp could not request scope-change approval: ${safeScopeException(e)}",
             )
         }
+        val projectAfterApproval = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return updateFailure(
+                input.operation,
+                ScopeToolStatus.BURP_ERROR,
+                ProjectMutationExecutionState.NOT_STARTED,
+                prepared.projectId,
+                null,
+                "Burp could not recheck the project after scope approval: ${safeScopeException(e)}",
+            )
+        }
+        if (projectAfterApproval != prepared.projectId) {
+            return updateFailure(
+                input.operation,
+                ScopeToolStatus.PROJECT_MISMATCH,
+                ProjectMutationExecutionState.NOT_STARTED,
+                projectAfterApproval,
+                null,
+                "Burp project changed during scope approval",
+            )
+        }
         if (!approved) {
             auditScope(input.operation, indexesToChange.size, 0, "denied")
             return UpdateScopeResult(
@@ -328,7 +372,16 @@ internal class ScopeToolService(
                 currentCoroutineContext().ensureActive()
             } catch (e: CancellationException) {
                 auditScope(input.operation, indexesToChange.size, changedCount, "cancelled after $changedCount change(s)")
-                throw e
+                if (changedCount == 0) throw e
+                return uncertainUpdate(
+                    input.operation,
+                    prepared,
+                    after,
+                    changed,
+                    changedCount,
+                    prepared.targets[index].index,
+                    "Scope update was cancelled after one or more changes may have been applied",
+                )
             }
             val target = prepared.targets[index]
             var mutationAttempted = false
@@ -383,7 +436,16 @@ internal class ScopeToolService(
                 }
             } catch (e: CancellationException) {
                 auditScope(input.operation, indexesToChange.size, changedCount, "cancelled during mutation")
-                throw e
+                if (!mutationAttempted && changedCount == 0) throw e
+                return uncertainUpdate(
+                    input.operation,
+                    prepared,
+                    after,
+                    changed,
+                    changedCount,
+                    target.index,
+                    "Scope update was cancelled after a mutation may have been applied",
+                )
             } catch (e: Exception) {
                 if (!mutationAttempted && changedCount == 0) {
                     return updateFailure(
@@ -406,6 +468,65 @@ internal class ScopeToolService(
                     "Scope update may have been partially applied: ${safeScopeException(e)}",
                 )
             }
+        }
+
+        val finalProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            if (changedCount == 0) throw e
+            auditScope(input.operation, indexesToChange.size, changedCount, "final project check cancelled; execution uncertain")
+            return uncertainUpdate(
+                input.operation,
+                prepared,
+                after,
+                changed,
+                changedCount,
+                null,
+                "Scope update completed one or more changes but final verification was cancelled",
+            )
+        } catch (e: Exception) {
+            if (changedCount == 0) {
+                return updateFailure(
+                    input.operation,
+                    ScopeToolStatus.BURP_ERROR,
+                    ProjectMutationExecutionState.NOT_STARTED,
+                    prepared.projectId,
+                    null,
+                    "Burp could not recheck the project after the scope update: ${safeScopeException(e)}",
+                )
+            }
+            auditScope(input.operation, indexesToChange.size, changedCount, "final project check failed; execution uncertain")
+            return uncertainUpdate(
+                input.operation,
+                prepared,
+                after,
+                changed,
+                changedCount,
+                null,
+                "Burp could not prove the project after applying scope updates: ${safeScopeException(e)}",
+            )
+        }
+        if (finalProjectId != prepared.projectId) {
+            if (changedCount == 0) {
+                return updateFailure(
+                    input.operation,
+                    ScopeToolStatus.PROJECT_MISMATCH,
+                    ProjectMutationExecutionState.NOT_STARTED,
+                    finalProjectId,
+                    null,
+                    "Burp project changed before any scope update executed",
+                )
+            }
+            auditScope(input.operation, indexesToChange.size, changedCount, "project changed after mutation; execution uncertain")
+            return uncertainUpdate(
+                input.operation,
+                prepared,
+                after,
+                changed,
+                changedCount,
+                null,
+                "Burp project changed before the completed scope update could be confirmed",
+            )
         }
 
         auditScope(input.operation, indexesToChange.size, changedCount, "completed")
@@ -544,7 +665,7 @@ internal class ScopeToolService(
         after: List<Boolean>,
         changed: BooleanArray,
         changedCount: Int,
-        errorIndex: Int,
+        errorIndex: Int?,
         error: String,
     ) = UpdateScopeResult(
         status = ScopeToolStatus.EXECUTION_UNCERTAIN,

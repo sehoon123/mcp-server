@@ -76,6 +76,34 @@ class HttpMessageComparisonTest {
     }
 
     @Test
+    fun `project transition during comparison materialization discards results`() = runBlocking {
+        val first = proxyItem(1, "alpha-one")
+        val second = proxyItem(2, "alpha-two")
+        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        val response = requireNotNull(first.response())
+        val body = response.body()
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        every { response.body() } answers {
+            currentProjectId = "other-project"
+            body
+        }
+
+        val result = service.compare(
+            CompareHttpMessages(
+                projectId = "project-123",
+                refs = refs(1, 2),
+                part = HttpComparisonPart.RESPONSE_BODY,
+                includeResponseVariations = false,
+            )
+        )
+
+        assertEquals(HttpComparisonStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
     fun `matching inspected prefixes report unknown equality when truncated`() = runBlocking {
         val first = proxyItem(1, "abcdef")
         val second = proxyItem(2, "abcdZZ")
@@ -207,6 +235,33 @@ class HttpMessageComparisonTest {
         assertEquals(HttpComparisonStatus.PART_UNAVAILABLE, result.status)
         assertEquals(1, result.errorRefIndex)
         verify(exactly = 0) { http.createResponseVariationsAnalyzer() }
+    }
+
+    @Test
+    fun `project transition during batch data approval prevents message resolution`() = runBlocking {
+        service = HttpMessageComparisonService(api, config(requireDataApproval = true))
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "other-project"
+                return true
+            }
+        }
+
+        val result = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE_BODY,
+                includeResponseVariations = false,
+            )
+        )
+
+        assertEquals(HttpComparisonStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.items.isEmpty())
+        verify(exactly = 0) { proxy.history(any()) }
     }
 
     @Test

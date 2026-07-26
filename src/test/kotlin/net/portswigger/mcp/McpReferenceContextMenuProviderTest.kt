@@ -249,9 +249,9 @@ class McpReferenceContextMenuProviderTest {
         tasks.runPending()
 
         verify(exactly = 1) { siteMap.issues() }
-        verify(exactly = 1) { selected.detail() }
-        verify(exactly = 2) { current.detail() }
-        val expectedId = current.stableHistoryId()
+        verify(exactly = 0) { selected.detail() }
+        verify(exactly = 0) { current.detail() }
+        val expectedId = current.stableHistoryId(0)
         assertEquals("burp://scanner-issue/project-A/$expectedId", clipboard.value)
     }
 

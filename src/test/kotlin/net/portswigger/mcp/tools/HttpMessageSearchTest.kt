@@ -20,6 +20,10 @@ import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.DataAccessApprovalHandler
+import net.portswigger.mcp.security.DataAccessSecurity
+import net.portswigger.mcp.security.DataAccessType
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
@@ -40,11 +44,17 @@ class HttpMessageSearchTest {
     private val siteMapItems = mutableListOf<HttpRequestResponse>()
     private lateinit var config: McpConfig
     private lateinit var service: HttpMessageSearchService
+    private lateinit var originalDataAccessHandler: DataAccessApprovalHandler
 
     @BeforeEach
     fun setUp() {
+        originalDataAccessHandler = DataAccessSecurity.approvalHandler
+        val storedBooleans = mutableMapOf<String, Boolean>()
         val storage = mockk<PersistedObject>(relaxed = true)
-        every { storage.getBoolean(any()) } returns false
+        every { storage.getBoolean(any()) } answers { storedBooleans[firstArg()] ?: false }
+        every { storage.setBoolean(any(), any()) } answers {
+            storedBooleans[firstArg()] = secondArg()
+        }
         every { storage.getString(any()) } returns ""
         every { api.logging() } returns logging
         every { api.project() } returns project
@@ -59,6 +69,31 @@ class HttpMessageSearchTest {
             config,
             cursorSecret = ByteArray(32) { 7 },
         )
+    }
+
+    @AfterEach
+    fun tearDown() {
+        DataAccessSecurity.approvalHandler = originalDataAccessHandler
+    }
+
+    @Test
+    fun `project transition during HTTP data approval prevents history access`() = runBlocking {
+        config.requireDataAccessApproval = true
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "other-project"
+                return true
+            }
+        }
+
+        val result = service.search(SearchHttpMessages())
+
+        assertEquals(HttpMessageSearchStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertTrue(result.items.isEmpty())
+        verify(exactly = 0) { proxy.history() }
     }
 
     @Test

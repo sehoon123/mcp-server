@@ -1308,7 +1308,7 @@ class ToolsKtTest {
         val replay = tools.single { it.name == "send_http_request_from_id" }
         assertNotNull(replay.outputSchema?.properties?.get("recordedRef"))
         val redirectSchema = replay.inputSchema.properties?.get("redirection").toString()
-        assertTrue(redirectSchema.contains("\"enum\":[\"never\"]"))
+        assertTrue(redirectSchema.contains("\"enum\":[\"never\",null]"))
         assertTrue(redirectSchema.contains("\"default\":\"never\""))
 
         val rawSend = tools.single { it.name == "send_raw_http_request" }
@@ -1569,7 +1569,13 @@ class ToolsKtTest {
             val service = mockk<burp.api.montoya.http.HttpService>()
             val definition = mockk<AuditIssueDefinition>()
             every { api.project() } returns project
-            every { project.id() } returnsMany listOf("project-before", "project-before", "project-after")
+            every { project.id() } returnsMany listOf(
+                "project-before",
+                "project-before",
+                "project-before",
+                "project-before",
+                "project-after",
+            )
             every { api.siteMap() } returns siteMap
             every { siteMap.issues() } returns listOf(issue)
             every { issue.definition() } returns definition

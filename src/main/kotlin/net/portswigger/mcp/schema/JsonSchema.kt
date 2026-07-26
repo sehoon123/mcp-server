@@ -11,6 +11,7 @@ import kotlinx.serialization.descriptors.StructureKind
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.reflect.KClass
@@ -37,10 +38,10 @@ annotation class JsonSchemaMetadata(
 
 /**
  * Marks a serializable class whose generated JSON Schema must require exactly one of the
- * named sibling properties to be present. This is emitted as a standard `oneOf` constraint
- * over per-property `required` alternatives (`oneOf: [{required: [a]}, {required: [b]}]`),
- * which JSON Schema satisfies only when exactly one alternative matches - i.e. exactly one
- * of the named properties is present.
+ * named sibling properties to contain a non-null value. This is emitted as a standard `oneOf`
+ * constraint over per-property required/non-null alternatives. A sibling explicitly set to
+ * null therefore does not count as selected, matching nullable Kotlin decoding and runtime
+ * validation.
  *
  * This only takes effect where the annotated class is used as a *nested* schema, for example
  * as a `List<T>` item type or a nested object property. The MCP Kotlin SDK's `ToolSchema` has
@@ -170,7 +171,18 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
                             "oneOf",
                             JsonArray(
                                 exactlyOneOf.properties.map { name ->
-                                    JsonObject(mapOf("required" to JsonArray(listOf(JsonPrimitive(name)))))
+                                    JsonObject(
+                                        mapOf(
+                                            "required" to JsonArray(listOf(JsonPrimitive(name))),
+                                            "properties" to JsonObject(
+                                                mapOf(
+                                                    name to JsonObject(
+                                                        mapOf("not" to typedSchema("null"))
+                                                    )
+                                                )
+                                            ),
+                                        )
+                                    )
                                 }
                             ),
                         )
@@ -200,7 +212,11 @@ private fun JsonElement.withMetadata(metadata: JsonSchemaMetadata?): JsonElement
         if (metadata.maxLength >= 0) put("maxLength", JsonPrimitive(metadata.maxLength))
         if (metadata.pattern.isNotEmpty()) put("pattern", JsonPrimitive(metadata.pattern.take(512)))
         if (metadata.enumValues.isNotEmpty()) {
-            put("enum", JsonArray(metadata.enumValues.distinct().map(::JsonPrimitive)))
+            val values = metadata.enumValues.distinct().map { value ->
+                JsonPrimitive(value) as JsonElement
+            }.toMutableList()
+            if (schema.acceptsNull()) values += JsonNull
+            put("enum", JsonArray(values))
         }
         if (metadata.minimum != Long.MIN_VALUE) put("minimum", JsonPrimitive(metadata.minimum))
         if (metadata.maximum != Long.MIN_VALUE) put("maximum", JsonPrimitive(metadata.maximum))
@@ -216,10 +232,28 @@ private fun typedSchema(type: String) = JsonObject(mapOf("type" to JsonPrimitive
 
 private fun JsonElement.withNullType(): JsonElement {
     val objectSchema = this as? JsonObject ?: return this
+    if (objectSchema.containsKey("oneOf") || objectSchema.containsKey("allOf")) {
+        return JsonObject(mapOf("anyOf" to JsonArray(listOf(this, typedSchema("null")))))
+    }
     val type = objectSchema["type"] as? JsonPrimitive ?: return JsonObject(
         mapOf("anyOf" to JsonArray(listOf(this, typedSchema("null"))))
     )
-    return JsonObject(objectSchema + ("type" to JsonArray(listOf(type, JsonPrimitive("null")))))
+    return JsonObject(buildMap {
+        putAll(objectSchema)
+        put("type", JsonArray(listOf(type, JsonPrimitive("null"))))
+        val enumValues = objectSchema["enum"] as? JsonArray
+        if (enumValues != null && JsonNull !in enumValues) {
+            put("enum", JsonArray(enumValues + JsonNull))
+        }
+    })
+}
+
+private fun JsonObject.acceptsNull(): Boolean {
+    val type = this["type"]
+    return type == JsonPrimitive("null") || (type is JsonArray && JsonPrimitive("null") in type) ||
+        ((this["anyOf"] as? JsonArray)?.any { candidate ->
+            (candidate as? JsonObject)?.get("type") == JsonPrimitive("null")
+        } == true)
 }
 
 fun KClass<*>.asInputSchema(): ToolSchema {

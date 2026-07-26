@@ -270,51 +270,22 @@ internal class McpReferenceContextMenuProvider(
     private fun findCurrentScannerIssueId(selected: AuditIssue): String {
         val issues = api.siteMap().issues()
         val scanSize = issues.size.coerceAtMost(MAX_REFERENCE_SOURCE_SCAN)
-        val selectedSummaryAnchor = selected.referenceAnchor(includeDetail = false)
-        val selectedSemanticAnchors = selected.semanticReferenceAnchors()
-        var selectedDetailAnchor: String? = null
-        var summaryMatch: AuditIssue? = null
-        var summaryMatches = 0
-        var semanticDefinitionMatch: AuditIssue? = null
-        var semanticDefinitionMatches = 0
-        var semanticMatch: AuditIssue? = null
-        var semanticMatches = 0
-        var detailMatch: AuditIssue? = null
-        var detailMatches = 0
+        val selectedFingerprint = selected.contextMetadataFingerprint()
+        var matchIndex: Int? = null
+        var matchCount = 0
 
         for (index in 0 until scanSize) {
             val issue = issues[index]
-            if (issue === selected) return issue.stableHistoryId()
-            if (issue.referenceAnchor(includeDetail = false) == selectedSummaryAnchor) {
-                summaryMatches++
-                if (summaryMatches == 1) summaryMatch = issue
-            }
-            val semanticAnchors = issue.semanticReferenceAnchors()
-            if (semanticAnchors.withDefinition == selectedSemanticAnchors.withDefinition) {
-                semanticDefinitionMatches++
-                if (semanticDefinitionMatches == 1) semanticDefinitionMatch = issue
-            }
-            if (semanticAnchors.withoutDefinition != selectedSemanticAnchors.withoutDefinition) continue
-            semanticMatches++
-            if (semanticMatches == 1) semanticMatch = issue
-            val expectedDetailAnchor = selectedDetailAnchor
-                ?: selected.referenceAnchor(includeDetail = true).also { selectedDetailAnchor = it }
-            if (issue.referenceAnchor(includeDetail = true) == expectedDetailAnchor) {
-                detailMatches++
-                if (detailMatches == 1) detailMatch = issue
+            if (issue === selected) return issue.stableHistoryId(index)
+            if (issue.contextMetadataFingerprint() == selectedFingerprint) {
+                matchCount++
+                if (matchCount == 1) matchIndex = index
             }
         }
 
-        val match = when {
-            detailMatches == 1 -> detailMatch
-            summaryMatches == 1 -> summaryMatch
-            semanticDefinitionMatches == 1 -> semanticDefinitionMatch
-            semanticMatches == 1 -> semanticMatch
-            else -> null
-        }
-        return requireNotNull(match) {
-            "Scanner issue is missing or ambiguous in the current project"
-        }.stableHistoryId()
+        require(matchCount == 1) { "Scanner issue is missing or ambiguous in the current project" }
+        val resolvedIndex = requireNotNull(matchIndex) { "Scanner issue is missing in the current project" }
+        return issues[resolvedIndex].stableHistoryId(resolvedIndex)
     }
 
     private fun raiseInfo(message: String) {
@@ -350,81 +321,36 @@ private fun ContextWebSocketMessage.referenceAnchor(): String {
     return HexFormat.of().formatHex(digest.digest(), 0, 16)
 }
 
-private fun AuditIssue.referenceAnchor(includeDetail: Boolean): String {
+private fun AuditIssue.contextMetadataFingerprint(): String {
     val digest = MessageDigest.getInstance("SHA-256")
     val service = httpService()
     digest.updateReferenceString(definition().typeIndex().toString())
-    digest.updateReferenceString(name().orEmpty())
-    digest.updateReferenceString(baseUrl().orEmpty())
-    digest.updateReferenceString(service?.host().orEmpty())
-    digest.updateReferenceString(service?.port()?.toString().orEmpty())
-    digest.updateReferenceString(service?.secure()?.toString().orEmpty())
+    digest.updateReferenceString(name().orEmpty().take(512))
+    val fallbackUri = if (service == null) {
+        runCatching { URI(baseUrl().orEmpty().take(4_096)) }.getOrNull()
+    } else null
+    val fallbackHost = fallbackUri?.host?.lowercase(Locale.ROOT)
+    val fallbackScheme = fallbackUri?.scheme?.lowercase(Locale.ROOT)
+    if (service != null) {
+        digest.update(1)
+        digest.updateReferenceString(service.host().orEmpty().lowercase(Locale.ROOT).take(253))
+        digest.updateReferenceInt(service.port())
+        digest.update(if (service.secure()) 1.toByte() else 0.toByte())
+    } else if (!fallbackHost.isNullOrEmpty() && fallbackScheme in setOf("http", "https")) {
+        val secure = fallbackScheme == "https"
+        digest.update(1)
+        digest.updateReferenceString(fallbackHost.take(253))
+        val fallbackPort = requireNotNull(fallbackUri).port
+        digest.updateReferenceInt(if (fallbackPort >= 0) fallbackPort else if (secure) 443 else 80)
+        digest.update(if (secure) 1.toByte() else 0.toByte())
+    } else {
+        digest.update(0)
+        digest.updateReferenceString(baseUrl().orEmpty().take(4_096))
+    }
     digest.updateReferenceString(severity().name)
     digest.updateReferenceString(confidence().name)
-    if (includeDetail) digest.updateReferenceString(detail().orEmpty())
     return HexFormat.of().formatHex(digest.digest(), 0, 16)
 }
-
-private fun AuditIssue.semanticReferenceAnchors(): ScannerSemanticReferenceAnchors {
-    val definitionType = definition().typeIndex().toString()
-    val issueName = name().orEmpty()
-    val endpoint = referenceEndpoint()
-    val fallbackBaseUrl = if (endpoint == null) baseUrl().orEmpty() else ""
-
-    fun calculate(includeDefinition: Boolean): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        if (includeDefinition) digest.updateReferenceString(definitionType)
-        digest.updateReferenceString(issueName)
-        if (endpoint == null) {
-            digest.update(0)
-            digest.updateReferenceString(fallbackBaseUrl)
-        } else {
-            digest.update(1)
-            digest.updateReferenceString(endpoint.host)
-            digest.updateReferenceInt(endpoint.port)
-            digest.update(if (endpoint.secure) 1.toByte() else 0.toByte())
-        }
-        return HexFormat.of().formatHex(digest.digest(), 0, 16)
-    }
-
-    return ScannerSemanticReferenceAnchors(
-        withDefinition = calculate(includeDefinition = true),
-        withoutDefinition = calculate(includeDefinition = false),
-    )
-}
-
-private fun AuditIssue.referenceEndpoint(): ScannerReferenceEndpoint? {
-    val service = httpService()
-    if (service != null) {
-        val serviceHost = service.host()?.normalizeReferenceHost()
-        val servicePort = service.port()
-        if (!serviceHost.isNullOrEmpty() && servicePort in 1..65_535) {
-            return ScannerReferenceEndpoint(serviceHost, servicePort, service.secure())
-        }
-    }
-
-    val rawBaseUrl = baseUrl().orEmpty().take(REFERENCE_HASH_STRING_CHARS)
-    val uri = runCatching { URI(rawBaseUrl) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return null
-    val secure = when (scheme) {
-        "https", "wss" -> true
-        "http", "ws" -> false
-        else -> return null
-    }
-    val host = uri.host?.normalizeReferenceHost()?.takeIf(String::isNotEmpty) ?: return null
-    val port = if (uri.port >= 0) uri.port else if (secure) 443 else 80
-    return port.takeIf { it in 1..65_535 }?.let { ScannerReferenceEndpoint(host, it, secure) }
-}
-
-private fun String.normalizeReferenceHost(): String =
-    trim().removePrefix("[").removeSuffix("]").lowercase(Locale.ROOT)
-
-private data class ScannerReferenceEndpoint(val host: String, val port: Int, val secure: Boolean)
-
-private data class ScannerSemanticReferenceAnchors(
-    val withDefinition: String,
-    val withoutDefinition: String,
-)
 
 private fun httpReferenceAnchor(request: HttpRequest, response: HttpResponse?): String {
     val digest = MessageDigest.getInstance("SHA-256")

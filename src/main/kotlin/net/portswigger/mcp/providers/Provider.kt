@@ -3,7 +3,6 @@ package net.portswigger.mcp.providers
 import burp.api.montoya.logging.Logging
 import kotlinx.serialization.json.*
 import net.portswigger.mcp.config.ConfigValidation
-import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.io.File
 import java.nio.ByteBuffer
@@ -17,6 +16,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
 import javax.swing.JFileChooser
+import javax.swing.SwingUtilities
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.listDirectoryEntries
@@ -25,11 +25,23 @@ import kotlin.io.path.name
 private const val MAX_PROVIDER_CONFIG_BYTES = 4L * 1024 * 1024
 private val OWNER_ONLY_FILE_PERMISSIONS = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
 
+data class ProviderInstallConfig(
+    val host: String,
+    val port: Int,
+    val localBearerToken: String,
+)
+
+fun interface ProviderInstallOperation {
+    fun execute(): String?
+}
+
 interface Provider {
     val name: String
     val installButtonText: String
     val confirmationText: String?
-    fun install(config: McpConfig): String?
+
+    /** Called on Swing's EDT. Returns an immutable operation whose blocking work runs off the EDT. */
+    fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation?
 }
 
 private const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "BURP_MCP_BEARER_TOKEN"
@@ -140,7 +152,7 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
             "- env: BURP_MCP_BEARER_TOKEN (sensitive)\n\n" +
             "The current $claudeConfigFileName will be backed up before an atomic update."
 
-    override fun install(config: McpConfig): String {
+    override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation = ProviderInstallOperation {
         val proxyJarFile = proxyJarManager.getProxyJar()
 
         val path = configFilePath() ?: error("Could not find Claude config path")
@@ -181,7 +193,7 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
 
         logging.logToOutput("Installed Burp MCP Server to Claude Desktop config with an atomic owner-only update")
 
-        return "Installation successful. Updated command and proxy args for $mcpUrl; " +
+        "Installation successful. Updated command and proxy args for $mcpUrl; " +
             "the bearer environment value was replaced (redacted), and a backup was created. " +
             "Please restart $name if it is currently running."
     }
@@ -272,31 +284,31 @@ class ManualProxyInstallerProvider(private val logging: Logging, private val pro
     override val installButtonText = "Extract server proxy jar"
     override val confirmationText = null
 
-    override fun install(config: McpConfig): String? {
-        val proxyJarFile = proxyJarManager.getProxyJar()
-
+    override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation? {
+        check(SwingUtilities.isEventDispatchThread()) { "proxy destination must be selected on the EDT" }
         val fileChooser = JFileChooser().apply {
             dialogTitle = "Save proxy jar"
             selectedFile = File("mcp-proxy.jar")
         }
+        if (fileChooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return null
+        val destinationFile = fileChooser.selectedFile.toPath().toAbsolutePath().normalize()
 
-        if (fileChooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) {
-            return null
+        return ProviderInstallOperation {
+            check(!SwingUtilities.isEventDispatchThread()) { "proxy extraction must run off the EDT" }
+            val proxyJarFile = proxyJarManager.getProxyJar()
+            try {
+                atomicWritePrivate(
+                    destinationFile,
+                    Files.readAllBytes(proxyJarFile),
+                    createBackup = Files.exists(destinationFile, LinkOption.NOFOLLOW_LINKS),
+                )
+                logging.logToOutput("MCP proxy jar saved successfully")
+            } catch (ex: Exception) {
+                logging.logToError("Failed to save installer: ${safeExceptionSummary(ex)}")
+                throw ex
+            }
+
+            "Extracted proxy jar to $destinationFile"
         }
-
-        val destinationFile = fileChooser.selectedFile
-        try {
-            atomicWritePrivate(
-                destinationFile.toPath(),
-                Files.readAllBytes(proxyJarFile),
-                createBackup = destinationFile.exists(),
-            )
-            logging.logToOutput("MCP proxy jar saved successfully")
-        } catch (ex: Exception) {
-            logging.logToError("Failed to save installer: ${safeExceptionSummary(ex)}")
-            throw ex
-        }
-
-        return "Extracted proxy jar to $destinationFile"
     }
 }

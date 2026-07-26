@@ -156,6 +156,29 @@ internal class HttpMessageResolver(
                     "MCP ${source.displayNameForResolution()} access ${if (allowed) "granted" else "denied"}"
                 )
             }
+            val projectAfterSourceApproval = try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return failure(
+                    HttpMessageResolutionStatus.BURP_ERROR,
+                    currentProjectId,
+                    validated.first { it.ref.source == source }.ref,
+                    validated.indexOfFirst { it.ref.source == source },
+                    "Burp could not recheck the project after HTTP data approval: ${safeResolverException(e)}",
+                )
+            }
+            if (projectAfterSourceApproval != currentProjectId) {
+                val changedIndex = validated.indexOfFirst { it.ref.source == source }
+                return failure(
+                    HttpMessageResolutionStatus.PROJECT_MISMATCH,
+                    projectAfterSourceApproval,
+                    validated[changedIndex].ref,
+                    changedIndex,
+                    "Burp project changed during HTTP data approval",
+                )
+            }
             if (!allowed) {
                 val deniedIndex = validated.indexOfFirst { it.ref.source == source }
                 return failure(
@@ -168,12 +191,12 @@ internal class HttpMessageResolver(
             }
         }
 
-        return try {
+        val resolution = try {
             resolveValidated(currentProjectId, validated, includeSourceMetadata)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            failure(
+            return failure(
                 HttpMessageResolutionStatus.BURP_ERROR,
                 currentProjectId,
                 refs.first(),
@@ -181,6 +204,29 @@ internal class HttpMessageResolver(
                 "Burp could not resolve the HTTP message: ${safeResolverException(e)}",
             )
         }
+        val projectAfterResolution = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return failure(
+                HttpMessageResolutionStatus.BURP_ERROR,
+                currentProjectId,
+                refs.first(),
+                0,
+                "Burp could not recheck the project after resolving HTTP data: ${safeResolverException(e)}",
+            )
+        }
+        if (projectAfterResolution != currentProjectId) {
+            return failure(
+                HttpMessageResolutionStatus.PROJECT_MISMATCH,
+                projectAfterResolution,
+                refs.first(),
+                0,
+                "Burp project changed while HTTP data was resolved",
+            )
+        }
+        return resolution
     }
 
     private suspend fun resolveValidated(

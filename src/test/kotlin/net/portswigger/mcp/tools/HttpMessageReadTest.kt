@@ -23,7 +23,7 @@ import kotlin.test.assertNull
 class HttpMessageReadTest {
     @Test
     fun `project switch after resolution fails closed before returning metadata`() = runBlocking {
-        val fixture = fixture(projectIds = listOf("project-a", "project-b"))
+        val fixture = fixture(projectIds = listOf("project-a", "project-a", "project-b"))
 
         val result = fixture.service.read(
             GetHttpMessage(

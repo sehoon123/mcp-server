@@ -268,7 +268,7 @@ Open the **MCP** tab in Burp:
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
 - `Always allow all outbound HTTP requests` is off by default. Enable it only when every destination may permanently bypass per-target **Allow Once / Allow All for This Session / Always Allow Host / Always Allow Host:Port / Deny** review; target syntax validation and all other tool safeguards remain active.
-- Request-routing and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
+- Request-routing/derived-request and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. The request-action session grant never replaces independent outbound-target approval. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
 - Use **Reset active session approvals** to revoke future use of all memory-only grants without cancelling already-started operations. Use **Reset all persistent approvals...** to restore every saved HTTP, routing, Scope, and project-data approval bypass to prompt-by-default.
 - Enable configuration-editing tools only when they are required.
 - Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
@@ -333,8 +333,8 @@ count, 32 MiB content budget, signed cursor, result order, and selected-record i
 values are never added to the index.
 
 Use `send_raw_http_request` for new raw traffic. It accepts exactly one HTTP/1.1 or HTTP/2 variant, uses an explicit
-Montoya protocol mode, denies redirects, bounds response timeout/body output, and adds completed exchanges to Site Map
-on a best-effort basis. Use `route_raw_http_request` for exactly one Repeater, Intruder, or Organizer destination. Both
+Montoya protocol mode, denies redirects, and bounds response timeout/body output. It does not automatically add completed
+exchanges to Site Map because Montoya has no atomic project-bound add. Use `route_raw_http_request` for exactly one Repeater, Intruder, or Organizer destination. Both
 return structured execution state; `uncertain` means the side effect may exist and must not be retried automatically.
 The older protocol- and destination-specific names were removed in v4.
 
@@ -400,18 +400,19 @@ each. `route_http_message_from_id` with `destination: "intruder"` can additional
 header-value, or whole-body insertion points; clients cannot supply raw byte offsets. `tabName` is accepted only for
 Repeater or Intruder, and `insertionPoints` only for Intruder. HTTP replay defaults to the source protocol, rejects every
 automatic redirect mode because redirected destinations cannot be reviewed separately, uses a 30-second response timeout,
-and returns at most an 8 KiB body preview by default
-(64 KiB maximum). Responses are recorded in Site Map on a best-effort basis. When the recorded item can be located,
-`recordedRef` contains the exact opaque Site Map reference for follow-up reads or focused audits. Unmodified Organizer
-actions preserve a source response when the Montoya source supports it; patched requests never attach a now-mismatched
-response.
+and returns at most an 8 KiB body preview by default (64 KiB maximum). Responses are not automatically added to Site
+Map because Montoya does not provide an atomic project-bound add; `recordedInSiteMap` remains false and `recordedRef`
+remains absent. This prevents a project switch during a pending transmission from recording project-A traffic in project
+B. Unmodified Organizer actions preserve a source response when the Montoya source supports it; patched requests never
+attach a now-mismatched response.
 
 Each action returns structured `status` and `executionState`. `not_started` is safe with respect to that invocation.
 `uncertain` means a Burp API call may already have completed and **must not be retried automatically**. Routing actions
 show the exact resulting request and a normalized change summary when request-action approval is enabled. The dialog
 provides **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**. The session choice retains no
-request or target value and expires with that MCP session. Always Allow intentionally disables all future routing-action
-prompts until `Require approval for request routing actions` is re-enabled in the MCP tab. Audit
+request or target value and expires with that MCP session. Always Allow intentionally disables future routing and
+exact derived-request prompts until `Require approval for request routing and derived-request actions` is re-enabled in
+the MCP tab. Outbound-target approval remains independent. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
 
@@ -466,8 +467,10 @@ HTTP discovery uses `search_http_messages`; WebSocket discovery uses `search_web
 compact complete summaries, enforce 10,000-record and 32 MiB content-search budgets, and use signed raw-source-index
 cursors instead of offset-based compatibility lists. Their optional regex accepts at most 512 characters and
 conservatively rejects backreferences, lookarounds, quantified groups, and multiple unbounded quantifiers. Summaries
-expose project-scoped references; Scanner issue IDs are deterministic `issue_<hash>` values derived from issue identity
-fields.
+expose project-scoped references. Scanner issue IDs use the versioned
+`issue_v2_<locator>_<fingerprint>` form. Search locators bind a bounded snapshot index to a fingerprint derived only
+from bounded metadata; detail, remediation, and evidence content are never read to create or resolve an ID. Refresh a
+summary if issue ordering or bounded identity metadata changes. The former v4.7 `issue_<hash>` form is not accepted.
 
 Use the corresponding read tool to fetch only the required record and field:
 
@@ -755,16 +758,25 @@ Client references: [Claude Code](https://code.claude.com/docs/en/mcp),
 The embedded proxy source is maintained in the companion fork:
 [sehoon123/mcp-proxy](https://github.com/sehoon123/mcp-proxy).
 
-## Developing tools
+## Development
 
-Tools are defined in `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt`. Parameters use serializable data classes;
-tool names and JSON schemas are derived from those types. Implement `Paginated` for potentially large result sets.
+Start with the [development guide](docs/DEVELOPMENT.md) for the architecture, local build, tool and schema workflow,
+approval/project-boundary rules, testing strategy, Swing ownership, and embedded-proxy update procedure. The
+[independent release guide](docs/RELEASING.md) defines fork identity, legal/source artifacts, reproducible builds,
+least-privilege GitHub Actions, exact-byte Burp smoke testing, and immutable publication.
 
-CI also runs the official MCP conformance scenarios for initialization, ping, tool discovery, DNS-rebinding
-protection, and multiple Streamable HTTP SSE streams. Integration tests negotiate `2025-03-26`, `2025-06-18`, and
-`2025-11-25`; the modern per-request scenario has a stale-sensitive expected-failure baseline until the protocol and
-pinned production SDK support that lifecycle.
+Tools are registered in `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt`. Input/output schemas are derived from
+serializable Kotlin types, but every bound and cross-field constraint must also be enforced at runtime. Potentially
+large results must use bounded summaries, byte slices, or signed project/query-bound cursors and must not materialize
+complete records before applying an output limit. The remaining legacy Scanner exception is tracked in the
+[active release roadmap](docs/NEXT_RELEASE_ROADMAP.md).
 
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for runtime analysis, [docs/ROADMAP.md](docs/ROADMAP.md) for proposed
-improvements, [docs/V5_READINESS.md](docs/V5_READINESS.md) for the modern-protocol release gates, and
-[docs/V5_APPROVAL_MODEL.md](docs/V5_APPROVAL_MODEL.md) for the fail-safe sessionless approval baseline.
+CI runs the official MCP conformance scenarios for initialization, ping, discovery, DNS-rebinding protection, and
+multiple Streamable HTTP SSE streams. Integration tests negotiate `2025-03-26`, `2025-06-18`, and `2025-11-25`; the
+modern per-request scenario retains a checked-in expected-failure baseline until the protocol and pinned production
+SDK support that lifecycle.
+
+Additional design records: [active release roadmap](docs/NEXT_RELEASE_ROADMAP.md),
+[capability roadmap](docs/ROADMAP.md), [performance analysis](docs/PERFORMANCE.md),
+[project-bound notifications](docs/PROJECT_BOUND_NOTIFICATIONS.md), [v5 readiness](docs/V5_READINESS.md), and the
+[sessionless v5 approval model](docs/V5_APPROVAL_MODEL.md).

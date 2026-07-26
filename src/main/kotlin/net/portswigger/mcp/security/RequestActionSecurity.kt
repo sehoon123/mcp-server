@@ -36,13 +36,13 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
             appendLine("Review the exact resulting request before allowing this action.")
             appendLine()
             appendLine(
-                "Allow for This Session permits later request-routing actions only until this MCP session ends or " +
-                    "session approvals are reset."
+                "Allow for This Session permits later request-routing and derived-request actions only until this " +
+                    "MCP session ends or session approvals are reset. It never grants outbound-target approval."
             )
             appendLine("Allow Once applies only to this action.")
             append(
                 "Always Allow is stored in MCP settings, does not expire automatically, and disables future " +
-                    "request-routing approval prompts until re-enabled."
+                    "request-routing and derived-request approval prompts until re-enabled."
             )
         }
         val result = SwingApprovalGate.showOption {
@@ -65,11 +65,11 @@ class SwingRequestActionApprovalHandler : RequestActionApprovalHandler {
                 runCatching {
                     if (persisted.isSuccess) {
                         api.logging().logToOutput(
-                            "MCP request-routing approval disabled by the user from an approval dialog"
+                            "MCP request-routing and derived-request approval disabled by the user from an approval dialog"
                         )
                     } else {
                         api.logging().logToError(
-                            "MCP could not persist Always Allow for request-routing actions"
+                            "MCP could not persist Always Allow for request-routing and derived-request actions"
                         )
                     }
                 }

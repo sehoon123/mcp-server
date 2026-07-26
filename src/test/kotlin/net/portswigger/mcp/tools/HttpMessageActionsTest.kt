@@ -28,10 +28,17 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.repeater.Repeater
 import burp.api.montoya.sitemap.SiteMap
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.HttpRequestSecurity
+import net.portswigger.mcp.security.McpSessionApproval
+import net.portswigger.mcp.security.McpSessionApprovalContext
+import net.portswigger.mcp.security.McpSessionApprovalState
 import net.portswigger.mcp.security.RequestActionApprovalHandler
 import net.portswigger.mcp.security.RequestActionSecurity
+import net.portswigger.mcp.security.UserApprovalHandler
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -47,11 +54,13 @@ class HttpMessageActionsTest {
     private val logging = mockk<Logging>(relaxed = true)
     private lateinit var config: McpConfig
     private lateinit var service: HttpMessageActionService
-    private lateinit var originalApprovalHandler: RequestActionApprovalHandler
+    private lateinit var originalRequestActionApprovalHandler: RequestActionApprovalHandler
+    private lateinit var originalHttpRequestApprovalHandler: UserApprovalHandler
 
     @BeforeEach
     fun setUp() {
-        originalApprovalHandler = RequestActionSecurity.approvalHandler
+        originalRequestActionApprovalHandler = RequestActionSecurity.approvalHandler
+        originalHttpRequestApprovalHandler = HttpRequestSecurity.approvalHandler
         val storedBooleans = mutableMapOf<String, Boolean>()
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } answers { storedBooleans[firstArg()] ?: false }
@@ -69,7 +78,8 @@ class HttpMessageActionsTest {
 
     @AfterEach
     fun tearDown() {
-        RequestActionSecurity.approvalHandler = originalApprovalHandler
+        RequestActionSecurity.approvalHandler = originalRequestActionApprovalHandler
+        HttpRequestSecurity.approvalHandler = originalHttpRequestApprovalHandler
     }
 
     @Test
@@ -543,10 +553,6 @@ class HttpMessageActionsTest {
             every { response.httpVersion() } returns "HTTP/1.1"
             every { response.headers() } returns emptyList()
             every { response.body() } returns responseBody
-            val siteMap = mockk<SiteMap>(relaxed = true)
-            every { api.siteMap() } returns siteMap
-            every { siteMap.requestResponses() } returns listOf(envelope)
-
             val result = service.send(
                 SendHttpRequestFromId(
                     projectId = "project-123",
@@ -562,13 +568,382 @@ class HttpMessageActionsTest {
             assertEquals("response", result.response?.body?.data)
             assertEquals(8, result.response?.body?.returnedBytes)
             assertEquals(8, result.response?.body?.nextOffsetBytes)
-            assertEquals(true, result.recordedInSiteMap)
-            assertEquals(HttpMessageSource.SITE_MAP, result.recordedRef?.source)
-            assertTrue(result.recordedRef?.id.orEmpty().startsWith("sitemap_0_"))
+            assertEquals(false, result.recordedInSiteMap)
+            assertEquals(null, result.recordedRef)
+            assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
             verify(exactly = 1) { http.sendRequest(fixture.request, options) }
-            verify(exactly = 1) { siteMap.add(envelope) }
+            verify(exactly = 0) { api.siteMap() }
         } finally {
             unmockkStatic(RequestOptions::class)
+        }
+    }
+
+    @Test
+    fun `routing session grant cannot bypass outbound HTTP approval`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(22)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>(relaxed = true)
+            every { api.http() } returns http
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean = error("routing session approval should bypass only this request-action prompt")
+            }
+            var outboundApprovalCount = 0
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean {
+                    outboundApprovalCount++
+                    assertEquals("example.test", hostname)
+                    assertEquals(443, port)
+                    assertEquals("GET /test HTTP/1.1\r\nHost: example.test\r\n\r\n", requestContent)
+                    verify(exactly = 0) { http.sendRequest(any<HttpRequest>(), any<RequestOptions>()) }
+                    return false
+                }
+            }
+            val state = McpSessionApprovalState(onGrantAdded = {}, onGrantsCleared = {})
+            val context = McpSessionApprovalContext.create(state)
+            assertTrue(context.grant(McpSessionApproval.REQUEST_ROUTING))
+
+            val result = withContext(context) {
+                service.send(
+                    SendHttpRequestFromId(
+                        projectId = "project-123",
+                        ref = HttpMessageReference(HttpMessageSource.PROXY, "22"),
+                    )
+                )
+            }
+
+            assertEquals(HttpMessageActionStatus.ACTION_DENIED, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            assertEquals(1, outboundApprovalCount)
+            verify(exactly = 0) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `outbound session grant cannot bypass exact request denial`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(25)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>(relaxed = true)
+            every { api.http() } returns http
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean = false
+            }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean = error("exact request denial must stop before outbound approval")
+            }
+
+            val result = withContext(sessionContext(McpSessionApproval.OUTBOUND_HTTP)) {
+                service.send(
+                    SendHttpRequestFromId(
+                        projectId = "project-123",
+                        ref = HttpMessageReference(HttpMessageSource.PROXY, "25"),
+                    )
+                )
+            }
+
+            assertEquals(HttpMessageActionStatus.ACTION_DENIED, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            verify(exactly = 0) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `both session grants authorize exactly one HTTP replay`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(26)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } returns null
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean = error("request-action handler must not run for its session grant")
+            }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean = error("outbound handler must not run for its session grant")
+            }
+
+            val result = withContext(
+                sessionContext(McpSessionApproval.REQUEST_ROUTING, McpSessionApproval.OUTBOUND_HTTP)
+            ) {
+                service.send(
+                    SendHttpRequestFromId(
+                        projectId = "project-123",
+                        ref = HttpMessageReference(HttpMessageSource.PROXY, "26"),
+                    )
+                )
+            }
+
+            assertEquals(HttpMessageActionStatus.OK, result.status)
+            assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+            verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `project transition during exact request approval stops before outbound approval`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(27)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>(relaxed = true)
+            every { api.http() } returns http
+            var currentProjectId = "project-123"
+            every { project.id() } answers { currentProjectId }
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "other-project"
+                    return true
+                }
+            }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean = error("project mismatch must stop before outbound approval")
+            }
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "27"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            verify(exactly = 0) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `project transition with denied exact request approval returns mismatch`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(28)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>(relaxed = true)
+            every { api.http() } returns http
+            var currentProjectId = "project-123"
+            every { project.id() } answers { currentProjectId }
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "other-project"
+                    return false
+                }
+            }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean = error("project mismatch must stop before outbound approval")
+            }
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "28"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            assertEquals("other-project", result.projectId)
+            verify(exactly = 0) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `HTTP replay requires exact request and outbound approvals in order`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = true
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(23)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            every { api.http() } returns http
+            val order = mutableListOf<String>()
+            every { http.sendRequest(fixture.request, options) } answers {
+                order += "send"
+                null
+            }
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean {
+                    assertEquals(emptyList(), order)
+                    assertEquals("GET /test HTTP/1.1\r\nHost: example.test\r\n\r\n", requestContent)
+                    verify(exactly = 0) { http.sendRequest(any<HttpRequest>(), any<RequestOptions>()) }
+                    order += "request_action"
+                    return true
+                }
+            }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean {
+                    assertEquals(listOf("request_action"), order)
+                    assertEquals("GET /test HTTP/1.1\r\nHost: example.test\r\n\r\n", requestContent)
+                    verify(exactly = 0) { http.sendRequest(any<HttpRequest>(), any<RequestOptions>()) }
+                    order += "outbound"
+                    return true
+                }
+            }
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "23"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.OK, result.status)
+            assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+            assertEquals(listOf("request_action", "outbound", "send"), order)
+            verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `project transition during outbound approval prevents HTTP replay`() = runBlocking {
+        withMockedRequestOptions { options ->
+            config.requireRequestActionApproval = false
+            config.requireHttpRequestApproval = true
+            val fixture = proxyFixture(24)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>(relaxed = true)
+            every { api.http() } returns http
+            var currentProjectId = "project-123"
+            every { project.id() } answers { currentProjectId }
+            HttpRequestSecurity.approvalHandler = object : UserApprovalHandler {
+                override suspend fun requestApproval(
+                    hostname: String,
+                    port: Int,
+                    config: McpConfig,
+                    requestContent: String?,
+                    api: MontoyaApi?,
+                ): Boolean {
+                    currentProjectId = "other-project"
+                    return true
+                }
+            }
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "24"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            assertEquals("other-project", result.projectId)
+            verify(exactly = 0) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `cancellation after HTTP transmission begins is execution uncertain`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(29)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } throws CancellationException("cancelled")
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "29"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+            assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+            assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+            verify(exactly = 1) { http.sendRequest(fixture.request, options) }
         }
     }
 
@@ -721,6 +1096,27 @@ class HttpMessageActionsTest {
         every { request.toString() } returns text
         every { request.parameters(any()) } returns emptyList()
         return request
+    }
+
+    private fun sessionContext(vararg approvals: McpSessionApproval): McpSessionApprovalContext {
+        val state = McpSessionApprovalState(onGrantAdded = {}, onGrantsCleared = {})
+        return McpSessionApprovalContext.create(state).also { context ->
+            approvals.forEach { assertTrue(context.grant(it)) }
+        }
+    }
+
+    private suspend fun <T> withMockedRequestOptions(block: suspend (RequestOptions) -> T): T {
+        mockkStatic(RequestOptions::class)
+        return try {
+            val options = mockk<RequestOptions>()
+            every { RequestOptions.requestOptions() } returns options
+            every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+            every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+            every { options.withResponseTimeout(30_000) } returns options
+            block(options)
+        } finally {
+            unmockkStatic(RequestOptions::class)
+        }
     }
 
     private fun montoyaBytes(text: String): MontoyaByteArray {

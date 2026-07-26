@@ -1,7 +1,10 @@
-# Burp MCP improvement roadmap
+# Burp MCP capability roadmap
 
-This document separates transport migration work from proposed product changes. New tools should remain explicit,
-scoped, auditable, and safe to invoke from an LLM.
+This document records implemented capabilities and the long-range backlog. The canonical near-term version sequence,
+release blockers, and milestone gates are in [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md); that active roadmap
+takes priority if this historical capability record conflicts with it.
+
+New tools should remain explicit, scoped, auditable, bounded, and safe to invoke from an LLM.
 
 ## Current transport baseline
 
@@ -153,15 +156,17 @@ Implemented foundation:
 - Produce byte-identical proxy and extension JARs from identical inputs.
 - Run official lifecycle, ping, tool-list, DNS-rebinding, and concurrent-POST conformance scenarios in CI.
 
-Implemented release controls:
+Implemented draft-building controls:
 
 - Deterministic CycloneDX 1.6 SBOM generation covers the extension runtime and the pinned proxy runtime metadata.
 - The SBOM task is configuration-cache compatible and verifies the proxy artifact against its recorded SHA-256.
-- Releases include the SBOM, dependency vulnerability review, third-party notices, license, and `SHA256SUMS`.
-- Matching annotated source tags are published for releases and resolve to the same commit as the release target.
+- The target draft workflow stages the SBOM, dependency vulnerability review, third-party notices, project license, and
+  `SHA256SUMS`; public-release completeness still requires an independently enforced publication gate.
+- A matching protected annotated source tag is a target publication requirement and must resolve to the built commit.
 - A manual-only `workflow_dispatch` verifies native HTTP and embedded-stdio clients, runs two clean no-build-cache
   packages, compares JAR/SBOM bytes, generates checksums and provenance attestations, and creates or updates a draft.
-  It never publishes a release; live Burp validation and an annotated tag remain explicit release gates.
+  It never publishes a release; exact-byte Burp validation, complete legal/source assets, and protected publication remain
+  explicit release gates.
 
 Remaining work:
 
@@ -330,22 +335,21 @@ Remaining work:
 - Add saved, scoped history queries and optional notifications instead of model-side polling.
 - Provide import/export of MCP settings with secrets excluded by default.
 
-## Current post-v4.6 execution order
+## Active execution order
 
-The approval baseline, schema-preserving outcome normalization, Montoya `2026.7` compile baseline, and v4 project-session
-boundary are complete. While the modern protocol gates remain closed, the active order is:
+The near-term order is gate-driven:
 
-1. Start the modern-wire alpha as soon as a released official SDK supplies the server transport; do not create a parallel
-   raw JSON-RPC dispatcher while that implementation is absent.
-2. Complete the supported-client install, discovery, resource-link, prompt, restart, and fallback matrix.
-3. Extend common retry metadata and recursive sensitive-value filtering without breaking existing output schemas.
-4. Improve multi-instance/project UX, approval/task state, settings portability, and accessibility.
-5. Perform the deferred scale and soak work at the v5 RC gate rather than ahead of current feature/security work.
+1. Publish no new tool until the v4.8 authorization, bounded Scanner, project, schema, UI, identity, legal, and release
+   blockers in [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md) are closed.
+2. Release v4.8.0 as an independently branded and protected trust baseline, then add operator-safety/client UX in v4.9.0.
+3. Add at most one bounded passive analysis family alongside live scale evidence in v4.10.0.
+4. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
+   approval entry gates are satisfied; require modern conformance and the supported-client matrix before beta/RC, as
+   defined in [V5_READINESS.md](V5_READINESS.md) and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md).
 
-See [V5_READINESS.md](V5_READINESS.md) for release gates and
-[V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md) for the sessionless authorization decision.
+Do not create a parallel raw JSON-RPC dispatcher while the official server lifecycle is unavailable.
 
-## Suggested implementation order
+## Historical implementation order
 
 | Order | Change | Benefit | Risk/effort |
 |---|---|---|---|

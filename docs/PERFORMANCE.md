@@ -483,8 +483,8 @@ conversion and are capped at 64 KiB. A 100 ms–120 s Montoya response timeout b
 an ambiguously delivered request in an unsafe coroutine retry.
 
 Intruder semantic selectors resolve at most 32 non-overlapping parameter/header/body ranges before approval and build one
-native request template. Replay recording searches at most the last 10,000 Site Map entries for the newly added response;
-a missing stable reference becomes a non-retryable warning after the request has completed.
+native request template. Direct sends no longer add responses to Site Map automatically: Montoya does not expose an
+atomic project-bound add, so recording after a pending transmission could cross a Burp project transition.
 
 The unified raw path normalizes HTTP/1.1 request preludes in one pass instead of up to five complete replacement passes.
 Bodies remain untouched, and HTTP/2 header construction reuses its ordered map rather than allocating a second merged

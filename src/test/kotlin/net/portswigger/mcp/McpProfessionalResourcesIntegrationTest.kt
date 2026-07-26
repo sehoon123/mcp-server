@@ -166,7 +166,7 @@ class McpProfessionalResourcesIntegrationTest {
             }
         }
 
-        val missing = "issue_00000000000000000000000000000000"
+        val missing = "issue_v2_x_00000000000000000000000000000000"
         val notFound = client.readResource(
             "burp://scanner-issue/professional-project/$missing"
         ).singleTextJson()

@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -10,8 +11,14 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.schema.AuditIssueConfidence as SerializableAuditIssueConfidence
+import net.portswigger.mcp.schema.AuditIssueDefinition as SerializableAuditIssueDefinition
+import net.portswigger.mcp.schema.AuditIssueSeverity as SerializableAuditIssueSeverity
+import net.portswigger.mcp.schema.HttpRequestResponse as SerializableHttpRequestResponse
+import net.portswigger.mcp.schema.HttpService as SerializableHttpService
+import net.portswigger.mcp.schema.Interaction as SerializableInteraction
+import net.portswigger.mcp.schema.IssueDetails
 import net.portswigger.mcp.schema.JsonSchemaMetadata
-import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.safeExceptionSummary
@@ -24,14 +31,21 @@ import javax.crypto.spec.SecretKeySpec
 
 private const val DEFAULT_SCANNER_ISSUE_LIMIT = 25
 private const val MAX_SCANNER_ISSUE_LIMIT = 50
-private const val MAX_SCANNER_ISSUE_SCAN = 10_000
+internal const val MAX_SCANNER_ISSUE_SCAN = 10_000
 private const val MAX_SCANNER_FILTER_VALUES = 8
 private const val MAX_SCANNER_HOST_CHARS = 253
 private const val MAX_SCANNER_NAME_FILTER_CHARS = 256
 private const val MAX_SCANNER_CURSOR_CHARS = 16_384
 private const val MAX_LEGACY_SCANNER_TEXT_CHARS = 512 * 1024
+private const val MAX_LEGACY_SCANNER_RECORD_INPUT_CHARS = 64 * 1024
+private const val MAX_LEGACY_SCANNER_FIELD_CHARS = 8 * 1024
+private const val MAX_LEGACY_SCANNER_MESSAGE_BYTES = 16 * 1024
+private const val MAX_LEGACY_SCANNER_EVIDENCE = 8
+private const val MAX_LEGACY_SCANNER_INTERACTIONS = 16
 private const val SCANNER_CURSOR_VERSION = 1
 private const val SCANNER_CURSOR_HMAC = "HmacSHA256"
+private const val LEGACY_SCANNER_TRUNCATION_MARKER =
+    "\n\n<Scanner issue output truncated; use summariesOnly or get_scanner_issue_by_id>"
 
 @Serializable
 data class GetScannerIssues(
@@ -221,6 +235,17 @@ internal class ScannerIssueSearchService(
             null
         }
 
+        val projectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return responseError(
+                ScannerIssuePageStatus.BURP_ERROR,
+                "Burp could not read the current project: ${safeScannerSearchException(e)}",
+                legacyMode = !input.usesCursorMode(),
+            )
+        }
         val allowed = try {
             DataAccessSecurity.checkDataAccessPermission(DataAccessType.SCANNER_ISSUES, config)
         } catch (e: CancellationException) {
@@ -243,15 +268,24 @@ internal class ScannerIssueSearchService(
             )
         }
 
-        val projectId = try {
+        val projectAfterApproval = try {
             api.project().id()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return responseError(
                 ScannerIssuePageStatus.BURP_ERROR,
-                "Burp could not read the current project: ${safeScannerSearchException(e)}",
-                legacyMode = !input.usesCursorMode(),
+                "Burp could not recheck the project after Scanner approval: ${safeScannerSearchException(e)}",
+                projectId,
+                legacyMode = preparedCursor == null,
+            )
+        }
+        if (projectAfterApproval != projectId) {
+            return responseError(
+                ScannerIssuePageStatus.PROJECT_MISMATCH,
+                "Burp project changed during Scanner issue approval",
+                projectAfterApproval,
+                legacyMode = preparedCursor == null,
             )
         }
         if (preparedCursor?.cursor != null && preparedCursor.cursor.projectId != projectId) {
@@ -296,7 +330,7 @@ internal class ScannerIssueSearchService(
             )
         }
 
-        return try {
+        val response = try {
             if (preparedCursor != null) {
                 cursorPage(input, projectId, issues, preparedCursor)
             } else {
@@ -305,13 +339,34 @@ internal class ScannerIssueSearchService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            responseError(
+            return responseError(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp returned an invalid Scanner issue: ${safeScannerSearchException(e)}",
                 projectId,
                 legacyMode = preparedCursor == null,
             )
         }
+        val finalProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return responseError(
+                ScannerIssuePageStatus.BURP_ERROR,
+                "Burp could not recheck the project after materializing Scanner issues: ${safeScannerSearchException(e)}",
+                projectId,
+                legacyMode = preparedCursor == null,
+            )
+        }
+        if (finalProjectId != projectId) {
+            return responseError(
+                ScannerIssuePageStatus.PROJECT_MISMATCH,
+                "Burp project changed while Scanner issues were materialized",
+                finalProjectId,
+                legacyMode = preparedCursor == null,
+            )
+        }
+        return response
     }
 
     private suspend fun legacyPage(
@@ -319,24 +374,23 @@ internal class ScannerIssueSearchService(
         projectId: String,
         issues: List<AuditIssue>,
     ): StructuredToolResponse<ScannerIssuePageResult> {
-        val selected = issues.asSequence().drop(input.offset).take(input.count).toList()
-        val summaries = selected.map { it.toHistorySummary() }
-        val legacyText = selected.toBoundedLegacyText(input.summariesOnly == true)
+        val selected = issues.withIndex().asSequence().drop(input.offset).take(input.count).toList()
+        val page = selected.toBoundedLegacyPage(input.summariesOnly == true)
         return StructuredToolResponse(
             output = ScannerIssuePageResult(
                 status = ScannerIssuePageStatus.OK,
                 projectId = projectId,
-                items = summaries,
-                returned = summaries.size,
-                scanned = summaries.size,
+                items = page.summaries,
+                returned = page.summaries.size,
+                scanned = page.scanned,
                 snapshotSize = issues.size,
                 scanLimitReached = false,
-                hasMore = input.offset.toLong() + selected.size.toLong() < issues.size.toLong(),
+                hasMore = input.offset.toLong() + page.summaries.size.toLong() < issues.size.toLong(),
                 nextCursor = null,
                 legacyMode = true,
-                legacyTextTruncated = legacyText.second,
+                legacyTextTruncated = page.truncated,
             ),
-            text = legacyText.first,
+            text = page.text,
         )
     }
 
@@ -376,8 +430,8 @@ internal class ScannerIssueSearchService(
         val snapshot = if (cursor == null) {
             ScannerIssueCursorSnapshot(
                 size = issues.size,
-                firstAnchor = issues.firstOrNull()?.stableHistoryId(),
-                lastAnchor = issues.lastOrNull()?.stableHistoryId(),
+                firstAnchor = issues.firstOrNull()?.stableHistoryId(0),
+                lastAnchor = issues.lastOrNull()?.stableHistoryId(issues.lastIndex),
             )
         } else {
             try {
@@ -397,7 +451,7 @@ internal class ScannerIssueSearchService(
             if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
             val issue = issues[index]
             scanned++
-            if (issue.matches(compiledQuery)) results += issue.toHistorySummary()
+            if (issue.matches(compiledQuery)) results += issue.toHistorySummary(issue.stableHistoryId(index))
             index += direction
         }
         val scanLimitReached = scanned >= MAX_SCANNER_ISSUE_SCAN && index in 0 until snapshot.size
@@ -444,8 +498,8 @@ internal class ScannerIssueSearchService(
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor position is invalid")
         }
         if (cursor.snapshot.size > 0 &&
-            (issues.first().stableHistoryId() != cursor.snapshot.firstAnchor ||
-                issues[cursor.snapshot.size - 1].stableHistoryId() != cursor.snapshot.lastAnchor)
+            (issues.first().stableHistoryId(0) != cursor.snapshot.firstAnchor ||
+                issues[cursor.snapshot.size - 1].stableHistoryId(cursor.snapshot.size - 1) != cursor.snapshot.lastAnchor)
         ) {
             throw ScannerIssueSearchError(
                 ScannerIssuePageStatus.STALE_CURSOR,
@@ -494,39 +548,167 @@ internal class ScannerIssueSearchService(
     }
 }
 
-private suspend fun List<AuditIssue>.toBoundedLegacyText(summariesOnly: Boolean): Pair<String, Boolean> {
-    if (isEmpty()) return "Reached end of items" to false
-    val marker = "\n\n<Scanner issue output truncated; use summariesOnly or get_scanner_issue_by_id>"
+private data class BoundedLegacyScannerPage(
+    val summaries: List<ScannerIssueSummary>,
+    val text: String,
+    val truncated: Boolean,
+    val scanned: Int,
+)
+
+private data class BoundedLegacyIssueDetails(
+    val value: IssueDetails,
+    val truncated: Boolean,
+)
+
+private suspend fun List<IndexedValue<AuditIssue>>.toBoundedLegacyPage(
+    summariesOnly: Boolean,
+): BoundedLegacyScannerPage {
+    if (isEmpty()) return BoundedLegacyScannerPage(emptyList(), "Reached end of items", false, 0)
+    val summaries = ArrayList<ScannerIssueSummary>(size)
+    val contentLimit = MAX_LEGACY_SCANNER_TEXT_CHARS - LEGACY_SCANNER_TRUNCATION_MARKER.length
+    val text = StringBuilder(minOf(contentLimit, size * 4_096))
     var truncated = false
-    val text = buildString(minOf(MAX_LEGACY_SCANNER_TEXT_CHARS, size * 4_096)) {
-        this@toBoundedLegacyText.forEachIndexed { index, issue ->
-            currentCoroutineContext().ensureActive()
-            val separator = if (index == 0) "" else "\n\n"
-            val serialized = if (summariesOnly) {
-                Json.encodeToString(issue.toHistorySummary())
-            } else {
-                Json.encodeToString(issue.toSerializableForm())
-            }
-            if (length + separator.length + serialized.length <= MAX_LEGACY_SCANNER_TEXT_CHARS) {
-                append(separator)
-                append(serialized)
-            } else {
-                val prefixLimit = MAX_LEGACY_SCANNER_TEXT_CHARS - marker.length
-                if (length > prefixLimit) setLength(prefixLimit)
-                var available = (prefixLimit - length).coerceAtLeast(0)
-                if (available > 0) {
-                    val separatorChars = minOf(available, separator.length)
-                    append(separator, 0, separatorChars)
-                    available -= separatorChars
-                    if (available > 0) append(serialized, 0, minOf(available, serialized.length))
-                }
-                append(marker)
-                truncated = true
-                return@buildString
-            }
+    var scanned = 0
+    for ((sourceIndex, issue) in this) {
+        currentCoroutineContext().ensureActive()
+        scanned++
+        val summary = issue.toHistorySummary(issue.stableHistoryId(sourceIndex))
+        val bounded = if (summariesOnly) null else issue.toBoundedLegacyDetails()
+        val serialized = if (summariesOnly) {
+            Json.encodeToString(summary)
+        } else {
+            Json.encodeToString(requireNotNull(bounded).value)
+        }
+        val separator = if (text.isEmpty()) "" else "\n\n"
+        if (text.length + separator.length + serialized.length > contentLimit) {
+            truncated = true
+            break
+        }
+        text.append(separator).append(serialized)
+        summaries += summary
+        if (bounded?.truncated == true) {
+            truncated = true
+            break
         }
     }
-    return text to truncated
+    if (truncated) text.append(LEGACY_SCANNER_TRUNCATION_MARKER)
+    return BoundedLegacyScannerPage(summaries, text.toString(), truncated, scanned)
+}
+
+private fun AuditIssue.toBoundedLegacyDetails(): BoundedLegacyIssueDetails {
+    val budget = LegacyScannerIssueBudget()
+    val service = httpService()
+    val serializedService = service?.let {
+        SerializableHttpService(
+            host = budget.takeRequired(MAX_SCANNER_HOST_CHARS) { it.host() },
+            port = it.port(),
+            secure = it.secure(),
+        )
+    }
+    val serializedSeverity = SerializableAuditIssueSeverity.valueOf(severity().name)
+    val serializedConfidence = SerializableAuditIssueConfidence.valueOf(confidence().name)
+    val issueDefinition = definition()
+    val serializedDefinition = SerializableAuditIssueDefinition(
+        id = budget.takeRequired(MAX_LEGACY_SCANNER_FIELD_CHARS) { issueDefinition.name() },
+        background = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { issueDefinition.background() },
+        remediation = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { issueDefinition.remediation() },
+        typeIndex = issueDefinition.typeIndex(),
+    )
+    val name = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { name() }
+    val baseUrl = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { baseUrl() }
+    val detail = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { detail() }
+    val remediation = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { remediation() }
+    val requestResponses = ArrayList<SerializableHttpRequestResponse>()
+    if (budget.canReadOptional()) {
+        val evidence = requestResponses()
+        if (evidence.size > MAX_LEGACY_SCANNER_EVIDENCE) budget.markTruncated()
+        var index = 0
+        while (index < evidence.size && index < MAX_LEGACY_SCANNER_EVIDENCE && budget.canReadOptional()) {
+            val item = evidence[index]
+            requestResponses += SerializableHttpRequestResponse(
+                request = budget.takeMessage("<no request>") { item.request()?.toByteArray() },
+                response = budget.takeMessage("<no response>") { item.response()?.toByteArray() },
+                notes = budget.takeOptional(MAX_LEGACY_SCANNER_FIELD_CHARS) { item.annotations().notes() },
+            )
+            index++
+        }
+        if (index < evidence.size) budget.markTruncated()
+    } else {
+        budget.markTruncated()
+    }
+    val interactions = ArrayList<SerializableInteraction>()
+    if (budget.canReadOptional()) {
+        val sourceInteractions = collaboratorInteractions()
+        if (sourceInteractions.size > MAX_LEGACY_SCANNER_INTERACTIONS) budget.markTruncated()
+        var index = 0
+        while (index < sourceInteractions.size && index < MAX_LEGACY_SCANNER_INTERACTIONS && budget.canReadOptional()) {
+            val interaction = sourceInteractions[index]
+            interactions += SerializableInteraction(
+                interactionId = budget.takeRequired(512) { interaction.id().toString() },
+                timestamp = budget.takeRequired(512) { interaction.timeStamp().toString() },
+            )
+            index++
+        }
+        if (index < sourceInteractions.size) budget.markTruncated()
+    } else {
+        budget.markTruncated()
+    }
+    return BoundedLegacyIssueDetails(
+        value = IssueDetails(
+            name = name,
+            detail = detail,
+            remediation = remediation,
+            httpService = serializedService,
+            baseUrl = baseUrl,
+            severity = serializedSeverity,
+            confidence = serializedConfidence,
+            requestResponses = requestResponses,
+            collaboratorInteractions = interactions,
+            definition = serializedDefinition,
+        ),
+        truncated = budget.truncated,
+    )
+}
+
+private class LegacyScannerIssueBudget {
+    private var remainingChars = MAX_LEGACY_SCANNER_RECORD_INPUT_CHARS
+    var truncated: Boolean = false
+        private set
+
+    fun canReadOptional(): Boolean = remainingChars > 0
+
+    fun markTruncated() {
+        truncated = true
+    }
+
+    fun takeRequired(maxChars: Int, value: () -> String?): String = takeOptional(maxChars, value).orEmpty()
+
+    fun takeOptional(maxChars: Int, value: () -> String?): String? {
+        if (!canReadOptional()) {
+            truncated = true
+            return null
+        }
+        val raw = value() ?: return null
+        val allowed = minOf(maxChars, remainingChars)
+        if (raw.length > allowed) truncated = true
+        val selected = if (raw.length <= allowed) raw else raw.take(allowed)
+        remainingChars -= selected.length
+        return selected
+    }
+
+    fun takeMessage(absentValue: String, value: () -> MontoyaByteArray?): String? {
+        if (!canReadOptional()) {
+            truncated = true
+            return null
+        }
+        val bytes = value() ?: return takeOptional(absentValue.length) { absentValue }
+        val totalBytes = bytes.length()
+        val selectedBytes = minOf(totalBytes, MAX_LEGACY_SCANNER_MESSAGE_BYTES, remainingChars)
+        if (selectedBytes < totalBytes) truncated = true
+        if (selectedBytes == 0) return ""
+        val selected = bytes.subArray(0, selectedBytes).toString()
+        return takeOptional(remainingChars) { selected }
+    }
 }
 
 private fun GetScannerIssues.usesCursorMode(): Boolean =

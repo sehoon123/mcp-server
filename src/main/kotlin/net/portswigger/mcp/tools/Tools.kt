@@ -261,7 +261,7 @@ internal fun Server.registerTools(
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
 
     mcpStructuredTool<SendRawHttpRequest, RawHttpActionResult>(
-        description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. On success the exchange is recorded to Site Map (not Proxy history) and the result includes recordedInSiteMap and a recordedRef you can pass to get_http_message, compare_http_messages, send_http_request_from_id, or route_http_message_from_id; find it later with search_http_messages using sources=[\"site_map\"], since the default search source is Proxy only. executionState=uncertain means the request may have been sent and must not be retried automatically.",
+        description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. The exchange is not automatically added to Site Map because Burp does not provide an atomic project-bound add; recordedInSiteMap remains false and recordedRef remains absent. executionState=uncertain means the request may have been sent and must not be retried automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         rawHttpActionService.send(this)
@@ -730,7 +730,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Note: requests issued directly via send_raw_http_request or replayed via send_http_request_from_id are recorded to Site Map, not Proxy history, so they will not appear unless sources includes \"site_map\". Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. With a progress token, fixed stages cover validation, approval, snapshot preparation, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
+        description = "Searches compact HTTP metadata in Proxy history by default, or explicitly selected Proxy, Site Map, and Organizer sources. Requests issued directly by send_raw_http_request or send_http_request_from_id are not automatically recorded because Burp does not expose an atomic project-bound Site Map add. Filters support exact host, literal or conservatively safe regex content, path, method, status, MIME type, scope, and response presence. Results are bounded to 50 items and content scans to 32 MiB. With a progress token, fixed stages cover validation, approval, snapshot preparation, bounded scanning, and finalization; coroutine cancellation is checked between scan batches. Use nextCursor by itself to continue the same signed snapshot. Copy projectId and ref into get_http_message, send_http_request_from_id, or route_http_message_from_id.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         StructuredToolResponse(
@@ -741,7 +741,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
-        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records only, so, like search_http_messages, it misses requests recorded only to Site Map (e.g. from send_raw_http_request) unless sources includes \"site_map\"; it strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit. status=burp_error with a message about HTTP metadata changing is a transient condition (e.g. immediately after update_scope or set_burp_options) and the call should simply be retried. With a progress token, fixed stages cover validation, approval, bounded index refresh, aggregation, and snapshot verification; coroutine cancellation is checked during refresh and aggregation.",
+        description = "Summarizes a bounded, project-scoped, body-free HTTP metadata index. It defaults to in-scope Proxy records only and does not include direct MCP sends, which are not automatically recorded; it strips query strings, normalizes likely identifier path segments, and returns aggregate services, methods, status classes, MIME types, file extensions, and path prefixes. The index retains no bodies, header values, notes, URLs with queries, or Montoya objects; source truncation and refresh state are explicit. status=burp_error with a message about HTTP metadata changing is a transient condition (e.g. immediately after update_scope or set_burp_options) and the call should simply be retried. With a progress token, fixed stages cover validation, approval, bounded index refresh, aggregation, and snapshot verification; coroutine cancellation is checked during refresh and aggregation.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         StructuredToolResponse(
@@ -780,7 +780,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredTool<SendHttpRequestFromId, HttpMessageActionResult>(
-        description = "Replays a Proxy, Site Map, or Organizer request returned by search_http_messages. Applies only bounded structured method, path, header, parameter, or body patches; never asks the model to reconstruct raw HTTP. Requires the matching projectId and approvals. The response preview, timeout, and HTTP mode are bounded and explicit; automatic redirects are rejected because each destination would require separate review. Successful Site Map recording returns recordedRef for the exact replay result when Burp can locate it. executionState=uncertain means the request must not be retried automatically.",
+        description = "Replays a Proxy, Site Map, or Organizer request returned by search_http_messages. Applies only bounded structured method, path, header, parameter, or body patches; never asks the model to reconstruct raw HTTP. Requires the matching projectId and approvals. The response preview, timeout, and HTTP mode are bounded and explicit; automatic redirects are rejected because each destination would require separate review. Results are not automatically added to Site Map because Burp does not expose an atomic project-bound add. executionState=uncertain means the request must not be retried automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) {
         httpMessageActionService.send(this)
@@ -1143,8 +1143,6 @@ internal fun Server.registerTools(
     }
 }
 
-private const val MAX_SITE_MAP_RECORD_LOOKBACK = 10_000
-
 internal data class SiteMapRecordResult(
     val recorded: Boolean,
     val ref: HttpMessageReference? = null,
@@ -1160,57 +1158,13 @@ internal fun recordHttpResponseInSiteMap(
     projectId: String?,
 ): SiteMapRecordResult {
     if (response == null) return SiteMapRecordResult(recorded = false)
-    try {
-        api.siteMap().add(response)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (_: Exception) {
-        // The request may already have changed server state. Never turn a local recording failure into a retryable tool error.
-        runCatching {
-            api.logging().logToError("MCP request completed, but its response could not be added to Site Map")
-        }
-        return SiteMapRecordResult(recorded = false)
+    val warning = if (projectId == null) {
+        "automatic Site Map recording was skipped because no project boundary was available"
+    } else {
+        "automatic Site Map recording is disabled because Burp does not provide an atomic project-bound add"
     }
-
-    if (projectId == null) return SiteMapRecordResult(recorded = true)
-    return try {
-        if (api.project().id() != projectId) {
-            val warning = "request was recorded, but the Burp project changed before a stable Site Map reference could be created"
-            runCatching { api.logging().logToError("MCP $warning") }
-            SiteMapRecordResult(recorded = true, warning = warning)
-        } else {
-            // Montoya's SiteMap.add API does not return an index. Take one post-add snapshot and search from the append end.
-            // Identity is normally preserved; the bounded anchor is a fallback for Burp implementations that wrap the object.
-            val items = api.siteMap().requestResponses()
-            val firstCandidate = (items.size - MAX_SITE_MAP_RECORD_LOOKBACK).coerceAtLeast(0)
-            val identityIndex = (items.lastIndex downTo firstCandidate).firstOrNull { items[it] === response } ?: -1
-            val index = if (identityIndex >= 0) identityIndex else {
-                val anchor = siteMapBoundaryAnchor(response)
-                (items.lastIndex downTo firstCandidate).firstOrNull { candidateIndex ->
-                    siteMapBoundaryAnchor(items[candidateIndex]) == anchor
-                } ?: -1
-            }
-            if (index < 0) {
-                val warning = "request was recorded, but its stable Site Map reference could not be located"
-                runCatching { api.logging().logToError("MCP $warning") }
-                SiteMapRecordResult(recorded = true, warning = warning)
-            } else {
-                SiteMapRecordResult(
-                    recorded = true,
-                    ref = HttpMessageReference(
-                        source = HttpMessageSource.SITE_MAP,
-                        id = stableSiteMapId(projectId, index, items[index]),
-                    ),
-                )
-            }
-        }
-    } catch (e: CancellationException) {
-        throw e
-    } catch (_: Exception) {
-        val warning = "request was recorded, but its stable Site Map reference could not be created"
-        runCatching { api.logging().logToError("MCP $warning") }
-        SiteMapRecordResult(recorded = true, warning = warning)
-    }
+    runCatching { api.logging().logToOutput("MCP request completed; $warning") }
+    return SiteMapRecordResult(recorded = false, warning = warning)
 }
 
 fun getActiveEditor(api: MontoyaApi): JTextArea? {
@@ -1318,7 +1272,12 @@ data class GetWebsocketMessageById(
 
 @Serializable
 data class GetScannerIssueById(
-    @JsonSchemaMetadata(description = "Stable Scanner issue ID.", pattern = "^issue_[0-9a-f]{32}$", maxLength = 128) val id: String,
+    @JsonSchemaMetadata(
+        description = "Versioned Scanner issue ID returned by search or audit status.",
+        pattern = "^issue_v2_(x|[0-9a-z]{1,6})_[0-9a-f]{32}$",
+        maxLength = 128,
+    )
+    val id: String,
     @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(enumValues = ["metadata", "detail", "remediation", "evidence_request", "evidence_response"], defaultJson = "\"metadata\"") val field: String? = null,
     @JsonSchemaMetadata(minimum = 0) val evidenceIndex: Int? = null,

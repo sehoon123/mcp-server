@@ -370,17 +370,6 @@ internal class HttpMessageActionService(
         } catch (e: Exception) {
             return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
         }
-        val approved = try {
-            approveNetworkAction(resolved, patched)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
-        }
-        if (!approved) {
-            return denied(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched)
-        }
-
         val options = try {
             RequestOptions.requestOptions()
                 .withHttpMode(input.httpMode.toMontoyaMode(patched.request))
@@ -392,12 +381,41 @@ internal class HttpMessageActionService(
             return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
         }
 
+        val requestActionApproved = try {
+            approveRoutingAction(HttpMessageActionDestination.HTTP, resolved, patched)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
+        }
         currentCoroutineContext().ensureActive()
         recheckProject(input.projectId, input.ref, HttpMessageActionDestination.HTTP)?.let { return it }
+        if (!requestActionApproved) {
+            return denied(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched)
+        }
+
+        val outboundApproved = try {
+            approveOutboundNetworkAction(patched)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e)
+        }
+        currentCoroutineContext().ensureActive()
+        recheckProject(input.projectId, input.ref, HttpMessageActionDestination.HTTP)?.let { return it }
+        if (!outboundApproved) {
+            return denied(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched)
+        }
+
         val response = try {
             api.http().sendRequest(patched.request, options)
         } catch (e: CancellationException) {
-            throw e
+            runCatching {
+                api.logging().logToError(
+                    auditLine(HttpMessageActionDestination.HTTP, resolved, patched, "cancelled after execution began")
+                )
+            }
+            return uncertain(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched, e)
         } catch (e: Exception) {
             runCatching {
                 api.logging().logToError(
@@ -407,13 +425,10 @@ internal class HttpMessageActionService(
             return uncertain(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched, e)
         }
 
-        currentCoroutineContext().ensureActive()
         val recorded = recordHttpResponseInSiteMap(api, response, input.projectId)
         var summaryError: String? = recorded.warning
         val responseSummary = try {
             response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
             val message = "request completed but its response preview could not be created: ${safeException(e)}"
             summaryError = listOfNotNull(summaryError, message).joinToString("; ")
@@ -575,6 +590,8 @@ internal class HttpMessageActionService(
         } catch (e: Exception) {
             return burpError(projectId, ref, destination, e)
         }
+        currentCoroutineContext().ensureActive()
+        recheckProject(projectId, ref, destination)?.let { return it }
         if (!approved) {
             return denied(
                 projectId,
@@ -587,12 +604,20 @@ internal class HttpMessageActionService(
             )
         }
 
-        currentCoroutineContext().ensureActive()
-        recheckProject(projectId, ref, destination)?.let { return it }
         val preserved = try {
             execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
         } catch (e: CancellationException) {
-            throw e
+            runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "cancelled after execution began")) }
+            return uncertain(
+                projectId,
+                ref,
+                destination,
+                patched,
+                e,
+                normalizedTabName,
+                changes = actionChanges,
+                insertionPointCount = preparedInsertionPoints?.ranges?.size,
+            )
         } catch (e: Exception) {
             runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "execution uncertain")) }
             return uncertain(
@@ -647,14 +672,8 @@ internal class HttpMessageActionService(
         )
     }
 
-    private suspend fun approveNetworkAction(
-        resolved: ResolvedHttpMessage,
-        patched: PatchedRequest,
-    ): Boolean {
+    private suspend fun approveOutboundNetworkAction(patched: PatchedRequest): Boolean {
         val service = patched.service
-        if (config.requireRequestActionApproval) {
-            return approveRoutingAction(HttpMessageActionDestination.HTTP, resolved, patched)
-        }
         return HttpRequestSecurity.checkHttpRequestPermissionLazy(
             service.host(),
             service.port(),
@@ -1099,7 +1118,11 @@ private fun uncertain(
     requestBytes = patched.requestBytes,
     tabName = tabName,
     insertionPointCount = insertionPointCount,
-    error = uncertainExecutionError("Burp may have completed the request action", error),
+    error = uncertainExecutionError(
+        "Burp may have completed the request action",
+        error,
+        preserveCancellation = false,
+    ),
 )
 
 private fun safeException(error: Exception): String = safeExceptionSummary(error)

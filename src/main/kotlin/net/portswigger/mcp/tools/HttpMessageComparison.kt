@@ -311,6 +311,29 @@ internal class HttpMessageComparisonService(
             null
         }
 
+        val projectAfterComparison = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return comparisonError(
+                HttpComparisonStatus.BURP_ERROR,
+                input.projectId,
+                part,
+                input.refs,
+                "Burp could not recheck the project after comparison: ${safeComparisonException(e)}",
+            )
+        }
+        if (projectAfterComparison != input.projectId) {
+            return comparisonError(
+                HttpComparisonStatus.PROJECT_MISMATCH,
+                projectAfterComparison,
+                part,
+                input.refs,
+                "Burp project changed while the comparison was prepared",
+            )
+        }
+
         return CompareHttpMessagesResult(
             status = HttpComparisonStatus.OK,
             projectId = input.projectId,

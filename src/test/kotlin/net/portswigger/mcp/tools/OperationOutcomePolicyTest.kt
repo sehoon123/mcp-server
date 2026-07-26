@@ -2,7 +2,6 @@ package net.portswigger.mcp.tools
 
 import kotlinx.coroutines.CancellationException
 import org.junit.jupiter.api.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -29,14 +28,18 @@ class OperationOutcomePolicyTest {
     }
 
     @Test
-    fun `uncertain execution guidance honors smaller result bounds and survives a long summary`() {
-        val result = uncertainExecutionError("Operation may have completed", maxChars = 64)
+    fun `uncertain execution guidance honors supported bounds and survives a long summary`() {
+        val bound = UNCERTAIN_RETRY_GUIDANCE.length + 24
+        val result = uncertainExecutionError("Operation may have completed", maxChars = bound)
         val longSummary = uncertainExecutionError("x".repeat(1_000), maxChars = MAX_STANDARD_TOOL_ERROR_CHARS)
 
-        assertEquals(64, result.length)
-        assertTrue(result.startsWith("Operation may have completed; do not retry"))
+        assertTrue(result.length <= bound)
+        assertTrue(result.contains(UNCERTAIN_RETRY_GUIDANCE))
         assertTrue(longSummary.contains(UNCERTAIN_RETRY_GUIDANCE))
         assertTrue(longSummary.length <= MAX_STANDARD_TOOL_ERROR_CHARS)
+        assertFailsWith<IllegalArgumentException> {
+            uncertainExecutionError("Operation may have completed", maxChars = 64)
+        }
     }
 
     @Test
@@ -47,6 +50,12 @@ class OperationOutcomePolicyTest {
         assertFailsWith<CancellationException> {
             uncertainExecutionError("Operation may have completed", CancellationException("cancelled"))
         }
+        val postSideEffect = uncertainExecutionError(
+            "Operation may have completed",
+            CancellationException("cancelled"),
+            preserveCancellation = false,
+        )
+        assertTrue(postSideEffect.contains(UNCERTAIN_RETRY_GUIDANCE))
 
         val failure = runCatchingPreservingCancellation<Unit> { error("unavailable") }.exceptionOrNull()
         assertTrue(failure is IllegalStateException)
