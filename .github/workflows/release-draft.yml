@@ -192,7 +192,8 @@ jobs:
           trap cleanup EXIT
 
           ready=false
-          for _ in $(seq 1 30); do
+          # Keep startup bounded while allowing a cold verified Gradle graph to compile before binding.
+          for _ in $(seq 1 180); do
             code=$(curl --silent --show-error --max-time 1 --output /dev/null --write-out '%{http_code}' \
               http://127.0.0.1:19877/mcp \
               --header 'Content-Type: application/json' \
