@@ -310,6 +310,22 @@ class WebSocketMessageSearchTest {
     }
 
     @Test
+    fun `project transition during data approval prevents WebSocket history access`() = runBlocking {
+        config.requireDataAccessApproval = true
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "replacement-project"
+                return true
+            }
+        }
+
+        val result = service.search(SearchWebsocketMessages(projectId = "project-ws"))
+
+        assertEquals(WebSocketSearchStatus.PROJECT_MISMATCH, result.status)
+        verify(exactly = 0) { proxy.webSocketHistory() }
+    }
+
+    @Test
     fun `data access denial returns no WebSocket metadata`() = runBlocking {
         config.requireDataAccessApproval = true
         DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {

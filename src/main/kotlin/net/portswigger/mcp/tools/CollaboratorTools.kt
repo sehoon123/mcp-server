@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -43,8 +44,10 @@ private const val MAX_CONCURRENT_COLLABORATOR_WAITS = 4
 private const val COLLABORATOR_POLL_INTERVAL_MS = 1_000L
 
 @Serializable
-data class GenerateCollaboratorPayloadResult(
+internal data class GenerateCollaboratorPayloadResult(
     val status: CollaboratorToolStatus,
+    val executionState: HttpMessageExecutionState,
+    val retry: ToolRetryGuidance,
     val projectId: String? = null,
     val payload: String? = null,
     val payloadId: String? = null,
@@ -97,6 +100,9 @@ enum class CollaboratorToolStatus {
 
     @SerialName("burp_error")
     BURP_ERROR,
+
+    @SerialName("execution_uncertain")
+    EXECUTION_UNCERTAIN,
 }
 
 @Serializable
@@ -168,6 +174,8 @@ internal class CollaboratorToolService(
             return StructuredToolResponse(
                 GenerateCollaboratorPayloadResult(
                     status = CollaboratorToolStatus.INVALID_ARGUMENT,
+                    executionState = HttpMessageExecutionState.NOT_STARTED,
+                    retry = ToolRetryGuidance.AFTER_CORRECTION,
                     projectId = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
                     error = "projectId is empty, too long, or contains control characters",
                 )
@@ -179,25 +187,35 @@ internal class CollaboratorToolService(
         ) {
             val result = GenerateCollaboratorPayloadResult(
                 status = CollaboratorToolStatus.INVALID_ARGUMENT,
+                executionState = HttpMessageExecutionState.NOT_STARTED,
+                retry = ToolRetryGuidance.AFTER_CORRECTION,
                 projectId = input.projectId,
                 error = "customData must contain 1 to $MAX_COLLABORATOR_CUSTOM_DATA_CHARS ASCII alphanumeric characters",
             )
             return StructuredToolResponse(result)
         }
 
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
+        var generationAttempted = false
         return try {
             val generated = clientMutex.withLock {
                 verifyCurrentProject(input.projectId)
                 val client = clientForProject(input.projectId)
+                generationAttempted = true
                 val payload = if (customData == null) client.generatePayload() else client.generatePayload(customData)
-                GeneratedCollaboratorPayload(
+                val result = GeneratedCollaboratorPayload(
                     payload = payload.toString().take(2_048),
                     payloadId = payload.id().toString().take(MAX_COLLABORATOR_PAYLOAD_ID_CHARS),
                     server = client.server().address().take(MAX_HTTP_SEARCH_HOST_CHARS),
                 )
+                verifyCurrentProject(input.projectId)
+                result
             }
             val result = GenerateCollaboratorPayloadResult(
                 status = CollaboratorToolStatus.OK,
+                executionState = HttpMessageExecutionState.COMPLETED,
+                retry = ToolRetryGuidance.NOT_APPLICABLE,
                 projectId = input.projectId,
                 payload = generated.payload,
                 payloadId = generated.payloadId,
@@ -208,23 +226,39 @@ internal class CollaboratorToolService(
                 text = "Payload: ${result.payload}\nPayload ID: ${result.payloadId}\nCollaborator server: ${result.server}",
             )
         } catch (e: CollaboratorProjectMismatchException) {
-            StructuredToolResponse(
-                GenerateCollaboratorPayloadResult(
-                    status = CollaboratorToolStatus.PROJECT_MISMATCH,
-                    projectId = e.currentProjectId,
-                    error = "Burp project changed before Collaborator payload generation",
+            if (generationAttempted) {
+                collaboratorGenerationUncertain(
+                    input.projectId,
+                    IllegalStateException("Burp project changed while the Collaborator payload was generated"),
                 )
-            )
+            } else {
+                StructuredToolResponse(
+                    GenerateCollaboratorPayloadResult(
+                        status = CollaboratorToolStatus.PROJECT_MISMATCH,
+                        executionState = HttpMessageExecutionState.NOT_STARTED,
+                        retry = ToolRetryGuidance.AFTER_USER_ACTION,
+                        projectId = e.currentProjectId,
+                        error = "Burp project changed before Collaborator payload generation",
+                    )
+                )
+            }
         } catch (e: CancellationException) {
-            throw e
+            if (!callContext.isActive || !generationAttempted) throw e
+            collaboratorGenerationUncertain(input.projectId, e)
         } catch (e: Exception) {
-            StructuredToolResponse(
-                GenerateCollaboratorPayloadResult(
-                    status = CollaboratorToolStatus.BURP_ERROR,
-                    projectId = input.projectId,
-                    error = "Burp could not generate a Collaborator payload: ${safeCollaboratorException(e)}",
+            if (generationAttempted) {
+                collaboratorGenerationUncertain(input.projectId, e)
+            } else {
+                StructuredToolResponse(
+                    GenerateCollaboratorPayloadResult(
+                        status = CollaboratorToolStatus.BURP_ERROR,
+                        executionState = HttpMessageExecutionState.NOT_STARTED,
+                        retry = ToolRetryGuidance.SAFE_TO_RETRY,
+                        projectId = input.projectId,
+                        error = "Burp could not prepare Collaborator payload generation: ${safeCollaboratorException(e)}",
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -448,6 +482,29 @@ internal class CollaboratorToolService(
 private data class ProjectCollaboratorClient(val projectId: String, val client: CollaboratorClient)
 private data class GeneratedCollaboratorPayload(val payload: String, val payloadId: String, val server: String)
 private class CollaboratorProjectMismatchException(val currentProjectId: String) : Exception()
+
+private fun collaboratorGenerationUncertain(
+    projectId: String,
+    error: Exception,
+): StructuredToolResponse<GenerateCollaboratorPayloadResult> {
+    val message = uncertainExecutionError(
+        "Burp may have generated a Collaborator payload",
+        error,
+        preserveCancellation = false,
+        maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+    )
+    return StructuredToolResponse(
+        output = GenerateCollaboratorPayloadResult(
+            status = CollaboratorToolStatus.EXECUTION_UNCERTAIN,
+            executionState = HttpMessageExecutionState.UNCERTAIN,
+            retry = ToolRetryGuidance.DO_NOT_RETRY,
+            projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+            error = message,
+        ),
+        text = "Error: $message",
+        isError = true,
+    )
+}
 
 private data class NormalizedCollaboratorInput(
     val payloadId: String?,

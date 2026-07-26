@@ -1,0 +1,202 @@
+name: Record exact-byte Burp smoke attestation
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable draft tag (for example v4.8.0-rc.1)
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character source commit recorded by the draft
+        required: true
+        type: string
+      tested_jar_sha256:
+        description: SHA-256 of the exact JAR manually tested in both editions
+        required: true
+        type: string
+      operating_systems:
+        description: OS and Java runtime versions used for the Community and Professional tests
+        required: true
+        type: string
+      burp_community_version:
+        description: Exact Burp Suite Community version tested
+        required: true
+        type: string
+      burp_professional_version:
+        description: Exact Burp Suite Professional version tested
+        required: true
+        type: string
+      mcp_clients:
+        description: MCP client names and exact versions tested
+        required: true
+        type: string
+      results_json:
+        description: Single-line JSON containing observedExtensionVersion plus exact editions and scenarios pass/fail maps
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-smoke-${{ inputs.tag }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Validate draft identity and record tester claim
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-smoke
+    permissions:
+      contents: read
+    steps:
+      - name: Download and verify the immutable draft bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+          TESTED_JAR_SHA256: ${{ inputs.tested_jar_sha256 }}
+          RESULTS_JSON: ${{ inputs.results_json }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$TESTED_JAR_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ ${#RESULTS_JSON} -ge 1 && ${#RESULTS_JSON} -le 4096 ]]
+          [[ "$RESULTS_JSON" != *$'\n'* && "$RESULTS_JSON" != *$'\r'* ]]
+
+          stage="$RUNNER_TEMP/draft-assets"
+          mkdir -p "$stage"
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
+            .draft == true and .tag_name == $tag and .target_commitish == $sha
+          ' <<<"$release_json" >/dev/null
+          gh release download "$RELEASE_TAG" --dir "$stage"
+          [[ ! -L "$stage/SHA256SUMS" && -f "$stage/SHA256SUMS" ]]
+          (cd "$stage" && sha256sum -c SHA256SUMS)
+          [[ $(jq -r '.tag' "$stage/SOURCE_IDENTITY.json") == "$RELEASE_TAG" ]]
+          [[ $(jq -r '.sourceCommit' "$stage/SOURCE_IDENTITY.json") == "$SOURCE_COMMIT" ]]
+          actual_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
+          [[ "$actual_jar_sha" == "$TESTED_JAR_SHA256" ]]
+          [[ $(jq -r '.artifacts.jarSha256' "$stage/SOURCE_IDENTITY.json") == "$actual_jar_sha" ]]
+          expected_version=$(jq -r '.version' "$stage/SOURCE_IDENTITY.json")
+          jq -e --arg version "$expected_version" '
+            (keys | sort) == ["editions", "observedExtensionVersion", "scenarios"] and
+            .observedExtensionVersion == $version and
+            (.editions | keys | sort) == ["community", "professional"] and
+            ([.editions[]] | all(. == "pass")) and
+            (.scenarios | keys | sort) == [
+              "boundedLargeDataAndCancellation",
+              "catalogEditionGating",
+              "dataApprovalAndProjectTransition",
+              "diagnosticsRedaction",
+              "embeddedStdio",
+              "loadUnload",
+              "nativeHttp",
+              "professionalScannerCollaborator",
+              "routingNoHiddenNetwork",
+              "scopeScannerUncertainOutcomes",
+              "serverLifecycle",
+              "stableIdReplayIndependentApprovals",
+              "unloadDuringBackgroundWork"
+            ] and
+            ([.scenarios[]] | all(. == "pass"))
+          ' <<<"$RESULTS_JSON" > "$RUNNER_TEMP/smoke-claims.json"
+
+      - name: Create bounded machine-readable smoke record
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+          TESTED_JAR_SHA256: ${{ inputs.tested_jar_sha256 }}
+          OPERATING_SYSTEMS: ${{ inputs.operating_systems }}
+          BURP_COMMUNITY_VERSION: ${{ inputs.burp_community_version }}
+          BURP_PROFESSIONAL_VERSION: ${{ inputs.burp_professional_version }}
+          MCP_CLIENTS: ${{ inputs.mcp_clients }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for value in "$OPERATING_SYSTEMS" "$BURP_COMMUNITY_VERSION" \
+            "$BURP_PROFESSIONAL_VERSION" "$MCP_CLIENTS"; do
+            [[ ${#value} -ge 1 && ${#value} -le 512 ]]
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]]
+          done
+          output="$RUNNER_TEMP/smoke-result.json"
+          jq -n \
+            --arg schemaVersion '1' \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$RELEASE_TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg jarSha256 "$TESTED_JAR_SHA256" \
+            --arg testerActor "$GITHUB_ACTOR" \
+            --arg operatingSystems "$OPERATING_SYSTEMS" \
+            --arg communityVersion "$BURP_COMMUNITY_VERSION" \
+            --arg professionalVersion "$BURP_PROFESSIONAL_VERSION" \
+            --arg mcpClients "$MCP_CLIENTS" \
+            --arg workflowRun "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile claims "$RUNNER_TEMP/smoke-claims.json" \
+            '{
+              schemaVersion: $schemaVersion,
+              repository: $repository,
+              tag: $tag,
+              sourceCommit: $sourceCommit,
+              jarSha256: $jarSha256,
+              testerActor: $testerActor,
+              operatingSystems: $operatingSystems,
+              burp: {community: $communityVersion, professional: $professionalVersion},
+              mcpClients: $mcpClients,
+              workflowRun: $workflowRun,
+              recordedAt: $recordedAt,
+              observedExtensionVersion: $claims[0].observedExtensionVersion,
+              editions: $claims[0].editions,
+              scenarios: $claims[0].scenarios
+            }' > "$output"
+
+      - name: Upload immutable smoke record
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-smoke-record-${{ inputs.tag }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/smoke-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record Actions artifact identity
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          {
+            echo "Smoke record artifact ID: $ARTIFACT_ID"
+            echo "Smoke record artifact digest: $ARTIFACT_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  attest:
+    name: Attest the protected smoke record
+    needs: record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-smoke-record-${{ inputs.tag }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/smoke-record
+
+      - name: Attest exact smoke record
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ runner.temp }}/smoke-record/smoke-result.json
+
+      - name: Upload detached smoke attestation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-smoke-attestation-${{ inputs.tag }}-${{ inputs.source_sha }}
+          path: ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90

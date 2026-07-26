@@ -5,8 +5,9 @@ release gate, not a description of PortSwigger's process and not evidence that e
 version sequence and implementation milestones are tracked in
 [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md).
 
-The checked-in `release-draft.yml` currently creates a one-shot **draft only**. Publication needs a separate protected
-job that revalidates the immutable source, artifacts, and attestation. A successful local build is not a release.
+The checked-in `release-draft.yml` creates a one-shot draft only. The separately checked-in `release-smoke.yml` and
+`release-publish.yml` workflows record exact-byte human evidence and perform protected no-rebuild publication. A
+successful local build or draft workflow is not a release.
 
 ## Release principles
 
@@ -51,9 +52,11 @@ Configure these controls in GitHub before enabling publication:
 - CODEOWNERS/review requirements for workflows, Gradle files, proxy provenance, manifests, and legal files;
 - protected `v*` tags restricted to authorized maintainers;
 - Actions restricted to approved, full-SHA-pinned actions;
-- a protected `release` environment requiring human approval;
+- protected `release-draft`, `release-smoke`, and `release-publication` environments requiring independent human approval;
 - minimal default `GITHUB_TOKEN` permissions;
-- immutable releases, if available for the repository;
+- immutable releases enabled for the repository;
+- a fine-grained `IMMUTABLE_RELEASES_READ_TOKEN` environment secret scoped to Administration (read-only) in
+  `release-publication`, used only to fail closed on the repository immutability setting before publication;
 - Dependabot or Renovate coverage for GitHub Actions and Gradle dependencies;
 - private reporting instructions and an owner for release/security incidents.
 
@@ -310,7 +313,7 @@ workflow, change-range, verification, and digest data cannot be replaced by free
 Document both integrity and publisher/source verification. A checksum downloaded beside the JAR detects corruption but
 not compromise of the release account.
 
-Example after the target attestation workflow is implemented:
+Example for verifying a published release produced by the checked-in attestation workflow:
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -346,15 +349,29 @@ an exact legal/source asset allowlist, and passes only downloaded bytes to the O
 job runs no project code, revalidates checksums and source identity, creates an attestation bundle, fails if the release
 already exists, and never uses `--clobber`.
 
-This is only the immutable **draft** half of the target process. Stable publication remains blocked until:
+`release-smoke.yml` records a protected human tester attestation for the exact draft JAR. It does not pretend to run
+Burp on a GitHub-hosted runner: the tester must first perform the documented Community and Professional matrix, supply
+the exact downloaded JAR digest and environment versions, and obtain `release-smoke` environment approval. The workflow
+then independently downloads the draft, verifies that digest and source identity, emits a bounded `smoke-result.json`,
+and attests the record in a separate no-checkout OIDC job.
 
-- the repository's `release-draft` and future publication environments are externally configured with required
-  reviewers and least-privilege branch/tag rules;
+`release-publish.yml` is intentionally limited to SemVer prereleases. Its read-only preflight and protected publication
+job independently re-resolve the signed tag, protected-main ancestry, one-shot draft, exact asset/API-digest snapshot,
+checksums, source identity, release body, draft provenance, authorized smoke workflow run, tester identity, smoke
+attestation, and JAR digest. The publication step first checks the repository immutable-release setting using a protected read-only administration
+token, sends only `draft=false`, requires the resulting release to report `immutable=true`, does not rebuild or replace
+assets, and is followed by an anonymous checksum/source/provenance check. Stable tags fail closed until a separate machine-verifiable seven-day RC
+and unresolved-P1 gate is implemented.
+
+Any publication remains blocked until:
+
+- the repository's `release-draft`, `release-smoke`, and `release-publication` environments are externally configured
+  with required reviewers, prevention of self-review/admin bypass, and least-privilege branch/tag rules;
+- GitHub immutable releases are enabled and write access to drafts/tags is restricted;
 - the checked-in Gradle/npm locks and verification metadata are independently reviewed for the candidate;
-- protected exact-byte Community and Professional smoke evidence is produced and attested;
-- a minimal protected publish workflow independently downloads the draft, validates the tag, exact allowlist,
-  attestations, tester identity, and smoke-record JAR digest, then publishes without rebuilding or replacing assets; and
-- a clean unauthenticated post-publication verification is archived.
+- the exact-byte Community and Professional matrix is actually performed and its protected smoke workflow succeeds;
+- the prerelease has the required soak and defect review before stable publication; and
+- the unauthenticated post-publication job succeeds and its run is retained.
 
 Do not use the manually built and later corrected v4.7.0 publication as evidence that the target process ran.
 

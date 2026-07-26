@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.requests.HttpRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
@@ -155,6 +156,13 @@ internal class RawHttpActionService(
             return burpError(input.protocol, HttpMessageActionDestination.HTTP, target, e)
         }
 
+        val expectedProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(input.protocol, HttpMessageActionDestination.HTTP, target, e)
+        }
         val approved = try {
             HttpRequestSecurity.checkHttpRequestPermission(
                 input.targetHostname,
@@ -168,8 +176,21 @@ internal class RawHttpActionService(
         } catch (e: Exception) {
             return burpError(input.protocol, HttpMessageActionDestination.HTTP, target, e)
         }
+        preExecutionProjectResult(
+            expectedProjectId,
+            input.protocol,
+            HttpMessageActionDestination.HTTP,
+            target,
+            prepared.requestBytes,
+        )?.let { return it }
         if (!approved) {
-            return denied(input.protocol, HttpMessageActionDestination.HTTP, target, prepared.requestBytes)
+            return denied(
+                input.protocol,
+                HttpMessageActionDestination.HTTP,
+                target,
+                prepared.requestBytes,
+                projectId = expectedProjectId,
+            )
         }
 
         val options = try {
@@ -183,17 +204,41 @@ internal class RawHttpActionService(
             return burpError(input.protocol, HttpMessageActionDestination.HTTP, target, e)
         }
 
-        currentCoroutineContext().ensureActive()
-        val recordingProjectId = runCatchingPreservingCancellation { api.project().id() }.getOrNull()
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         val exchange = try {
             api.http().sendRequest(prepared.request, options)
         } catch (e: CancellationException) {
-            return uncertain(input.protocol, HttpMessageActionDestination.HTTP, target, prepared.requestBytes, null, e)
+            if (!callContext.isActive) throw e
+            return uncertain(
+                input.protocol,
+                HttpMessageActionDestination.HTTP,
+                target,
+                prepared.requestBytes,
+                null,
+                e,
+                expectedProjectId,
+            )
         } catch (e: Exception) {
-            return uncertain(input.protocol, HttpMessageActionDestination.HTTP, target, prepared.requestBytes, null, e)
+            return uncertain(
+                input.protocol,
+                HttpMessageActionDestination.HTTP,
+                target,
+                prepared.requestBytes,
+                null,
+                e,
+                expectedProjectId,
+            )
         }
 
-        val recording = recordHttpResponseInSiteMap(api, exchange, recordingProjectId)
+        postExecutionProjectResult(
+            expectedProjectId,
+            input.protocol,
+            HttpMessageActionDestination.HTTP,
+            target,
+            prepared.requestBytes,
+        )?.let { return it }
+        val recording = recordHttpResponseInSiteMap(api, exchange, expectedProjectId)
         var warning: String? = recording.warning
         val response = try {
             exchange?.response()?.toActionSummary(bodyLimit, encoding)
@@ -202,13 +247,20 @@ internal class RawHttpActionService(
             warning = listOfNotNull(warning, previewWarning).joinToString("; ").take(512)
             null
         }
+        postExecutionProjectResult(
+            expectedProjectId,
+            input.protocol,
+            HttpMessageActionDestination.HTTP,
+            target,
+            prepared.requestBytes,
+        )?.let { return it }
         return RawHttpActionResult(
             status = HttpMessageActionStatus.OK,
             executionState = HttpMessageExecutionState.COMPLETED,
             protocol = input.protocol,
             destination = HttpMessageActionDestination.HTTP,
             target = target,
-            projectId = recordingProjectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+            projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
             requestBytes = prepared.requestBytes,
             response = response,
             recordedInSiteMap = recording.recorded,
@@ -253,6 +305,13 @@ internal class RawHttpActionService(
             return burpError(input.protocol, destination, target, e)
         }
 
+        val expectedProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(input.protocol, destination, target, e)
+        }
         val approved = try {
             RequestActionSecurity.checkPermission(
                 action = input.destination.approvalLabel(),
@@ -269,9 +328,27 @@ internal class RawHttpActionService(
         } catch (e: Exception) {
             return burpError(input.protocol, destination, target, e)
         }
-        if (!approved) return denied(input.protocol, destination, target, prepared.requestBytes, tabName)
+        preExecutionProjectResult(
+            expectedProjectId,
+            input.protocol,
+            destination,
+            target,
+            prepared.requestBytes,
+            tabName,
+        )?.let { return it }
+        if (!approved) {
+            return denied(
+                input.protocol,
+                destination,
+                target,
+                prepared.requestBytes,
+                tabName,
+                expectedProjectId,
+            )
+        }
 
-        currentCoroutineContext().ensureActive()
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         try {
             when (input.destination) {
                 RawHttpRouteDestination.REPEATER -> {
@@ -285,19 +362,76 @@ internal class RawHttpActionService(
                 RawHttpRouteDestination.ORGANIZER -> api.organizer().sendToOrganizer(prepared.request)
             }
         } catch (e: CancellationException) {
-            return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e)
+            if (!callContext.isActive) throw e
+            return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e, expectedProjectId)
         } catch (e: Exception) {
-            return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e)
+            return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e, expectedProjectId)
         }
 
+        postExecutionProjectResult(
+            expectedProjectId,
+            input.protocol,
+            destination,
+            target,
+            prepared.requestBytes,
+            tabName,
+        )?.let { return it }
         return RawHttpActionResult(
             status = HttpMessageActionStatus.OK,
             executionState = HttpMessageExecutionState.COMPLETED,
             protocol = input.protocol,
             destination = destination,
             target = target,
+            projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
             requestBytes = prepared.requestBytes,
             tabName = tabName,
+        )
+    }
+
+    private fun preExecutionProjectResult(
+        expectedProjectId: String,
+        protocol: RawHttpProtocol,
+        destination: HttpMessageActionDestination,
+        target: HttpActionTarget,
+        requestBytes: Int,
+        tabName: String? = null,
+    ): RawHttpActionResult? {
+        val currentProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(protocol, destination, target, e)
+        }
+        if (currentProjectId == expectedProjectId) return null
+        return projectMismatch(protocol, destination, target, requestBytes, tabName, currentProjectId)
+    }
+
+    private suspend fun postExecutionProjectResult(
+        expectedProjectId: String,
+        protocol: RawHttpProtocol,
+        destination: HttpMessageActionDestination,
+        target: HttpActionTarget,
+        requestBytes: Int,
+        tabName: String? = null,
+    ): RawHttpActionResult? {
+        val currentProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return uncertain(protocol, destination, target, requestBytes, tabName, e, expectedProjectId)
+        } catch (e: Exception) {
+            return uncertain(protocol, destination, target, requestBytes, tabName, e, expectedProjectId)
+        }
+        if (currentProjectId == expectedProjectId) return null
+        return uncertain(
+            protocol,
+            destination,
+            target,
+            requestBytes,
+            tabName,
+            IllegalStateException("Burp project changed while the raw request action was executing"),
+            expectedProjectId,
         )
     }
 }
@@ -428,15 +562,36 @@ private fun denied(
     target: HttpActionTarget,
     requestBytes: Int,
     tabName: String? = null,
+    projectId: String? = null,
 ) = RawHttpActionResult(
     status = HttpMessageActionStatus.ACTION_DENIED,
     executionState = HttpMessageExecutionState.NOT_STARTED,
     protocol = protocol,
     destination = destination,
     target = target,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     requestBytes = requestBytes,
     tabName = tabName,
     error = "request action denied by Burp Suite",
+)
+
+private fun projectMismatch(
+    protocol: RawHttpProtocol,
+    destination: HttpMessageActionDestination,
+    target: HttpActionTarget,
+    requestBytes: Int,
+    tabName: String?,
+    currentProjectId: String,
+) = RawHttpActionResult(
+    status = HttpMessageActionStatus.PROJECT_MISMATCH,
+    executionState = HttpMessageExecutionState.NOT_STARTED,
+    protocol = protocol,
+    destination = destination,
+    target = target,
+    projectId = currentProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    requestBytes = requestBytes,
+    tabName = tabName,
+    error = "Burp project changed before the raw request action started",
 )
 
 private fun burpError(
@@ -460,12 +615,14 @@ private fun uncertain(
     requestBytes: Int,
     tabName: String?,
     error: Exception,
+    projectId: String? = null,
 ) = RawHttpActionResult(
     status = HttpMessageActionStatus.EXECUTION_UNCERTAIN,
     executionState = HttpMessageExecutionState.UNCERTAIN,
     protocol = protocol,
     destination = destination,
     target = target,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     requestBytes = requestBytes,
     tabName = tabName,
     error = uncertainExecutionError(

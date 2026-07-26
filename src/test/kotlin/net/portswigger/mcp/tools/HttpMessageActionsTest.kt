@@ -29,7 +29,11 @@ import burp.api.montoya.repeater.Repeater
 import burp.api.montoya.sitemap.SiteMap
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.HttpRequestSecurity
@@ -43,6 +47,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -948,6 +953,36 @@ class HttpMessageActionsTest {
     }
 
     @Test
+    fun `caller cancellation during stable ID HTTP replay propagates`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(30)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            lateinit var invocationJob: Job
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } answers {
+                invocationJob.cancel(CancellationException("caller cancelled"))
+                throw CancellationException("caller cancelled")
+            }
+
+            supervisorScope {
+                val invocation = async {
+                    invocationJob = currentCoroutineContext()[Job]!!
+                    service.send(
+                        SendHttpRequestFromId(
+                            projectId = "project-123",
+                            ref = HttpMessageReference(HttpMessageSource.PROXY, "30"),
+                        )
+                    )
+                }
+                assertFailsWith<CancellationException> { invocation.await() }
+            }
+
+            verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
     fun `HTTP replay rejects automatic redirects before resolution or network access`() = runBlocking {
         val http = mockk<Http>(relaxed = true)
         every { api.http() } returns http
@@ -1028,6 +1063,55 @@ class HttpMessageActionsTest {
         assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
         assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
         verify(exactly = 0) { intruder.sendToIntruder(any<HttpRequest>()) }
+    }
+
+    @Test
+    fun `project transition during successful stable ID routing is execution uncertain`() = runBlocking {
+        val fixture = proxyFixture(31)
+        filteredHistory(fixture.item)
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        val intruder = mockk<Intruder>()
+        every { api.intruder() } returns intruder
+        every { intruder.sendToIntruder(fixture.request) } answers { currentProjectId = "replacement-project" }
+
+        val result = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "31"),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+    }
+
+    @Test
+    fun `project transition during successful stable ID HTTP send suppresses response as uncertain`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(32)
+            filteredHistory(fixture.item)
+            var currentProjectId = "project-123"
+            every { project.id() } answers { currentProjectId }
+            val http = mockk<Http>()
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } answers {
+                currentProjectId = "replacement-project"
+                mockk<HttpRequestResponse>(relaxed = true)
+            }
+
+            val result = service.send(
+                SendHttpRequestFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.PROXY, "32"),
+                )
+            )
+
+            assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+            assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+            assertEquals(null, result.response)
+        }
     }
 
     @Test

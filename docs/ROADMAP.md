@@ -164,8 +164,9 @@ Implemented draft-building controls:
   `SHA256SUMS`; public-release completeness still requires an independently enforced publication gate.
 - A matching protected annotated source tag is a target publication requirement and must resolve to the built commit.
 - A manual-only `workflow_dispatch` verifies native HTTP and embedded-stdio clients, runs two clean no-build-cache
-  packages, compares JAR/SBOM bytes, generates checksums and provenance attestations, and creates or updates a draft.
-  It never publishes a release; exact-byte Burp validation, complete legal/source assets, and protected publication remain
+  packages, compares JAR/SBOM bytes, generates checksums and provenance attestations, and creates a draft only when no
+  release exists for the tag. It never updates or publishes a release; exact-byte Burp validation, complete legal/source
+  assets, and protected publication remain
   explicit release gates.
 
 Remaining work:

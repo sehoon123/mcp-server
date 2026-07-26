@@ -29,13 +29,22 @@ internal class WebSocketMessageReadService(
                 error = "WebSocket history ID belongs to a different Burp project",
             )
         }
-        if (!checkDataAccessOrDeny(
-                DataAccessType.WEBSOCKET_HISTORY,
-                config,
-                api,
-                "WebSocket history item ${input.id}",
+        val allowed = checkDataAccessOrDeny(
+            DataAccessType.WEBSOCKET_HISTORY,
+            config,
+            api,
+            "WebSocket history item ${input.id}",
+        )
+        val projectAfterApproval = api.project().id()
+        if (projectAfterApproval != expectedProjectId) {
+            return WebSocketMessageReadResult(
+                status = HistoryReadStatus.PROJECT_MISMATCH,
+                id = input.id,
+                projectId = projectAfterApproval,
+                error = "Burp project changed during WebSocket history approval",
             )
-        ) {
+        }
+        if (!allowed) {
             return WebSocketMessageReadResult(
                 status = HistoryReadStatus.ACCESS_DENIED,
                 id = input.id,

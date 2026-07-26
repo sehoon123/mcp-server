@@ -167,6 +167,9 @@ private fun SerialDescriptor.asJsonSchema(): JsonElement {
                         require(exactlyOneOf.properties.all(properties::containsKey)) {
                             "JsonSchemaExactlyOneOf on $serialName names a property that is not declared on the class"
                         }
+                        require(exactlyOneOf.properties.distinct().size == exactlyOneOf.properties.size) {
+                            "JsonSchemaExactlyOneOf on $serialName must name distinct properties"
+                        }
                         put(
                             "oneOf",
                             JsonArray(

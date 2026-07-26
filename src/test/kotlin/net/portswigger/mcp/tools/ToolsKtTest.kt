@@ -484,6 +484,104 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `project configuration read stops before export when approval crosses projects`() = runBlocking {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>(relaxed = true)
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.burpSuite() } returns burpSuite
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    summary: String,
+                    reviewContent: String?,
+                    renderContentAsHttp: Boolean,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "project-b"
+                    return true
+                }
+            }
+
+            val result = client.callTool("get_burp_options", mapOf("level" to "project"))
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertNull(result?.structuredContent?.get("configuration"))
+            verify(exactly = 0) { burpSuite.exportProjectOptionsAsJson() }
+        }
+
+        @Test
+        fun `project configuration write stops before import when approval crosses projects`() = runBlocking {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>(relaxed = true)
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.burpSuite() } returns burpSuite
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    summary: String,
+                    reviewContent: String?,
+                    renderContentAsHttp: Boolean,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "project-b"
+                    return true
+                }
+            }
+
+            val result = client.callTool(
+                "set_burp_options",
+                mapOf("level" to "project", "json" to "{\"project_options\":{}}"),
+            )
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            verify(exactly = 0) { burpSuite.importProjectOptionsFromJson(any()) }
+        }
+
+        @Test
+        fun `project configuration transition after import is execution uncertain`() = runBlocking {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.burpSuite() } returns burpSuite
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            every { burpSuite.importProjectOptionsFromJson(any()) } answers {
+                currentProjectId = "project-b"
+            }
+
+            val result = client.callTool(
+                "set_burp_options",
+                mapOf("level" to "project", "json" to "{\"project_options\":{}}"),
+            )
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(any()) }
+        }
+
+        @Test
+        fun `configuration import cancellation after invocation is execution uncertain`() = runBlocking {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.importUserOptionsFromJson(any()) } throws kotlinx.coroutines.CancellationException("cancelled")
+
+            val result = client.callTool(
+                "set_burp_options",
+                mapOf("level" to "user", "json" to "{\"user_options\":{}}"),
+            )
+
+            assertEquals("burp_error", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+        }
+
+        @Test
         fun `set task execution engine state should work properly`() {
             val taskExecutionEngine = mockk<TaskExecutionEngine>()
             val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
@@ -695,6 +793,98 @@ class ToolsKtTest {
 
     @Nested
     inner class EditorTests {
+        @Test
+        fun `active editor read stops before resolving an editor when approval crosses projects`() = runBlocking {
+            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    summary: String,
+                    reviewContent: String?,
+                    renderContentAsHttp: Boolean,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "project-b"
+                    return true
+                }
+            }
+
+            val result = client.callTool("get_active_editor_contents", emptyMap())
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertNull(result?.structuredContent?.get("content"))
+            verify(exactly = 0) { getActiveEditor(api) }
+        }
+
+        @Test
+        fun `active editor write stops before the setter when approval crosses projects`() = runBlocking {
+            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            val textArea = mockk<JTextArea>()
+            every { getActiveEditor(api) } returns textArea
+            every { textArea.isEditable } returns true
+            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    summary: String,
+                    reviewContent: String?,
+                    renderContentAsHttp: Boolean,
+                    api: MontoyaApi,
+                ): Boolean {
+                    currentProjectId = "project-b"
+                    return true
+                }
+            }
+
+            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            verify(exactly = 0) { textArea.text = any() }
+        }
+
+        @Test
+        fun `active editor transition after setter is execution uncertain`() = runBlocking {
+            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
+            val project = mockk<burp.api.montoya.project.Project>()
+            var currentProjectId = "project-a"
+            every { api.project() } returns project
+            every { project.id() } answers { currentProjectId }
+            val textArea = mockk<JTextArea>()
+            every { getActiveEditor(api) } returns textArea
+            every { textArea.isEditable } returns true
+            every { textArea.text = any() } answers { currentProjectId = "project-b" }
+
+            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
+
+            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            verify(exactly = 1) { textArea.text = "replacement" }
+        }
+
+        @Test
+        fun `active editor setter cancellation is execution uncertain`() = runBlocking {
+            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
+            val textArea = mockk<JTextArea>()
+            every { getActiveEditor(api) } returns textArea
+            every { textArea.isEditable } returns true
+            every { textArea.text = any() } throws kotlinx.coroutines.CancellationException("cancelled")
+
+            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
+
+            assertEquals("burp_error", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+        }
+
         @Test
         fun `get active editor contents should handle no editor`() {
             mockkStatic("net.portswigger.mcp.tools.ToolsKt")

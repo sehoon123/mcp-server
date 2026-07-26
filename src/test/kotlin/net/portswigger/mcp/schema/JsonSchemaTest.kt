@@ -1,11 +1,12 @@
 package net.portswigger.mcp.schema
 
+import com.networknt.schema.dialect.Dialects
+import com.networknt.schema.InputFormat
+import com.networknt.schema.SchemaRegistry
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,6 +15,7 @@ import net.portswigger.mcp.tools.CheckScope
 import net.portswigger.mcp.tools.UpdateScope
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -33,8 +35,15 @@ class JsonSchemaTest {
     @Serializable
     private data class NoAnnotationPair(val a: String? = null, val b: String? = null)
 
+    @JsonSchemaExactlyOneOf("a", "a")
+    @Serializable
+    private data class DuplicateExactlyOnePair(val a: String? = null, val b: String? = null)
+
     @Serializable
     private data class ListContainer(val items: List<ExactlyOnePair>)
+
+    @Serializable
+    private data class DuplicateExactlyOneContainer(val target: DuplicateExactlyOnePair)
 
     @Serializable
     private data class ObjectContainer(val target: ExactlyOnePair)
@@ -92,9 +101,11 @@ class JsonSchemaTest {
             "{\"a\":null,\"b\":null}" to false,
         )
 
+        val validator = SchemaRegistry.withDialect(Dialects.getDraft202012())
+            .getSchema(schema.toString(), InputFormat.JSON)
         cases.forEach { (payload, expected) ->
-            val value = Json.parseToJsonElement(payload).jsonObject
-            assertEquals(expected, schema.matchesGeneratedOneOf(value), payload)
+            val errors = validator.validate(payload, InputFormat.JSON)
+            assertEquals(expected, errors.isEmpty(), "$payload: $errors")
             val decoded = Json.decodeFromString<ExactlyOnePair>(payload)
             assertEquals(expected, (decoded.a == null) != (decoded.b == null), payload)
         }
@@ -111,6 +122,28 @@ class JsonSchemaTest {
         assertEquals("object", alternatives[0].jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("null", alternatives[1].jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals(null, Json.decodeFromString<NullableObjectContainer>("{\"target\":null}").target)
+
+        val validator = SchemaRegistry.withDialect(Dialects.getDraft202012())
+            .getSchema(schema.toString(), InputFormat.JSON)
+        val cases = mapOf(
+            "null" to true,
+            "{}" to false,
+            "{\"a\":null}" to false,
+            "{\"b\":null}" to false,
+            "{\"a\":\"value\"}" to true,
+            "{\"b\":\"value\"}" to true,
+            "{\"a\":null,\"b\":\"value\"}" to true,
+            "{\"a\":\"value\",\"b\":null}" to true,
+            "{\"a\":\"value\",\"b\":\"value\"}" to false,
+            "{\"a\":null,\"b\":null}" to false,
+            "{\"a\":1}" to false,
+            "{\"a\":\"value\",\"extra\":true}" to false,
+            "42" to false,
+        )
+        cases.forEach { (payload, expected) ->
+            val errors = validator.validate(payload, InputFormat.JSON)
+            assertEquals(expected, errors.isEmpty(), "$payload: $errors")
+        }
     }
 
     @Test
@@ -137,6 +170,15 @@ class JsonSchemaTest {
     }
 
     @Test
+    fun `exactly-one annotation rejects duplicate property names`() {
+        val error = assertFailsWith<IllegalArgumentException> {
+            serializer<DuplicateExactlyOneContainer>().descriptor.asInputSchema()
+        }
+
+        assertTrue(error.message.orEmpty().contains("distinct"))
+    }
+
+    @Test
     fun `oneOf is absent without the annotation`() {
         val schema = serializer<NoAnnotationListContainer>().descriptor.asInputSchema()
         val itemSchema = schema.properties!!["items"]!!.jsonObject["items"]!!.jsonObject
@@ -159,12 +201,4 @@ class JsonSchemaTest {
         assertTrue(updateScopeItemSchema.containsKey("oneOf"))
     }
 
-    private fun JsonObject.matchesGeneratedOneOf(value: JsonObject): Boolean {
-        val alternatives = this["oneOf"] as JsonArray
-        return alternatives.count { candidate ->
-            val schema = candidate.jsonObject
-            val required = schema["required"]!!.jsonArray.single().jsonPrimitive.content
-            value.containsKey(required) && value[required] != JsonNull
-        } == 1
-    }
 }

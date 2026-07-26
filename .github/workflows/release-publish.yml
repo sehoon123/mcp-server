@@ -1,0 +1,440 @@
+name: Publish verified immutable prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable draft prerelease tag
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character source commit recorded by the draft
+        required: true
+        type: string
+      smoke_run_id:
+        description: Successful protected release-smoke workflow run ID
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-publication-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Read-only independent publication preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    outputs:
+      release_id: ${{ steps.verify.outputs.release_id }}
+      snapshot: ${{ steps.verify.outputs.snapshot }}
+    steps:
+      - name: Re-resolve tag, draft, bytes, provenance, and smoke evidence
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+          SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
+          AUTHORIZED_TESTER_LOGIN: sehoon123
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$RELEASE_TAG" =~ $semver ]]
+          # Stable publication remains blocked until the seven-day RC and defect gate is machine-verifiable.
+          tag_without_build=${RELEASE_TAG%%+*}
+          [[ "$tag_without_build" == *-* ]]
+
+          expected_assets=$(cat <<'EOF'
+          Apache-2.0.txt
+          CORRESPONDING_SOURCE.md
+          FORK_NOTICE.md
+          LICENSE
+          MIGRATION_V4_8.md
+          MIT-SLF4J.txt
+          NOTICE.md
+          RELEASE_NOTES.md
+          SHA256SUMS
+          SOURCE_IDENTITY.json
+          runtime-licenses.properties
+          THIRD_PARTY_NOTICES.md
+          VULNERABILITY_REPORT.md
+          bom.cdx.json
+          independent-mcp-bridge-all.jar
+          provenance.intoto.jsonl
+          SOURCE_ARCHIVE_PLACEHOLDER
+          EOF
+          )
+          version=${RELEASE_TAG#v}
+          expected_assets=${expected_assets/SOURCE_ARCHIVE_PLACEHOLDER/independent-mcp-bridge-$version-source.tar.gz}
+
+          ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
+          [[ $(jq -r '.object.type' <<<"$ref_json") == tag ]]
+          tag_object=$(jq -r '.object.sha' <<<"$ref_json")
+          tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")
+          jq -e --arg sha "$SOURCE_COMMIT" --arg email "$AUTHORIZED_TAGGER_EMAIL" --arg tag "$RELEASE_TAG" '
+            .object.type == "commit" and .object.sha == $sha and .tag == $tag and
+            .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
+          ' <<<"$tag_json" >/dev/null
+          compare_json=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...main")
+          [[ $(jq -r '.merge_base_commit.sha' <<<"$compare_json") == "$SOURCE_COMMIT" ]]
+
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          release_id=$(jq -r '.id' <<<"$release_json")
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
+            .draft == true and .prerelease == true and .tag_name == $tag and
+            .target_commitish == $sha and .name == ("Independent MCP Bridge " + $tag)
+          ' <<<"$release_json" >/dev/null
+          actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_assets" | sed 's/^          //' | LC_ALL=C sort) <(printf '%s\n' "$actual_assets")
+          [[ $(jq '[.assets[].name] | length == (unique | length)' <<<"$release_json") == true ]]
+          jq -e 'all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))' \
+            <<<"$release_json" >/dev/null
+
+          stage="$RUNNER_TEMP/release-assets"
+          mkdir -p "$stage"
+          gh release download "$RELEASE_TAG" --dir "$stage"
+          while IFS= read -r entry; do
+            [[ -f "$entry" && ! -L "$entry" ]]
+          done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 17 ]]
+          (cd "$stage" && sha256sum -c SHA256SUMS)
+          [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 15 ]]
+          expected_checksums=$(printf '%s\n' "$expected_assets" | sed 's/^          //' | \
+            grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
+          actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
+
+          while IFS=$'\t' read -r name size digest; do
+            file="$stage/$name"
+            [[ -f "$file" && $(stat -c '%s' "$file") == "$size" ]]
+            [[ "sha256:$(sha256sum "$file" | cut -d' ' -f1)" == "$digest" ]]
+          done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' <<<"$release_json")
+
+          identity="$stage/SOURCE_IDENTITY.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg version "$version" --arg sha "$SOURCE_COMMIT" '
+            .repository == ("https://github.com/" + $repo) and .tag == $tag and .version == $version and
+            .sourceCommit == $sha and
+            (.workflowRun | test("^https://github.com/" + $repo + "/actions/runs/[1-9][0-9]*$")) and
+            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom
+          ' --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
+            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" "$identity" >/dev/null
+          grep -Fx "**Source commit:** \`$SOURCE_COMMIT\`<br>" "$stage/VULNERABILITY_REPORT.md" >/dev/null
+          jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
+          cmp "$RUNNER_TEMP/release-body" "$stage/RELEASE_NOTES.md"
+
+          for subject in "$stage"/*; do
+            [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --bundle "$stage/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$SOURCE_COMMIT" \
+              --source-digest "$SOURCE_COMMIT" \
+              --source-ref "refs/tags/$RELEASE_TAG" >/dev/null
+          done
+
+          smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
+          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+            .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+            .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+          ' <<<"$smoke_json" >/dev/null
+          smoke_head=$(jq -r '.head_sha' <<<"$smoke_json")
+          [[ "$smoke_head" == "$GITHUB_SHA" ]]
+          smoke_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID/artifacts?per_page=100")
+          jq -e --arg record "release-smoke-record-$RELEASE_TAG-$SOURCE_COMMIT" \
+            --arg attestation "release-smoke-attestation-$RELEASE_TAG-$SOURCE_COMMIT" '
+            ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+            ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+          ' <<<"$smoke_artifacts" >/dev/null
+          smoke_dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$smoke_dir/record" "$smoke_dir/attestation"
+          gh run download "$SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-record-$RELEASE_TAG-$SOURCE_COMMIT" --dir "$smoke_dir/record"
+          gh run download "$SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-attestation-$RELEASE_TAG-$SOURCE_COMMIT" --dir "$smoke_dir/attestation"
+          [[ -f "$smoke_dir/record/smoke-result.json" && ! -L "$smoke_dir/record/smoke-result.json" ]]
+          smoke_bundle=$(find "$smoke_dir/attestation" -maxdepth 1 -type f)
+          [[ -n "$smoke_bundle" && $(printf '%s\n' "$smoke_bundle" | wc -l) -eq 1 ]]
+          gh attestation verify "$smoke_dir/record/smoke-result.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle "$smoke_bundle" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
+            --signer-digest "$smoke_head" \
+            --source-digest "$smoke_head" \
+            --source-ref refs/heads/main >/dev/null
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" \
+            --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
+            --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$SMOKE_RUN_ID" '
+            (keys | sort) == ["burp", "editions", "jarSha256", "mcpClients", "observedExtensionVersion",
+              "operatingSystems", "recordedAt", "repository", "scenarios", "schemaVersion", "sourceCommit",
+              "tag", "testerActor", "workflowRun"] and
+            .schemaVersion == "1" and .repository == $repo and .tag == $tag and .sourceCommit == $sha and
+            .jarSha256 == $jar and .testerActor == $actor and .observedExtensionVersion == ($tag | ltrimstr("v")) and
+            .workflowRun == ("https://github.com/" + $repo + "/actions/runs/" + $run) and
+            (.editions | keys | sort) == ["community", "professional"] and
+            ([.editions[]] | all(. == "pass")) and
+            (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
+              "dataApprovalAndProjectTransition", "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp",
+              "professionalScannerCollaborator", "routingNoHiddenNetwork", "scopeScannerUncertainOutcomes",
+              "serverLifecycle", "stableIdReplayIndependentApprovals", "unloadDuringBackgroundWork"] and
+            ([.scenarios[]] | all(. == "pass"))
+          ' "$smoke_dir/record/smoke-result.json" >/dev/null
+
+          snapshot=$(jq -cS '[.id, .tag_name, .target_commitish, .name, .body, .draft, .prerelease,
+            ([.assets[] | [.id, .name, .size, .digest]] | sort)]' <<<"$release_json" | sha256sum | cut -d' ' -f1)
+          {
+            echo "release_id=$release_id"
+            echo "snapshot=$snapshot"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Protected no-rebuild publication
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release-publication
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    steps:
+      - name: Fail closed unless repository immutable releases are enabled
+        env:
+          IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$IMMUTABLE_RELEASES_READ_TOKEN" ]]
+          response=$(curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            -H "Authorization: Bearer $IMMUTABLE_RELEASES_READ_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/immutable-releases")
+          jq -e '.enabled == true' <<<"$response" >/dev/null
+
+      - name: Independently revalidate exact bytes and evidence after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+          SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          EXPECTED_RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+          EXPECTED_SNAPSHOT: ${{ needs.preflight.outputs.snapshot }}
+          AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
+          AUTHORIZED_TESTER_LOGIN: sehoon123
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          tag_without_build=${RELEASE_TAG%%+*}
+          [[ "$tag_without_build" == *-* ]]
+
+          ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
+          [[ $(jq -r '.object.type' <<<"$ref_json") == tag ]]
+          tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$ref_json")")
+          jq -e --arg sha "$SOURCE_COMMIT" --arg email "$AUTHORIZED_TAGGER_EMAIL" --arg tag "$RELEASE_TAG" '
+            .object.type == "commit" and .object.sha == $sha and .tag == $tag and
+            .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
+          ' <<<"$tag_json" >/dev/null
+          [[ $(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...main" --jq '.merge_base_commit.sha') == "$SOURCE_COMMIT" ]]
+
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID")
+          jq -e --argjson id "$EXPECTED_RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
+            .id == $id and .draft == true and .prerelease == true and .tag_name == $tag and
+            .target_commitish == $sha and .name == ("Independent MCP Bridge " + $tag) and
+            ([.assets[].name] | length == (unique | length)) and
+            all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
+          ' <<<"$release_json" >/dev/null
+          snapshot=$(jq -cS '[.id, .tag_name, .target_commitish, .name, .body, .draft, .prerelease,
+            ([.assets[] | [.id, .name, .size, .digest]] | sort)]' <<<"$release_json" | sha256sum | cut -d' ' -f1)
+          [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
+
+          version=${RELEASE_TAG#v}
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md FORK_NOTICE.md LICENSE \
+            MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
+            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_REPORT.md bom.cdx.json \
+            "independent-mcp-bridge-$version-source.tar.gz" independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
+          actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets")
+
+          stage="$RUNNER_TEMP/release-assets"
+          mkdir -p "$stage"
+          gh release download "$RELEASE_TAG" --dir "$stage"
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 17 ]]
+          while IFS= read -r entry; do
+            [[ -f "$entry" && ! -L "$entry" ]]
+          done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
+          (cd "$stage" && sha256sum -c SHA256SUMS)
+          [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 15 ]]
+          expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
+          actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
+          while IFS=$'\t' read -r name size digest; do
+            [[ -f "$stage/$name" && ! -L "$stage/$name" && $(stat -c '%s' "$stage/$name") == "$size" ]]
+            [[ "sha256:$(sha256sum "$stage/$name" | cut -d' ' -f1)" == "$digest" ]]
+          done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' <<<"$release_json")
+          jq -e --arg tag "$RELEASE_TAG" --arg version "$version" --arg sha "$SOURCE_COMMIT" \
+            --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
+            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" '
+            .tag == $tag and .version == $version and .sourceCommit == $sha and
+            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom
+          ' "$stage/SOURCE_IDENTITY.json" >/dev/null
+          jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
+          cmp "$RUNNER_TEMP/release-body" "$stage/RELEASE_NOTES.md"
+          for subject in "$stage"/*; do
+            [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$stage/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$SOURCE_COMMIT" --source-digest "$SOURCE_COMMIT" \
+              --source-ref "refs/tags/$RELEASE_TAG" >/dev/null
+          done
+
+          smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
+          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+            .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+            .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+          ' <<<"$smoke_json" >/dev/null
+          smoke_head=$(jq -r '.head_sha' <<<"$smoke_json")
+          [[ "$smoke_head" == "$GITHUB_SHA" ]]
+          smoke_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID/artifacts?per_page=100")
+          jq -e --arg record "release-smoke-record-$RELEASE_TAG-$SOURCE_COMMIT" \
+            --arg attestation "release-smoke-attestation-$RELEASE_TAG-$SOURCE_COMMIT" '
+            ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+            ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+          ' <<<"$smoke_artifacts" >/dev/null
+          mkdir -p "$RUNNER_TEMP/smoke/record" "$RUNNER_TEMP/smoke/attestation"
+          gh run download "$SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-record-$RELEASE_TAG-$SOURCE_COMMIT" --dir "$RUNNER_TEMP/smoke/record"
+          gh run download "$SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-attestation-$RELEASE_TAG-$SOURCE_COMMIT" --dir "$RUNNER_TEMP/smoke/attestation"
+          smoke_bundle=$(find "$RUNNER_TEMP/smoke/attestation" -maxdepth 1 -type f)
+          [[ -f "$RUNNER_TEMP/smoke/record/smoke-result.json" && $(printf '%s\n' "$smoke_bundle" | wc -l) -eq 1 ]]
+          gh attestation verify "$RUNNER_TEMP/smoke/record/smoke-result.json" --repo "$GITHUB_REPOSITORY" \
+            --bundle "$smoke_bundle" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
+            --signer-digest "$smoke_head" --source-digest "$smoke_head" --source-ref refs/heads/main >/dev/null
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" \
+            --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
+            --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$SMOKE_RUN_ID" '
+            (keys | sort) == ["burp", "editions", "jarSha256", "mcpClients", "observedExtensionVersion",
+              "operatingSystems", "recordedAt", "repository", "scenarios", "schemaVersion", "sourceCommit",
+              "tag", "testerActor", "workflowRun"] and
+            .schemaVersion == "1" and .repository == $repo and .tag == $tag and .sourceCommit == $sha and
+            .jarSha256 == $jar and .testerActor == $actor and .observedExtensionVersion == ($tag | ltrimstr("v")) and
+            .workflowRun == ("https://github.com/" + $repo + "/actions/runs/" + $run) and
+            (.editions | keys | sort) == ["community", "professional"] and
+            ([.editions[]] | all(. == "pass")) and
+            (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
+              "dataApprovalAndProjectTransition", "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp",
+              "professionalScannerCollaborator", "routingNoHiddenNetwork", "scopeScannerUncertainOutcomes",
+              "serverLifecycle", "stableIdReplayIndependentApprovals", "unloadDuringBackgroundWork"] and
+            ([.scenarios[]] | all(. == "pass"))
+          ' "$RUNNER_TEMP/smoke/record/smoke-result.json" >/dev/null
+
+      - name: Publish by changing only the draft flag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false)
+          jq -e --argjson id "$RELEASE_ID" \
+            '.id == $id and .draft == false and .prerelease == true and .immutable == true' <<<"$response" >/dev/null
+
+      - name: Verify publication did not change release identity or assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+          EXPECTED_SNAPSHOT: ${{ needs.preflight.outputs.snapshot }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json=$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+          jq -e '.draft == false and .immutable == true' <<<"$release_json" >/dev/null
+          # The approved transition changes only draft=true to draft=false; normalize it before comparing the snapshot.
+          snapshot=$(jq ' .draft = true ' <<<"$release_json" | jq -cS '[.id, .tag_name, .target_commitish, .name, .body, .draft, .prerelease,
+            ([.assets[] | [.id, .name, .size, .digest]] | sort)]' | sha256sum | cut -d' ' -f1)
+          [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
+          {
+            echo "## Published immutable prerelease"
+            echo
+            echo "- Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+            echo "- Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Source: \`$SOURCE_COMMIT\`"
+            echo "- JAR SHA-256: \`$(sha256sum "$RUNNER_TEMP/release-assets/independent-mcp-bridge-all.jar" | cut -d' ' -f1)\`"
+            echo "- SBOM SHA-256: \`$(sha256sum "$RUNNER_TEMP/release-assets/bom.cdx.json" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  public-check:
+    name: Anonymous post-publication checksum verification
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download public assets without a repository token
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
+          release_json=$(curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "$api_url")
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
+            .draft == false and .prerelease == true and .immutable == true and
+            .tag_name == $tag and .target_commitish == $sha and
+            all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
+          ' <<<"$release_json" >/dev/null
+          version=${RELEASE_TAG#v}
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md FORK_NOTICE.md LICENSE \
+            MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
+            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_REPORT.md bom.cdx.json \
+            "independent-mcp-bridge-$version-source.tar.gz" independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
+          actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets")
+          stage="$RUNNER_TEMP/public-assets"
+          mkdir -p "$stage"
+          while IFS=$'\t' read -r name url; do
+            [[ "$name" != */* && "$name" != *\\* ]]
+            curl --fail --silent --show-error --location "$url" --output "$stage/$name"
+          done < <(jq -r '.assets[] | [.name, .browser_download_url] | @tsv' <<<"$release_json")
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 17 ]]
+          (cd "$stage" && sha256sum -c SHA256SUMS)
+          actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
+          expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
+          while IFS=$'\t' read -r name size digest; do
+            [[ $(stat -c '%s' "$stage/$name") == "$size" ]]
+            [[ "sha256:$(sha256sum "$stage/$name" | cut -d' ' -f1)" == "$digest" ]]
+          done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' <<<"$release_json")
+          [[ $(jq -r '.sourceCommit' "$stage/SOURCE_IDENTITY.json") == "$SOURCE_COMMIT" ]]
+          for subject in "$stage"/*; do
+            [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$stage/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$SOURCE_COMMIT" --source-digest "$SOURCE_COMMIT" \
+              --source-ref "refs/tags/$RELEASE_TAG" >/dev/null
+          done

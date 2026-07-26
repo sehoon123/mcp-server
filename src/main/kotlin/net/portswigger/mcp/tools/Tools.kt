@@ -8,6 +8,9 @@ import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -51,6 +54,9 @@ private const val MAX_CONFIGURATION_JSON_CHARS = 1024 * 1024
 private const val MAX_EDITOR_CONTENT_CHARS = 1024 * 1024
 private const val MAX_EDITOR_PREVIEW_CHARS = 32 * 1024
 private const val MAX_SAFE_REGEX_CHARS = 512
+
+private fun MontoyaApi.isCurrentProject(expectedProjectId: String?): Boolean =
+    expectedProjectId == null || project().id() == expectedProjectId
 
 internal fun validateRawTarget(hostname: String, port: Int) {
     require(TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null) {
@@ -430,6 +436,27 @@ internal fun Server.registerTools(
     ) { input ->
         val deniedMessage =
             "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration access denied by Burp Suite"
+        val expectedProjectId = if (input.level == BurpOptionsLevel.PROJECT) {
+            try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val error = standardToolException("Burp could not capture the project before configuration approval", e)
+                return@mcpStructuredToolWithContext StructuredToolResponse(
+                    GetBurpOptionsResult(
+                        StandardToolStatus.BURP_ERROR,
+                        ToolRetryGuidance.SAFE_TO_RETRY,
+                        input.level,
+                        error = error,
+                    ),
+                    text = "Error: $error",
+                    isError = true,
+                )
+            }
+        } else {
+            null
+        }
         val approved = try {
             when (input.level) {
                 BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
@@ -453,6 +480,36 @@ internal fun Server.registerTools(
                 GetBurpOptionsResult(
                     StandardToolStatus.BURP_ERROR,
                     ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterApproval = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after configuration approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterApproval) {
+            val error = "Burp project changed during project configuration approval"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
                     input.level,
                     error = error,
                 ),
@@ -491,6 +548,36 @@ internal fun Server.registerTools(
                 isError = true,
             )
         }
+        val projectStableAfterExport = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after configuration export", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterExport) {
+            val error = "Burp project changed while project configuration was exported"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
         if (exported.length > MAX_CONFIGURATION_JSON_CHARS) {
             val error = "configuration exceeds the output limit"
             return@mcpStructuredToolWithContext StructuredToolResponse(
@@ -515,6 +602,36 @@ internal fun Server.registerTools(
                 GetBurpOptionsResult(
                     StandardToolStatus.BURP_ERROR,
                     ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterFiltering = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after configuration filtering", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    input.level,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterFiltering) {
+            val error = "Burp project changed while project configuration was prepared"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetBurpOptionsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
                     input.level,
                     error = error,
                 ),
@@ -583,6 +700,28 @@ internal fun Server.registerTools(
         }
         val deniedMessage =
             "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration change denied by Burp Suite"
+        val expectedProjectId = if (input.level == BurpOptionsLevel.PROJECT) {
+            try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val error = standardToolException("Burp could not capture the project before configuration-change approval", e)
+                return@mcpStructuredToolWithContext StructuredToolResponse(
+                    SetBurpOptionsResult(
+                        StandardToolStatus.BURP_ERROR,
+                        ToolRetryGuidance.SAFE_TO_RETRY,
+                        StandardExecutionState.NOT_STARTED,
+                        input.level,
+                        error,
+                    ),
+                    text = "Error: $error",
+                    isError = true,
+                )
+            }
+        } else {
+            null
+        }
         val approved = try {
             when (input.level) {
                 BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
@@ -616,6 +755,38 @@ internal fun Server.registerTools(
                 isError = true,
             )
         }
+        val projectStableAfterApproval = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after configuration-change approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterApproval) {
+            val error = "Burp project changed during project configuration approval"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
         if (!approved) {
             return@mcpStructuredToolWithContext StructuredToolResponse(
                 SetBurpOptionsResult(
@@ -630,6 +801,8 @@ internal fun Server.registerTools(
         }
         val successMessage =
             "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration has been applied"
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         try {
             when (input.level) {
                 BurpOptionsLevel.PROJECT -> {
@@ -644,7 +817,24 @@ internal fun Server.registerTools(
                 }
             }
         } catch (e: CancellationException) {
-            throw e
+            if (!callContext.isActive) throw e
+            val error = uncertainExecutionError(
+                "Configuration may have been partially applied",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         } catch (e: Exception) {
             val error = uncertainExecutionError(
                 "Configuration may have been partially applied",
@@ -658,6 +848,60 @@ internal fun Server.registerTools(
                     StandardExecutionState.UNCERTAIN,
                     input.level,
                     error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterImport = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
+            val error = uncertainExecutionError(
+                "Configuration may have been applied but the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        } catch (e: Exception) {
+            val error = uncertainExecutionError(
+                "Configuration may have been applied but the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.level,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterImport) {
+            val error = "Configuration may have been applied while the Burp project changed; reconcile manually and do not retry automatically"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpOptionsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.level,
+                    boundedStandardToolError(error),
                 ),
                 text = "Error: $error",
                 isError = true,
@@ -714,7 +958,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GenerateCollaboratorPayload, GenerateCollaboratorPayloadResult>(
-            description = "Generates a project-bound, bounded Burp Collaborator payload for out-of-band testing and returns its payloadId. Optional customData must contain 1–16 ASCII alphanumeric characters, matching Burp's native limit. Use get_collaborator_interactions with that payloadId; generation does not inject or send the payload.",
+            description = "Generates a project-bound, bounded Burp Collaborator payload for out-of-band testing and returns its payloadId. Optional customData must contain 1–16 ASCII alphanumeric characters, matching Burp's native limit. Use get_collaborator_interactions with that payloadId; generation does not inject or send the payload. executionState=uncertain means Burp may have allocated a payload and the call must not be retried automatically.",
             annotations = COLLABORATOR_GENERATE_TOOL_ANNOTATIONS,
         ) { input ->
             collaboratorToolService.generate(input)
@@ -871,6 +1115,8 @@ internal fun Server.registerTools(
             BurpControl.PROXY_INTERCEPT ->
                 "Intercept has been ${if (input.enabled) "enabled" else "disabled"}"
         }
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         try {
             when (input.control) {
                 BurpControl.TASK_EXECUTION_ENGINE -> {
@@ -881,7 +1127,25 @@ internal fun Server.registerTools(
                 }
             }
         } catch (e: CancellationException) {
-            throw e
+            if (!callContext.isActive) throw e
+            val error = uncertainExecutionError(
+                "Burp control state may have changed",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetBurpControlStateResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.control,
+                    input.enabled,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         } catch (e: Exception) {
             val error = uncertainExecutionError(
                 "Burp control state may have changed",
@@ -918,6 +1182,22 @@ internal fun Server.registerTools(
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { _ ->
         val deniedMessage = "Active editor access denied by Burp Suite"
+        val expectedProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not capture the project before active-editor approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
         val approved = try {
             SensitiveActionSecurity.checkPermission(
                 "read active editor contents",
@@ -932,6 +1212,34 @@ internal fun Server.registerTools(
                 GetActiveEditorContentsResult(
                     StandardToolStatus.BURP_ERROR,
                     ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterApproval = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after active-editor approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterApproval) {
+            val error = "Burp project changed during active-editor approval"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
                     error = error,
                 ),
                 text = "Error: $error",
@@ -958,6 +1266,34 @@ internal fun Server.registerTools(
                 GetActiveEditorContentsResult(
                     StandardToolStatus.BURP_ERROR,
                     ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterRead = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after active-editor read", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterRead) {
+            val error = "Burp project changed while active-editor content was read"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                GetActiveEditorContentsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
                     error = error,
                 ),
                 text = "Error: $error",
@@ -1007,6 +1343,24 @@ internal fun Server.registerTools(
                     ToolRetryGuidance.AFTER_CORRECTION,
                     StandardExecutionState.NOT_STARTED,
                     error = error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val expectedProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not capture the project before resolving the active editor", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
                 ),
                 text = "Error: $error",
                 isError = true,
@@ -1098,6 +1452,38 @@ internal fun Server.registerTools(
                 isError = true,
             )
         }
+        val projectStableAfterApproval = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val error = standardToolException("Burp could not recheck the project after active-editor change approval", e)
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterApproval) {
+            val error = "Burp project changed during active-editor change approval"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.AFTER_USER_ACTION,
+                    StandardExecutionState.NOT_STARTED,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
         if (!approved) {
             return@mcpStructuredToolWithContext StructuredToolResponse(
                 SetActiveEditorContentsResult(
@@ -1110,10 +1496,29 @@ internal fun Server.registerTools(
                 text = deniedMessage,
             )
         }
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         try {
             editor.text = input.text
         } catch (e: CancellationException) {
-            throw e
+            if (!callContext.isActive) throw e
+            val error = uncertainExecutionError(
+                "Active editor text may have changed",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
         } catch (e: Exception) {
             val error = uncertainExecutionError(
                 "Active editor text may have changed",
@@ -1127,6 +1532,60 @@ internal fun Server.registerTools(
                     StandardExecutionState.UNCERTAIN,
                     input.text.length,
                     error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        val projectStableAfterWrite = try {
+            api.isCurrentProject(expectedProjectId)
+        } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
+            val error = uncertainExecutionError(
+                "Active editor text may have changed but the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        } catch (e: Exception) {
+            val error = uncertainExecutionError(
+                "Active editor text may have changed but the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
+            )
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.text.length,
+                    error,
+                ),
+                text = "Error: $error",
+                isError = true,
+            )
+        }
+        if (!projectStableAfterWrite) {
+            val error = "Active editor text may have changed while the Burp project changed; reconcile manually and do not retry automatically"
+            return@mcpStructuredToolWithContext StructuredToolResponse(
+                SetActiveEditorContentsResult(
+                    StandardToolStatus.PROJECT_MISMATCH,
+                    ToolRetryGuidance.DO_NOT_RETRY,
+                    StandardExecutionState.UNCERTAIN,
+                    input.text.length,
+                    boundedStandardToolError(error),
                 ),
                 text = "Error: $error",
                 isError = true,

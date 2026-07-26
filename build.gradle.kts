@@ -443,6 +443,8 @@ dependencies {
     testImplementation(libs.bundles.test.framework)
     testImplementation(libs.bundles.ktor.test)
     testImplementation(libs.burp.montoya.api)
+    testImplementation(platform(libs.jackson.bom.test))
+    testImplementation(libs.json.schema.validator)
     byteBuddyAgent(libs.byte.buddy.agent)
 }
 

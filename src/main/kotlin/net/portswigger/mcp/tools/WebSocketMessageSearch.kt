@@ -227,6 +227,16 @@ internal class WebSocketMessageSearchService(
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
+        val projectAfterApproval = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(expectedProjectId, e)
+        }
+        if (projectAfterApproval != expectedProjectId) {
+            return projectMismatch(projectAfterApproval, "Burp project changed during WebSocket history approval")
+        }
         if (!allowed) {
             return SearchWebsocketMessagesResult(
                 status = WebSocketSearchStatus.ACCESS_DENIED,

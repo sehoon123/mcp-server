@@ -12,6 +12,8 @@ burp-montoya = "2026.7"
 # Test Dependencies
 mockk = "1.14.6"
 byte-buddy = "1.17.6"
+json-schema-validator = "3.0.6"
+jackson-test = "3.1.5"
 
 [libraries]
 # Kotlin
@@ -36,6 +38,8 @@ burp-montoya-api = { module = "net.portswigger.burp.extensions:montoya-api", ver
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 byte-buddy-agent = { module = "net.bytebuddy:byte-buddy-agent", version.ref = "byte-buddy" }
+json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "json-schema-validator" }
+jackson-bom-test = { module = "tools.jackson:jackson-bom", version.ref = "jackson-test" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 

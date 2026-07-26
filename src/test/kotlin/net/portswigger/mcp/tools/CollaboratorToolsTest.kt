@@ -7,8 +7,13 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -58,6 +63,63 @@ class CollaboratorToolsTest {
         assertEquals(CollaboratorToolStatus.INVALID_ARGUMENT, result.output.status)
         assertTrue(result.output.error.orEmpty().contains("16 ASCII alphanumeric"))
         verify(exactly = 0) { collaborator.createClient() }
+    }
+
+    @Test
+    fun `project transition during payload generation is execution uncertain and withholds the payload`() = runBlocking {
+        var currentProjectId = projectId
+        every { project.id() } answers { currentProjectId }
+        val payload = mockk<CollaboratorPayload>()
+        val server = mockk<CollaboratorServer>()
+        every { client.generatePayload() } answers {
+            currentProjectId = "replacement-project"
+            payload
+        }
+        every { payload.toString() } returns "generated.example"
+        every { payload.id() } returns mockk(relaxed = true)
+        every { client.server() } returns server
+        every { server.address() } returns "collaborator.example"
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.generate(GenerateCollaboratorPayload(projectId = projectId))
+
+        assertEquals(CollaboratorToolStatus.EXECUTION_UNCERTAIN, result.output.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.output.executionState)
+        assertEquals(ToolRetryGuidance.DO_NOT_RETRY, result.output.retry)
+        assertEquals(null, result.output.payload)
+        assertTrue(result.output.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+    }
+
+    @Test
+    fun `payload generation cancellation after invocation is execution uncertain`() = runBlocking {
+        every { client.generatePayload() } throws CancellationException("cancelled")
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.generate(GenerateCollaboratorPayload(projectId = projectId))
+
+        assertEquals(CollaboratorToolStatus.EXECUTION_UNCERTAIN, result.output.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.output.executionState)
+        assertEquals(ToolRetryGuidance.DO_NOT_RETRY, result.output.retry)
+    }
+
+    @Test
+    fun `caller cancellation during payload generation propagates`() = runBlocking {
+        lateinit var invocationJob: Job
+        every { client.generatePayload() } answers {
+            invocationJob.cancel(CancellationException("caller cancelled"))
+            throw CancellationException("caller cancelled")
+        }
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        supervisorScope {
+            val invocation = async {
+                invocationJob = currentCoroutineContext()[Job]!!
+                service.generate(GenerateCollaboratorPayload(projectId = projectId))
+            }
+            assertFailsWith<CancellationException> { invocation.await() }
+        }
+
+        verify(exactly = 1) { client.generatePayload() }
     }
 
     @Test

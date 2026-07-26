@@ -31,6 +31,9 @@ internal enum class StandardToolStatus {
     @SerialName("limit_exceeded")
     LIMIT_EXCEEDED,
 
+    @SerialName("project_mismatch")
+    PROJECT_MISMATCH,
+
     @SerialName("burp_error")
     BURP_ERROR,
 }

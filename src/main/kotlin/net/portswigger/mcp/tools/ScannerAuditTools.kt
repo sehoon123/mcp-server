@@ -8,6 +8,7 @@ import burp.api.montoya.scanner.audit.Audit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
@@ -346,6 +347,30 @@ internal class ScannerAuditService(
                     index,
                 )
             }
+            val projectBeforeScope = try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return scannerAuditError(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.NOT_STARTED,
+                    input.projectId,
+                    input.mode,
+                    "Burp could not recheck the project before Scanner scope inspection: ${safeScannerAuditException(e)}",
+                    index,
+                )
+            }
+            if (projectBeforeScope != input.projectId) {
+                return scannerAuditError(
+                    ScannerAuditToolStatus.PROJECT_MISMATCH,
+                    ScannerAuditActionState.NOT_STARTED,
+                    projectBeforeScope,
+                    input.mode,
+                    "Burp project changed before Scanner target scope was inspected",
+                    index,
+                )
+            }
             val inScope = try {
                 api.scope().isInScope(message.request.url())
             } catch (e: CancellationException) {
@@ -357,6 +382,30 @@ internal class ScannerAuditService(
                     input.projectId,
                     input.mode,
                     "Burp could not check Scanner target scope: ${safeScannerAuditException(e)}",
+                    index,
+                )
+            }
+            val projectAfterScope = try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return scannerAuditError(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.NOT_STARTED,
+                    input.projectId,
+                    input.mode,
+                    "Burp could not recheck the project after Scanner scope inspection: ${safeScannerAuditException(e)}",
+                    index,
+                )
+            }
+            if (projectAfterScope != input.projectId) {
+                return scannerAuditError(
+                    ScannerAuditToolStatus.PROJECT_MISMATCH,
+                    ScannerAuditActionState.NOT_STARTED,
+                    projectAfterScope,
+                    input.mode,
+                    "Burp project changed while Scanner target scope was inspected",
                     index,
                 )
             }
@@ -478,6 +527,29 @@ internal class ScannerAuditService(
                 "Burp could not request Scanner approval: ${safeScannerAuditException(e)}",
             )
         }
+        val projectAfterApproval = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.BURP_ERROR,
+                ScannerAuditActionState.NOT_STARTED,
+                input.projectId,
+                input.mode,
+                "Burp could not recheck the project after Scanner approval: ${safeScannerAuditException(e)}",
+            )
+        }
+        observeProject(projectAfterApproval)
+        if (projectAfterApproval != input.projectId) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.PROJECT_MISMATCH,
+                ScannerAuditActionState.NOT_STARTED,
+                projectAfterApproval,
+                input.mode,
+                "Burp project changed during Scanner approval",
+            )
+        }
         if (!approved) {
             auditScanner(input.mode, prepared.size, null, "denied")
             return ScannerAuditResult(
@@ -496,16 +568,6 @@ internal class ScannerAuditService(
         callContext.ensureActive()
         return startMutex.withLock {
             callContext.ensureActive()
-            refreshAndTrimRecords()
-            if (records.values.count { !it.lastState.isTerminal() } + cleanupReservations.get() >= MAX_ACTIVE_SCANNER_AUDITS) {
-                return@withLock scannerAuditError(
-                    ScannerAuditToolStatus.CAPACITY_EXCEEDED,
-                    ScannerAuditActionState.NOT_STARTED,
-                    input.projectId,
-                    input.mode,
-                    "at most $MAX_ACTIVE_SCANNER_AUDITS MCP-started Scanner audits may be active or awaiting confirmed cleanup",
-                )
-            }
             val currentProjectId = try {
                 api.project().id()
             } catch (e: CancellationException) {
@@ -529,6 +591,16 @@ internal class ScannerAuditService(
                     "Burp project changed before the Scanner audit started",
                 )
             }
+            refreshAndTrimRecords()
+            if (records.values.count { !it.lastState.isTerminal() } + cleanupReservations.get() >= MAX_ACTIVE_SCANNER_AUDITS) {
+                return@withLock scannerAuditError(
+                    ScannerAuditToolStatus.CAPACITY_EXCEEDED,
+                    ScannerAuditActionState.NOT_STARTED,
+                    input.projectId,
+                    input.mode,
+                    "at most $MAX_ACTIVE_SCANNER_AUDITS MCP-started Scanner audits may be active or awaiting confirmed cleanup",
+                )
+            }
             prepared.forEachIndexed { index, target ->
                 callContext.ensureActive()
                 val stillInScope = try {
@@ -542,6 +614,30 @@ internal class ScannerAuditService(
                         input.projectId,
                         input.mode,
                         "Burp could not recheck Scanner target scope: ${safeScannerAuditException(e)}",
+                        index,
+                    )
+                }
+                val projectAfterScopeRecheck = try {
+                    api.project().id()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return@withLock scannerAuditError(
+                        ScannerAuditToolStatus.BURP_ERROR,
+                        ScannerAuditActionState.NOT_STARTED,
+                        input.projectId,
+                        input.mode,
+                        "Burp could not recheck the project after final Scanner scope inspection: ${safeScannerAuditException(e)}",
+                        index,
+                    )
+                }
+                if (projectAfterScopeRecheck != input.projectId) {
+                    return@withLock scannerAuditError(
+                        ScannerAuditToolStatus.PROJECT_MISMATCH,
+                        ScannerAuditActionState.NOT_STARTED,
+                        projectAfterScopeRecheck,
+                        input.mode,
+                        "Burp project changed during final Scanner scope inspection",
                         index,
                     )
                 }
@@ -575,8 +671,22 @@ internal class ScannerAuditService(
             val audit: Audit = try {
                 api.scanner().startAudit(configuration)
             } catch (e: CancellationException) {
-                auditScanner(input.mode, prepared.size, null, "start cancelled")
-                throw e
+                if (!callContext.isActive) {
+                    auditScanner(input.mode, prepared.size, null, "start cancelled by caller")
+                    throw e
+                }
+                auditScanner(input.mode, prepared.size, null, "start cancellation uncertain")
+                return@withLock scannerAuditError(
+                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    ScannerAuditActionState.UNCERTAIN,
+                    input.projectId,
+                    input.mode,
+                    uncertainExecutionError(
+                        "Burp may have started the Scanner audit but did not return a task handle",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
             } catch (e: Exception) {
                 auditScanner(input.mode, prepared.size, null, "start execution uncertain")
                 return@withLock scannerAuditError(
@@ -617,10 +727,23 @@ internal class ScannerAuditService(
                 record.updateState(ScannerAuditTaskState.RUNNING, ticker())
             } catch (e: CancellationException) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                auditScanner(input.mode, prepared.size, taskId, "target submission cancelled")
-                val deleted = cleanupOwnedAuditOnce(record)
-                if (deleted) records.remove(taskId, record)
-                throw e
+                if (!callContext.isActive) {
+                    auditScanner(input.mode, prepared.size, taskId, "target submission cancelled by caller")
+                    val deleted = cleanupOwnedAuditOnce(record)
+                    if (deleted) records.remove(taskId, record)
+                    throw e
+                }
+                record.markPublished(ticker())
+                auditScanner(input.mode, prepared.size, taskId, "target submission cancellation uncertain")
+                return@withLock record.toResult(
+                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    actionState = ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit started, but one or more targets may not have been submitted",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
             } catch (e: Exception) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
                 record.markPublished(ticker())
@@ -635,6 +758,54 @@ internal class ScannerAuditService(
                 )
             }
 
+            val projectAfterStart = try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                if (!callContext.isActive) {
+                    auditScanner(input.mode, prepared.size, taskId, "post-start project check cancelled by caller")
+                    val deleted = cleanupOwnedAuditOnce(record)
+                    if (deleted) records.remove(taskId, record)
+                    throw e
+                }
+                record.markPublished(ticker())
+                auditScanner(input.mode, prepared.size, taskId, "post-start project check uncertain")
+                return@withLock record.toResult(
+                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    actionState = ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit started, but the project boundary could not be rechecked",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
+            } catch (e: Exception) {
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                record.markPublished(ticker())
+                auditScanner(input.mode, prepared.size, taskId, "post-start project check uncertain")
+                return@withLock record.toResult(
+                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    actionState = ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit started, but the project boundary could not be rechecked",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
+            }
+            if (projectAfterStart != input.projectId) {
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                record.markPublished(ticker())
+                auditScanner(input.mode, prepared.size, taskId, "project changed during start")
+                observeProject(projectAfterStart)
+                return@withLock record.toResult(
+                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    actionState = ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit started while the Burp project changed; reconcile the task manually and do not retry automatically",
+                    ),
+                )
+            }
             record.markPublished(ticker())
             auditScanner(input.mode, prepared.size, taskId, "started")
             record.toResult(
@@ -822,6 +993,27 @@ internal class ScannerAuditService(
                 error = "Burp could not request Scanner cancellation approval: ${safeScannerAuditException(e)}",
             )
         }
+        val projectAfterApproval = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return record.toResult(
+                ScannerAuditToolStatus.BURP_ERROR,
+                ScannerAuditActionState.NOT_STARTED,
+                error = "Burp could not recheck the project after Scanner cancellation approval: ${safeScannerAuditException(e)}",
+            )
+        }
+        observeProject(projectAfterApproval)
+        if (projectAfterApproval != record.projectId) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.PROJECT_MISMATCH,
+                ScannerAuditActionState.NOT_STARTED,
+                projectAfterApproval,
+                record.mode,
+                "Burp project changed during Scanner cancellation approval",
+            )
+        }
         if (!approved) {
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation denied")
             return record.toResult(
@@ -831,7 +1023,8 @@ internal class ScannerAuditService(
             )
         }
 
-        currentCoroutineContext().ensureActive()
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         val currentProjectId = try {
             api.project().id()
         } catch (e: CancellationException) {
@@ -853,7 +1046,7 @@ internal class ScannerAuditService(
                 "Burp project changed before Scanner cancellation",
             )
         }
-        currentCoroutineContext().ensureActive()
+        callContext.ensureActive()
         if (!record.claimCleanup()) {
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             return record.toResult(
@@ -864,14 +1057,66 @@ internal class ScannerAuditService(
         }
         return try {
             record.audit.delete()
+            val projectAfterDelete = try {
+                api.project().id()
+            } catch (e: CancellationException) {
+                if (!callContext.isActive) throw e
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check uncertain")
+                return record.toResult(
+                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit may have been cancelled but the project boundary could not be rechecked",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
+            } catch (e: Exception) {
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check uncertain")
+                return record.toResult(
+                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit may have been cancelled but the project boundary could not be rechecked",
+                        e,
+                        preserveCancellation = false,
+                    ),
+                )
+            }
+            if (projectAfterDelete != record.projectId) {
+                record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+                auditScanner(record.mode, record.targets.size, record.taskId, "project changed during cancellation")
+                observeProject(projectAfterDelete)
+                return record.toResult(
+                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError(
+                        "Scanner audit may have been cancelled while the Burp project changed; do not retry automatically",
+                    ),
+                )
+            }
             record.updateState(ScannerAuditTaskState.CANCELLED, ticker())
             record.cancelledAt = clock()
             auditScanner(record.mode, record.targets.size, record.taskId, "cancelled")
             record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
         } catch (e: CancellationException) {
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-            auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted")
-            throw e
+            if (!callContext.isActive) {
+                auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted by caller")
+                throw e
+            }
+            auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted with uncertain outcome")
+            record.toResult(
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                ScannerAuditActionState.UNCERTAIN,
+                error = uncertainExecutionError(
+                    "Scanner audit may have been cancelled",
+                    e,
+                    preserveCancellation = false,
+                ),
+            )
         } catch (e: Exception) {
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation uncertain")

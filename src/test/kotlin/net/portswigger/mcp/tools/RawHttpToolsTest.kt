@@ -11,6 +11,7 @@ import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.project.Project
 import burp.api.montoya.repeater.Repeater
 import io.mockk.every
 import io.mockk.mockk
@@ -18,7 +19,11 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.RequestActionApprovalHandler
 import net.portswigger.mcp.security.RequestActionSecurity
@@ -27,13 +32,16 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.net.SocketTimeoutException
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RawHttpToolsTest {
     private val api = mockk<MontoyaApi>()
     private val logging = mockk<Logging>(relaxed = true)
+    private val project = mockk<Project>()
     private val storedBooleans = mutableMapOf<String, Boolean>()
+    private var currentProjectId = "project-raw"
     private lateinit var config: McpConfig
     private lateinit var service: RawHttpActionService
     private lateinit var originalRoutingApprovalHandler: RequestActionApprovalHandler
@@ -46,6 +54,9 @@ class RawHttpToolsTest {
         every { storage.setBoolean(any(), any()) } answers { storedBooleans[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns ""
         every { api.logging() } returns logging
+        currentProjectId = "project-raw"
+        every { api.project() } returns project
+        every { project.id() } answers { currentProjectId }
         config = McpConfig(storage, logging)
         service = RawHttpActionService(api, config)
         mockkStatic(HttpService::class)
@@ -139,6 +150,33 @@ class RawHttpToolsTest {
     }
 
     @Test
+    fun `caller cancellation during raw send propagates instead of becoming a normal uncertain response`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        lateinit var invocationJob: Job
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } answers {
+            invocationJob.cancel(CancellationException("caller cancelled"))
+            throw CancellationException("caller cancelled")
+        }
+
+        supervisorScope {
+            val invocation = async {
+                invocationJob = currentCoroutineContext()[Job]!!
+                service.send(defaultHttp1Send())
+            }
+            assertFailsWith<CancellationException> { invocation.await() }
+        }
+
+        verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
     fun `post-send automatic Site Map recording stays disabled at project boundary`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()
@@ -156,7 +194,7 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageActionStatus.OK, result.status)
         assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
         assertEquals(false, result.recordedInSiteMap)
-        assertTrue(result.error.orEmpty().contains("no project boundary was available"))
+        assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
         verify(exactly = 0) { api.siteMap() }
     }
 
@@ -214,6 +252,72 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
         assertTrue(result.error.orEmpty().contains("do not retry automatically"))
+    }
+
+    @Test
+    fun `project transition during raw routing approval prevents the side effect`() = runBlocking {
+        http1Fixture()
+        config.requireRequestActionApproval = true
+        RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String,
+                source: String,
+                target: String,
+                changes: String,
+                requestContent: String,
+                config: McpConfig,
+                api: MontoyaApi,
+            ): Boolean {
+                currentProjectId = "replacement-project"
+                return true
+            }
+        }
+        val repeater = mockk<Repeater>(relaxed = true)
+        every { api.repeater() } returns repeater
+
+        val result = service.route(defaultHttp1Route())
+
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        verify(exactly = 0) { repeater.sendToRepeater(any<HttpRequest>()) }
+    }
+
+    @Test
+    fun `project transition inside raw routing is execution uncertain`() = runBlocking {
+        val fixture = http1Fixture()
+        val repeater = mockk<Repeater>()
+        every { api.repeater() } returns repeater
+        every { repeater.sendToRepeater(fixture.request) } answers { currentProjectId = "replacement-project" }
+
+        val result = service.route(defaultHttp1Route())
+
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertEquals("project-raw", result.projectId)
+        assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
+    }
+
+    @Test
+    fun `project transition inside raw send is execution uncertain and suppresses response`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } answers {
+            currentProjectId = "replacement-project"
+            mockk<HttpRequestResponse>(relaxed = true)
+        }
+
+        val result = service.send(defaultHttp1Send())
+
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
+        assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertEquals("project-raw", result.projectId)
+        assertNull(result.response)
     }
 
     @Test

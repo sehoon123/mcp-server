@@ -15,6 +15,7 @@ import burp.api.montoya.intruder.HttpRequestTemplate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.config.McpConfig
@@ -407,9 +408,12 @@ internal class HttpMessageActionService(
             return denied(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched)
         }
 
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         val response = try {
             api.http().sendRequest(patched.request, options)
         } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
             runCatching {
                 api.logging().logToError(
                     auditLine(HttpMessageActionDestination.HTTP, resolved, patched, "cancelled after execution began")
@@ -425,6 +429,12 @@ internal class HttpMessageActionService(
             return uncertain(input.projectId, input.ref, HttpMessageActionDestination.HTTP, patched, e)
         }
 
+        recheckProjectAfterExecution(
+            input.projectId,
+            input.ref,
+            HttpMessageActionDestination.HTTP,
+            patched,
+        )?.let { return it }
         val recorded = recordHttpResponseInSiteMap(api, response, input.projectId)
         var summaryError: String? = recorded.warning
         val responseSummary = try {
@@ -435,6 +445,12 @@ internal class HttpMessageActionService(
             runCatching { api.logging().logToError(message) }
             null
         }
+        recheckProjectAfterExecution(
+            input.projectId,
+            input.ref,
+            HttpMessageActionDestination.HTTP,
+            patched,
+        )?.let { return it }
         runCatching {
             api.logging().logToOutput(
                 auditLine(HttpMessageActionDestination.HTTP, resolved, patched, "completed")
@@ -604,9 +620,12 @@ internal class HttpMessageActionService(
             )
         }
 
+        val callContext = currentCoroutineContext()
+        callContext.ensureActive()
         val preserved = try {
             execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
         } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
             runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "cancelled after execution began")) }
             return uncertain(
                 projectId,
@@ -631,6 +650,15 @@ internal class HttpMessageActionService(
                 insertionPointCount = preparedInsertionPoints?.ranges?.size,
             )
         }
+        recheckProjectAfterExecution(
+            projectId,
+            ref,
+            destination,
+            patched,
+            normalizedTabName,
+            actionChanges,
+            preparedInsertionPoints?.ranges?.size,
+        )?.let { return it }
         runCatching { api.logging().logToOutput(auditLine(destination, resolved, patched, "completed")) }
         return success(
             projectId,
@@ -648,6 +676,54 @@ internal class HttpMessageActionService(
         projectId: String,
         ref: HttpMessageReference,
     ): HttpMessageBatchResolution = resolver.resolve(projectId, ref)
+
+    private suspend fun recheckProjectAfterExecution(
+        expectedProjectId: String,
+        ref: HttpMessageReference,
+        destination: HttpMessageActionDestination,
+        patched: PatchedRequest,
+        tabName: String? = null,
+        changes: String = patched.summary,
+        insertionPointCount: Int? = null,
+    ): HttpMessageActionResult? {
+        val currentProjectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return uncertain(
+                expectedProjectId,
+                ref,
+                destination,
+                patched,
+                e,
+                tabName,
+                changes,
+                insertionPointCount,
+            )
+        } catch (e: Exception) {
+            return uncertain(
+                expectedProjectId,
+                ref,
+                destination,
+                patched,
+                e,
+                tabName,
+                changes,
+                insertionPointCount,
+            )
+        }
+        if (currentProjectId == expectedProjectId) return null
+        return uncertain(
+            expectedProjectId,
+            ref,
+            destination,
+            patched,
+            IllegalStateException("Burp project changed while the request action was executing"),
+            tabName,
+            changes,
+            insertionPointCount,
+        )
+    }
 
     private fun recheckProject(
         expectedProjectId: String,
