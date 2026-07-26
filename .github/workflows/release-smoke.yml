@@ -69,7 +69,9 @@ jobs:
 
           stage="$RUNNER_TEMP/draft-assets"
           mkdir -p "$stage"
-          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          release_id=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")
           jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
             .draft == true and .tag_name == $tag and .target_commitish == $sha
           ' <<<"$release_json" >/dev/null
