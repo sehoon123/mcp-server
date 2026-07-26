@@ -205,6 +205,7 @@ class ProxyEndToEndTest {
         val prompts = client.listPrompts().map { it.name }.toSet()
         assertTrue("analyze_http_without_sending" in prompts)
         assertTrue("review_auth_session_handling" in prompts)
+        assertTrue("plan_repeater_tests_without_sending" in prompts)
 
         val projectContent = assertInstanceOf(
             TextResourceContents::class.java,
@@ -220,6 +221,15 @@ class ProxyEndToEndTest {
         )
         val promptText = assertInstanceOf(TextContent::class.java, prompt.messages.single().content).text
         assertTrue(promptText.contains("Do not send traffic"))
+
+        val repeaterPlan = client.getPrompt(
+            "plan_repeater_tests_without_sending",
+            mapOf("httpReference" to "burp://http/proxy-e2e-project/proxy/42"),
+        )
+        val repeaterPlanText = assertInstanceOf(TextContent::class.java, repeaterPlan.messages.single().content).text
+        assertTrue(repeaterPlanText.contains("planning-only manual Repeater test plan"))
+        assertTrue(repeaterPlanText.contains("Do not send or replay traffic"))
+        assertTrue(repeaterPlanText.contains("create or route anything to a Repeater tab"))
     }
 
     @Test

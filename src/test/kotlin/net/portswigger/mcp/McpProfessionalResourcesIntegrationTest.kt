@@ -133,6 +133,7 @@ class McpProfessionalResourcesIntegrationTest {
                 "analyze_http_without_sending",
                 "compare_http_references",
                 "review_auth_session_handling",
+                "plan_repeater_tests_without_sending",
                 "summarize_scanner_issue",
             ),
             prompts,

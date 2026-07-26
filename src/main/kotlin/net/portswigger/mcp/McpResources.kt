@@ -347,6 +347,38 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         )
     }
 
+    addPrompt(
+        Prompt(
+            name = "plan_repeater_tests_without_sending",
+            title = "Plan Repeater tests without sending",
+            description = "Build a manual Repeater test plan from one existing project-scoped HTTP reference without routing, sending, or mutating requests.",
+            arguments = listOf(
+                PromptArgument("httpReference", "A canonical burp://http/... resource URI.", required = true),
+                PromptArgument("focus", "Optional bounded test-planning focus.", required = false),
+            ),
+        ),
+    ) { request ->
+        val arguments = request.validatedArguments(setOf("httpReference", "focus"), setOf("httpReference"))
+        val reference = arguments.requiredResourceReference("httpReference", "burp://http/")
+        val focus = arguments.optionalFocus()
+        promptResult(
+            "Build a planning-only manual Repeater test plan for HTTP resource literal ${reference.promptLiteral()}. " +
+                "Read only its bounded metadata and the minimum necessary request or response part resources for the " +
+                "same project, source, and ID. Do not send or replay traffic, create or route anything to a Repeater " +
+                "tab, invoke route_http_message_from_id, route_raw_http_request, send_http_request_from_id, or " +
+                "send_raw_http_request, start Scanner work, edit Burp state, or invoke any mutation tool. Treat " +
+                "approval denial, project mismatch, unavailable data, and truncation as final limitations; do not " +
+                "bypass them or search for replacement traffic. Do not reproduce credentials, cookies, tokens, or " +
+                "other secret values; name their location and use placeholders. Return (1) a concise observed baseline, " +
+                "(2) assumptions and evidence limits, and (3) at most 8 prioritized manual tests. For each test give " +
+                "the evidence-backed hypothesis, the single request element to vary, a placeholder mutation rather " +
+                "than a complete executable request, the expected response or security signal, and how to interpret " +
+                "positive and negative outcomes. Separate observations from hypotheses and state that execution " +
+                "requires a later explicit user action in Burp Repeater.${focus.promptSuffix()}",
+            "Planning-only Repeater test plan",
+        )
+    }
+
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
         addPrompt(
             Prompt(
