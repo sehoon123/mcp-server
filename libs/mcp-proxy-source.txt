@@ -1,5 +1,5 @@
 Source: https://github.com/sehoon123/mcp-proxy
-Commit: 90636d9f2f0ed0f85beadd343404a94d4ab2cacd
+Commit: 5fc6a395af59b97d5250cf96002671b000cc0310
 Branch: main
 Version: 2.2.0
 Build: ./gradlew clean test shadowJar writeRuntimeComponents --no-build-cache
