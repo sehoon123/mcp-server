@@ -99,8 +99,9 @@ Implemented foundation:
   after execution, including cancellation and uncertain completion paths.
 - `summarize_http_attack_surface` returns bounded service, method, status-class, MIME, extension, response, and normalized
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
-- The v4 catalog consolidates same-policy transforms, configuration access, global controls, stable-reference routing,
-  raw protocol/destination operations, and cross-source HTTP discovery into 26 Professional tools (19 on Community).
+- The initial compact v4 catalog consolidated same-policy transforms, configuration access, global controls,
+  stable-reference routing, raw protocol/destination operations, and cross-source HTTP discovery into 26 Professional
+  tools (19 on Community). The reviewed additive v4.9 analyzer and four preset tools bring the current catalogs to 31/24.
   Deprecated v3 aliases are not registered. Each invocation retains one operation or destination, and fixed value-free
   audit classifications preserve operation context.
 - `send_raw_http_request` and `route_raw_http_request` use protocol-nested inputs, structured execution state, bounded
@@ -217,10 +218,17 @@ Implemented foundation in v4.4.0:
 - Bound prompt arguments and keep prompt retrieval independent from project-data reads, so protected resources still
   apply their approval checks when the client follows a prompt.
 
+Implemented on the v4.9 development branch:
+
+- `plan_repeater_tests_without_sending` builds a bounded manual test-plan instruction from one canonical HTTP reference.
+  Prompt retrieval reads no traffic and the wording prohibits sending/replay, routing or creating a Repeater tab,
+  Scanner execution, editor writes, and every mutation tool.
+- `review_auth_session_handling` prefers the compact project-bound session analyzer when references can be mapped.
+
 Remaining work:
 
-- Add a minimal Repeater test-plan prompt only after its wording and client behavior can reliably distinguish planning
-  from request routing or transmission.
+- Prove across every supported client that normal and adversarial focus text produces no routing, Repeater-tab creation,
+  sending, Scanner, editor, or other mutation before the planning prompt is released.
 - Validate resource-link rendering and prompt discovery across the supported client matrix.
 
 ### 8. Support progress, cancellation, and MCP tasks
@@ -314,6 +322,15 @@ Remaining work:
 
 ## Priority 2 — usability and integrations
 
+Implemented on the v4.9 development branch:
+
+- `analyze_http_session_security` produces a bounded, value-free passive summary over 1–32 distinct stable HTTP
+  references, with fixed cookie/authentication/redirect classifications and explicit evidence limits.
+- Four project-scoped workflow-preset tools persist only dedicated safe metadata-search/comparison settings in one
+  bounded versioned `extensionData()` envelope and delegate execution to the existing approved services.
+- The common catalog is 24 tools and Professional adds seven for 31 total; existing resources and URI templates remain
+  unchanged, while prompt catalogs become 4 Community / 5 Professional.
+
 Implemented incrementally through v4.3.2:
 
 - The MCP settings viewport tracks the available width instead of silently hiding horizontally oversized content.
@@ -332,19 +349,22 @@ Remaining work:
   Inspector.
 - Add named security-policy profiles such as read-only review, scoped active testing, and full local control.
 - Support selecting a Burp project or task context so multiple Burp instances cannot be confused.
-- Add saved comparison profiles only if repeated workflows justify them; compact stable-ID HTTP comparison is implemented.
-- Add saved, scoped history queries and optional notifications instead of model-side polling.
-- Provide import/export of MCP settings with secrets excluded by default.
+- Consider a native preset-management UI only after MCP-only usage demonstrates the need; do not duplicate traffic results.
+- Evaluate optional notifications only after bounded project-aware SDK lifecycle support exists.
+- Provide import/export of MCP settings with secrets excluded by default only as a separately reviewed future milestone.
 
 ## Active execution order
 
 The near-term order is gate-driven:
 
-1. Publish no new tool until the v4.8 authorization, bounded Scanner, project, schema, UI, identity, legal, and release
-   blockers in [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md) are closed.
-2. Release v4.8.0 as an independently branded and protected trust baseline, then add operator-safety/client UX in v4.9.0.
-3. Add at most one bounded passive analysis family alongside live scale evidence in v4.10.0.
-4. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
+1. Complete the protected exact-byte Community/Professional smoke, independent review, token, and observation gates for
+   stable v4.8 without moving or replacing an existing RC tag or draft asset.
+2. Develop the approved analyzer, project-scoped workflow presets, and planning-only Repeater prompt on the isolated v4.9
+   feature branch; do not add client setup UI or multi-instance UX to this milestone.
+3. Release v4.9 only after stable v4.8 plus exact 24/31 tool, 4/5 prompt, project save/reopen, no-mutation client, full
+   regression, reproducibility, SBOM/legal, and Community/Professional gates pass.
+4. Keep v4.10 demand-driven and prefer measured scale/soak work or one separately reviewed client/operator UX problem.
+5. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
    approval entry gates are satisfied; require modern conformance and the supported-client matrix before beta/RC, as
    defined in [V5_READINESS.md](V5_READINESS.md) and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md).
 

@@ -1,6 +1,6 @@
 # Active release roadmap
 
-**Status date:** 2026-07-26  
+**Status date:** 2026-07-27<br>
 **Baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`  
 **Planning model:** gate-based; versions have no promised calendar date
 
@@ -24,15 +24,16 @@ The required work is larger than a patch:
 `v4.7.0` should be marked superseded after v4.8.0 is available. Its tag and published assets must not be moved or
 replaced. Start public validation at `v4.8.0-rc.1`; do not publish another locally assembled corrective artifact.
 
-No new MCP tool is planned for v4.8.0. User-facing feature work resumes only after the trust baseline is released.
+No new MCP tool is planned for v4.8.0. Stable v4.9 remains sequenced after the trust baseline; approved feature work
+may proceed earlier only on the isolated v4.9 branch without changing any v4.8 tag, draft, asset, or release claim.
 
 ## Release sequence
 
 | Version | Theme | New public capability | Stable gate |
 | --- | --- | --- | --- |
 | `v4.8.0` | Independent Trust Baseline | None | Security, boundedness, identity, legal, and protected-release gates |
-| `v4.9.0` | Operator Safety and Client UX | Policy profiles; client setup/export | No authority expansion; client matrix passes |
-| `v4.10.0` | Passive Insight and Scale | One bounded read-only family | Live scale evidence; value-free output |
+| `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
+| `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
 ## v4.8.0 — Independent Trust Baseline
@@ -249,79 +250,56 @@ The release is complete only after:
 - [ ] v4.7.0 is marked superseded without moving its tag or replacing an asset;
 - [ ] release/run URLs, full SHA, artifact digests, and smoke-record identity are archived.
 
-## v4.9.0 — Operator Safety and Client UX
+## v4.9.0 — Analysis and Reusable Workflows
 
-Start this milestone only after v4.8.0 is stable. Prefer configuration and integration improvements over expanding the
-tool catalog.
+The stable v4.9 release remains sequenced after stable v4.8. Development may proceed on the isolated
+`feature/v4.9-workflow-features` branch without moving or replacing any v4.8 tag or draft asset. This milestone is the
+reviewed feature-focused exception to the earlier no-catalog-expansion preference.
 
-### Feature 1 — named security-policy profiles
+### Feature 1 — bounded HTTP session-security analysis
 
-Profiles proposed:
+`analyze_http_session_security` passively analyzes 1–32 distinct ordered Proxy, Site Map, or Organizer references. It
+returns fixed authentication/header-presence signals, value-free cookie attribute/scope/lifetime classifications,
+heuristic login/logout/refresh/redirect roles, and known cross-message invariants/variants. Input order is a proposed flow,
+not proof of chronology or browser behavior. Analyzer materialization reads no body or authentication value; the existing
+v4.8 Site Map stable-ID verification remains byte-compatible and may privately inspect its bounded identity samples.
+No raw body, authentication, cookie, redirect, scope, or lifetime value is returned.
 
-- **Read-only review** — local transforms and explicitly approved project reads only;
-- **Passive project analysis** — read sources, resources, prompts, and comparisons; no mutation/network action;
-- **Scoped active testing** — explicit per-operation network/Scanner/scope approvals with emergency read-only available;
-- **Full local control** — exposes all current controls but does not silently enable persistent “Always Allow” policies.
+### Feature 2 — project-scoped workflow presets
 
-A profile is a reviewed configuration preset, not an authority token. Before applying one, show a permission diff and
-which prompts remain mandatory. Agents cannot select or elevate a profile.
+Four common tools save, list, delete, and execute named HTTP metadata-search, WebSocket metadata-search, or HTTP
+comparison settings. One strict versioned envelope in project-backed `extensionData()` is capped at 64 entries and
+256 KiB. Dedicated definitions contain no project, cursor, stable-reference, connection-ID, traffic/result, raw-message,
+or content-predicate fields. Bounded caller-authored labels/host/path criteria are persisted verbatim and must not contain
+secrets. Runtime cursors, limits, and comparison references are never persisted. Execution delegates to the existing
+services and approvals. No native preset UI, dynamic resource, or subscription is added.
 
-### Feature 2 — verified client setup/export
+### Feature 3 — planning-only Repeater prompt
 
-Support the documented matrix for Claude Desktop, Claude Code, VS Code/Copilot, Cursor, Codex, and MCP Inspector.
-Prefer a validated preview/copyable snippet before adding automatic file mutation. Automatic installation is allowed only
-when path, schema, backup, atomic replacement, permissions, ownership, and rollback are tested for that client/OS.
+`plan_repeater_tests_without_sending` accepts one canonical project-bound HTTP reference plus an optional bounded focus.
+It returns instructions for an observed baseline, evidence limits, and at most eight one-variable-at-a-time manual tests.
+Prompt retrieval reads no Burp traffic. The instructions explicitly prohibit sending/replay, routing or creating a
+Repeater tab, Scanner execution, editor writes, and all mutation tools. A later explicit user action in Burp is required
+to execute a plan.
 
-Bearer values remain separate secrets and must not appear in preview logs, diagnostics, or exported documentation.
+### Public compatibility
 
-### Feature 3 — multi-instance operator UX
-
-Add an optional human-readable instance label to diagnostics and generated client server names. Show endpoint and project
-mismatch in the installation preview. Do not use a display label as an authentication principal, approval scope, or URI
-authority. Defer resource-URI migration until a real collision requires it.
-
-### Feature 4 — safe settings portability
-
-Add schema-versioned import/export with a diff preview. Exclude bearer tokens, credentials, auto-approved targets, local
-paths, traffic, project identifiers, and audit data by default. Sensitive fields require a separate explicit opt-in and
-must never be copied through normal support diagnostics.
-
-### Feature 5 — accessibility and discovery matrix
-
-Validate light/dark/high-contrast themes, 100/150/200% UI scaling, keyboard-only navigation, resource links, prompts,
-restart, and fallback behavior on every supported OS/client combination.
-
-A planning-only Repeater test-plan prompt may enter v4.9 only after supported clients prove that its wording never routes
-or sends a request.
+The change is additive. Existing tool inputs, resources, templates, prompt names, approvals, transports, and URI formats
+remain unchanged. Current catalogs become 24 Community / 31 Professional tools and 4 Community / 5 Professional prompts.
+Clients must reconnect and rediscover capabilities after upgrading.
 
 ### v4.9.0 gate
 
-- [ ] Profile switching cannot bypass source, project, action, outbound, or emergency-read-only controls.
-- [ ] Permission-diff tests cover every profile and persistent policy.
-- [ ] Exported settings contain no secret, traffic, project, or local-path value by default.
-- [ ] Two Burp instances remain distinguishable without sharing session/approval authority.
-- [ ] Every supported client completes discovery, one read, one denied action, and restart/reconnect.
-- [ ] Installer/UI lifecycle regressions remain green on supported operating systems.
+- [x] Analyzer count, duplicate, privacy-sentinel, accessor, truncation, approval, cancellation, and project-transition tests pass.
+- [x] Preset store, schema, capacity, malformed-data preservation, concurrency, project-boundary, uncertainty, and delegated-execution tests pass.
+- [x] Native HTTP and embedded stdio tests advertise the additive catalogs and preserve the planning-only prompt wording.
+- [ ] Supported clients prove prompt discovery and produce zero routing, Repeater-tab creation, sending, Scanner, editor, or other mutation under normal and adversarial focus text.
+- [ ] Community and Professional exact-candidate Burp smoke cover analyzer mixed sources and preset project save/reopen behavior.
+- [ ] Full release, reproducibility, SBOM/legal, conformance, and supported-client gates pass for the exact candidate.
 
-## v4.10.0 — Passive Intelligence and Scale
+## v4.10.0 — Scale and Demand-driven Client UX
 
-Candidate scope is demand-driven. Limit this release to at most one new tool family.
-
-### Candidate capability — bounded session-security summary
-
-A useful read-only addition is a deterministic summary over at most 32 stable HTTP references:
-
-- cookie flags, SameSite, domain/path scope, and lifetime metadata;
-- presence—not values—of authentication/session headers;
-- redirect, login, logout, refresh, and session endpoint metadata;
-- invariant/variant security attributes across selected references;
-- explicit missing/oversized/truncated evidence.
-
-It must perform no network request, expose no cookie/header/body value, use source-specific approvals, and recheck the
-project before returning. Existing prompts can then interpret a compact structured summary instead of receiving another
-full-traffic tool.
-
-### Scale and reliability work
+No additional tool family is planned by default. Candidate work is selected from measured operator demand after v4.9:
 
 - run 10k/50k/100k live matrices for Proxy, Site Map, Organizer, WebSocket, Professional Scanner, and context-menu paths;
 - run long-duration multi-client session, cancellation, restart, and unload soak tests;
@@ -329,15 +307,13 @@ full-traffic tool.
 - record extension allocation/accessor counts separately from Montoya source-list acquisition;
 - add bounded negotiated-protocol distribution diagnostics without retaining client identity;
 - validate raw HTTP/2 routing only against an explicitly supported Burp runtime;
-- add saved project-scoped query/comparison presets only after repeated real workflows justify persistence.
+- consider validated multi-client setup previews, multi-instance display labels, security-policy profiles, settings
+  portability, and expanded accessibility matrices only as separately reviewed milestones.
 
 ### v4.10.0 gate
 
-- [ ] The new summary is read-only in annotation and observed behavior.
-- [ ] Output, audit, progress, and errors contain no authentication/cookie values.
-- [ ] Aggregate record/byte/accessor bounds have adversarial tests.
 - [ ] 100k and soak runs have reviewed baselines and no unexplained EDT or extension-allocation regression.
-- [ ] Saved workflows, if included, persist no raw traffic or credentials and invalidate at project boundaries.
+- [ ] Any selected client/UI feature has an explicit secret, project, filesystem, rollback, and accessibility contract.
 - [ ] HTTP/2 behavior is either live-verified or remains explicitly unavailable.
 
 ## v5.0.0 — Modern MCP gate
@@ -377,7 +353,8 @@ The following are not part of v4.8 or v4.9:
 - resource subscriptions before bounded SDK lifecycle support;
 - a custom partial v5 dispatcher beside the official SDK;
 - agent-selected or automatically enabled persistent approval;
-- project traffic/credentials in profiles, saved queries, exports, or diagnostics;
+- dedicated project-traffic, credential, token, raw-message, or stable-reference fields in profiles, presets, exports, or diagnostics;
+- multi-client setup/install UI, multi-instance UX, policy profiles, or settings portability in v4.9;
 - full Kotlin package-namespace refactoring solely for branding;
 - resource-URI instance migration without demonstrated collision requirements;
 - alias tools that expand the catalog without a distinct policy or result model;
@@ -417,28 +394,26 @@ Suggested labels:
 | `TEST-001` | P1 | Community/Professional exact-byte RC and soak evidence |
 | `DOC-001` | P1 | Reconcile active roadmap, release claims, and current-version documentation |
 
-### Milestone: v4.9.0 — Operator Safety and Client UX
+### Milestone: v4.9.0 — Analysis and Reusable Workflows
 
 | ID | Issue |
 | --- | --- |
-| `UX-001` | Named security profiles with permission-diff preview |
-| `UX-002` | Multi-instance label and collision-safe client naming |
-| `INT-001` | Verified setup/export for the supported client matrix |
-| `CFG-001` | Secret-free schema-versioned settings import/export |
-| `A11Y-001` | Theme, high-contrast, scaling, and keyboard release matrix |
-| `PROMPT-001` | Client-validated planning-only Repeater prompt, if evidence permits |
+| `TOOL-001` | Bounded read-only session-security analyzer |
+| `QUERY-001` | Project-scoped saved metadata-search and comparison presets |
+| `PROMPT-001` | Client-validated planning-only Repeater test-plan prompt |
+| `COMPAT-001` | Exact 24/31 tool and 4/5 prompt discovery matrices |
+| `TEST-002` | Community/Professional mixed-source, persistence, and no-mutation smoke |
 
-### Milestone: v4.10.0 — Passive Intelligence and Scale
+### Milestone: v4.10.0 — Scale and Demand-driven Client UX
 
 | ID | Issue |
 | --- | --- |
-| `TOOL-001` | Bounded read-only session-security summary |
 | `PERF-001` | 100k live source/context-menu matrix |
 | `PERF-002` | Long-duration multi-client lifecycle soak |
 | `WS-001` | Remove redundant WebSocket snapshot copy and prove interruption |
-| `QUERY-001` | Evidence-gated saved scoped query/comparison presets |
 | `H2-001` | Live HTTP/2 routing validation in a supported Burp runtime |
 | `DIAG-001` | Bounded negotiated-protocol distribution counters |
+| `UX-001` | Select one measured client/operator UX problem for separate review |
 
 ### Milestone: v5.0.0 — Modern MCP gate
 

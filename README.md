@@ -51,6 +51,8 @@ client-liveness, and capacity-pressure safeguards.
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Fixed-stage MCP progress and cooperative cancellation checks for bounded HTTP/WebSocket searches and attack-surface preparation
 - Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
+- Value-free passive HTTP session-security analysis over up to 32 distinct stable references
+- Project-scoped saved HTTP/WebSocket metadata-search and HTTP comparison presets with runtime-only cursors/references
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
 - Explicit Target scope checks/updates and bounded HTTP message comparison from stable references
@@ -174,10 +176,17 @@ required. URIs must be canonical. Resource subscriptions and list-change notific
 catalog is fixed for a listener lifetime and Kotlin SDK `0.14.0` does not expose bounded, project-aware subscription
 admission or selective invalidation. See [PROJECT_BOUND_NOTIFICATIONS.md](docs/PROJECT_BOUND_NOTIFICATIONS.md).
 
-Reusable prompts are `analyze_http_without_sending`, `compare_http_references`, and
+Reusable prompts introduced in v4.4 are `analyze_http_without_sending`, `compare_http_references`, and
 `review_auth_session_handling`; Professional also provides `summarize_scanner_issue`. Prompt arguments are bounded,
 prompts do not read project data themselves, and each workflow explicitly prohibits hidden request sending, routing,
 or mutation. Both native Streamable HTTP clients and the embedded stdio proxy preserve these protocol features.
+
+v4.9 adds the common `plan_repeater_tests_without_sending` prompt, bringing the current prompt catalogs to 4 Community
+and 5 Professional. It accepts one canonical HTTP reference and an optional bounded focus, reads no Burp traffic during
+prompt retrieval, and asks for an observed baseline, evidence limits, and at most eight manual tests. Its instructions
+prohibit sending/replay, routing or creating a Repeater tab, Scanner execution, editor writes, and every mutation tool;
+executing the plan requires a later explicit user action in Burp. Supported-client no-mutation validation remains a
+release gate because prompt wording cannot technically constrain an independent client/model.
 
 Starting with v4.4.1, right-click exactly one Proxy history, Site Map, Organizer, WebSocket history, or Professional
 Scanner issue item and choose **Copy MCP reference**. The official Montoya context-menu provider copies only the

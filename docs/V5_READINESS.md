@@ -119,8 +119,8 @@ The following constraints carry into v5:
   separately reviewed. It must not carry targets, traffic, project IDs, or client-provided values.
 - Ambiguous state-changing results remain non-retryable.
 - Diagnostics remain fixed-cardinality and value-redacted.
-- The Professional and Community catalogs remain 26 and 19 tools unless a separately reviewed major-version catalog
-  change has concrete user value.
+- The reviewed v4.9 feature catalogs contain 31 Professional and 24 Community tools. v5 preserves that baseline unless
+  another separately reviewed catalog change has concrete user value and complete compatibility evidence.
 
 ## Implementation stages
 
