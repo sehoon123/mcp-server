@@ -20,6 +20,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.HexFormat
+import java.util.RandomAccess
 import java.util.regex.Pattern
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -123,6 +124,16 @@ private data class WebSocketSearchCursor(
     val itemIndex: Int,
     val firstAnchor: String?,
     val lastAnchor: String?,
+)
+
+private data class WebSocketHistorySource(
+    val records: List<ProxyWebSocketMessage>,
+    val revalidateScanWindow: Boolean,
+)
+
+private data class ObservedWebSocketRecord(
+    val sourceIndex: Int,
+    val message: ProxyWebSocketMessage,
 )
 
 private enum class WebSocketSearchProgressStage(val message: String) {
@@ -246,13 +257,19 @@ internal class WebSocketMessageSearchService(
         }
 
         progress.report(WebSocketSearchProgressStage.LOADING.ordinal)
-        val records = try {
-            api.proxy().webSocketHistory().toList()
+        val source = try {
+            val history = api.proxy().webSocketHistory()
+            if (history is RandomAccess) {
+                WebSocketHistorySource(history, revalidateScanWindow = true)
+            } else {
+                WebSocketHistorySource(history.toList(), revalidateScanWindow = false)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return burpError(expectedProjectId, e)
         }
+        val records = source.records
         val projectAfterAccess = try {
             api.project().id()
         } catch (e: CancellationException) {
@@ -267,11 +284,7 @@ internal class WebSocketMessageSearchService(
         val snapshot = try {
             decodedCursor?.also { validateSnapshot(it, records) } ?: newCursorSnapshot(expectedProjectId, query, records)
         } catch (e: StaleWebSocketCursorException) {
-            return SearchWebsocketMessagesResult(
-                status = WebSocketSearchStatus.STALE_CURSOR,
-                projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
-                error = e.message.orEmpty().take(512),
-            )
+            return if (decodedCursor == null) burpError(expectedProjectId, e) else staleCursor(expectedProjectId, e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -279,6 +292,13 @@ internal class WebSocketMessageSearchService(
         }
 
         progress.report(WebSocketSearchProgressStage.SCANNING.ordinal)
+        val scanWindow = try {
+            captureScanWindow(snapshot, records, query, limit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(expectedProjectId, e)
+        }
         var itemIndex = snapshot.itemIndex
         val items = ArrayList<WebSocketHistorySummary>(limit)
         var scanned = 0
@@ -287,13 +307,11 @@ internal class WebSocketMessageSearchService(
         var scanLimitReached = false
         var contentLimitReached = false
         try {
-            while (inSnapshot(itemIndex, snapshot.snapshotSize) && items.size < limit) {
+            for (observed in scanWindow) {
+                if (items.size >= limit) break
                 if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
-                if (scanned >= maxScannedItems) {
-                    scanLimitReached = true
-                    break
-                }
-                val item = records[itemIndex]
+                check(observed.sourceIndex == itemIndex) { "WebSocket scan window is inconsistent" }
+                val item = observed.message
                 scanned++
                 if (!item.matchesMetadata(query)) {
                     itemIndex = advance(itemIndex, query.newestFirst)
@@ -319,6 +337,8 @@ internal class WebSocketMessageSearchService(
                 items += item.toHistorySummary()
                 itemIndex = advance(itemIndex, query.newestFirst)
             }
+            scanLimitReached = items.size < limit && inSnapshot(itemIndex, snapshot.snapshotSize) &&
+                scanned >= maxScannedItems
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -326,6 +346,16 @@ internal class WebSocketMessageSearchService(
         }
 
         progress.report(WebSocketSearchProgressStage.FINALIZING.ordinal)
+        try {
+            if (source.revalidateScanWindow) validateScanWindow(scanWindow, scanned, records)
+            validateSnapshot(snapshot.copy(itemIndex = itemIndex), records)
+        } catch (e: StaleWebSocketCursorException) {
+            return if (decodedCursor == null) burpError(expectedProjectId, e) else staleCursor(expectedProjectId, e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(expectedProjectId, e)
+        }
         val finalProjectId = try {
             api.project().id()
         } catch (e: CancellationException) {
@@ -363,19 +393,61 @@ internal class WebSocketMessageSearchService(
         )
     }
 
+    private suspend fun captureScanWindow(
+        snapshot: WebSocketSearchCursor,
+        records: List<ProxyWebSocketMessage>,
+        query: NormalizedWebSocketQuery,
+        limit: Int,
+    ): List<ObservedWebSocketRecord> {
+        val maximumWindowSize = if (query.hasSearchPredicate()) maxScannedItems else minOf(limit, maxScannedItems)
+        val window = ArrayList<ObservedWebSocketRecord>(
+            minOf(maximumWindowSize, snapshot.snapshotSize.coerceAtLeast(0)),
+        )
+        var sourceIndex = snapshot.itemIndex
+        while (window.size < maximumWindowSize && inSnapshot(sourceIndex, snapshot.snapshotSize)) {
+            if (window.size and 63 == 0) currentCoroutineContext().ensureActive()
+            window += ObservedWebSocketRecord(sourceIndex, records[sourceIndex])
+            sourceIndex = advance(sourceIndex, query.newestFirst)
+        }
+        return window
+    }
+
+    private fun validateScanWindow(
+        window: List<ObservedWebSocketRecord>,
+        inspected: Int,
+        records: List<ProxyWebSocketMessage>,
+    ) {
+        for (index in 0 until inspected) {
+            val observed = window[index]
+            if (records[observed.sourceIndex] !== observed.message) {
+                throw StaleWebSocketCursorException(
+                    "WebSocket history was cleared, reordered, or replaced while the page was prepared",
+                )
+            }
+        }
+    }
+
     private fun newCursorSnapshot(
         projectId: String,
         query: NormalizedWebSocketQuery,
         records: List<ProxyWebSocketMessage>,
-    ) = WebSocketSearchCursor(
-        version = WEBSOCKET_CURSOR_VERSION,
-        projectId = projectId,
-        query = query,
-        snapshotSize = records.size,
-        itemIndex = if (query.newestFirst) records.lastIndex else 0,
-        firstAnchor = records.firstOrNull()?.cursorAnchor(),
-        lastAnchor = records.lastOrNull()?.cursorAnchor(),
-    )
+    ): WebSocketSearchCursor {
+        val snapshotSize = records.size
+        val firstAnchor = if (snapshotSize == 0) null else records[0].cursorAnchor()
+        val lastAnchor = if (snapshotSize == 0) null else records[snapshotSize - 1].cursorAnchor()
+        if (records.size < snapshotSize) {
+            throw StaleWebSocketCursorException("WebSocket history shrank while the snapshot was opened")
+        }
+        return WebSocketSearchCursor(
+            version = WEBSOCKET_CURSOR_VERSION,
+            projectId = projectId,
+            query = query,
+            snapshotSize = snapshotSize,
+            itemIndex = if (query.newestFirst) snapshotSize - 1 else 0,
+            firstAnchor = firstAnchor,
+            lastAnchor = lastAnchor,
+        )
+    }
 
     private fun validateSnapshot(cursor: WebSocketSearchCursor, records: List<ProxyWebSocketMessage>) {
         if (cursor.snapshotSize < 0 || records.size < cursor.snapshotSize) {
@@ -457,6 +529,9 @@ private fun SearchWebsocketMessages.hasExplicitQuery(): Boolean =
     webSocketId != null || direction != null || listenerPort != null || regex != null ||
         caseSensitive != null || newestFirst != null
 
+private fun NormalizedWebSocketQuery.hasSearchPredicate(): Boolean =
+    webSocketId != null || direction != null || listenerPort != null || regex != null
+
 private fun ProxyWebSocketMessage.matchesMetadata(query: NormalizedWebSocketQuery): Boolean {
     if (query.webSocketId != null && webSocketId() != query.webSocketId) return false
     if (query.listenerPort != null && listenerPort() != query.listenerPort) return false
@@ -516,6 +591,12 @@ private fun invalidCursor(projectId: String, message: String) = SearchWebsocketM
     status = WebSocketSearchStatus.INVALID_CURSOR,
     projectId = projectId,
     error = message.take(512),
+)
+
+private fun staleCursor(projectId: String, error: StaleWebSocketCursorException) = SearchWebsocketMessagesResult(
+    status = WebSocketSearchStatus.STALE_CURSOR,
+    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    error = error.message.orEmpty().take(512),
 )
 
 private fun projectMismatch(projectId: String, message: String) = SearchWebsocketMessagesResult(

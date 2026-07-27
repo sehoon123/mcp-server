@@ -501,6 +501,17 @@ tasks {
         mainClass.set("net.portswigger.mcp.ConformanceServerMainKt")
     }
 
+    register<JavaExec>("historyPerformanceProbe") {
+        group = "verification"
+        description = "Records synthetic history allocation and accessor diagnostics without Burp performance claims"
+        dependsOn(testClasses)
+        classpath = sourceSets["test"].runtimeClasspath
+        mainClass.set("net.portswigger.mcp.tools.HistoryPerformanceProbeKt")
+        args(layout.buildDirectory.file("reports/performance/history-synthetic.jsonl").get().asFile.absolutePath)
+        environment("PROBE_GRADLE_VERSION", gradle.gradleVersion)
+        jvmArgs("-Xms512m", "-Xmx512m")
+    }
+
     val verifyProxyJar = register<VerifyProxyJarTask>("verifyProxyJar") {
         group = "verification"
         description = "Verifies the pinned MCP proxy checksum before packaging"

@@ -299,12 +299,24 @@ Clients must reconnect and rediscover capabilities after upgrading.
 
 ## v4.10.0 — Scale and Demand-driven Client UX
 
-No additional tool family is planned by default. Candidate work is selected from measured operator demand after v4.9:
+No additional tool family is planned by default. Candidate work is selected from measured operator demand after v4.9.
+Development uses the non-release identity `4.10.0-dev.1` and remains isolated from the immutable v4.9 release candidates.
+The first implementation slice removes the
+redundant full WebSocket history copy for random-access source lists while retaining a safe sequential-list fallback,
+adds 64-record interruption checkpoints to bounded context-menu fallback scans, and commits a clean-tree Java 21
+synthetic allocation/accessor diagnostic. Random-access searches capture only the bounded window a call can inspect and
+identity-revalidate its inspected slots before output. A 100,000-entry regression bounds an unfiltered one-record page to
+six indexed accesses and a scan-limit-exhausting filtered page to 20,004. These are extension-side regression results only; live
+Community/Professional source-acquisition, returned-list stability, allocation, and unload evidence remains open.
+
+Candidate work:
 
 - run 10k/50k/100k live matrices for Proxy, Site Map, Organizer, WebSocket, Professional Scanner, and context-menu paths;
 - run long-duration multi-client session, cancellation, restart, and unload soak tests;
-- remove redundant full WebSocket snapshot copies and add interruption checks;
-- record extension allocation/accessor counts separately from Montoya source-list acquisition;
+- live-validate the removed WebSocket snapshot copy and interruption behavior under append, clear, unload, and project
+  change;
+- use the synthetic diagnostics and live fixtures to separate extension allocation/accessor counts from Montoya
+  source-list acquisition;
 - add bounded negotiated-protocol distribution diagnostics without retaining client identity;
 - validate raw HTTP/2 routing only against an explicitly supported Burp runtime;
 - consider validated multi-client setup previews, multi-instance display labels, security-policy profiles, settings

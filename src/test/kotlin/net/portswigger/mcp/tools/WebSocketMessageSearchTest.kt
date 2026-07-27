@@ -13,6 +13,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -22,6 +24,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
+import java.util.RandomAccess
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -87,6 +90,184 @@ class WebSocketMessageSearchTest {
         }
 
         verify(exactly = 0) { proxy.webSocketHistory() }
+    }
+
+    @Test
+    fun `large returned history is accessed by index without an extension owned full copy`() = runBlocking {
+        val fixture = message(1)
+        var getCalls = 0
+        val syntheticHistory = object : AbstractList<ProxyWebSocketMessage>(), RandomAccess {
+            override val size = 100_000
+
+            override fun get(index: Int): ProxyWebSocketMessage {
+                require(index in indices)
+                getCalls++
+                return fixture
+            }
+        }
+        every { proxy.webSocketHistory() } returns syntheticHistory
+
+        val result = service.search(
+            SearchWebsocketMessages(projectId = currentProjectId, newestFirst = false, limit = 1)
+        )
+
+        assertEquals(WebSocketSearchStatus.OK, result.status)
+        assertEquals(listOf(1), result.items.map { it.id })
+        assertEquals(1, result.scanned)
+        assertTrue(result.hasMore)
+        assertTrue(getCalls <= 6, "expected two boundary pairs plus one captured and revalidated record, got $getCalls")
+        verify(exactly = 1) { proxy.webSocketHistory() }
+    }
+
+    @Test
+    fun `large filtered history copies and revalidates only the bounded scan window`() = runBlocking {
+        val fixture = message(1, webSocketId = 1)
+        var getCalls = 0
+        val syntheticHistory = object : AbstractList<ProxyWebSocketMessage>(), RandomAccess {
+            override val size = 100_000
+
+            override fun get(index: Int): ProxyWebSocketMessage {
+                require(index in indices)
+                getCalls++
+                return fixture
+            }
+        }
+        every { proxy.webSocketHistory() } returns syntheticHistory
+
+        val result = service.search(
+            SearchWebsocketMessages(
+                projectId = currentProjectId,
+                webSocketId = 2,
+                newestFirst = false,
+                limit = 1,
+            )
+        )
+
+        assertEquals(WebSocketSearchStatus.OK, result.status)
+        assertEquals(10_000, result.scanned)
+        assertTrue(result.scanLimitReached)
+        assertEquals(20_004, getCalls)
+    }
+
+    @Test
+    fun `non random access history uses one defensive reference copy`() = runBlocking {
+        val backing = listOf(message(1), message(2))
+        var getCalls = 0
+        val sequentialHistory = object : AbstractList<ProxyWebSocketMessage>() {
+            override val size = backing.size
+
+            override fun get(index: Int): ProxyWebSocketMessage {
+                getCalls++
+                return backing[index]
+            }
+        }
+        every { proxy.webSocketHistory() } returns sequentialHistory
+
+        val result = service.search(
+            SearchWebsocketMessages(projectId = currentProjectId, newestFirst = false, limit = 1)
+        )
+
+        assertEquals(WebSocketSearchStatus.OK, result.status)
+        assertEquals(listOf(1), result.items.map { it.id })
+        assertEquals(backing.size, getCalls)
+    }
+
+    @Test
+    fun `newest first snapshot derives every boundary from one captured size`() = runBlocking {
+        val backing = listOf(message(1), message(2), message(3))
+        var sizeReads = 0
+        val growingHistory = object : AbstractList<ProxyWebSocketMessage>(), RandomAccess {
+            override val size: Int
+                get() = if (sizeReads++ == 0) 2 else 3
+
+            override fun get(index: Int) = backing[index]
+        }
+        every { proxy.webSocketHistory() } returns growingHistory
+
+        val result = service.search(SearchWebsocketMessages(projectId = currentProjectId, limit = 1))
+
+        assertEquals(WebSocketSearchStatus.OK, result.status)
+        assertEquals(listOf(2), result.items.map { it.id })
+        assertEquals(1, result.scanned)
+        assertTrue(result.hasMore)
+    }
+
+    @Test
+    fun `same call boundary mutation discards the prepared page`() = runBlocking {
+        val first = message(1)
+        val second = message(2)
+        val history = mutableListOf(first, second)
+        val annotations = mockk<Annotations>()
+        every { annotations.notes() } returns null
+        every { second.annotations() } answers {
+            history.reverse()
+            annotations
+        }
+        every { proxy.webSocketHistory() } returns history
+
+        val result = service.search(SearchWebsocketMessages(projectId = currentProjectId, limit = 1))
+
+        assertEquals(WebSocketSearchStatus.BURP_ERROR, result.status)
+        assertTrue(result.items.isEmpty())
+        assertTrue(result.error.orEmpty().contains("reordered"))
+    }
+
+    @Test
+    fun `same call interior mutation discards the bounded scan window`() = runBlocking {
+        val first = message(1)
+        val second = message(2)
+        val third = message(3)
+        val fourth = message(4)
+        val history = mutableListOf(first, second, third, fourth)
+        val annotations = mockk<Annotations>()
+        every { annotations.notes() } returns null
+        every { fourth.annotations() } answers {
+            val moved = history[1]
+            history[1] = history[2]
+            history[2] = moved
+            annotations
+        }
+        every { proxy.webSocketHistory() } returns history
+
+        val result = service.search(SearchWebsocketMessages(projectId = currentProjectId, limit = 2))
+
+        assertEquals(WebSocketSearchStatus.BURP_ERROR, result.status)
+        assertTrue(result.items.isEmpty())
+        assertTrue(result.error.orEmpty().contains("reordered"))
+    }
+
+    @Test
+    fun `bounded scan observes cancellation every 64 inspected records`() = runBlocking {
+        val fixture = message(1, webSocketId = 1)
+        var remainingAnchorReads = 2
+        var filterReads = 0
+        lateinit var search: kotlinx.coroutines.Deferred<SearchWebsocketMessagesResult>
+        every { fixture.webSocketId() } answers {
+            if (remainingAnchorReads > 0) {
+                remainingAnchorReads--
+            } else {
+                filterReads++
+                if (filterReads == 64) search.cancel(CancellationException("cancel bounded scan"))
+            }
+            1
+        }
+        val syntheticHistory = object : AbstractList<ProxyWebSocketMessage>(), RandomAccess {
+            override val size = 100
+            override fun get(index: Int) = fixture
+        }
+        every { proxy.webSocketHistory() } returns syntheticHistory
+        search = async(start = CoroutineStart.LAZY) {
+            service.search(
+                SearchWebsocketMessages(
+                    projectId = currentProjectId,
+                    webSocketId = 2,
+                    newestFirst = false,
+                )
+            )
+        }
+
+        assertFailsWith<CancellationException> { search.await() }
+        assertEquals(64, filterReads)
     }
 
     @Test

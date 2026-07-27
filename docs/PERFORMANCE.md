@@ -273,19 +273,56 @@ invalidation. The existing raw
 source snapshots, 10,000-record scan count, signed cursor payload/version, result order, and 32 MiB content accounting
 remain authoritative.
 
+## Reproducible synthetic history phase probe
+
+The manual `historyPerformanceProbe` task records raw current-thread allocation samples, indexed-list access counts,
+and a checksum for 10k/50k/100k synthetic WebSocket reference lists. It intentionally records no latency or percentile
+claim. The supported entry point requires a clean Git worktree, exports the exact commit to a temporary source archive,
+mounts that archive read-only, copies it into an ephemeral container-only workspace, and redirects project caches and
+build output. It resolves the local Java 21 container tag to one recorded image digest/ID before running Docker:
+
+```bash
+scripts/run-history-performance-probe.sh
+```
+
+It writes JSON Lines to `build/reports/performance/history-synthetic.jsonl`. The four phases deliberately distinguish a
+synthetic supplier call, the removed extension-owned full-copy baseline, capture and identity revalidation of a bounded
+50-record window plus two boundary pairs, and serialization of an already-built 50-record result. The bounded-window
+phase does not reproduce filtering, anchor hashing, or summary construction. The output records the source commit, run ID,
+container digest/ID and memory limit, Gradle/JVM/OS/CPU metadata, and every allocation/accessor sample. No threshold runs
+in `test` or CI; deterministic regressions assert the work bounds instead.
+
+This diagnostic does **not** execute Burp or measure Montoya source-list acquisition. `synthetic_supplier_only` is fixture
+overhead, while `removed_extension_owned_full_copy_baseline` is a counterfactual comparison for the deleted `toList()`
+path, not current production work. Current-thread allocation also excludes work on other threads and remains sensitive
+to JVM compilation and fixture effects; it is diagnostic rather than benchmark evidence. Live evidence must time the
+source API call separately and record the runtime collection behavior before these results are used to explain a
+Burp-scale observation.
+
 ## Bounded WebSocket search
 
-`search_websocket_messages` copies one Montoya WebSocket history list per call and advances a raw source index inside an
-HMAC-signed project/query/snapshot cursor. It applies connection ID, direction, and listener-port predicates before
-payload length or pattern access. Each page returns at most 50 summaries and scans at most 10,000 raw records. Safe-regex
-calls account original plus edited payload lengths against the 32 MiB budget; individually oversized records are
-skipped without invoking the regex matcher, and an aggregate-budget stop leaves the cursor at the uninspected record.
+`search_websocket_messages` acquires one Montoya WebSocket history list per call and uses it directly when the returned
+list advertises constant-time random access. A non-random-access implementation receives one defensive reference copy
+to avoid quadratic indexed scanning. The normal random-access path creates no second extension-owned full-history
+container: it captures only the bounded source window that the call can inspect, then identity-revalidates every inspected
+slot before returning. An unfiltered page needs only its requested result count; a filtered page retains the existing
+10,000-record scan cap. It advances a raw source index inside an HMAC-signed project/query/snapshot cursor. Connection ID,
+direction, and listener-port predicates run before payload length or
+pattern access. Each page returns at most 50 summaries and scans at most 10,000 raw records. Safe-regex calls account
+original plus edited payload lengths against the 32 MiB budget; individually oversized records are skipped without
+invoking the regex matcher, and an aggregate-budget stop leaves the cursor at the uninspected record.
 
 The cursor stores only bounded query metadata, the original source size, next index, and one-way first/last boundary
 anchors. Appended messages remain outside the original size. Source shrinkage or boundary replacement/reordering fails
 with `stale_cursor`; selected summaries are discarded if the Burp project changes after source access or content
 materialization. The cursor secret is process-local, so server restart invalidation avoids retaining another long-lived
-credential. These properties are covered by synthetic/mock regression tests and are not Burp product latency claims.
+credential. A 100,000-entry synthetic list regression proves that an unfiltered one-record page performs at most two
+boundary pairs plus one capture and one identity-revalidation access. A filtered 100,000-entry source performs exactly
+20,004 indexed accesses when it exhausts the 10,000-record window: two boundary pairs plus bounded capture and
+revalidation. Boundary and inspected-window replacement/reordering discards the prepared output. The bounded scan checks
+cancellation every 64 records. These properties are
+synthetic/mock regression evidence, not Burp product latency claims; source acquisition remains synchronous and may
+still materialize the complete history inside Burp.
 
 ## Body-free HTTP metadata index
 

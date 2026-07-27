@@ -99,6 +99,10 @@ internal class McpReferenceContextMenuProvider(
     private val taskExecutor: McpReferenceTaskExecutor = BoundedMcpReferenceTaskExecutor(),
     private val clipboard: McpReferenceClipboard = SystemMcpReferenceClipboard(),
 ) : ContextMenuItemsProvider, AutoCloseable {
+    private val lifecycleLock = Any()
+
+    @Volatile
+    private var closed = false
 
     override fun provideMenuItems(event: ContextMenuEvent): List<Component> = menuFor(
         runCatching { selectedHttpReference(event) }.getOrNull(),
@@ -153,23 +157,31 @@ internal class McpReferenceContextMenuProvider(
 
     private fun menuFor(selection: SelectedMcpReference?): List<Component> {
         if (selection == null) return emptyList()
-        return listOf(
-            JMenuItem(COPY_MCP_REFERENCE_LABEL).apply {
-                accessibleContext.accessibleDescription = COPY_MCP_REFERENCE_DESCRIPTION
-                toolTipText = COPY_MCP_REFERENCE_DESCRIPTION
-                addActionListener { enqueueCopy(selection) }
-            },
-        )
+        return synchronized(lifecycleLock) {
+            if (closed) {
+                emptyList()
+            } else {
+                listOf(
+                    JMenuItem(COPY_MCP_REFERENCE_LABEL).apply {
+                        accessibleContext.accessibleDescription = COPY_MCP_REFERENCE_DESCRIPTION
+                        toolTipText = COPY_MCP_REFERENCE_DESCRIPTION
+                        addActionListener { enqueueCopy(selection) }
+                    },
+                )
+            }
+        }
     }
 
     private fun enqueueCopy(selection: SelectedMcpReference) {
+        if (closed) return
         if (!taskExecutor.submit { copyReference(selection) }) {
-            raiseError(COPY_MCP_REFERENCE_BUSY)
+            raiseErrorIfOpen(COPY_MCP_REFERENCE_BUSY)
         }
     }
 
     private fun copyReference(selection: SelectedMcpReference) {
         try {
+            checkCopyActive()
             val projectId = api.project().id()
             check(validMcpProjectId(projectId))
             val reference = when (selection) {
@@ -197,12 +209,15 @@ internal class McpReferenceContextMenuProvider(
                 is SelectedMcpReference.ScannerIssue ->
                     canonicalScannerIssueMcpReference(projectId, findCurrentScannerIssueId(selection.issue))
             }
-            check(api.project().id() == projectId)
-            check(!Thread.currentThread().isInterrupted)
-            clipboard.setText(reference)
-            raiseInfo(COPY_MCP_REFERENCE_SUCCESS)
+            synchronized(lifecycleLock) {
+                check(!closed)
+                check(api.project().id() == projectId)
+                check(!Thread.currentThread().isInterrupted)
+                clipboard.setText(reference)
+                raiseInfo(COPY_MCP_REFERENCE_SUCCESS)
+            }
         } catch (_: Exception) {
-            raiseError(COPY_MCP_REFERENCE_FAILURE)
+            raiseErrorIfOpen(COPY_MCP_REFERENCE_FAILURE)
         }
     }
 
@@ -211,6 +226,7 @@ internal class McpReferenceContextMenuProvider(
         val selectedAnchor = httpReferenceAnchor(selected.request(), selected.response())
         var match: Int? = null
         for (index in 0 until items.size.coerceAtMost(MAX_REFERENCE_SOURCE_SCAN)) {
+            checkReferenceScanActive(index)
             val item = items[index]
             if ((item as Any) === selected) return item.id()
             val request = item.request() ?: continue
@@ -226,6 +242,7 @@ internal class McpReferenceContextMenuProvider(
         val selectedAnchor = httpReferenceAnchor(selected.request(), selected.response())
         var match: Int? = null
         for (index in 0 until items.size.coerceAtMost(MAX_REFERENCE_SOURCE_SCAN)) {
+            checkReferenceScanActive(index)
             val item = items[index]
             if (item === selected) return item.id()
             if (httpReferenceAnchor(item.request(), item.response()) != selectedAnchor) continue
@@ -239,12 +256,14 @@ internal class McpReferenceContextMenuProvider(
         val items = api.siteMap().requestResponses()
         val scanSize = items.size.coerceAtMost(MAX_REFERENCE_SOURCE_SCAN)
         for (index in 0 until scanSize) {
+            checkReferenceScanActive(index)
             if (items[index] === selected) return MatchedSiteMapItem(index, items[index])
         }
 
         val selectedAnchor = httpReferenceAnchor(selected.request(), selected.response())
         var match: MatchedSiteMapItem? = null
         for (index in 0 until scanSize) {
+            checkReferenceScanActive(index)
             val item = items[index]
             if (httpReferenceAnchor(item.request(), item.response()) != selectedAnchor) continue
             check(match == null)
@@ -258,6 +277,7 @@ internal class McpReferenceContextMenuProvider(
         val selectedAnchor = selected.referenceAnchor()
         var match: Int? = null
         for (index in 0 until items.size.coerceAtMost(MAX_REFERENCE_SOURCE_SCAN)) {
+            checkReferenceScanActive(index)
             val item = items[index]
             if (item === selected) return item.id()
             if (item.referenceAnchor() != selectedAnchor) continue
@@ -275,6 +295,7 @@ internal class McpReferenceContextMenuProvider(
         var matchCount = 0
 
         for (index in 0 until scanSize) {
+            checkReferenceScanActive(index)
             val issue = issues[index]
             if (issue === selected) return issue.stableHistoryId(index)
             if (issue.contextMetadataFingerprint() == selectedFingerprint) {
@@ -288,6 +309,15 @@ internal class McpReferenceContextMenuProvider(
         return issues[resolvedIndex].stableHistoryId(resolvedIndex)
     }
 
+    private fun checkCopyActive() {
+        check(!closed)
+        check(!Thread.currentThread().isInterrupted)
+    }
+
+    private fun checkReferenceScanActive(index: Int) {
+        if (index and 63 == 0) checkCopyActive()
+    }
+
     private fun raiseInfo(message: String) {
         runCatching { api.logging().raiseInfoEvent(message) }
     }
@@ -296,8 +326,20 @@ internal class McpReferenceContextMenuProvider(
         runCatching { api.logging().raiseErrorEvent(message) }
     }
 
+    private fun raiseErrorIfOpen(message: String) {
+        synchronized(lifecycleLock) {
+            if (!closed) raiseError(message)
+        }
+    }
+
     override fun close() {
-        taskExecutor.close()
+        val shouldClose = synchronized(lifecycleLock) {
+            if (closed) false else {
+                closed = true
+                true
+            }
+        }
+        if (shouldClose) taskExecutor.close()
     }
 }
 

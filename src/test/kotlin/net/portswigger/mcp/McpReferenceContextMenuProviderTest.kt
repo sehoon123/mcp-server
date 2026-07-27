@@ -30,6 +30,8 @@ import net.portswigger.mcp.tools.HttpMessageSource
 import net.portswigger.mcp.tools.stableHistoryId
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.swing.JMenuItem
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -316,6 +318,81 @@ class McpReferenceContextMenuProviderTest {
     }
 
     @Test
+    fun `fallback source scan stops at the next interruption checkpoint`() {
+        val selected = siteMapItem()
+        val unmatched = siteMapItem("https://other.test/path")
+        val current = mockk<ProxyHttpRequestResponse>()
+        every { current.id() } returns 8
+        every { current.request() } returns unmatched.request()
+        every { current.response() } returns null
+        var getCalls = 0
+        val history = object : AbstractList<ProxyHttpRequestResponse>() {
+            override val size = 100_000
+
+            override fun get(index: Int): ProxyHttpRequestResponse {
+                getCalls++
+                if (getCalls == 64) Thread.currentThread().interrupt()
+                return current
+            }
+        }
+        val proxy = mockk<Proxy>()
+        every { api.proxy() } returns proxy
+        every { proxy.history() } returns history
+        val event = mockk<ContextMenuEvent>()
+        every { event.selectedRequestResponses() } returns listOf(selected)
+        every { event.invocationType() } returns InvocationType.PROXY_HISTORY
+
+        try {
+            val provider = provider()
+            (provider.provideMenuItems(event).single() as JMenuItem).doClick()
+        } finally {
+            Thread.interrupted()
+        }
+
+        assertEquals(64, getCalls)
+        assertNull(clipboard.value)
+        verify { logging.raiseErrorEvent(any()) }
+    }
+
+    @Test
+    fun `close interrupts active fallback work without later clipboard or logging events`() {
+        val selected = siteMapItem()
+        val enteredSource = CountDownLatch(1)
+        val neverReleased = CountDownLatch(1)
+        val current = mockk<ProxyHttpRequestResponse>()
+        every { current.id() } returns 8
+        every { current.request() } returns siteMapItem("https://other.test/path").request()
+        every { current.response() } returns null
+        val history = object : AbstractList<ProxyHttpRequestResponse>() {
+            override val size = 1
+
+            override fun get(index: Int): ProxyHttpRequestResponse {
+                enteredSource.countDown()
+                neverReleased.await()
+                return current
+            }
+        }
+        val proxy = mockk<Proxy>()
+        every { api.proxy() } returns proxy
+        every { proxy.history() } returns history
+        val event = mockk<ContextMenuEvent>()
+        every { event.selectedRequestResponses() } returns listOf(selected)
+        every { event.invocationType() } returns InvocationType.PROXY_HISTORY
+        val tasks = JoiningTaskExecutor()
+        val provider = provider(tasks = tasks)
+
+        (provider.provideMenuItems(event).single() as JMenuItem).doClick()
+        assertTrue(enteredSource.await(5, TimeUnit.SECONDS))
+        provider.close()
+        provider.close()
+
+        assertTrue(provider.provideMenuItems(event).isEmpty())
+        assertNull(clipboard.value)
+        verify(exactly = 0) { logging.raiseInfoEvent(any()) }
+        verify(exactly = 0) { logging.raiseErrorEvent(any()) }
+    }
+
+    @Test
     fun `bounded executor rejection reports busy without retaining or copying selection`() {
         val selected = mockk<OrganizerItem>(relaxed = true)
         every { selected.id() } returns 4
@@ -360,12 +437,12 @@ class McpReferenceContextMenuProviderTest {
         clipboard = clipboard,
     )
 
-    private fun siteMapItem(): HttpRequestResponse {
+    private fun siteMapItem(url: String = "https://example.test/path"): HttpRequestResponse {
         val body = mockk<MontoyaByteArray>()
         every { body.length() } returns 0
         val request = mockk<HttpRequest>()
         every { request.method() } returns "GET"
-        every { request.url() } returns "https://example.test/path"
+        every { request.url() } returns url
         every { request.httpVersion() } returns "HTTP/1.1"
         every { request.headers() } returns emptyList()
         every { request.body() } returns body
@@ -432,4 +509,23 @@ private class DeferredTaskExecutor : McpReferenceTaskExecutor {
 private object RejectingTaskExecutor : McpReferenceTaskExecutor {
     override fun submit(task: () -> Unit): Boolean = false
     override fun close() = Unit
+}
+
+private class JoiningTaskExecutor : McpReferenceTaskExecutor {
+    @Volatile
+    private var worker: Thread? = null
+
+    override fun submit(task: () -> Unit): Boolean {
+        check(worker == null)
+        worker = Thread(task, "mcp-reference-test-worker").apply { start() }
+        return true
+    }
+
+    override fun close() {
+        worker?.let { thread ->
+            thread.interrupt()
+            thread.join(5_000)
+            check(!thread.isAlive) { "reference task did not stop after interruption" }
+        }
+    }
 }
