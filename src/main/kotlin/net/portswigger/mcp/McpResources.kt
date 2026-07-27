@@ -340,9 +340,10 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         }.orEmpty()
         promptResult(
             "Review resource literal ${primary.promptLiteral()} for authentication and session-handling observations." +
-                "$relatedText Do not make " +
-                "requests, guess credentials or secret values, route messages, or modify Burp. Separate direct " +
-                "evidence from hypotheses and recommend only manual follow-up steps.${focus.promptSuffix()}",
+                "$relatedText Prefer the project-bound analyze_http_session_security tool when the references can be " +
+                "mapped to its projectId/ref inputs; otherwise read only the bounded resources. Do not make requests, " +
+                "guess credentials or secret values, route messages, or modify Burp. Separate direct evidence from " +
+                "hypotheses and recommend only manual follow-up steps.${focus.promptSuffix()}",
             "Passive authentication and session review",
         )
     }

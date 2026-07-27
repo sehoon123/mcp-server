@@ -1376,7 +1376,7 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(19, tools.size)
+        assertEquals(20, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertEquals(
@@ -1392,6 +1392,7 @@ class ToolsKtTest {
                 "check_scope",
                 "update_scope",
                 "compare_http_messages",
+                "analyze_http_session_security",
                 "get_http_message",
                 "send_http_request_from_id",
                 "route_http_message_from_id",
@@ -1488,6 +1489,26 @@ class ToolsKtTest {
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
 
+        val sessionAnalysis = tools.single { it.name == "analyze_http_session_security" }
+        assertEquals(setOf("projectId", "refs"), sessionAnalysis.inputSchema.required?.toSet())
+        assertTrue(sessionAnalysis.inputSchema.properties?.get("refs").toString().contains("\"minItems\":1"))
+        assertTrue(sessionAnalysis.inputSchema.properties?.get("refs").toString().contains("\"maxItems\":32"))
+        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("messages"))
+        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("cookieSummaries"))
+        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("invariants"))
+        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("variants"))
+        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("evidence"))
+        val sessionMessagesSchema = sessionAnalysis.outputSchema?.properties?.get("messages").toString()
+        assertTrue(sessionMessagesSchema.contains("partitioned"))
+        assertTrue(sessionMessagesSchema.contains("domainScope"))
+        assertTrue(sessionMessagesSchema.contains("pathScope"))
+        assertTrue(sessionMessagesSchema.contains("lifetime"))
+        assertTrue(sessionMessagesSchema.contains("prefixCompliant"))
+        assertEquals(true, sessionAnalysis.annotations?.readOnlyHint)
+        assertEquals(false, sessionAnalysis.annotations?.destructiveHint)
+        assertEquals(true, sessionAnalysis.annotations?.idempotentHint)
+        assertEquals(false, sessionAnalysis.annotations?.openWorldHint)
+
         val intruder = tools.single { it.name == "route_http_message_from_id" }
         val insertionSchema = intruder.inputSchema.properties?.get("insertionPoints").toString()
         assertTrue(insertionSchema.contains("parameter"))
@@ -1563,6 +1584,46 @@ class ToolsKtTest {
             "invalid_argument",
             invalidComparison?.structuredContent?.get("status")?.jsonPrimitive?.content,
         )
+
+        val sessionProxy = mockk<Proxy>()
+        val sessionItem = mockk<ProxyHttpRequestResponse>()
+        val sessionRequest = mockk<HttpRequest>()
+        val sessionService = mockk<burp.api.montoya.http.HttpService>()
+        every { api.proxy() } returns sessionProxy
+        every { sessionProxy.history(any()) } returns listOf(sessionItem)
+        every { sessionItem.id() } returns 31
+        every { sessionItem.request() } returns sessionRequest
+        every { sessionItem.response() } returns null
+        every { sessionRequest.method() } returns "GET"
+        every { sessionRequest.path() } returns "/login"
+        every { sessionRequest.headers() } returns emptyList()
+        every { sessionRequest.httpService() } returns sessionService
+        every { sessionService.host() } returns "example.test"
+        every { sessionService.port() } returns 443
+        every { sessionService.secure() } returns true
+        val sessionResult = client.callTool(
+            "analyze_http_session_security",
+            mapOf(
+                "projectId" to "project-schema",
+                "refs" to listOf(mapOf("source" to "proxy", "id" to "31")),
+            ),
+        )
+        assertEquals("ok", sessionResult?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(false, sessionResult?.isError)
+        assertTrue(sessionResult?.structuredContent?.get("messages").toString().contains("\"index\":0"))
+
+        val invalidSessionResult = client.callTool(
+            "analyze_http_session_security",
+            mapOf(
+                "projectId" to "project-schema",
+                "refs" to (1..33).map { mapOf("source" to "proxy", "id" to it.toString()) },
+            ),
+        )
+        assertEquals(
+            "invalid_argument",
+            invalidSessionResult?.structuredContent?.get("status")?.jsonPrimitive?.content,
+        )
+        assertEquals(true, invalidSessionResult?.isError)
     }
 
     @Nested
@@ -1646,7 +1707,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(26, tools.size)
+            assertEquals(27, tools.size)
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }

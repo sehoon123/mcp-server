@@ -1017,6 +1017,20 @@ internal fun Server.registerTools(
         httpMessageComparisonService.compare(this)
     }
 
+    mcpStructuredToolWithContext<AnalyzeHttpSessionSecurity, AnalyzeHttpSessionSecurityResult>(
+        description = "Passively analyzes 1 to 32 distinct ordered project-scoped Proxy, Site Map, or Organizer references for bounded authentication/session header presence, value-free response-cookie classifications, heuristic login/logout/refresh/redirect roles, and cross-message cookie observations. Input order is only a proposed flow. Analyzer logic does not access message bodies or authentication values; preserving v4.8 Site Map stable IDs can privately inspect bounded identity body samples and header values during reference resolution. Cookie and Location values are privately inspected only for fixed classifications and are never returned, and no raw body, authentication, redirect, cookie scope/lifetime value, Scanner analysis, traffic, or mutation is returned or performed. Observations do not establish chronology, causality, browser behavior, severity, or a vulnerability.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = services.httpSessionSecurityAnalyzer.analyze(input, config) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
+        StructuredToolResponse(
+            output = output,
+            text = null,
+            isError = output.status != HttpSessionAnalysisStatus.OK,
+        )
+    }
+
     mcpStructuredTool<GetHttpMessage, GetHttpMessageResult>(
         description = "Reads one Proxy, Site Map, or Organizer message returned by search_http_messages. Copy projectId and the complete ref from the search result. Select metadata, request, request_headers, request_body, response, response_headers, or response_body. Content is byte-paginated and supports text or base64.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,

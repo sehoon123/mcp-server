@@ -45,7 +45,7 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 26 tools on Professional and 19 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 27 tools on Professional and 20 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
@@ -84,7 +84,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 19 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 20 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|
@@ -95,13 +95,13 @@ the offset-based WebSocket list with `search_websocket_messages`. The current ca
 
 The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transform_data`, `generate_random_string`,
 `get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`, `check_scope`,
-`update_scope`, `compare_http_messages`, `get_http_message`, `send_http_request_from_id`,
-`route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
+`update_scope`, `compare_http_messages`, `analyze_http_session_security`, `get_http_message`,
+`send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
 `set_burp_control_state`, `get_active_editor_contents`, and `set_active_editor_contents`.
 
 Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 26 total. Individual WebSocket and Scanner
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 27 total. Individual WebSocket and Scanner
 issue reads now require `projectId`; v3 aliases are not advertised.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
@@ -441,6 +441,13 @@ and uncertain-result handling remain active even when prompts are disabled. Scop
 header invariants/variants, a first-difference excerpt for two messages, and optional Burp response-variation attributes.
 The default per-message inspection limit is 256 KiB and the maximum is 1 MiB. `allEqual: null` means the inspected
 prefixes matched but truncation prevents a complete equality claim.
+
+`analyze_http_session_security` passively analyzes 1–32 distinct ordered references as a proposed flow. Analyzer logic
+reads bounded header evidence but no message bodies or authentication values. To preserve v4.8 Site Map stable IDs and
+URIs, Site Map reference resolution can privately inspect the existing bounded identity body samples and header values.
+Cookie and redirect Location values are privately inspected only to produce fixed value-free classifications; raw bodies,
+authentication values, cookie values, redirect targets, and Domain/Path/expiry/Max-Age values are never returned. Results
+are observations with explicit evidence limits, not chronology, browser behavior, severity, or vulnerability claims.
 
 Burp Professional additionally exposes:
 

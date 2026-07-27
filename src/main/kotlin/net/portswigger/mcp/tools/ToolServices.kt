@@ -13,10 +13,15 @@ internal class ToolServices(private val api: MontoyaApi) {
     private val httpMetadataIndexDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         HttpMetadataIndex(api)
     }
+    private val httpSessionSecurityAnalyzerDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        HttpSessionSecurityAnalyzerService(api)
+    }
 
     val collaborator: CollaboratorToolService get() = collaboratorDelegate.value
     val scannerAudits: ScannerAuditService get() = scannerAuditsDelegate.value
     val httpMetadataIndex: HttpMetadataIndex get() = httpMetadataIndexDelegate.value
+    val httpSessionSecurityAnalyzer: HttpSessionSecurityAnalyzerService
+        get() = httpSessionSecurityAnalyzerDelegate.value
 
     fun resetForProjectBoundary() {
         if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.resetForProjectBoundary()

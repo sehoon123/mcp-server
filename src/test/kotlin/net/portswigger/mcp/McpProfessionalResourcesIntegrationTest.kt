@@ -95,6 +95,7 @@ class McpProfessionalResourcesIntegrationTest {
                 "check_scope",
                 "update_scope",
                 "compare_http_messages",
+                "analyze_http_session_security",
                 "get_http_message",
                 "send_http_request_from_id",
                 "route_http_message_from_id",

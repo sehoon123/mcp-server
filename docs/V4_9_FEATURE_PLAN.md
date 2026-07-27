@@ -13,7 +13,7 @@ The v4.9 release candidate is cut only after the implementation and compatibilit
 
 Add the edition-neutral `analyze_http_session_security` tool.
 
-- Input: the current `projectId` and 1–32 ordered stable HTTP references from Proxy, Site Map, or Organizer.
+- Input: the current `projectId` and 1–32 distinct ordered stable HTTP references from Proxy, Site Map, or Organizer.
 - Output: per-message authentication/session signals, response-cookie attributes, heuristic login/logout/refresh roles,
   redirect relationships, cross-message cookie observations, and known invariant/variant attributes.
 - Cookie names may be returned for correlation; cookie values, authorization values, redirect targets, Domain/Path
@@ -22,7 +22,11 @@ Add the edition-neutral `analyze_http_session_security` tool.
 - The tool reports observations and evidence limits, not vulnerability severity or proof of browser behavior.
 
 Implementation reuses `HttpMessageResolver.resolveAll` so source approval, project binding, stable IDs, and one-time batch
-resolution match existing HTTP tools. Header, cookie, and selected-character work is explicitly bounded.
+resolution match existing HTTP tools. Analyzer materialization is body-free and never reads authentication values. Preserving
+the v4.8 Site Map stable-ID/URI contract means Site Map reference verification can privately inspect the existing bounded
+identity body samples and header values before analysis; identity material is never returned. Cookie and redirect Location
+values are privately inspected only within explicit bounds for fixed value-free classifications. Header, cookie, and
+selected-character work is explicitly bounded.
 
 ## Feature 2 — saved workflow presets
 
@@ -79,10 +83,11 @@ rediscover capabilities after upgrading. Fixed resources and resource templates 
 
 ## Acceptance gates
 
-- Session analyzer handles exactly 32 references, rejects 33 before source access, preserves caller order, and produces
-  no network or mutation side effect.
-- Adversarial sentinels prove no cookie/header/redirect/scope/lifetime value appears in analyzer output, error, log, or
-  audit text; body and authentication-value accessors remain unused.
+- Session analyzer handles exactly 32 distinct references, rejects duplicates and 33 references before project, approval,
+  or source access, preserves caller order, and produces no network or mutation side effect.
+- Adversarial sentinels prove no raw body, authentication, cookie, redirect, scope, or lifetime value appears in analyzer
+  output, error, log, or audit text. Analyzer materialization leaves body and authentication-value accessors unused; the
+  pre-existing bounded Site Map stable-ID verification described above remains unchanged.
 - Presets survive listener restart and project save/reopen semantics, remain isolated to the current project, and never
   persist runtime references/cursors/results or prohibited content.
 - Preset execution produces the same delegated input normalization, approvals, progress, cursor behavior, and result as
