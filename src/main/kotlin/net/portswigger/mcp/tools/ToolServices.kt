@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.presets.WorkflowPresetStore
 
@@ -26,8 +27,12 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
     val httpSessionSecurityAnalyzer: HttpSessionSecurityAnalyzerService
         get() = httpSessionSecurityAnalyzerDelegate.value
 
-    fun resetForProjectBoundary() {
-        if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.resetForProjectBoundary()
+    suspend fun resetForProjectBoundary() {
+        if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
+            scannerAuditsDelegate.value.resetForProjectBoundary()
+            collaboratorDelegate.value.resetForProjectBoundary()
+        }
+        httpMetadataIndexDelegate.value.resetForProjectBoundary()
     }
 
     fun close() {

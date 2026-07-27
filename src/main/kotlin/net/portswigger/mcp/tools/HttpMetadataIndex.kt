@@ -261,6 +261,15 @@ internal class HttpMetadataIndex(
         }
     }
 
+    suspend fun resetForProjectBoundary() {
+        lock.withLock {
+            if (!closed) {
+                observedProjectId = null
+                invalidateLocked()
+            }
+        }
+    }
+
     override fun close() = runBlocking {
         lock.withLock {
             if (!closed) {

@@ -287,6 +287,14 @@ internal fun formatMcpDiagnostics(
         "Session approvals: ${diagnostics.sessionApprovalGrants} grants across " +
             "${diagnostics.sessionsWithApprovals} active sessions"
     )
+    appendLine("Project changes observed: ${diagnostics.projectBoundaryResets}")
+    appendLine(
+        "Initialized session protocol requests: 2025-03-26=${diagnostics.initializedWithProtocol20250326}, " +
+            "2025-06-18=${diagnostics.initializedWithProtocol20250618}, " +
+            "2025-11-25=${diagnostics.initializedWithProtocol20251125}, " +
+            "other=${diagnostics.initializedWithOtherProtocol}, " +
+            "not-reported=${diagnostics.initializedWithoutProtocolHeader}"
+    )
     appendLine(
         "Event streams: ${diagnostics.activeEventStreams} active, ${diagnostics.openedEventStreams} opened, " +
             "${diagnostics.closedEventStreams} closed, ${diagnostics.reopenedEventStreams} reopened"

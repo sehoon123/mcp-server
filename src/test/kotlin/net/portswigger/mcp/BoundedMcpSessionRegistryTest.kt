@@ -4,6 +4,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
@@ -14,6 +15,7 @@ import net.portswigger.mcp.security.McpSessionApprovalSummary
 import org.junit.jupiter.api.Test
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -257,6 +259,58 @@ class BoundedMcpSessionRegistryTest {
         assertEquals(1, metrics.snapshot().activeSessions)
         registry.closeAll()
         coVerify(exactly = 1) { replacementTransport.close() }
+    }
+
+    @Test
+    fun `request aligned before a project change cannot reserve after boundary cleanup`() = runBlocking {
+        var projectId = "project-one"
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val guard = McpProjectEpochGuard(
+            projectIdProvider = { projectId },
+            resetSessions = { generation -> registry.resetForProjectBoundary(generation) },
+        )
+        val oldAlignment = guard.alignRequest()
+
+        projectId = "project-two"
+        val newAlignment = guard.alignRequest()
+
+        assertEquals(0, oldAlignment.generation)
+        assertEquals(1, newAlignment.generation)
+        assertFailsWith<McpProjectGenerationMismatchException> {
+            registry.reserve(transport(), oldAlignment.generation)
+        }
+        val current = assertNotNull(registry.reserve(transport(), newAlignment.generation)).pending
+        registry.activate(current, "current-project-session")
+        registry.closeAll()
+    }
+
+    @Test
+    fun `partially cancelled project cleanup retries its generation before accepting an earlier fingerprint`() = runBlocking {
+        var projectId = "project-one"
+        var cancelFirstReset = true
+        val registry = BoundedMcpSessionRegistry(maxSessions = 1, idleMillis = 60_000)
+        val guard = McpProjectEpochGuard(
+            projectIdProvider = { projectId },
+            resetSessions = { generation ->
+                registry.resetForProjectBoundary(generation)
+                if (cancelFirstReset) {
+                    cancelFirstReset = false
+                    throw CancellationException("cancel after registry reset")
+                }
+            },
+        )
+        assertEquals(0, guard.alignRequest().generation)
+
+        projectId = "project-two"
+        assertFailsWith<CancellationException> { guard.alignRequest() }
+        projectId = "project-one"
+        val recovered = guard.alignRequest()
+
+        assertEquals(McpProjectBindingStatus.TRANSITIONED, recovered.status)
+        assertEquals(1, recovered.generation)
+        val current = assertNotNull(registry.reserve(transport(), recovered.generation)).pending
+        registry.activate(current, "recovered-project-session")
+        registry.closeAll()
     }
 
     @Test

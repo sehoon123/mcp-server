@@ -279,7 +279,9 @@ The manual `historyPerformanceProbe` task records raw current-thread allocation 
 and a checksum for 10k/50k/100k synthetic WebSocket reference lists. It intentionally records no latency or percentile
 claim. The supported entry point requires a clean Git worktree, exports the exact commit to a temporary source archive,
 mounts that archive read-only, copies it into an ephemeral container-only workspace, and redirects project caches and
-build output. It resolves the local Java 21 container tag to one recorded image digest/ID before running Docker:
+build output. The default Java 21 image is pinned by digest. Dependency resolution and compilation use a disposable
+Docker volume before measurement; the measured JavaExec phase is offline with Docker networking disabled. The volume,
+workspace, and output staging directory are removed on success, failure, or interruption:
 
 ```bash
 scripts/run-history-performance-probe.sh
@@ -298,6 +300,59 @@ path, not current production work. Current-thread allocation also excludes work 
 to JVM compilation and fixture effects; it is diagnostic rather than benchmark evidence. Live evidence must time the
 source API call separately and record the runtime collection behavior before these results are used to explain a
 Burp-scale observation.
+
+## Disposable live WebSocket scale and lifecycle diagnostics
+
+Two opt-in Python entry points exercise an already-running exact development JAR in a disposable Burp project. They do
+not launch Burp, accept a license, change a project, clear history, unload an extension, or download a dependency. Both
+require a clean exact source commit, an expected candidate-JAR SHA-256, a mode-0600 bearer file, an explicit disposable-
+project flag, loopback MCP/proxy endpoints, fixed catalog counts, and a non-existing private output path. Reports
+allowlist aggregate fields and fail before writing if the bearer, current project identifier, marker, home path, or
+credential-bearing header text reaches the serialized evidence.
+
+After manually loading and verifying the exact JAR in a fresh temporary project, the staged WebSocket run is invoked as:
+
+```bash
+scripts/run-live-websocket-scale.py \
+  --approved-disposable-project \
+  --token-file <private-token-file> \
+  --candidate-jar <candidate-jar> \
+  --expected-jar-sha256 <sha256> \
+  --expected-source-commit <full-commit> \
+  --expected-tools 31 --expected-prompts 5 \
+  --burp-pid <pid> --max-rss-mib 6144 \
+  --output <new-private-output.json>
+```
+
+The runner first requires a no-match baseline below 10,000 records. Each stage adds only the exact delta needed to reach
+10k, 50k, and 100k estimated history entries: one verified client message and one verified echo account for two entries.
+It checks RSS every 512 client messages, aborts above the configured whole-process limit, verifies the 10,000-record
+no-match cap and one-record recent path at every stage, and then checks cursor separation, tamper rejection, and stable-ID
+readability without recording IDs or cursors. Above 10,000, the current public search result cannot independently expose
+total history size. The stage count is therefore fixture accounting, not an observed Burp source count; a release claim
+still requires separate bounded UI or reviewed fixture evidence that Burp retained the expected total. Client wall time
+and RSS cover the whole process and are not product or extension benchmarks.
+
+The lifecycle runner repeatedly initializes, discovers, reads, performs one bounded WebSocket search, inspects the
+allowlisted public transport counters, and sends authenticated DELETE. It rotates through all three supported protocol
+revisions and requires each new cycle to observe exactly its own active session with no pending session, event stream,
+or approval accumulation:
+
+```bash
+scripts/run-live-lifecycle-soak.py \
+  --approved-disposable-project \
+  --token-file <private-token-file> \
+  --candidate-jar <candidate-jar> \
+  --expected-jar-sha256 <sha256> \
+  --expected-source-commit <full-commit> \
+  --expected-tools 31 --expected-prompts 5 \
+  --duration-seconds 1800 --burp-pid <pid> --max-rss-mib 6144 \
+  --output <new-private-output.json>
+```
+
+The committed contract tests run with `python3 scripts/test-live-mcp-harness.py`. A bounded soak does not automate the
+remaining restart, project-replacement, cancellation, SSE-pressure, or extension unload/reload scenarios; those remain
+manual gates. Reports belong in private review evidence and are not release assets.
 
 ## Bounded WebSocket search
 

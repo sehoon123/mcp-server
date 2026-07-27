@@ -459,6 +459,12 @@ class McpServerIntegrationTest {
                 "Expected negotiated protocol $protocolVersion in ${response.body()}"
             )
         }
+        val diagnostics = serverManager.diagnostics()
+        assertEquals(1, diagnostics.initializedWithProtocol20250326)
+        assertEquals(1, diagnostics.initializedWithProtocol20250618)
+        assertEquals(1, diagnostics.initializedWithProtocol20251125)
+        assertEquals(0, diagnostics.initializedWithOtherProtocol)
+        assertEquals(0, diagnostics.initializedWithoutProtocolHeader)
     }
 
     @Test
@@ -532,6 +538,7 @@ class McpServerIntegrationTest {
         assertNotNull(staleFailure)
         assertFalse(staleFailure?.message.orEmpty().contains("replacement-project"))
         assertEquals(0, serverManager.diagnostics().activeSessions)
+        assertEquals(1, serverManager.diagnostics().projectBoundaryResets)
         runCatching { client.close() }
 
         val replacement = TestStreamableHttpMcpClient(

@@ -1,6 +1,9 @@
 package net.portswigger.mcp
 
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.time.Clock
@@ -29,7 +32,12 @@ class McpDiagnosticsTest {
         metrics.onSessionDeleteRequest()
         metrics.onPressureEvicted()
         metrics.updateSessions(pending = 2, active = 3)
-        repeat(3) { metrics.onSessionInitialized() }
+        metrics.onSessionInitialized("2025-03-26")
+        metrics.onSessionInitialized("2025-06-18")
+        metrics.onSessionInitialized("2025-11-25")
+        metrics.onSessionInitialized("unrecognized-version")
+        metrics.onSessionInitialized()
+        metrics.onProjectBoundaryReset()
         metrics.onIdleEvicted(2)
         metrics.onHostOriginRejected()
         metrics.onMetadataRejected()
@@ -60,7 +68,13 @@ class McpDiagnosticsTest {
         assertEquals(2, snapshot.pendingSessions)
         assertEquals(3, snapshot.activeSessions)
         assertEquals(3, snapshot.totalRequests)
-        assertEquals(3, snapshot.initializedSessions)
+        assertEquals(5, snapshot.initializedSessions)
+        assertEquals(1, snapshot.initializedWithProtocol20250326)
+        assertEquals(1, snapshot.initializedWithProtocol20250618)
+        assertEquals(1, snapshot.initializedWithProtocol20251125)
+        assertEquals(1, snapshot.initializedWithOtherProtocol)
+        assertEquals(1, snapshot.initializedWithoutProtocolHeader)
+        assertEquals(1, snapshot.projectBoundaryResets)
         assertEquals(2, snapshot.idleEvictions)
         assertEquals(1, snapshot.hostOriginRejections)
         assertEquals(1, snapshot.metadataRejections)
@@ -68,6 +82,11 @@ class McpDiagnosticsTest {
         assertEquals(1, snapshot.overloadRejections)
         assertEquals(1, snapshot.sessionCapacityRejections)
         assertNull(snapshot.lastError)
+
+        val publicJson = Json.encodeToString(snapshot)
+        assertFalse(publicJson.contains("projectBoundaryResets"))
+        assertFalse(publicJson.contains("initializedWithProtocol"))
+        assertFalse(publicJson.contains("initializedWithoutProtocolHeader"))
     }
 
     @Test
@@ -108,6 +127,12 @@ class McpDiagnosticsTest {
         assertEquals(0, restarted.heartbeatFailures)
         assertEquals(0, restarted.sessionDeleteRequests)
         assertEquals(0, restarted.pressureEvictions)
+        assertEquals(0, restarted.projectBoundaryResets)
+        assertEquals(0, restarted.initializedWithProtocol20250326)
+        assertEquals(0, restarted.initializedWithProtocol20250618)
+        assertEquals(0, restarted.initializedWithProtocol20251125)
+        assertEquals(0, restarted.initializedWithOtherProtocol)
+        assertEquals(0, restarted.initializedWithoutProtocolHeader)
         assertNull(restarted.lastError)
     }
 }

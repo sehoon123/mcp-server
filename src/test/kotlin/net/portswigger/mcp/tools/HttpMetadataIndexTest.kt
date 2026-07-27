@@ -260,6 +260,21 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `project boundary reset discards warm metadata even when the project identifier is unchanged`() = runBlocking {
+        history += proxyItem(1, "/one").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        index.resetForProjectBoundary()
+
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        assertEquals(
+            MetadataIndexRefresh.REBUILT,
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single().refresh,
+        )
+    }
+
+    @Test
     fun `snapshot generation detects invalidation before a response is returned`() = runBlocking {
         history += proxyItem(1, "/one").item
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })

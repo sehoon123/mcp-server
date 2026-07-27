@@ -157,6 +157,25 @@ class CollaboratorToolsTest {
     }
 
     @Test
+    fun `project boundary reset rotates Collaborator client even when the identifier is unchanged`() = runBlocking {
+        val secondClient = mockk<CollaboratorClient>()
+        every { collaborator.createClient() } returnsMany listOf(client, secondClient)
+        every { client.getAllInteractions() } returns emptyList()
+        every { secondClient.getAllInteractions() } returns emptyList()
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val first = service.interactions(GetCollaboratorInteractions(projectId), config(false)) { _, _, _ -> }
+        service.resetForProjectBoundary()
+        val second = service.interactions(GetCollaboratorInteractions(projectId), config(false)) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.OK, first.output.status)
+        assertEquals(CollaboratorToolStatus.OK, second.output.status)
+        verify(exactly = 1) { client.getAllInteractions() }
+        verify(exactly = 1) { secondClient.getAllInteractions() }
+        verify(exactly = 2) { collaborator.createClient() }
+    }
+
+    @Test
     fun `interaction exactly equal to since is excluded`() = runBlocking {
         val boundary = ZonedDateTime.parse("2025-01-02T00:00:00Z")
         every { client.getAllInteractions() } returns listOf(

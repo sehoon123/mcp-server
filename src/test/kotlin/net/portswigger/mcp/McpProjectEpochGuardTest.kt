@@ -15,7 +15,7 @@ class McpProjectEpochGuardTest {
     fun `stable project does not reset sessions and transition resets before it is accepted`() = runBlocking {
         var projectId = "project-one"
         var resets = 0
-        val guard = McpProjectEpochGuard({ projectId }) { resets++ }
+        val guard = McpProjectEpochGuard({ projectId }) { _ -> resets++ }
 
         assertEquals(McpProjectBindingStatus.READY, guard.align())
         assertEquals(McpProjectBindingStatus.READY, guard.align())
@@ -38,7 +38,7 @@ class McpProjectEpochGuardTest {
                 if (fail) error("project unavailable")
                 projectId
             },
-            resetSessions = { resets++ },
+            resetSessions = { _ -> resets++ },
         )
 
         assertEquals(McpProjectBindingStatus.READY, guard.align())
@@ -62,7 +62,7 @@ class McpProjectEpochGuardTest {
         val releaseReset = CompletableDeferred<Unit>()
         val guard = McpProjectEpochGuard(
             projectIdProvider = { projectId },
-            resetSessions = {
+            resetSessions = { _ ->
                 resetStarted.complete(Unit)
                 releaseReset.await()
             },
@@ -82,10 +82,39 @@ class McpProjectEpochGuardTest {
     }
 
     @Test
+    fun `alignment generation changes only after boundary cleanup succeeds`() = runBlocking {
+        var projectId = "project-one"
+        var failReset = true
+        val observedGenerations = mutableListOf<Long>()
+        val guard = McpProjectEpochGuard(
+            projectIdProvider = { projectId },
+            resetSessions = { generation ->
+                observedGenerations += generation
+                if (failReset) error("cleanup failed")
+            },
+        )
+
+        val initial = guard.alignRequest()
+        assertEquals(McpProjectBindingStatus.READY, initial.status)
+        assertEquals(0, initial.generation)
+
+        projectId = "project-two"
+        val failed = guard.alignRequest()
+        assertEquals(McpProjectBindingStatus.UNAVAILABLE, failed.status)
+        assertEquals(0, failed.generation)
+
+        failReset = false
+        val transitioned = guard.alignRequest()
+        assertEquals(McpProjectBindingStatus.TRANSITIONED, transitioned.status)
+        assertEquals(1, transitioned.generation)
+        assertEquals(listOf(1L, 1L), observedGenerations)
+    }
+
+    @Test
     fun `project observation preserves coroutine cancellation`() = runBlocking {
         val guard = McpProjectEpochGuard(
             projectIdProvider = { throw CancellationException("cancelled") },
-            resetSessions = {},
+            resetSessions = { _ -> },
         )
 
         assertFailsWith<CancellationException> { guard.align() }

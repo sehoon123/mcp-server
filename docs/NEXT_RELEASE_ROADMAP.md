@@ -306,8 +306,17 @@ redundant full WebSocket history copy for random-access source lists while retai
 adds 64-record interruption checkpoints to bounded context-menu fallback scans, and commits a clean-tree Java 21
 synthetic allocation/accessor diagnostic. Random-access searches capture only the bounded window a call can inspect and
 identity-revalidate its inspected slots before output. A 100,000-entry regression bounds an unfiltered one-record page to
-six indexed accesses and a scan-limit-exhausting filtered page to 20,004. These are extension-side regression results only; live
-Community/Professional source-acquisition, returned-list stability, allocation, and unload evidence remains open.
+six indexed accesses and a scan-limit-exhausting filtered page to 20,004.
+
+The next server slice stamps every admitted request and pending/active session with an internal project generation. A
+request that completed its project check before a later transition can no longer reserve or recover a session after the
+transition cleanup. The same serialized boundary revokes sessions, streams, and approvals, detaches Scanner work, drops
+warm HTTP metadata, and rotates the retained Collaborator client before new admission. Fixed-cardinality project-change
+and successful-initialization protocol counters are visible only in the local diagnostics panel; `burp://diagnostics`
+keeps its existing serialized contract. Reproducible opt-in scale and lifecycle scripts now enforce exact source/JAR
+identity, private evidence, loopback traffic, RSS cutoffs, and disposable-project acknowledgement. These are extension-
+side regressions and harness readiness only; live Community/Professional source-acquisition, returned-list stability,
+allocation, and unload evidence remains open.
 
 Candidate work:
 
@@ -317,7 +326,8 @@ Candidate work:
   change;
 - use the synthetic diagnostics and live fixtures to separate extension allocation/accessor counts from Montoya
   source-list acquisition;
-- add bounded negotiated-protocol distribution diagnostics without retaining client identity;
+- review local fixed-bucket initialization-protocol and project-change counters without retaining client identity or
+  changing the public diagnostics resource;
 - validate raw HTTP/2 routing only against an explicitly supported Burp runtime;
 - consider validated multi-client setup previews, multi-instance display labels, security-policy profiles, settings
   portability, and expanded accessibility matrices only as separately reviewed milestones.
@@ -325,6 +335,10 @@ Candidate work:
 ### v4.10.0 gate
 
 - [ ] 100k and soak runs have reviewed baselines and no unexplained EDT or extension-allocation regression.
+- [x] Delayed old-project session reservation/activation is rejected, and initialized project-retained metadata and
+  Collaborator state are cleared before new-project admission.
+- [x] Disposable loopback WebSocket scale and bounded protocol-lifecycle runners have fail-closed identity, RSS,
+  cleanup, and private-evidence contracts.
 - [ ] Any selected client/UI feature has an explicit secret, project, filesystem, rollback, and accessibility contract.
 - [ ] HTTP/2 behavior is either live-verified or remains explicitly unavailable.
 

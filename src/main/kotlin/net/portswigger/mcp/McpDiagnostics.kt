@@ -1,6 +1,7 @@
 package net.portswigger.mcp
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -44,6 +45,12 @@ data class McpDiagnosticsSnapshot(
     val pressureEvictions: Long = 0,
     val sessionsWithApprovals: Int = 0,
     val sessionApprovalGrants: Int = 0,
+    @Transient val projectBoundaryResets: Long = 0,
+    @Transient val initializedWithProtocol20250326: Long = 0,
+    @Transient val initializedWithProtocol20250618: Long = 0,
+    @Transient val initializedWithProtocol20251125: Long = 0,
+    @Transient val initializedWithOtherProtocol: Long = 0,
+    @Transient val initializedWithoutProtocolHeader: Long = 0,
 )
 
 internal fun unavailableMcpDiagnosticsSnapshot(): McpDiagnosticsSnapshot =
@@ -77,6 +84,12 @@ internal class McpRuntimeMetrics(
     private val activeSessions = AtomicInteger(0)
     private val totalRequests = AtomicLong(0)
     private val initializedSessions = AtomicLong(0)
+    private val initializedWithProtocol20250326 = AtomicLong(0)
+    private val initializedWithProtocol20250618 = AtomicLong(0)
+    private val initializedWithProtocol20251125 = AtomicLong(0)
+    private val initializedWithOtherProtocol = AtomicLong(0)
+    private val initializedWithoutProtocolHeader = AtomicLong(0)
+    private val projectBoundaryResets = AtomicLong(0)
     private val idleEvictions = AtomicLong(0)
     private val hostOriginRejections = AtomicLong(0)
     private val metadataRejections = AtomicLong(0)
@@ -107,6 +120,12 @@ internal class McpRuntimeMetrics(
         activeSessions.set(0)
         totalRequests.set(0)
         initializedSessions.set(0)
+        initializedWithProtocol20250326.set(0)
+        initializedWithProtocol20250618.set(0)
+        initializedWithProtocol20251125.set(0)
+        initializedWithOtherProtocol.set(0)
+        initializedWithoutProtocolHeader.set(0)
+        projectBoundaryResets.set(0)
         idleEvictions.set(0)
         hostOriginRejections.set(0)
         metadataRejections.set(0)
@@ -204,8 +223,19 @@ internal class McpRuntimeMetrics(
         activeSessions.set(active.coerceIn(0, maxSessions))
     }
 
-    fun onSessionInitialized() {
+    fun onSessionInitialized(observedProtocolVersion: String? = null) {
         initializedSessions.incrementAndGet()
+        when (observedProtocolVersion) {
+            "2025-03-26" -> initializedWithProtocol20250326.incrementAndGet()
+            "2025-06-18" -> initializedWithProtocol20250618.incrementAndGet()
+            "2025-11-25" -> initializedWithProtocol20251125.incrementAndGet()
+            null -> initializedWithoutProtocolHeader.incrementAndGet()
+            else -> initializedWithOtherProtocol.incrementAndGet()
+        }
+    }
+
+    fun onProjectBoundaryReset() {
+        projectBoundaryResets.incrementAndGet()
     }
 
     fun onIdleEvicted(count: Int) {
@@ -265,5 +295,11 @@ internal class McpRuntimeMetrics(
         heartbeatFailures = heartbeatFailures.get(),
         sessionDeleteRequests = sessionDeleteRequests.get(),
         pressureEvictions = pressureEvictions.get(),
+        projectBoundaryResets = projectBoundaryResets.get(),
+        initializedWithProtocol20250326 = initializedWithProtocol20250326.get(),
+        initializedWithProtocol20250618 = initializedWithProtocol20250618.get(),
+        initializedWithProtocol20251125 = initializedWithProtocol20251125.get(),
+        initializedWithOtherProtocol = initializedWithOtherProtocol.get(),
+        initializedWithoutProtocolHeader = initializedWithoutProtocolHeader.get(),
     )
 }

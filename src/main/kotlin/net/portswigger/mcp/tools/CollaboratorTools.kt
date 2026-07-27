@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.format.DateTimeParseException
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 
 private const val MAX_COLLABORATOR_CUSTOM_DATA_CHARS = 16
@@ -163,8 +164,7 @@ internal class CollaboratorToolService(
     init {
         require(pollIntervalMs in 1..COLLABORATOR_POLL_INTERVAL_MS) { "pollIntervalMs is out of range" }
     }
-    @Volatile
-    private var projectClient: ProjectCollaboratorClient? = null
+    private val projectClientState = AtomicReference(ProjectCollaboratorClientState())
     private val clientMutex = Mutex()
     private val waitAdmission = Semaphore(MAX_CONCURRENT_COLLABORATOR_WAITS)
 
@@ -464,8 +464,14 @@ internal class CollaboratorToolService(
         }
 
     private fun clientForProject(projectId: String): CollaboratorClient {
-        projectClient?.takeIf { it.projectId == projectId }?.let { return it.client }
-        return api.collaborator().createClient().also { projectClient = ProjectCollaboratorClient(projectId, it) }
+        val observedState = projectClientState.get()
+        observedState.projectClient?.takeIf { it.projectId == projectId }?.let { return it.client }
+        val created = api.collaborator().createClient()
+        projectClientState.compareAndSet(
+            observedState,
+            observedState.copy(projectClient = ProjectCollaboratorClient(projectId, created)),
+        )
+        return created
     }
 
     private fun verifyCurrentProject(expected: String) {
@@ -474,10 +480,19 @@ internal class CollaboratorToolService(
     }
 
     /** Wait operations are request-scoped; the Montoya Collaborator client exposes no close operation. */
-    fun close() {
-        projectClient = null
+    fun resetForProjectBoundary() {
+        projectClientState.updateAndGet { state ->
+            ProjectCollaboratorClientState(generation = state.generation + 1)
+        }
     }
+
+    fun close() = resetForProjectBoundary()
 }
+
+private data class ProjectCollaboratorClientState(
+    val generation: Long = 0,
+    val projectClient: ProjectCollaboratorClient? = null,
+)
 
 private data class ProjectCollaboratorClient(val projectId: String, val client: CollaboratorClient)
 private data class GeneratedCollaboratorPayload(val payload: String, val payloadId: String, val server: String)

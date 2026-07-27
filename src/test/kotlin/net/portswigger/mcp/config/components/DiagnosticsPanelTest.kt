@@ -46,6 +46,12 @@ class DiagnosticsPanelTest {
                 pressureEvictions = 9,
                 sessionsWithApprovals = 2,
                 sessionApprovalGrants = 5,
+                projectBoundaryResets = 2,
+                initializedWithProtocol20250326 = 1,
+                initializedWithProtocol20250618 = 2,
+                initializedWithProtocol20251125 = 3,
+                initializedWithOtherProtocol = 4,
+                initializedWithoutProtocolHeader = 5,
             ),
             readOnlyMode = true,
             auditEnabled = true,
@@ -71,6 +77,13 @@ class DiagnosticsPanelTest {
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))
         assertTrue(text.contains("Session approvals: 5 grants across 2 active sessions"))
+        assertTrue(text.contains("Project changes observed: 2"))
+        assertTrue(
+            text.contains(
+                "Initialized session protocol requests: 2025-03-26=1, 2025-06-18=2, " +
+                    "2025-11-25=3, other=4, not-reported=5"
+            )
+        )
         assertTrue(
             text.contains("Swing EDT delay: samples=100, coalesced=3, >=100ms=7, >=250ms=2, >=1s=1, max=1250ms, errors=0")
         )

@@ -95,7 +95,9 @@ private const val MCP_SSE_HEARTBEAT_MILLIS = 15_000L
 private const val MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS = 2_000L
 private const val MCP_SSE_INITIAL_LIVENESS_DELAY_MILLIS = 250L
 private const val MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS = 2_000L
+private const val MCP_PROJECT_STATE_CLEANUP_TIMEOUT_MILLIS = 2_000L
 private val MCP_HTTP_CALL_LEASE_KEY = AttributeKey<McpHttpCallLease>("McpHttpCallLease")
+private val MCP_PROJECT_GENERATION_KEY = AttributeKey<Long>("McpProjectGeneration")
 private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1")
 private val DNS_ALLOWED_HOSTS = listOf("localhost", "127.0.0.1", "[::1]")
 private val DNS_ALLOWED_ORIGINS = listOf("http://localhost", "http://127.0.0.1", "http://[::1]")
@@ -122,7 +124,7 @@ internal fun Application.configureMcpHttpEndpoint(
     sseHeartbeatMillis: Long = MCP_SSE_HEARTBEAT_MILLIS,
     sseClientLivenessTimeoutMillis: Long = MCP_SSE_CLIENT_LIVENESS_TIMEOUT_MILLIS,
     projectIdProvider: (() -> String)? = null,
-    onProjectBoundary: () -> Unit = {},
+    onProjectBoundary: suspend () -> Unit = {},
 ) {
     require(maxSessions > 0) { "maxSessions must be positive" }
     require(sseHeartbeatMillis > 0) { "sseHeartbeatMillis must be positive" }
@@ -190,13 +192,14 @@ internal fun Application.configureMcpHttpEndpoint(
         sessionApprovals,
     )
     val projectGuard = projectIdProvider?.let { provider ->
-        McpProjectEpochGuard(provider) {
-            sessions.resetForProjectBoundary()
-            try {
+        McpProjectEpochGuard(provider) { projectGeneration ->
+            sessions.resetForProjectBoundary(projectGeneration)
+            val stateCleanupCompleted = withTimeoutOrNull(MCP_PROJECT_STATE_CLEANUP_TIMEOUT_MILLIS) {
                 onProjectBoundary()
-            } catch (_: Exception) {
-                // Session authority is already revoked; auxiliary owned-work cleanup must not reopen the boundary.
-            }
+                true
+            } ?: false
+            if (!stateCleanupCompleted) throw McpProjectStateCleanupException()
+            runtimeMetrics?.onProjectBoundaryReset()
         }
     }
     val activeCalls = java.util.concurrent.atomic.AtomicInteger()
@@ -225,18 +228,20 @@ internal fun Application.configureMcpHttpEndpoint(
         context.attributes.put(MCP_HTTP_CALL_LEASE_KEY, callLease)
         runtimeMetrics?.onCallStarted()
         try {
-            // Keep project observation inside the 64-call lease; transition cleanup may take the bounded two seconds.
-            if (context.request.httpMethod != HttpMethod.Options &&
-                projectGuard?.align() == McpProjectBindingStatus.UNAVAILABLE
-            ) {
-                context.response.header(HttpHeaders.RetryAfter, "1")
-                context.rejectMcp(
-                    HttpStatusCode.ServiceUnavailable,
-                    RPCError.ErrorCode.CONNECTION_CLOSED,
-                    "Burp project binding is unavailable",
-                )
-                finish()
-                return@intercept
+            // Keep project observation inside the 64-call lease; transition cleanup is time-bounded and fail-closed.
+            if (context.request.httpMethod != HttpMethod.Options && projectGuard != null) {
+                val alignment = projectGuard.alignRequest()
+                if (alignment.status == McpProjectBindingStatus.UNAVAILABLE) {
+                    context.response.header(HttpHeaders.RetryAfter, "1")
+                    context.rejectMcp(
+                        HttpStatusCode.ServiceUnavailable,
+                        RPCError.ErrorCode.CONNECTION_CLOSED,
+                        "Burp project binding is unavailable",
+                    )
+                    finish()
+                    return@intercept
+                }
+                context.attributes.put(MCP_PROJECT_GENERATION_KEY, alignment.generation)
             }
             proceed()
         } finally {
@@ -378,7 +383,17 @@ internal fun Application.configureMcpHttpEndpoint(
                         maxRequestBodySize = MCP_MAX_REQUEST_BODY_BYTES,
                     )
                 )
-                val reservation = sessions.reserve(transport)
+                val reservation = try {
+                    sessions.reserve(transport, call.attributes.getOrNull(MCP_PROJECT_GENERATION_KEY))
+                } catch (_: McpProjectGenerationMismatchException) {
+                    runCatching { transport.close() }
+                    call.rejectMcp(
+                        HttpStatusCode.Conflict,
+                        RPCError.ErrorCode.CONNECTION_CLOSED,
+                        "Burp project changed; initialize a new MCP session",
+                    )
+                    return@post
+                }
                 if (reservation == null) {
                     runtimeMetrics?.onSessionCapacityRejected()
                     runCatching { transport.close() }
@@ -392,8 +407,9 @@ internal fun Application.configureMcpHttpEndpoint(
                 }
                 val pending = reservation.pending
 
+                val observedProtocolVersion = call.request.header(MCP_PROTOCOL_VERSION_HEADER)
                 transport.setOnSessionInitialized { initializedSessionId ->
-                    sessions.activate(pending, initializedSessionId)
+                    sessions.activate(pending, initializedSessionId, observedProtocolVersion)
                 }
                 transport.setOnSessionClosed {
                     sessions.remove(pending)
@@ -567,20 +583,30 @@ internal enum class McpProjectBindingStatus {
     UNAVAILABLE,
 }
 
+internal data class McpProjectAlignment(
+    val status: McpProjectBindingStatus,
+    val generation: Long,
+)
+
 /**
  * Retains only a fixed-size digest of the observed Burp project ID.
  *
  * Alignment is serialized with stale-session cleanup, so a request for a new project cannot pass this boundary until
  * every old session has been detached, its event streams have been cancelled, and its approvals have been revoked.
+ * The opaque generation closes the gap between this check and later session reservation or lookup.
  */
 internal class McpProjectEpochGuard(
     private val projectIdProvider: () -> String,
-    private val resetSessions: suspend () -> Unit,
+    private val resetSessions: suspend (Long) -> Unit,
 ) {
     private val lock = Mutex()
     private var projectFingerprint: ByteArray? = null
+    private var generation = 0L
+    private var pendingGeneration: Long? = null
 
-    suspend fun align(): McpProjectBindingStatus = lock.withLock {
+    suspend fun align(): McpProjectBindingStatus = alignRequest().status
+
+    suspend fun alignRequest(): McpProjectAlignment = lock.withLock {
         val currentFingerprint = try {
             projectIdProvider()
                 .takeIf(::validMcpProjectId)
@@ -592,26 +618,66 @@ internal class McpProjectEpochGuard(
             null
         }
 
+        if (pendingGeneration != null) {
+            if (!completePendingReset()) {
+                return@withLock McpProjectAlignment(McpProjectBindingStatus.UNAVAILABLE, generation)
+            }
+            projectFingerprint = currentFingerprint
+            val status = if (currentFingerprint == null) {
+                McpProjectBindingStatus.UNAVAILABLE
+            } else {
+                McpProjectBindingStatus.TRANSITIONED
+            }
+            return@withLock McpProjectAlignment(status, generation)
+        }
+
         if (currentFingerprint == null) {
-            if (projectFingerprint != null) resetSessions()
+            if (projectFingerprint != null && !resetForNextGeneration()) {
+                return@withLock McpProjectAlignment(McpProjectBindingStatus.UNAVAILABLE, generation)
+            }
             projectFingerprint = null
-            return@withLock McpProjectBindingStatus.UNAVAILABLE
+            return@withLock McpProjectAlignment(McpProjectBindingStatus.UNAVAILABLE, generation)
         }
 
         val previous = projectFingerprint
         if (previous == null) {
             projectFingerprint = currentFingerprint
-            return@withLock McpProjectBindingStatus.READY
+            return@withLock McpProjectAlignment(McpProjectBindingStatus.READY, generation)
         }
         if (MessageDigest.isEqual(previous, currentFingerprint)) {
-            return@withLock McpProjectBindingStatus.READY
+            return@withLock McpProjectAlignment(McpProjectBindingStatus.READY, generation)
         }
 
-        resetSessions()
+        if (!resetForNextGeneration()) {
+            return@withLock McpProjectAlignment(McpProjectBindingStatus.UNAVAILABLE, generation)
+        }
         projectFingerprint = currentFingerprint
-        McpProjectBindingStatus.TRANSITIONED
+        McpProjectAlignment(McpProjectBindingStatus.TRANSITIONED, generation)
+    }
+
+    private suspend fun resetForNextGeneration(): Boolean {
+        check(pendingGeneration == null) { "project cleanup is already pending" }
+        pendingGeneration = generation + 1
+        return completePendingReset()
+    }
+
+    private suspend fun completePendingReset(): Boolean {
+        val targetGeneration = checkNotNull(pendingGeneration)
+        return try {
+            resetSessions(targetGeneration)
+            generation = targetGeneration
+            pendingGeneration = null
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 }
+
+private class McpProjectStateCleanupException : Exception()
+internal class McpProjectGenerationMismatchException : Exception()
 
 internal data class McpSessionReservation(
     val pending: ManagedMcpSession,
@@ -628,10 +694,17 @@ internal class BoundedMcpSessionRegistry(
     private val slots = Semaphore(maxSessions, true)
     private val sessions = HashMap<String, ManagedMcpSession>()
     private val entries = HashSet<ManagedMcpSession>()
+    private var projectGeneration = 0L
     private var closed = false
 
-    fun reserve(transport: StreamableHttpServerTransport): McpSessionReservation? = synchronized(lock) {
+    fun reserve(
+        transport: StreamableHttpServerTransport,
+        expectedProjectGeneration: Long? = null,
+    ): McpSessionReservation? = synchronized(lock) {
         if (closed) return null
+        if (expectedProjectGeneration != null && expectedProjectGeneration != projectGeneration) {
+            throw McpProjectGenerationMismatchException()
+        }
 
         var displaced: ManagedMcpSession? = null
         if (!slots.tryAcquire()) {
@@ -649,16 +722,16 @@ internal class BoundedMcpSessionRegistry(
             check(slots.tryAcquire()) { "displaced MCP session did not release its capacity slot" }
         }
 
-        val pending = ManagedMcpSession(transport, slots)
+        val pending = ManagedMcpSession(transport, slots, projectGeneration)
         entries += pending
         updateMetricsLocked()
         McpSessionReservation(pending = pending, displaced = displaced)
     }
 
-    fun activate(entry: ManagedMcpSession, sessionId: String) {
+    fun activate(entry: ManagedMcpSession, sessionId: String, observedProtocolVersion: String? = null) {
         val accepted = synchronized(lock) {
-            if (closed || entry !in entries || sessionId.isBlank() || sessionId.length > 128 ||
-                sessions.containsKey(sessionId)
+            if (closed || entry !in entries || entry.projectGeneration != projectGeneration ||
+                sessionId.isBlank() || sessionId.length > 128 || sessions.containsKey(sessionId)
             ) {
                 false
             } else if (!sessionApprovals.activate(sessionId)) {
@@ -683,7 +756,7 @@ internal class BoundedMcpSessionRegistry(
             }
             entry.releaseSlot()
         } else {
-            runtimeMetrics?.onSessionInitialized()
+            runtimeMetrics?.onSessionInitialized(observedProtocolVersion)
         }
     }
 
@@ -698,8 +771,15 @@ internal class BoundedMcpSessionRegistry(
             )
             return null
         }
+        val expectedProjectGeneration = call.attributes.getOrNull(MCP_PROJECT_GENERATION_KEY)
         val entry = synchronized(lock) {
-            sessions[sessionId]?.also { it.acquire() }
+            if (expectedProjectGeneration != null && expectedProjectGeneration != projectGeneration) {
+                null
+            } else {
+                sessions[sessionId]
+                    ?.takeIf { it.projectGeneration == projectGeneration }
+                    ?.also { it.acquire() }
+            }
         }
         if (entry == null) {
             call.rejectMcp(
@@ -767,8 +847,15 @@ internal class BoundedMcpSessionRegistry(
      * disappear before a new-project request can be admitted. Wire resource subscriptions remain disabled.
      */
     suspend fun resetForProjectBoundary() {
+        val nextGeneration = synchronized(lock) { projectGeneration + 1 }
+        resetForProjectBoundary(nextGeneration)
+    }
+
+    suspend fun resetForProjectBoundary(newProjectGeneration: Long) {
         val stale = synchronized(lock) {
             if (closed) return
+            require(newProjectGeneration >= projectGeneration) { "project generation cannot move backwards" }
+            projectGeneration = newProjectGeneration
             val snapshot = entries.toList()
             sessions.clear()
             sessionApprovals.clearSessions()
@@ -827,6 +914,7 @@ internal class BoundedMcpSessionRegistry(
 internal class ManagedMcpSession(
     val transport: StreamableHttpServerTransport,
     private val slots: Semaphore,
+    val projectGeneration: Long = 0L,
 ) {
     private val slotReleased = AtomicBoolean(false)
     private val transportClosed = AtomicBoolean(false)
