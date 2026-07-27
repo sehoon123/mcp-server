@@ -90,8 +90,10 @@ bounded sequence.
 
 `KtorServerManager` owns listener start/stop/restart serialization, request admission, Streamable HTTP sessions, project
 epoch alignment, and the MCP SDK `Server`. A listener restart gets a new SDK server, while `ToolServices` retains the
-extension-lifetime services that must survive a restart. Project changes revoke sessions/approvals and reset
-project-bound state before new-project requests are admitted.
+extension-lifetime services that must survive a restart. This includes the workflow-preset repository over the exact
+project-backed `extensionData()` instance created by `ExtensionBase`; it decodes on each access and does not cache or map
+project IDs. Project changes revoke sessions/approvals and reset project-bound state before new-project requests are
+admitted.
 
 ### Source map
 
@@ -103,6 +105,7 @@ project-bound state before new-project requests are admitted.
 | `src/main/kotlin/net/portswigger/mcp/tools/Tools.kt` | Tool input types and catalog registration |
 | `src/main/kotlin/net/portswigger/mcp/tools/McpTool.kt` | Execution dispatcher, audit wrapper, tool/resource registration helpers |
 | `src/main/kotlin/net/portswigger/mcp/tools/ToolServices.kt` | Extension-lifetime service ownership |
+| `src/main/kotlin/net/portswigger/mcp/presets/*` | Strict project-backed workflow-preset models and synchronized repository |
 | `src/main/kotlin/net/portswigger/mcp/tools/*` | Bounded service implementations and result types |
 | `src/main/kotlin/net/portswigger/mcp/security/*` | Approval gates, session grants, audit, safe logging |
 | `src/main/kotlin/net/portswigger/mcp/schema/*` | JSON Schema derivation and legacy serialization |
@@ -287,6 +290,22 @@ For a source or action family, add at least these regressions:
 - post-invocation exceptions return uncertain execution;
 - explicit JSON null agrees between schema validation and Kotlin decoding;
 - audit/error text contains no user values or secrets.
+
+## Saved workflow presets
+
+Workflow presets use one strict, versioned JSON envelope in the same Burp project-backed `extensionData()` instance used
+by extension configuration and durable audit state. The store synchronizes each decode/read-modify-write operation,
+keeps no decoded project cache, caps storage at 64 presets and 256 KiB UTF-8, and preserves malformed, unknown-version,
+or oversized raw values. Every operation validates the required current `projectId` before storage and rechecks it
+afterward. Once `setString` may have executed, failures and project transitions are reported as uncertain and must not
+be retried automatically.
+
+Persist dedicated safe definition DTOs rather than direct tool inputs. Their schema has no project-ID, cursor,
+stable-reference, connection-ID, traffic/result, raw-message, content-predicate, credential, or token fields. Bounded
+caller-authored name, description, host, and path strings are persisted verbatim and must not contain secrets. Execution must delegate to the existing HTTP search, WebSocket search, or HTTP comparison service, retain
+search progress/cancellation, discard delegated output after an unprovable project transition, and add no new approval
+category. The four preset tools are the complete MCP-only management surface; do not add dynamic resources,
+subscriptions, prompt changes, or native preset UI without a later reviewed milestone.
 
 ## Resources and prompts
 

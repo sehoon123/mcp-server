@@ -37,6 +37,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
@@ -64,9 +65,18 @@ class ToolsKtTest {
         mapOf("Authorization" to "Bearer $testBearerToken")
     )
     private val api = mockk<MontoyaApi>(relaxed = true)
+    private val workflowStorageValues = mutableMapOf<String, String>()
+    private val workflowStorage = mockk<PersistedObject>(relaxed = true).also { storage ->
+        every { storage.getString(any()) } answers { workflowStorageValues[firstArg()] }
+        every { storage.setString(any(), any()) } answers {
+            workflowStorageValues[firstArg()] = secondArg()
+        }
+    }
     // Tool-contract fixtures deliberately replace their mocked project after the client connects. Project-bound
     // session lifecycle is covered by McpServerIntegrationTest and McpProjectEpochGuardTest instead.
-    private val serverManager = KtorServerManager(api, NoOpMcpAuditSink, projectIdProvider = null)
+    private val serverManager = KtorServerManager(
+        api, NoOpMcpAuditSink, projectIdProvider = null, extensionStorage = workflowStorage
+    )
     private val testPort = findAvailablePort()
     private var serverStarted = false
     private val config: McpConfig
@@ -1376,7 +1386,7 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(20, tools.size)
+        assertEquals(24, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertEquals(
@@ -1393,6 +1403,10 @@ class ToolsKtTest {
                 "update_scope",
                 "compare_http_messages",
                 "analyze_http_session_security",
+                "save_workflow_preset",
+                "list_workflow_presets",
+                "delete_workflow_preset",
+                "execute_workflow_preset",
                 "get_http_message",
                 "send_http_request_from_id",
                 "route_http_message_from_id",
@@ -1488,6 +1502,83 @@ class ToolsKtTest {
         assertTrue(comparison.inputSchema.properties?.get("excerptEncoding").toString().contains("base64"))
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
+
+        val savePreset = tools.single { it.name == "save_workflow_preset" }
+        assertEquals(setOf("projectId", "name", "definition"), savePreset.inputSchema.required?.toSet())
+        val definitionSchema = savePreset.inputSchema.properties?.get("definition").toString()
+        assertTrue(definitionSchema.contains("\"oneOf\""))
+        assertTrue(definitionSchema.contains("httpSearch"))
+        assertTrue(definitionSchema.contains("webSocketSearch"))
+        assertTrue(definitionSchema.contains("httpComparison"))
+        listOf("projectId", "cursor", "refs", "text", "regex", "searchIn", "caseSensitive", "webSocketId").forEach {
+            assertFalse(definitionSchema.contains("\"$it\":"), "saved definition must not expose $it")
+        }
+        assertEquals(false, savePreset.annotations?.readOnlyHint)
+        assertEquals(true, savePreset.annotations?.destructiveHint)
+        assertEquals(true, savePreset.annotations?.idempotentHint)
+        assertEquals(false, savePreset.annotations?.openWorldHint)
+        val listPreset = tools.single { it.name == "list_workflow_presets" }
+        val deletePreset = tools.single { it.name == "delete_workflow_preset" }
+        val executePreset = tools.single { it.name == "execute_workflow_preset" }
+        assertEquals(true, listPreset.annotations?.readOnlyHint)
+        assertEquals(true, executePreset.annotations?.readOnlyHint)
+        assertEquals(false, deletePreset.annotations?.readOnlyHint)
+        assertEquals(true, deletePreset.annotations?.destructiveHint)
+        assertNotNull(executePreset.outputSchema?.properties?.get("httpSearch"))
+        assertNotNull(executePreset.outputSchema?.properties?.get("webSocketSearch"))
+        assertNotNull(executePreset.outputSchema?.properties?.get("httpComparison"))
+
+        val invalidPresetSave = client.callTool(
+            "save_workflow_preset",
+            mapOf(
+                "projectId" to "wrong-project",
+                "name" to "metadata",
+                "definition" to mapOf("httpSearch" to emptyMap<String, Any>()),
+            ),
+        )
+        assertEquals(true, invalidPresetSave?.isError)
+        assertEquals("project_mismatch", invalidPresetSave?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        val validPresetSave = client.callTool(
+            "save_workflow_preset",
+            mapOf(
+                "projectId" to "project-default",
+                "name" to "metadata",
+                "definition" to mapOf("httpSearch" to mapOf("defaultLimit" to 5)),
+            ),
+        )
+        assertEquals(false, validPresetSave?.isError)
+        assertEquals("ok", validPresetSave?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        val presetList = client.callTool(
+            "list_workflow_presets", mapOf("projectId" to "project-default")
+        )
+        assertEquals(false, presetList?.isError)
+        val delegatedNonOk = client.callTool(
+            "execute_workflow_preset",
+            mapOf(
+                "projectId" to "project-default",
+                "name" to "metadata",
+                "cursor" to "invalid-runtime-cursor",
+            ),
+        )
+        assertEquals(true, delegatedNonOk?.isError)
+        assertEquals("ok", delegatedNonOk?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(
+            "invalid_cursor",
+            delegatedNonOk?.structuredContent?.get("httpSearch")?.jsonObject
+                ?.get("status")?.jsonPrimitive?.content,
+        )
+        assertEquals(null, delegatedNonOk?.structuredContent?.get("webSocketSearch"))
+        assertEquals(null, delegatedNonOk?.structuredContent?.get("httpComparison"))
+        val absentDelete = client.callTool(
+            "delete_workflow_preset", mapOf("projectId" to "project-default", "name" to "absent")
+        )
+        assertEquals(false, absentDelete?.isError)
+        assertEquals(false, absentDelete?.structuredContent?.get("deleted")?.jsonPrimitive?.boolean)
+        val absentExecute = client.callTool(
+            "execute_workflow_preset", mapOf("projectId" to "project-default", "name" to "absent")
+        )
+        assertEquals(true, absentExecute?.isError)
+        assertEquals("not_found", absentExecute?.structuredContent?.get("status")?.jsonPrimitive?.content)
 
         val sessionAnalysis = tools.single { it.name == "analyze_http_session_security" }
         assertEquals(setOf("projectId", "refs"), sessionAnalysis.inputSchema.required?.toSet())
@@ -1707,7 +1798,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(27, tools.size)
+            assertEquals(31, tools.size)
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }

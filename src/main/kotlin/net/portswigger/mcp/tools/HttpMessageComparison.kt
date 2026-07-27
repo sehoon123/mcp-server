@@ -500,6 +500,12 @@ private fun List<HttpHeader>.toBoundedHeaderData(ignored: Set<String>): BoundedH
     return BoundedHeaderData(result, truncated)
 }
 
+internal fun validateHttpComparisonSettings(input: CompareHttpMessages) {
+    val limit = input.limitBytesPerMessage ?: DEFAULT_COMPARE_BYTES_PER_MESSAGE
+    require(limit in 1..MAX_COMPARE_BYTES_PER_MESSAGE) { "limitBytesPerMessage is out of range" }
+    normalizeIgnoredHeaders(input.ignoreHeaders)
+}
+
 private fun normalizeIgnoredHeaders(values: List<String>?): Set<String> {
     require((values?.size ?: 0) <= MAX_COMPARE_IGNORE_HEADERS) {
         "ignoreHeaders can contain at most $MAX_COMPARE_IGNORE_HEADERS names"

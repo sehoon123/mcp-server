@@ -68,6 +68,7 @@ import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.tools.ToolServices
+import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.tools.registerTools
 import net.portswigger.mcp.tools.unbindToolRuntimePolicy
 import java.net.BindException
@@ -961,6 +962,7 @@ class KtorServerManager internal constructor(
     private val api: MontoyaApi,
     private val auditSink: McpAuditSink,
     private val projectIdProvider: (() -> String)? = { api.project().id() },
+    extensionStorage: PersistedObject = api.persistence().extensionData(),
 ) : ServerManager {
 
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
@@ -971,7 +973,7 @@ class KtorServerManager internal constructor(
     private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
-    private val toolServices = ToolServices(api)
+    private val toolServices = ToolServices(api, extensionStorage)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {

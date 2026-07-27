@@ -974,6 +974,16 @@ private fun NormalizedHttpSearchQuery.metadataIndexSources(): List<HttpMessageSo
     return sources.filter { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }
 }
 
+internal fun validateHttpMetadataSearchSettings(input: SearchHttpMessages) {
+    require(input.text == null && input.regex == null && input.searchIn == null && input.caseSensitive == null) {
+        "content predicates are not valid saved HTTP metadata settings"
+    }
+    normalizeQuery(input)
+    val limit = input.limit ?: DEFAULT_HTTP_SEARCH_LIMIT
+    require(limit in 1..MAX_HTTP_SEARCH_LIMIT) { "limit is out of range" }
+    require(input.cursor == null) { "cursor is runtime-only" }
+}
+
 private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery {
     require((input.sources?.size ?: 0) <= HttpMessageSource.entries.size) { "too many sources" }
     require((input.methods?.size ?: 0) <= MAX_HTTP_SEARCH_FILTER_VALUES) { "too many methods" }
@@ -994,6 +1004,7 @@ private fun normalizeQuery(input: SearchHttpMessages): NormalizedHttpSearchQuery
     val pathContains = input.pathContains?.also {
         require(it.isNotEmpty()) { "pathContains must not be empty" }
         require(it.length <= MAX_HTTP_SEARCH_PATH_CHARS) { "pathContains is too long" }
+        require(it.none(Char::isISOControl)) { "pathContains contains control characters" }
     }
     val methods = input.methods?.map { method ->
         require(method.length <= 64) { "HTTP method is too long" }

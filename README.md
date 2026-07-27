@@ -45,7 +45,7 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 27 tools on Professional and 20 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 31 tools on Professional and 24 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
@@ -84,7 +84,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 20 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 24 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|
@@ -95,13 +95,14 @@ the offset-based WebSocket list with `search_websocket_messages`. The current ca
 
 The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transform_data`, `generate_random_string`,
 `get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`, `check_scope`,
-`update_scope`, `compare_http_messages`, `analyze_http_session_security`, `get_http_message`,
+`update_scope`, `compare_http_messages`, `analyze_http_session_security`, `save_workflow_preset`,
+`list_workflow_presets`, `delete_workflow_preset`, `execute_workflow_preset`, `get_http_message`,
 `send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
 `set_burp_control_state`, `get_active_editor_contents`, and `set_active_editor_contents`.
 
 Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 27 total. Individual WebSocket and Scanner
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 31 total. Individual WebSocket and Scanner
 issue reads now require `projectId`; v3 aliases are not advertised.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
@@ -425,6 +426,23 @@ exact derived-request prompts until `Require approval for request routing and de
 the MCP Bridge tab. Outbound-target approval remains independent. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
+
+## Project-scoped workflow presets
+
+Four common MCP tools manage reusable settings in the current Burp project's project-backed `extensionData()`:
+`save_workflow_preset`, `list_workflow_presets`, `delete_workflow_preset`, and `execute_workflow_preset`. Presets survive
+listener restarts and are bounded to 64 entries and a 256 KiB versioned JSON envelope. Names are trimmed, 1–64
+characters, case-insensitively unique, and listed deterministically. Save is a complete upsert with `overwrite: false` by
+default; delete is idempotent and reports `deleted: false` when absent.
+
+A definition selects exactly one of HTTP metadata search, WebSocket metadata search, or HTTP comparison settings. Its
+schema has no `projectId`, cursor, stable-reference or connection-ID, traffic/result, raw-message, HTTP content-predicate,
+WebSocket payload-regex, credential, or token fields. Bounded caller-authored name, description, host, and path strings
+are persisted verbatim and must not contain secrets. Search limit/cursor and comparison refs are runtime-only execution
+arguments. Execution delegates to the same search/comparison services and therefore retains
+their approvals, progress, cancellation, cursor, bounds, and result statuses. Malformed, unknown-version, and oversized
+stored values fail closed and are preserved rather than overwritten. Preset management is MCP-only in this milestone;
+there is no native Swing preset UI or dynamic preset resource catalog.
 
 ## Scope, comparison, and focused Scanner audits
 

@@ -43,9 +43,10 @@ Presets are stored in Burp project-backed `extensionData()` with a versioned JSO
 2. WebSocket metadata search settings;
 3. HTTP comparison settings.
 
-A preset stores reusable settings only. It never stores a project ID, cursor, stable reference, traffic/result content,
-request/response body, credential, token, HTTP content predicate, WebSocket payload regex, or WebSocket connection ID.
-Search limits/cursors and comparison references are supplied only at execution time. Execution delegates to the existing
+A preset stores reusable settings only. Its definition schema has no project-ID, cursor, stable-reference,
+traffic/result-content, request/response-body, credential, token, HTTP content-predicate, WebSocket payload-regex, or
+WebSocket connection-ID fields. Bounded caller-authored name, description, host, and path strings are persisted verbatim
+and must not contain secrets. Search limits/cursors and comparison references are supplied only at execution time. Execution delegates to the existing
 search/comparison services so their approvals, progress, cursor, and result behavior remain authoritative.
 
 Limits: 64 presets per project, 256 KiB serialized envelope, case-insensitive unique names, deterministic listing, and
@@ -103,5 +104,5 @@ rediscover capabilities after upgrading. Fixed resources and resource templates 
 - Multi-instance labels, naming, identity, or resource-URI changes.
 - Security-policy profiles or settings portability.
 - Automatic Repeater tab creation, request generation, routing, sending, Scanner execution, or editor mutation.
-- Persisted traffic, credentials, active session grants, approvals, project IDs, stable IDs, or raw request/response data.
+- Dedicated persisted fields for traffic, credentials, active session grants, approvals, project IDs, stable IDs, or raw request/response data; caller-authored preset strings remain the caller's responsibility and must not contain secrets.
 - Additional tool families beyond the analyzer and workflow-presets APIs described here.

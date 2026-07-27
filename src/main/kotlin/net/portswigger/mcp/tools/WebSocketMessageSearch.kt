@@ -426,6 +426,16 @@ internal class WebSocketMessageSearchService(
 
 private class StaleWebSocketCursorException(message: String) : IllegalArgumentException(message)
 
+internal fun validateWebSocketMetadataSearchSettings(input: SearchWebsocketMessages) {
+    require(input.cursor == null && input.webSocketId == null && input.regex == null && input.caseSensitive == null) {
+        "content, cursor, and connection fields are not valid saved WebSocket metadata settings"
+    }
+    require((input.limit ?: DEFAULT_WEBSOCKET_SEARCH_LIMIT) in 1..MAX_WEBSOCKET_SEARCH_LIMIT) {
+        "limit is out of range"
+    }
+    normalizeQuery(input)
+}
+
 private fun normalizeQuery(input: SearchWebsocketMessages): NormalizedWebSocketQuery {
     input.webSocketId?.let { require(it >= 0) { "webSocketId must be non-negative" } }
     input.listenerPort?.let { require(it in 1..65_535) { "listenerPort is out of range" } }

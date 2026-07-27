@@ -17,6 +17,15 @@ import kotlinx.serialization.json.Json
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.TargetValidation
+import net.portswigger.mcp.presets.DeleteWorkflowPreset
+import net.portswigger.mcp.presets.DeleteWorkflowPresetResult
+import net.portswigger.mcp.presets.ExecuteWorkflowPreset
+import net.portswigger.mcp.presets.ExecuteWorkflowPresetResult
+import net.portswigger.mcp.presets.ListWorkflowPresets
+import net.portswigger.mcp.presets.ListWorkflowPresetsResult
+import net.portswigger.mcp.presets.SaveWorkflowPreset
+import net.portswigger.mcp.presets.SaveWorkflowPresetResult
+import net.portswigger.mcp.presets.WorkflowPresetStatus
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
@@ -266,6 +275,13 @@ internal fun Server.registerTools(
     val webSocketMessageReadService = WebSocketMessageReadService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)
+    val workflowPresetService = WorkflowPresetService(
+        api,
+        services.workflowPresetStore,
+        httpMessageSearchService,
+        webSocketMessageSearchService,
+        httpMessageComparisonService,
+    )
 
     mcpStructuredTool<SendRawHttpRequest, RawHttpActionResult>(
         description = "Issues exactly one bounded raw HTTP/1.1 or HTTP/2 request. Exactly the protocol-matching http1 or http2 object is required. Redirects are always disabled; timeout and response preview are bounded. The exchange is not automatically added to Site Map because Burp does not provide an atomic project-bound add; recordedInSiteMap remains false and recordedRef remains absent. executionState=uncertain means the request may have been sent and must not be retried automatically.",
@@ -1061,6 +1077,40 @@ internal fun Server.registerTools(
                 reportProgress(progress, total, message)
             }
         )
+    }
+
+    mcpStructuredToolWithContext<SaveWorkflowPreset, SaveWorkflowPresetResult>(
+        description = "Creates or completely replaces one bounded project-scoped workflow preset in Burp project-backed extension data. Definition schemas contain only reusable HTTP metadata search, WebSocket metadata search, or HTTP comparison settings and have no project-ID, cursor, reference, content-predicate, traffic, credential, or token fields. Bounded caller-authored name, description, host, and path strings are persisted verbatim and must not contain secrets. overwrite defaults to false. An uncertain execution state must not be retried automatically.",
+        annotations = WORKFLOW_PRESET_SAVE_ANNOTATIONS,
+    ) { input ->
+        val output = workflowPresetService.save(input)
+        StructuredToolResponse(output, isError = output.status != WorkflowPresetStatus.OK, text = null)
+    }
+
+    mcpStructuredToolWithContext<ListWorkflowPresets, ListWorkflowPresetsResult>(
+        description = "Lists safe workflow preset definitions from the current Burp project's extension data in deterministic case-insensitive name order. Results can be filtered by type and paged within the fixed 64-preset capacity.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = workflowPresetService.list(input)
+        StructuredToolResponse(output, isError = output.status != WorkflowPresetStatus.OK, text = null)
+    }
+
+    mcpStructuredToolWithContext<DeleteWorkflowPreset, DeleteWorkflowPresetResult>(
+        description = "Idempotently deletes one named workflow preset from the current Burp project's extension data. A missing preset succeeds with deleted=false. An uncertain execution state must not be retried automatically.",
+        annotations = WORKFLOW_PRESET_DELETE_ANNOTATIONS,
+    ) { input ->
+        val output = workflowPresetService.delete(input)
+        StructuredToolResponse(output, isError = output.status != WorkflowPresetStatus.OK, text = null)
+    }
+
+    mcpStructuredToolWithContext<ExecuteWorkflowPreset, ExecuteWorkflowPresetResult>(
+        description = "Executes one project-scoped preset through the existing HTTP search, WebSocket search, or HTTP comparison service. Search limit and cursor are runtime-only; comparison refs are runtime-only and required. Exactly one delegated typed result is returned after dispatch, and delegated approvals, progress, cancellation, cursors, status, and bounds remain authoritative.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = workflowPresetService.execute(input) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
+        StructuredToolResponse(output, isError = !output.delegatedSuccess(), text = null)
     }
 
     mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(

@@ -932,7 +932,7 @@ class McpServerIntegrationTest {
         }.exceptionOrNull()
         assertNotNull(noncanonicalPrompt)
 
-        assertEquals(20, toolsBefore.size)
+        assertEquals(24, toolsBefore.size)
         assertEquals(toolsBefore, client.listTools().map { it.name })
     }
 

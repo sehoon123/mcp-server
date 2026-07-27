@@ -1,9 +1,12 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.persistence.PersistedObject
+import net.portswigger.mcp.presets.WorkflowPresetStore
 
 /** Extension-lifetime state that must survive MCP HTTP server restarts. */
-internal class ToolServices(private val api: MontoyaApi) {
+internal class ToolServices(private val api: MontoyaApi, extensionStorage: PersistedObject) {
+    val workflowPresetStore = WorkflowPresetStore(extensionStorage)
     private val collaboratorDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         CollaboratorToolService(api)
     }

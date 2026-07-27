@@ -20,7 +20,7 @@ class ExtensionBase : BurpExtension {
         val config = McpConfig(extensionStorage, api.logging())
         val auditLog = PersistentMcpAuditLog(extensionStorage, config, api.logging())
         val edtWatchdog = EdtWatchdog()
-        val serverManager = KtorServerManager(api, auditLog)
+        val serverManager = KtorServerManager(api, auditLog, extensionStorage = extensionStorage)
 
         val proxyJarManager = ProxyJarManager(api.logging())
         val proxyVerified = runCatching { proxyJarManager.getProxyJar() }
