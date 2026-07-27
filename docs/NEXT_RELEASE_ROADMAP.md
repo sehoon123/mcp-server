@@ -300,7 +300,8 @@ Clients must reconnect and rediscover capabilities after upgrading.
 ## v4.10.0 — Scale and Demand-driven Client UX
 
 No additional tool family is planned by default. Candidate work is selected from measured operator demand after v4.9.
-Development uses the non-release identity `4.10.0-dev.1` and remains isolated from the immutable v4.9 release candidates.
+Development began under the non-release identity `4.10.0-dev.1`; the first release candidate uses `4.10.0-rc.1`
+and remains isolated from the immutable v4.9 release candidates.
 The first implementation slice removes the
 redundant full WebSocket history copy for random-access source lists while retaining a safe sequential-list fallback,
 adds 64-record interruption checkpoints to bounded context-menu fallback scans, and commits a clean-tree Java 21
