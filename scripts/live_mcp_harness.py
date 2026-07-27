@@ -27,6 +27,15 @@ class HarnessError(RuntimeError):
     """A bounded error safe to put in local diagnostic output."""
 
 
+def bounded_system_failure(error: BaseException) -> str:
+    """Classify dependency failures without serializing paths, endpoints, or payloads."""
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return "live diagnostic operation timed out"
+    if isinstance(error, subprocess.SubprocessError):
+        return "live diagnostic subprocess failed"
+    return "live diagnostic system operation failed"
+
+
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, file_pointer, code, message, headers, new_url):
         return None
@@ -88,6 +97,19 @@ def enforce_rss_limit(pid: int | None, max_rss_kib: int) -> int | None:
     return rss
 
 
+def bounded_rss_snapshot(pid: int | None, max_rss_kib: int) -> tuple[int | None, str | None]:
+    """Observe final RSS without allowing a secondary dependency failure to suppress a report."""
+    try:
+        rss = current_rss_kib(pid)
+    except HarnessError as error:
+        return None, str(error)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, bounded_system_failure(error)
+    if rss is not None and rss > max_rss_kib:
+        return rss, "Burp process RSS exceeded the configured safety limit"
+    return rss, None
+
+
 class McpClient:
     def __init__(self, endpoint: str, token: str, protocol: str = "2025-11-25") -> None:
         self.endpoint = validate_loopback_endpoint(endpoint)
@@ -121,7 +143,11 @@ class McpClient:
         try:
             with self._opener.open(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
-                return response.status, dict(response.headers.items()), json.loads(raw) if raw.strip() else None
+                try:
+                    parsed = json.loads(raw) if raw.strip() else None
+                except json.JSONDecodeError:
+                    parsed = None
+                return response.status, dict(response.headers.items()), parsed
         except urllib.error.HTTPError as error:
             try:
                 raw = error.read().decode("utf-8", errors="replace")

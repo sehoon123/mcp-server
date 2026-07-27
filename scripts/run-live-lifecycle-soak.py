@@ -15,6 +15,8 @@ from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
     SUPPORTED_PROTOCOLS,
+    bounded_rss_snapshot,
+    bounded_system_failure,
     call_tool,
     current_rss_kib,
     enforce_rss_limit,
@@ -138,6 +140,7 @@ def main() -> int:
             protocol = SUPPORTED_PROTOCOLS[cycle % len(SUPPORTED_PROTOCOLS)]
             client = McpClient(args.endpoint, token, protocol)
             delete_status: int | None = None
+            delete_failure: str | None = None
             try:
                 initialized = client.initialize()
                 report["successfulInitializations"] += 1
@@ -176,11 +179,17 @@ def main() -> int:
                     raise HarnessError("event stream or approval state accumulated during soak")
             finally:
                 session_was_created = client.session_id is not None
-                delete_status = client.close()
+                try:
+                    delete_status = client.close()
+                except (HarnessError, OSError, subprocess.SubprocessError) as error:
+                    delete_failure = bounded_system_failure(error)
+                    report["sessionCleanupFailure"] = delete_failure
                 if session_was_created:
                     report["sessionsCreated"] += 1
                 if delete_status in {200, 202}:
                     report["sessionDeletesAccepted"] += 1
+            if delete_failure is not None:
+                raise HarnessError("MCP session cleanup failed during soak")
             if delete_status not in {200, 202}:
                 raise HarnessError("session DELETE failed during soak")
 
@@ -200,14 +209,16 @@ def main() -> int:
         report["status"] = "passed"
     except HarnessError as error:
         report["failure"] = str(error)
+    except (OSError, subprocess.SubprocessError) as error:
+        report["failure"] = bounded_system_failure(error)
     finally:
         report["actualDurationSeconds"] = round(args.duration_seconds - max(deadline - time.monotonic(), 0), 3)
-        try:
-            report["rssEndKiB"] = enforce_rss_limit(args.burp_pid, max_rss_kib)
-        except HarnessError as error:
-            report["rssEndKiB"] = current_rss_kib(args.burp_pid)
+        final_rss, rss_failure = bounded_rss_snapshot(args.burp_pid, max_rss_kib)
+        report["rssEndKiB"] = final_rss
+        if rss_failure is not None:
             report["status"] = "failed"
-            report["failure"] = str(error)
+            report["rssObservationFailure"] = rss_failure
+            report.setdefault("failure", rss_failure)
         report["allCreatedSessionsDeleted"] = (
             report["sessionsCreated"] == report["sessionDeletesAccepted"]
         )

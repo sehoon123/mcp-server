@@ -16,9 +16,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
+    bounded_rss_snapshot,
     bounded_search_summary,
+    bounded_system_failure,
     call_tool,
-    current_rss_kib,
     enforce_rss_limit,
     read_private_token,
     read_project_id,
@@ -222,15 +223,23 @@ def main() -> int:
     except HarnessError as error:
         failure = str(error)
         report["failure"] = failure
+    except (OSError, subprocess.SubprocessError) as error:
+        failure = bounded_system_failure(error)
+        report["failure"] = failure
     finally:
-        delete_status = client.close()
-        report["sessionDeleteHttpStatus"] = delete_status
         try:
-            report["finalRssKiB"] = enforce_rss_limit(args.burp_pid, max_rss_kib)
-        except HarnessError as error:
-            report["finalRssKiB"] = current_rss_kib(args.burp_pid)
+            delete_status = client.close()
+        except (HarnessError, OSError, subprocess.SubprocessError) as error:
             report["status"] = "failed"
-            report["failure"] = str(error)
+            report["sessionCleanupFailure"] = bounded_system_failure(error)
+            report.setdefault("failure", "MCP session cleanup failed")
+        report["sessionDeleteHttpStatus"] = delete_status
+        final_rss, rss_failure = bounded_rss_snapshot(args.burp_pid, max_rss_kib)
+        report["finalRssKiB"] = final_rss
+        if rss_failure is not None:
+            report["status"] = "failed"
+            report["rssObservationFailure"] = rss_failure
+            report.setdefault("failure", rss_failure)
         if delete_status not in {200, 202, None} and report["status"] == "passed":
             report["status"] = "failed"
             report["failure"] = "MCP session cleanup failed"

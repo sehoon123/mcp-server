@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
@@ -150,6 +151,40 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             harness.websocket_search_count({"returned": True}, "returned")
         with self.assertRaises(harness.HarnessError):
             harness.websocket_search_flag({"hasMore": 1}, "hasMore")
+
+    def test_system_failures_are_classified_without_exception_details(self):
+        self.assertEqual(
+            "live diagnostic operation timed out",
+            harness.bounded_system_failure(TimeoutError("private endpoint and path")),
+        )
+        self.assertEqual(
+            "live diagnostic operation timed out",
+            harness.bounded_system_failure(subprocess.TimeoutExpired(["private-command"], 1)),
+        )
+        self.assertEqual(
+            "live diagnostic subprocess failed",
+            harness.bounded_system_failure(subprocess.CalledProcessError(1, ["private-command"])),
+        )
+        self.assertEqual(
+            "live diagnostic system operation failed",
+            harness.bounded_system_failure(OSError("private filesystem path")),
+        )
+
+    def test_final_rss_snapshot_is_bounded_after_timeout_and_limit_failure(self):
+        with mock.patch.object(
+            harness,
+            "current_rss_kib",
+            side_effect=subprocess.TimeoutExpired(["private-command"], 1),
+        ):
+            self.assertEqual(
+                (None, "live diagnostic operation timed out"),
+                harness.bounded_rss_snapshot(123, 1024),
+            )
+        with mock.patch.object(harness, "current_rss_kib", return_value=2048):
+            self.assertEqual(
+                (2048, "Burp process RSS exceeded the configured safety limit"),
+                harness.bounded_rss_snapshot(123, 1024),
+            )
 
     def test_fixture_connection_failure_closes_its_listener_thread(self):
         def unused_port():

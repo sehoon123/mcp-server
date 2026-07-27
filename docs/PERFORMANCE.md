@@ -310,7 +310,14 @@ project flag, loopback MCP/proxy endpoints, fixed catalog counts, and a non-exis
 allowlist aggregate fields and fail before writing if the bearer, current project identifier, marker, home path, or
 credential-bearing header text reaches the serialized evidence.
 
-After manually loading and verifying the exact JAR in a fresh temporary project, the staged WebSocket run is invoked as:
+After manually loading and verifying the exact JAR in a fresh temporary project, copy the current bearer token after
+that load or any extension restart; a token retained from an earlier extension lifecycle must not be reused. Explicitly
+approve WebSocket-history access for the diagnostic session, or temporarily enable the corresponding `Always allow`
+setting and restore it immediately afterward. The runners never click or dismiss Burp permission dialogs. An unresolved
+permission prompt can outlive the client timeout; dependency and timeout failures are recorded only as bounded categories,
+without exception messages, paths, endpoints, or payloads.
+
+The staged WebSocket run is invoked as:
 
 ```bash
 scripts/run-live-websocket-scale.py \
