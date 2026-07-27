@@ -74,6 +74,7 @@ class McpServerIntegrationTest {
 
     init {
         every { persistedObject.getBoolean(any()) } returns true
+        every { persistedObject.getBoolean("approvalYoloMode") } returns false
         every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns false
         every { persistedObject.getBoolean("_alwaysAllowHttpHistory") } returns false
         every { persistedObject.getBoolean("_alwaysAllowSiteMap") } returns false

@@ -79,6 +79,10 @@ object HttpRequestSecurity {
             recordCurrentToolApproval("http_request", "target_reject")
             return false
         }
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval("http_request", "yolo_allow")
+            return true
+        }
         if (!config.requireHttpRequestApproval) {
             recordCurrentToolApproval("http_request", "policy_allow")
             return true
@@ -109,6 +113,10 @@ object HttpRequestSecurity {
         if (!isValidRequestedTarget(hostname, port)) {
             recordCurrentToolApproval("http_request", "target_reject")
             return false
+        }
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval("http_request", "yolo_allow")
+            return true
         }
         if (!config.requireHttpRequestApproval) {
             recordCurrentToolApproval("http_request", "policy_allow")

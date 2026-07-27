@@ -49,6 +49,7 @@ class McpProfessionalResourcesIntegrationTest {
 
     init {
         every { storage.getBoolean(any()) } returns true
+        every { storage.getBoolean("approvalYoloMode") } returns false
         every { storage.getBoolean("emergencyReadOnlyMode") } returns false
         every { storage.getString(any()) } returns "127.0.0.1"
         every { storage.getString("localBearerToken") } returns token

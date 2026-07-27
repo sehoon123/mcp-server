@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -100,6 +101,7 @@ class McpAuditLogTest {
                     action = "change project configuration",
                     summary = "secret summary",
                     api = api,
+                    config = fixture.config,
                     auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
                 )
             }
@@ -201,6 +203,47 @@ class McpAuditLogTest {
         assertTrue(fixture.log.size() in 1 until MAX_AUDIT_RETENTION_ENTRIES)
         assertEquals("bounded_event_999", fixture.log.snapshot().last().tool)
         fixture.log.close()
+    }
+
+    @Test
+    fun `YOLO approval bypass is recorded without invoking a prompt`() = runBlocking {
+        val fixture = auditFixture()
+        fixture.config.approvalYoloMode = true
+        val api = mockk<MontoyaApi>()
+        val handler = mockk<SensitiveActionApprovalHandler>()
+        val originalHandler = SensitiveActionSecurity.approvalHandler
+        SensitiveActionSecurity.approvalHandler = handler
+        try {
+            val invocation = newToolAuditInvocation(
+                sink = fixture.log,
+                sessionId = "yolo-session",
+                tool = "set_burp_control_state",
+                readOnly = false,
+                argumentKeys = listOf("control", "enabled"),
+                clock = fixedClock,
+            )
+            withContext(invocation) {
+                assertTrue(
+                    SensitiveActionSecurity.checkPermission(
+                        action = "change Proxy Intercept state",
+                        summary = "Set Proxy Intercept to disabled",
+                        api = api,
+                        config = fixture.config,
+                        auditOperation = SensitiveActionAuditOperation.PROXY_INTERCEPT,
+                    )
+                )
+            }
+            invocation.complete("completed")
+            fixture.log.flush()
+
+            assertEquals(
+                McpAuditApproval("sensitive_action:proxy_intercept", "yolo_allow"),
+                fixture.log.snapshot().single().approvals.single(),
+            )
+            coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
+        } finally {
+            SensitiveActionSecurity.approvalHandler = originalHandler
+        }
     }
 
     @Test

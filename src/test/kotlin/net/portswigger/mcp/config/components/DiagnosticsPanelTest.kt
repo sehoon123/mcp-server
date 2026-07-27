@@ -54,6 +54,7 @@ class DiagnosticsPanelTest {
                 initializedWithoutProtocolHeader = 5,
             ),
             readOnlyMode = true,
+            yoloMode = true,
             auditEnabled = true,
             auditEntries = 12,
             auditRetention = 250,
@@ -92,6 +93,7 @@ class DiagnosticsPanelTest {
         assertTrue(text.contains("Session cleanup: DELETE=8, pressure-evictions=9, idle-evictions=1"))
         assertTrue(text.contains("auth=4"))
         assertTrue(text.contains("Emergency read-only: enabled"))
+        assertTrue(text.contains("YOLO approval bypass: enabled"))
         assertTrue(text.contains("12/250 retained"))
         assertTrue(text.contains("f46c402adc54ee45aff9a0ffea371708d2b6b004"))
         assertFalse(text.contains("secret-token"))

@@ -37,6 +37,7 @@ class McpToolPolicyTest {
     @Test
     fun `emergency read-only mode allows annotated reads and blocks mutation before execution`() = runBlocking {
         val config = configFixture()
+        config.approvalYoloMode = true
         config.emergencyReadOnlyMode = true
         val audit = RecordingAuditSink()
         val server = Server(

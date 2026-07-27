@@ -100,6 +100,10 @@ object RequestActionSecurity {
         auditOperation: RequestRoutingAuditOperation? = null,
     ): Boolean {
         val auditKind = auditOperation?.auditKind ?: "request_routing"
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval(auditKind, "yolo_allow")
+            return true
+        }
         if (!config.requireRequestActionApproval) {
             recordCurrentToolApproval(auditKind, "policy_allow")
             return true

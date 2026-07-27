@@ -170,7 +170,7 @@ internal class DiagnosticsPanel(
                 val choice = JOptionPane.showConfirmDialog(
                     this@DiagnosticsPanel,
                     "Restore all MCP approval policies to prompt-by-default? " +
-                        "This clears saved HTTP targets and all persistent approval bypasses.",
+                        "This disables YOLO mode and clears saved HTTP targets and all persistent approval bypasses.",
                     "Reset persistent MCP approvals",
                     JOptionPane.OK_CANCEL_OPTION,
                     JOptionPane.WARNING_MESSAGE,
@@ -228,6 +228,7 @@ internal class DiagnosticsPanel(
             formatMcpDiagnostics(
                 diagnostics = diagnosticsProvider(),
                 readOnlyMode = config.emergencyReadOnlyMode,
+                yoloMode = config.approvalYoloMode,
                 auditEnabled = config.auditLoggingEnabled,
                 auditEntries = auditLog.size(),
                 auditRetention = config.auditRetentionEntries.coerceIn(
@@ -258,6 +259,7 @@ internal class DiagnosticsPanel(
 internal fun formatMcpDiagnostics(
     diagnostics: McpDiagnosticsSnapshot,
     readOnlyMode: Boolean,
+    yoloMode: Boolean = false,
     auditEnabled: Boolean,
     auditEntries: Int,
     auditRetention: Int = DEFAULT_AUDIT_RETENTION_ENTRIES,
@@ -318,6 +320,7 @@ internal fun formatMcpDiagnostics(
             "session-capacity=${diagnostics.sessionCapacityRejections}"
     )
     appendLine("Emergency read-only: ${if (readOnlyMode) "enabled" else "disabled"}")
+    appendLine("YOLO approval bypass: ${if (yoloMode) "enabled" else "disabled"}")
     appendLine(
         "Redacted audit: ${if (auditEnabled) "enabled" else "disabled"}, $auditEntries/$auditRetention retained, max age 30 days"
     )

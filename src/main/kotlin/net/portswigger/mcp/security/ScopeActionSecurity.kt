@@ -103,6 +103,10 @@ internal object ScopeActionSecurity {
         require(reviewContent.length <= MAX_SCOPE_ACTION_REVIEW_CHARS && reviewContent.none { it == '\u0000' }) {
             "scope action review content is invalid"
         }
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval(operation.auditKind, "yolo_allow")
+            return true
+        }
         if (!config.requireScopeChangeApproval) {
             recordCurrentToolApproval(operation.auditKind, "policy_allow")
             return true

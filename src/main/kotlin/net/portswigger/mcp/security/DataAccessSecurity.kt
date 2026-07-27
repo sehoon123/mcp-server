@@ -84,6 +84,10 @@ object DataAccessSecurity {
     suspend fun checkDataAccessPermission(
         accessType: DataAccessType, config: McpConfig
     ): Boolean {
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "yolo_allow")
+            return true
+        }
         if (!config.requireDataAccessApproval) {
             recordCurrentToolApproval("data_access:${accessType.name.lowercase()}", "policy_allow")
             return true

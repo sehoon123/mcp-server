@@ -285,7 +285,7 @@ class ToolsKtTest {
         assertTrue(description("list_workflow_presets").contains("stored workflow preset definitions"))
         assertTrue(description("execute_workflow_preset").contains("runtime limit overrides the saved defaultLimit"))
         assertTrue(description("route_http_message_from_id").contains("sends no network traffic"))
-        assertTrue(description("set_burp_control_state").contains("after explicit approval"))
+        assertTrue(description("set_burp_control_state").contains("unless the local operator enabled YOLO mode"))
         assertTrue(description("get_active_editor_contents").contains("with an explanatory error"))
         assertTrue(description("set_active_editor_contents").contains("status=not_editable"))
 

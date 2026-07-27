@@ -120,6 +120,7 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             "--candidate-jar", "missing-jar",
             "--expected-jar-sha256", "0" * 64,
             "--expected-source-commit", "0" * 40,
+            "--expected-server-version", "4.10.0-dev.1",
             "--expected-tools", "31",
             "--expected-prompts", "5",
         ]

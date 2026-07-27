@@ -17,6 +17,7 @@ internal const val DEFAULT_AUDIT_RETENTION_ENTRIES = 250
 private const val TARGET_SEPARATOR = "\n"
 private const val LOCAL_BEARER_TOKEN_KEY = "localBearerToken"
 private const val AUDIT_RETENTION_ENTRIES_KEY = "auditRetentionEntries"
+private const val APPROVAL_YOLO_MODE_KEY = "approvalYoloMode"
 private val LOCAL_BEARER_TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43,128}")
 
 class McpConfig(private val storage: PersistedObject, private val logging: Logging) {
@@ -26,6 +27,22 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
     var host by storage.string("127.0.0.1")
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(true)
+
+    @Volatile
+    private var cachedApprovalYoloMode = runCatching {
+        storage.getBoolean(APPROVAL_YOLO_MODE_KEY)
+    }.getOrNull() ?: false
+
+    /** Local operator override that bypasses approval prompts while retaining validation and execution safeguards. */
+    var approvalYoloMode: Boolean
+        get() = cachedApprovalYoloMode
+        @Synchronized
+        set(value) {
+            if (cachedApprovalYoloMode == value) return
+            storage.setBoolean(APPROVAL_YOLO_MODE_KEY, value)
+            cachedApprovalYoloMode = value
+        }
+
     var requireRequestActionApproval: Boolean
         get() = storage.getBoolean("requireRequestActionApproval") ?: true
         set(value) {
@@ -210,6 +227,7 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
 
     /** Restores every persisted approval bypass to the secure prompt-by-default state. */
     fun resetPersistentApprovals() {
+        approvalYoloMode = false
         requireHttpRequestApproval = true
         clearAutoApproveTargets()
         requireRequestActionApproval = true

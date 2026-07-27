@@ -2,6 +2,7 @@ package net.portswigger.mcp.security
 
 import burp.api.montoya.MontoyaApi
 import net.portswigger.mcp.config.Dialogs
+import net.portswigger.mcp.config.McpConfig
 
 private const val MAX_SENSITIVE_ACTION_LABEL_CHARS = 128
 private const val MAX_SENSITIVE_ACTION_SUMMARY_CHARS = 4_096
@@ -30,7 +31,7 @@ class SwingSensitiveActionApprovalHandler : SensitiveActionApprovalHandler {
             appendLine()
             appendLine(summary)
             appendLine()
-            append("This operation always requires explicit approval and is not covered by request-routing Always Allow.")
+            append("This sensitive operation requires explicit approval unless the local operator has enabled YOLO mode.")
         }
         return SwingApprovalGate.showOption {
             Dialogs.showOptionDialog(
@@ -63,6 +64,7 @@ object SensitiveActionSecurity {
         reviewContent: String? = null,
         renderContentAsHttp: Boolean = false,
         api: MontoyaApi,
+        config: McpConfig,
         auditOperation: SensitiveActionAuditOperation? = null,
     ): Boolean {
         require(action.length in 1..MAX_SENSITIVE_ACTION_LABEL_CHARS && action.none(Char::isISOControl)) {
@@ -74,8 +76,12 @@ object SensitiveActionSecurity {
         require((reviewContent?.length ?: 0) <= MAX_SENSITIVE_ACTION_CONTENT_CHARS) {
             "sensitive action review content is too large"
         }
-        val approved = approvalHandler.requestApproval(action, summary, reviewContent, renderContentAsHttp, api)
         val auditKind = auditOperation?.auditKind ?: "sensitive_action"
+        if (config.approvalYoloMode) {
+            recordCurrentToolApproval(auditKind, "yolo_allow")
+            return true
+        }
+        val approved = approvalHandler.requestApproval(action, summary, reviewContent, renderContentAsHttp, api)
         recordCurrentToolApproval(auditKind, if (approved) "user_allow" else "user_deny")
         return approved
     }

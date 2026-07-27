@@ -103,6 +103,7 @@ def main() -> int:
     parser.add_argument("--candidate-jar", required=True, type=pathlib.Path)
     parser.add_argument("--expected-jar-sha256", required=True)
     parser.add_argument("--expected-source-commit", required=True)
+    parser.add_argument("--expected-server-version", required=True)
     parser.add_argument("--endpoint", default="http://127.0.0.1:9876/mcp")
     parser.add_argument("--proxy-port", type=int, default=8080)
     parser.add_argument("--target-port", type=int, default=18765)
@@ -138,6 +139,7 @@ def main() -> int:
         "sourceCommit": source_commit,
         "candidateJarSha256": actual_jar_sha256,
         "candidateJarName": args.candidate_jar.name,
+        "expectedServerVersion": args.expected_server_version,
         "protocol": "2025-11-25",
         "stages": [],
         "latencyClaimMade": False,
@@ -152,7 +154,10 @@ def main() -> int:
     try:
         initialized = client.initialize()
         server_info = ((initialized.get("result") or {}).get("serverInfo") or {})
-        if server_info.get("name") != "independent-mcp-bridge" or server_info.get("version") != "4.10.0-dev.1":
+        if (
+            server_info.get("name") != "independent-mcp-bridge"
+            or server_info.get("version") != args.expected_server_version
+        ):
             raise HarnessError("unexpected MCP server identity")
         project_id = read_project_id(client)
 

@@ -7,6 +7,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.Dialogs
+import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import javax.swing.SwingUtilities
@@ -50,9 +51,16 @@ class SensitiveActionSecurityTest {
         val handler = mockk<SensitiveActionApprovalHandler>()
         SensitiveActionSecurity.approvalHandler = handler
         val api = mockk<MontoyaApi>()
+        val config = McpConfig(mockk(relaxed = true), mockk(relaxed = true))
 
         assertFailsWith<IllegalArgumentException> {
-            SensitiveActionSecurity.checkPermission("x", "summary", "a".repeat(2 * 1024 * 1024 + 1), api = api)
+            SensitiveActionSecurity.checkPermission(
+                "x",
+                "summary",
+                "a".repeat(2 * 1024 * 1024 + 1),
+                api = api,
+                config = config,
+            )
         }
         coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
     }

@@ -244,6 +244,12 @@ Approval categories are orthogonal. A request-routing session grant must not rep
 access must not imply mutation permission. Validate and render the exact normalized action before prompting, then recheck
 project and mutable state after the user returns from the dialog.
 
+The local **YOLO mode** is the one deliberate master override: after a Burp operator confirms it in the extension UI,
+every approval gate records `yolo_allow` and skips its prompt. It must remain off by default, persist-before-publish,
+fail closed when enabling cannot be stored, and preserve the granular policies that resume when the operator disables it.
+It does not bypass authentication, input and target validation, project checks, operation bounds, emergency read-only
+mode, execution-state truth, or separately disabled tool families. An MCP tool or client must never enable this mode.
+
 Session grants retain only fixed categories. Never add request bodies, URLs, target values, project IDs, or client data
 to session approval state.
 

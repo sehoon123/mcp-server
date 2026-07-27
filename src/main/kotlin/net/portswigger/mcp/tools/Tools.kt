@@ -447,7 +447,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetBurpOptions, GetBurpOptionsResult>(
-        description = "Return bounded project- or user-level Burp configuration after explicit approval. Credentials are filtered by default; if the operator disables credential filtering, the returned JSON may contain sensitive values. This changes no Burp state.",
+        description = "Return bounded project- or user-level Burp configuration after approval unless the local operator enabled YOLO mode. Credentials are filtered by default; if the operator disables credential filtering, the returned JSON may contain sensitive values. This changes no Burp state.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage =
@@ -479,12 +479,14 @@ internal fun Server.registerTools(
                     "read project configuration",
                     "Export project-level Burp configuration to the MCP client",
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_READ,
                 )
                 BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
                     "read user configuration",
                     "Export user-level Burp configuration to the MCP client",
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_READ,
                 )
             }
@@ -685,7 +687,7 @@ internal fun Server.registerTools(
         "User has disabled configuration editing. They can enable it in Burp's ${ProductIdentity.SUITE_TAB_NAME} tab by selecting 'Enable tools that can edit your config'"
 
     mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
-        description = "Import bounded project- or user-level Burp configuration when configuration-editing tools are enabled. Explicit approval is always required. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
+        description = "Import bounded project- or user-level Burp configuration when configuration-editing tools are enabled. Approval is required unless the local operator enabled YOLO mode. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         if (input.json.length > MAX_CONFIGURATION_JSON_CHARS) {
@@ -745,6 +747,7 @@ internal fun Server.registerTools(
                     "Merge supplied JSON into Burp project configuration",
                     input.json,
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
                 )
                 BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
@@ -752,6 +755,7 @@ internal fun Server.registerTools(
                     "Merge supplied JSON into Burp user configuration",
                     input.json,
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_WRITE,
                 )
             }
@@ -953,7 +957,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
-            description = "Start one passive or focused active Scanner audit from stored HTTP references after explicit approval. Both modes reject out-of-scope requests. Passive mode requires responses and sends no target traffic; active mode requires insertionPoints and can send requests. Passive mode accepts up to 16 targets and active mode up to 4. If actionState is uncertain, do not start another audit automatically.",
+            description = "Start one passive or focused active Scanner audit from stored HTTP references after approval unless the local operator enabled YOLO mode. Both modes reject out-of-scope requests. Passive mode requires responses and sends no target traffic; active mode requires insertionPoints and can send requests. Passive mode accepts up to 16 targets and active mode up to 4. If actionState is uncertain, do not start another audit automatically.",
             annotations = SCANNER_START_TOOL_ANNOTATIONS,
         ) {
             services.scannerAudits.start(this, config)
@@ -967,10 +971,10 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredTool<CancelScannerAudit, ScannerAuditResult>(
-            description = "Cancel a retained Scanner audit started by this MCP server after approval. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
+            description = "Cancel a retained Scanner audit started by this MCP server after approval unless the local operator enabled YOLO mode. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
             annotations = SCANNER_CANCEL_TOOL_ANNOTATIONS,
         ) {
-            services.scannerAudits.cancel(this)
+            services.scannerAudits.cancel(this, config)
         }
 
         mcpStructuredToolWithContext<GenerateCollaboratorPayload, GenerateCollaboratorPayloadResult>(
@@ -1121,7 +1125,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(
-        description = "Change exactly one Burp global control—the task execution engine or Proxy Intercept state—after explicit approval. If executionState is uncertain, the change may have occurred; do not retry automatically.",
+        description = "Change exactly one Burp global control—the task execution engine or Proxy Intercept state—after approval unless the local operator enabled YOLO mode. If executionState is uncertain, the change may have occurred; do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage = when (input.control) {
@@ -1134,12 +1138,14 @@ internal fun Server.registerTools(
                     "change task execution engine state",
                     "Set Burp task execution engine to ${if (input.enabled) "running" else "paused"}",
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.TASK_EXECUTION_ENGINE,
                 )
                 BurpControl.PROXY_INTERCEPT -> SensitiveActionSecurity.checkPermission(
                     "change Proxy Intercept state",
                     "Set Burp Proxy Intercept to ${if (input.enabled) "enabled" else "disabled"}",
                     api = api,
+                    config = config,
                     auditOperation = SensitiveActionAuditOperation.PROXY_INTERCEPT,
                 )
             }
@@ -1242,7 +1248,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetActiveEditorContents, GetActiveEditorContentsResult>(
-        description = "Read a bounded preview from the Burp text area that currently has keyboard focus, not from a fixed tool or selected tab. Requires approval. Returns status=not_available with an explanatory error when no editor is focused.",
+        description = "Read a bounded preview from the Burp text area that currently has keyboard focus, not from a fixed tool or selected tab. Approval is required unless the local operator enabled YOLO mode. Returns status=not_available with an explanatory error when no editor is focused.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { _ ->
         val deniedMessage = "Active editor access denied by Burp Suite"
@@ -1267,6 +1273,7 @@ internal fun Server.registerTools(
                 "read active editor contents",
                 "Return up to $MAX_EDITOR_PREVIEW_CHARS characters from the active message editor",
                 api = api,
+                config = config,
             )
         } catch (e: CancellationException) {
             throw e
@@ -1396,7 +1403,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SetActiveEditorContents, SetActiveEditorContentsResult>(
-        description = "Replace all text in the Burp text area that currently has keyboard focus. Requires approval. Returns status=not_available if no editor is focused, or status=not_editable if the focused editor is read-only. If executionState is uncertain, the edit may have occurred; do not retry automatically.",
+        description = "Replace all text in the Burp text area that currently has keyboard focus. Approval is required unless the local operator enabled YOLO mode. Returns status=not_available if no editor is focused, or status=not_editable if the focused editor is read-only. If executionState is uncertain, the edit may have occurred; do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         if (input.text.length > MAX_EDITOR_CONTENT_CHARS) {
@@ -1499,6 +1506,7 @@ internal fun Server.registerTools(
                 "Replace editable message text with ${input.text.length} characters",
                 input.text,
                 api = api,
+                config = config,
             )
         } catch (e: CancellationException) {
             throw e

@@ -288,9 +288,10 @@ Open the **MCP Bridge** tab in Burp:
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
+- **Enable YOLO mode...** is a local, persistent master override for every MCP approval prompt, including sensitive configuration, Scanner, editor, and Burp global-control actions. Enabling it requires one warning confirmation. It preserves the granular policies shown below it and resumes them when disabled. An authenticated client can read sensitive data, send traffic, and mutate Burp state without another prompt while the mode is active. Authentication, input validation, project binding, operation bounds, execution-state handling, and Emergency read-only mode remain active.
 - `Always allow all outbound HTTP requests` is off by default. Enable it only when every destination may permanently bypass per-target **Allow Once / Allow All for This Session / Always Allow Host / Always Allow Host:Port / Deny** review; target syntax validation and all other tool safeguards remain active.
-- Request-routing/derived-request and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. The request-action session grant never replaces independent outbound-target approval. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations still require explicit **Allow Once / Deny** approval.
-- Use **Reset active session approvals** to revoke future use of all memory-only grants without cancelling already-started operations. Use **Reset all persistent approvals...** to restore every saved HTTP, routing, Scope, and project-data approval bypass to prompt-by-default.
+- Request-routing/derived-request and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. The request-action session grant never replaces independent outbound-target approval. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations require explicit **Allow Once / Deny** approval unless YOLO mode is active.
+- Use **Reset active session approvals** to revoke future use of all memory-only grants without cancelling already-started operations. Use **Reset all persistent approvals...** to disable YOLO mode and restore every saved HTTP, routing, Scope, and project-data approval bypass to prompt-by-default.
 - Enable configuration-editing tools only when they are required.
 - Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
 - Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
@@ -301,7 +302,7 @@ support a remote listener; do not weaken the bind or use an unauthenticated forw
 ### Diagnostics, audit, and emergency read-only mode
 
 The diagnostics view reports only operational metadata: listener state and endpoint, the production protocol target,
-active/peak HTTP calls, pending/active sessions, aggregate value-free session-approval counts,
+active/peak HTTP calls, pending/active sessions, aggregate value-free session-approval counts, YOLO-mode status,
 event-stream opens/closes/reopens, liveness ping outcomes, heartbeat failures, explicit session termination,
 pressure/idle evictions, request and rejection counters, last activity, a safe last-error summary, and the embedded proxy
 version/commit/SHA-256 verification state. Counters reset when the listener starts and
@@ -485,8 +486,8 @@ Burp Professional additionally exposes:
 
 These tools do not crawl. Every target must already be in Burp Target scope. Passive mode accepts only messages with a
 response and sends no target traffic. Active mode accepts at most four targets and requires explicit semantic insertion
-points for every target; no implicit whole-request audit is permitted. Starting and cancelling always require explicit
-Burp approval. Task IDs are random, project-bound, retained only by this extension instance, and status/cancellation
+points for every target; no implicit whole-request audit is permitted. Starting and cancelling require explicit Burp
+approval unless the local operator enabled YOLO mode. Task IDs are random, project-bound, retained only by this extension instance, and status/cancellation
 cannot address unrelated Burp tasks. Some Burp runtimes do not expose issue objects while an audit is live; in that
 case status and counters still return `status: "ok"` with `issuesUnavailable: true` and a bounded warning. If start or
 cancellation returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID and Burp

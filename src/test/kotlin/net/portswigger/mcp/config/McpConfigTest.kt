@@ -145,6 +145,7 @@ class McpConfigTest {
 
     @Test
     fun `resetPersistentApprovals restores every approval policy to prompt by default`() {
+        config.approvalYoloMode = true
         config.requireHttpRequestApproval = false
         config.addAutoApproveTarget("example.com")
         config.requireRequestActionApproval = false
@@ -159,6 +160,7 @@ class McpConfigTest {
 
         config.resetPersistentApprovals()
 
+        assertFalse(config.approvalYoloMode)
         assertTrue(config.requireHttpRequestApproval)
         assertTrue(config.getAutoApproveTargetsList().isEmpty())
         assertTrue(config.requireRequestActionApproval)
@@ -170,6 +172,42 @@ class McpConfigTest {
         assertFalse(config.alwaysAllowOrganizer)
         assertFalse(config.alwaysAllowScannerIssues)
         assertFalse(config.alwaysAllowCollaboratorInteractions)
+    }
+
+    @Test
+    fun `YOLO mode reloads only an explicitly persisted enabled value`() {
+        val persisted = mockk<PersistedObject>(relaxed = true)
+        every { persisted.getBoolean("approvalYoloMode") } returns true
+        every { persisted.getString(any()) } returns ""
+
+        val reloaded = McpConfig(persisted, mockLogging)
+
+        assertTrue(reloaded.approvalYoloMode)
+    }
+
+    @Test
+    fun `YOLO mode starts disabled when persisted state cannot be read`() {
+        val persisted = mockk<PersistedObject>(relaxed = true)
+        every { persisted.getBoolean("approvalYoloMode") } throws IllegalStateException("storage unavailable")
+        every { persisted.getString(any()) } returns ""
+
+        val reloaded = McpConfig(persisted, mockLogging)
+
+        assertFalse(reloaded.approvalYoloMode)
+    }
+
+    @Test
+    fun `failed YOLO enable persistence leaves runtime approval bypass disabled`() {
+        val persisted = mockk<PersistedObject>(relaxed = true)
+        every { persisted.getBoolean("approvalYoloMode") } returns false
+        every { persisted.getString(any()) } returns ""
+        every { persisted.setBoolean("approvalYoloMode", true) } throws IllegalStateException("storage unavailable")
+        val failClosed = McpConfig(persisted, mockLogging)
+
+        assertThrows(IllegalStateException::class.java) {
+            failClosed.approvalYoloMode = true
+        }
+        assertFalse(failClosed.approvalYoloMode)
     }
 
     @Test

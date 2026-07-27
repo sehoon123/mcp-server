@@ -177,7 +177,7 @@ class ScannerAuditToolsTest {
         assertEquals(0, current.errorCount)
         assertEquals(0, current.discoveredIssueCount)
 
-        val cancelled = service.cancel(CancelScannerAudit("project-123", started.taskId!!))
+        val cancelled = service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         assertEquals(ScannerAuditToolStatus.OK, cancelled.status)
         assertEquals(ScannerAuditTaskState.CANCELLED, cancelled.taskState)
         assertNotNull(cancelled.cancelledAt)
@@ -226,6 +226,31 @@ class ScannerAuditToolsTest {
 
         assertEquals(ScannerAuditToolStatus.PROJECT_MISMATCH, result.status)
         assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+        verify(exactly = 0) { scanner.startAudit(any()) }
+    }
+
+    @Test
+    fun `YOLO Scanner start still rejects a project transition after scope validation`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        var scopeCompleted = false
+        var projectReadsAfterScope = 0
+        every { project.id() } answers {
+            if (!scopeCompleted || projectReadsAfterScope++ == 0) "project-123" else "replacement-project"
+        }
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } answers {
+            scopeCompleted = true
+            true
+        }
+        config.approvalYoloMode = true
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = approval
+
+        val result = service.start(passiveInput(1), config)
+
+        assertEquals(ScannerAuditToolStatus.PROJECT_MISMATCH, result.status)
+        assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+        coVerify(exactly = 0) { approval.requestApproval(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { scanner.startAudit(any()) }
     }
 
@@ -352,7 +377,7 @@ class ScannerAuditToolsTest {
         assertEquals(ScannerAuditTaskState.UNKNOWN, result.taskState)
         assertNotNull(result.taskId)
         assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
-        val cancelled = service.cancel(CancelScannerAudit("project-123", result.taskId!!))
+        val cancelled = service.cancel(CancelScannerAudit("project-123", result.taskId!!), config)
         assertEquals(ScannerAuditToolStatus.OK, cancelled.status)
         verify(exactly = 1) { audit.addRequestResponse(any()) }
         verify(exactly = 1) { audit.delete() }
@@ -410,7 +435,7 @@ class ScannerAuditToolsTest {
         assertEquals(ScannerAuditTaskState.UNKNOWN, result.taskState)
         assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
 
-        val cancelled = service.cancel(CancelScannerAudit("project-123", result.taskId!!))
+        val cancelled = service.cancel(CancelScannerAudit("project-123", result.taskId!!), config)
         assertEquals(ScannerAuditToolStatus.OK, cancelled.status)
         verify(exactly = 1) { audit.delete() }
     }
@@ -625,7 +650,7 @@ class ScannerAuditToolsTest {
         val unknown = "scanner_audit_${"0".repeat(32)}"
 
         val get = service.get(GetScannerAudit("project-123", unknown), config)
-        val cancel = service.cancel(CancelScannerAudit("project-123", unknown))
+        val cancel = service.cancel(CancelScannerAudit("project-123", unknown), config)
 
         assertEquals(ScannerAuditToolStatus.NOT_FOUND, get.status)
         assertEquals(ScannerAuditToolStatus.NOT_FOUND, cancel.status)
@@ -698,10 +723,39 @@ class ScannerAuditToolsTest {
             }
         }
 
-        val result = service.cancel(CancelScannerAudit("project-123", started.taskId!!))
+        val result = service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
 
         assertEquals(ScannerAuditToolStatus.PROJECT_MISMATCH, result.status)
         assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+        verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `YOLO Scanner cancellation still rejects a project transition before deletion`() = runBlocking {
+        val item = proxyItem(1, response = mockk())
+        val audit = mockk<Audit>()
+        var cancelling = false
+        var cancellationProjectReads = 0
+        every { project.id() } answers {
+            if (cancelling && cancellationProjectReads++ > 0) "replacement-project" else "project-123"
+        }
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns true
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.delete() } just runs
+        config.approvalYoloMode = true
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = approval
+        val started = service.start(passiveInput(1), config)
+        assertEquals(ScannerAuditToolStatus.OK, started.status)
+
+        cancelling = true
+        val result = service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
+
+        assertEquals(ScannerAuditToolStatus.PROJECT_MISMATCH, result.status)
+        assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+        coVerify(exactly = 0) { approval.requestApproval(any(), any(), any(), any(), any()) }
         verify(exactly = 1) { audit.delete() }
     }
 
@@ -721,7 +775,7 @@ class ScannerAuditToolsTest {
 
         val started = service.start(passiveInput(1), config)
 
-        val cancelled = service.cancel(CancelScannerAudit("project-123", started.taskId!!))
+        val cancelled = service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         assertEquals(ScannerAuditToolStatus.EXECUTION_UNCERTAIN, cancelled.status)
         assertEquals(ScannerAuditActionState.UNCERTAIN, cancelled.actionState)
         assertTrue(cancelled.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))

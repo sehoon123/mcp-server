@@ -515,6 +515,7 @@ internal class ScannerAuditService(
                 reviewContent = review.content,
                 renderContentAsHttp = review.renderAsHttp,
                 api = api,
+                config = config,
             )
         } catch (e: CancellationException) {
             throw e
@@ -956,7 +957,7 @@ internal class ScannerAuditService(
         )
     }
 
-    suspend fun cancel(input: CancelScannerAudit): ScannerAuditResult {
+    suspend fun cancel(input: CancelScannerAudit, config: McpConfig): ScannerAuditResult {
         val validation = validateTaskInput(input.projectId, input.taskId)
         if (validation != null) return validation
         val record = claimRecord(input.taskId) ?: return scannerAuditError(
@@ -983,6 +984,7 @@ internal class ScannerAuditService(
                 summary = "Project: ${record.projectId}\nTask: ${record.taskId}\nMode: ${record.mode.name.lowercase()}\n" +
                     "Targets: ${record.targets.size}",
                 api = api,
+                config = config,
             )
         } catch (e: CancellationException) {
             throw e

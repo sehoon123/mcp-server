@@ -1,8 +1,10 @@
 package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.ToggleSwitch
+import net.portswigger.mcp.security.findBurpFrame
 import java.awt.FlowLayout
 import java.awt.event.ItemEvent
 import javax.swing.*
@@ -15,6 +17,8 @@ class ServerConfigurationPanel(
     private val validationErrorLabel: WarningLabel
 ) : JPanel() {
 
+    private lateinit var yoloModeButton: JButton
+    private lateinit var yoloModeStatus: WrappingText
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowSiteMapCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
@@ -53,6 +57,9 @@ class ServerConfigurationPanel(
 
         val enabledPanel = createEnabledPanel()
         add(enabledPanel)
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        add(createYoloModePanel())
         add(createVerticalStrut(Design.Spacing.MD))
 
         val configEditingToolingCheckBox = createCheckBoxWithSubtitle(
@@ -141,6 +148,58 @@ class ServerConfigurationPanel(
         add(filterConfigCredentialsCheckBox)
 
         add(validationErrorLabel)
+        refreshPersistentApprovalControls()
+    }
+
+    private fun createYoloModePanel(): JPanel {
+        yoloModeButton = Design.createSemanticOutlinedButton("Enable YOLO mode...") { Design.Colors.error }.apply {
+            alignmentX = LEFT_ALIGNMENT
+            addActionListener { toggleYoloMode() }
+        }
+        yoloModeStatus = WrappingText("", WrappingTextStyle.LABEL_MEDIUM)
+        return JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = LEFT_ALIGNMENT
+            isOpaque = false
+            add(yoloModeButton)
+            add(createVerticalStrut(Design.Spacing.SM))
+            add(yoloModeStatus)
+        }
+    }
+
+    private fun toggleYoloMode() {
+        if (config.approvalYoloMode) {
+            persistYoloMode(false)
+            return
+        }
+
+        val confirmed = Dialogs.showConfirmDialog(
+            findBurpFrame(),
+            "YOLO mode bypasses every MCP approval prompt, including outbound traffic, project-data reads, " +
+                "request routing, Target scope changes, Scanner actions, configuration access, editor changes, " +
+                "and Burp global-control changes.\n\nAn authenticated MCP client may read sensitive data, send " +
+                "network requests, and mutate Burp state without another prompt. Validation, project binding, " +
+                "operation bounds, bearer authentication, and Emergency read-only mode remain active.\n\n" +
+                "Enable YOLO mode?",
+            JOptionPane.YES_NO_OPTION,
+        )
+        if (confirmed == JOptionPane.YES_OPTION) {
+            persistYoloMode(true)
+        }
+    }
+
+    private fun persistYoloMode(enabled: Boolean) {
+        val persisted = runCatching { config.approvalYoloMode = enabled }
+        refreshPersistentApprovalControls()
+        if (persisted.isFailure) {
+            yoloModeStatus.updateContent(
+                if (enabled) {
+                    "Could not enable YOLO mode; approval prompts remain governed by the saved granular policies."
+                } else {
+                    "Could not disable YOLO mode; all approval prompts remain bypassed."
+                }
+            )
+        }
     }
 
     private fun createEnabledPanel(): JPanel {
@@ -201,22 +260,49 @@ class ServerConfigurationPanel(
     }
 
     fun updatePersistentApprovalControls() {
-        SwingUtilities.invokeLater {
-            allowAllHttpRequestsCheckBox.isSelected = !config.requireHttpRequestApproval
-            requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
-            scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
-            dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
-            alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
-            alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
-            alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
-            alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
-            alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
-            alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
-            updateDataAccessEnabledState(config.requireDataAccessApproval)
-        }
+        SwingUtilities.invokeLater { refreshPersistentApprovalControls() }
     }
 
-    private fun updateDataAccessEnabledState(enabled: Boolean) {
+    private fun refreshPersistentApprovalControls() {
+        allowAllHttpRequestsCheckBox.isSelected = !config.requireHttpRequestApproval
+        requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+        scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
+        dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
+        alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
+        alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
+        alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
+        alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+        alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+        alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+
+        val yoloEnabled = config.approvalYoloMode
+        yoloModeButton.text = if (yoloEnabled) "Disable YOLO mode" else "Enable YOLO mode..."
+        yoloModeButton.accessibleContext.accessibleName = yoloModeButton.text
+        yoloModeButton.accessibleContext.accessibleDescription = if (yoloEnabled) {
+            "Disable the global MCP approval-prompt bypass and resume the saved granular approval policies"
+        } else {
+            "After one warning, bypass every MCP approval prompt until disabled"
+        }
+        yoloModeStatus.updateContent(
+            if (yoloEnabled) {
+                "ACTIVE: all MCP approval prompts are bypassed. Granular policies below are preserved and resume when disabled."
+            } else {
+                "One local confirmation bypasses all MCP approval prompts. Validation and other execution safeguards remain active."
+            }
+        )
+
+        val granularControlsEnabled = !yoloEnabled
+        allowAllHttpRequestsCheckBox.isEnabled = granularControlsEnabled
+        requestActionApprovalCheckBox.isEnabled = granularControlsEnabled
+        scopeChangeApprovalCheckBox.isEnabled = granularControlsEnabled
+        dataAccessApprovalCheckBox.isEnabled = granularControlsEnabled
+        updateDataAccessEnabledState(config.requireDataAccessApproval)
+        revalidate()
+        repaint()
+    }
+
+    private fun updateDataAccessEnabledState(approvalRequired: Boolean) {
+        val enabled = approvalRequired && !config.approvalYoloMode
         alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
         alwaysAllowSiteMapCheckBox.isEnabled = enabled
         alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled

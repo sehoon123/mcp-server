@@ -318,6 +318,12 @@ identity, private evidence, loopback traffic, RSS cutoffs, and disposable-projec
 side regressions and harness readiness only; live Community/Professional source-acquisition, returned-list stability,
 allocation, and unload evidence remains open.
 
+The selected demand-driven UX slice is a local **YOLO mode** button for operators who intentionally want one persistent
+master approval bypass. One warning confirmation enables it; disabling it restores the preserved granular policies.
+Every approval family audits `yolo_allow`, while authentication, validation, project binding, bounds, emergency
+read-only mode, execution-state handling, and separately disabled tool families remain authoritative. The setting stores
+no client, project, target, traffic, payload, credential, path, or filesystem value, and MCP clients cannot enable it.
+
 Candidate work:
 
 - run 10k/50k/100k live matrices for Proxy, Site Map, Organizer, WebSocket, Professional Scanner, and context-menu paths;
@@ -329,6 +335,8 @@ Candidate work:
 - review local fixed-bucket initialization-protocol and project-change counters without retaining client identity or
   changing the public diagnostics resource;
 - validate raw HTTP/2 routing only against an explicitly supported Burp runtime;
+- exact-candidate test the local YOLO control in Community and Professional, including warning cancellation, reload,
+  disable/rollback, persistence failure, diagnostics, audit, emergency read-only precedence, and project transitions;
 - consider validated multi-client setup previews, multi-instance display labels, security-policy profiles, settings
   portability, and expanded accessibility matrices only as separately reviewed milestones.
 
@@ -339,7 +347,7 @@ Candidate work:
   Collaborator state are cleared before new-project admission.
 - [x] Disposable loopback WebSocket scale and bounded protocol-lifecycle runners have fail-closed identity, RSS,
   cleanup, and private-evidence contracts.
-- [ ] Any selected client/UI feature has an explicit secret, project, filesystem, rollback, and accessibility contract.
+- [x] The selected YOLO UI feature has an explicit secret, project, filesystem, rollback, and accessibility contract.
 - [ ] HTTP/2 behavior is either live-verified or remains explicitly unavailable.
 
 ## v5.0.0 — Modern MCP gate
