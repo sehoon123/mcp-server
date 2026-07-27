@@ -116,6 +116,32 @@ class ScannerAuditToolsTest {
     }
 
     @Test
+    fun `active out of scope target is rejected before approval or Scanner start`() = runBlocking {
+        val item = proxyItem(2, response = mockk())
+        every { proxy.history(any()) } returns listOf(item)
+        every { scope.isInScope(any()) } returns false
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = approval
+        val active = StartScannerAuditFromIds(
+            "project-123",
+            ScannerAuditMode.ACTIVE,
+            listOf(
+                ScannerAuditTarget(
+                    HttpMessageReference(HttpMessageSource.PROXY, "2"),
+                    listOf(HttpInsertionPointSelector(HttpInsertionPointKind.BODY)),
+                ),
+            ),
+        )
+
+        val result = service.start(active, config)
+
+        assertEquals(ScannerAuditToolStatus.OUT_OF_SCOPE, result.status)
+        assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+        coVerify(exactly = 0) { approval.requestApproval(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { scanner.startAudit(any()) }
+    }
+
+    @Test
     fun `passive audit start get and cancellation retain an extension owned task`() = runBlocking {
         val item = proxyItem(7, response = mockk())
         val audit = mockk<Audit>()

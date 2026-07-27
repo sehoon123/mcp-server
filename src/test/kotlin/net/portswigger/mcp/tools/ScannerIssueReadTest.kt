@@ -18,6 +18,7 @@ import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ScannerIssueReadTest {
@@ -57,6 +58,24 @@ class ScannerIssueReadTest {
         assertEquals(id, result.summary?.id)
         verify(exactly = 0) { issue.detail() }
         verify(exactly = 0) { issue.remediation() }
+        verify(exactly = 0) { issue.requestResponses() }
+    }
+
+    @Test
+    fun `evidence field without evidenceIndex fails with documented requirement`() = runBlocking {
+        val issue = issue(12, "Evidence", "detail")
+        every { siteMap.issues() } returns listOf(issue)
+        val error = assertFailsWith<IllegalArgumentException> {
+            service.read(
+                GetScannerIssueById(
+                    projectId = "project-123",
+                    id = issue.stableHistoryId(0),
+                    field = "evidence_request",
+                ),
+            )
+        }
+
+        assertTrue(error.message.orEmpty().contains("evidenceIndex is required"))
         verify(exactly = 0) { issue.requestResponses() }
     }
 

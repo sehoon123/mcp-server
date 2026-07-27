@@ -86,6 +86,7 @@ data class RouteHttpMessageFromId(
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(description = "Single Burp tool destination for this action.")
     val destination: HttpMessageRouteDestination,
+    @JsonSchemaMetadata(description = "Optional structured request changes applied to the routed copy; this does not send it.")
     val patch: HttpRequestPatch? = null,
     @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
     val tabName: String? = null,
@@ -146,16 +147,29 @@ data class HttpRequestPatch(
 )
 
 @Serializable
-data class HttpHeaderMutation(val name: String, val value: String)
+data class HttpHeaderMutation(
+    @JsonSchemaMetadata(description = "Header name.") val name: String,
+    @JsonSchemaMetadata(description = "Header value.") val value: String,
+)
 
 @Serializable
-data class HttpParameterKey(val type: HttpActionParameterType, val name: String)
+data class HttpParameterKey(
+    @JsonSchemaMetadata(description = "Parameter location/type.") val type: HttpActionParameterType,
+    @JsonSchemaMetadata(description = "Exact parameter name.") val name: String,
+)
 
 @Serializable
-data class HttpParameterMutation(val type: HttpActionParameterType, val name: String, val value: String)
+data class HttpParameterMutation(
+    @JsonSchemaMetadata(description = "Parameter location/type.") val type: HttpActionParameterType,
+    @JsonSchemaMetadata(description = "Exact parameter name.") val name: String,
+    @JsonSchemaMetadata(description = "Replacement or appended parameter value.") val value: String,
+)
 
 @Serializable
-data class HttpBodyPatch(val encoding: HttpBodyPatchEncoding, val data: String)
+data class HttpBodyPatch(
+    @JsonSchemaMetadata(description = "Encoding of replacement body data.") val encoding: HttpBodyPatchEncoding,
+    @JsonSchemaMetadata(description = "Complete replacement request body in the selected encoding.") val data: String,
+)
 
 @Serializable
 enum class HttpBodyPatchEncoding {

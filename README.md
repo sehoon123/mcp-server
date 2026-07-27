@@ -109,7 +109,7 @@ issue reads now require `projectId`; v3 aliases are not advertised.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
-classification; HTTP/2-to-Intruder is rejected until verified against a supported Burp runtime. Safe-regex HTTP and
+classification; HTTP/2-to-Intruder routing is unsupported. Safe-regex HTTP and
 WebSocket searches use 10,000-record/32 MiB budgets and conservative regex validation. HTTP regex search deliberately
 bypasses metadata-index hints.
 
@@ -178,13 +178,14 @@ admission or selective invalidation. See [PROJECT_BOUND_NOTIFICATIONS.md](docs/P
 
 Reusable prompts introduced in v4.4 are `analyze_http_without_sending`, `compare_http_references`, and
 `review_auth_session_handling`; Professional also provides `summarize_scanner_issue`. Prompt arguments are bounded,
-prompts do not read project data themselves, and each workflow explicitly prohibits hidden request sending, routing,
-or mutation. Both native Streamable HTTP clients and the embedded stdio proxy preserve these protocol features.
+prompts do not read project data themselves, and each workflow supplies explicit instructions not to send or route
+requests or mutate Burp state. Both native Streamable HTTP clients and the embedded stdio proxy preserve these protocol
+features.
 
 v4.9 adds the common `plan_repeater_tests_without_sending` prompt, bringing the current prompt catalogs to 4 Community
 and 5 Professional. It accepts one canonical HTTP reference and an optional bounded focus, reads no Burp traffic during
 prompt retrieval, and asks for an observed baseline, evidence limits, and at most eight manual tests. Its instructions
-prohibit sending/replay, routing or creating a Repeater tab, Scanner execution, editor writes, and every mutation tool;
+say not to send or replay, route or create a Repeater tab, run Scanner, write editors, or use mutation tools;
 executing the plan requires a later explicit user action in Burp. Supported-client no-mutation validation remains a
 release gate because prompt wording cannot technically constrain an independent client/model.
 

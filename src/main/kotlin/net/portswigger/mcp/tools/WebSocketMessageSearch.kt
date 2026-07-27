@@ -46,7 +46,7 @@ enum class WebSocketSearchDirection {
 data class SearchWebsocketMessages(
     @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(description = "Signed cursor from a previous page; continue with only projectId, cursor, and optional limit.", maxLength = 4096)
+    @JsonSchemaMetadata(description = "Returned nextCursor from the previous page. When set, supply only projectId, cursor, and optional limit.", maxLength = 4096)
     val cursor: String? = null,
     @JsonSchemaMetadata(description = "Maximum summaries returned.", minimum = 1, maximum = 50, defaultJson = "25")
     val limit: Int? = null,

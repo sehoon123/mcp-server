@@ -119,7 +119,7 @@ Implemented foundation:
 
 Remaining work:
 
-- Validate raw HTTP/2 routing against an actual supported Burp runtime; HTTP/2-to-Intruder remains rejected until then.
+- Evaluate future raw HTTP/2 Intruder support as a separately tested contract; it remains unsupported in v4.
 - Validate metadata-index and unified-search performance with an actual large Burp history. Synthetic differential,
   accessor-count, and JFR allocation probes remain regression evidence rather than Burp product latency claims.
 

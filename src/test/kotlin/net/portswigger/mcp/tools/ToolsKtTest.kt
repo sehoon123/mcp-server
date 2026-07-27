@@ -169,6 +169,8 @@ class ToolsKtTest {
         every { item.annotations() } returns annotations
         every { request.method() } returns "GET"
         every { request.url() } returns "https://example.test/item$index"
+        every { request.path() } returns "/item$index"
+        every { request.isInScope() } returns true
         every { request.body() } returns body
         every { service.host() } returns "example.test"
         every { service.port() } returns 443
@@ -253,6 +255,58 @@ class ToolsKtTest {
         SensitiveActionSecurity.approvalHandler = originalSensitiveActionHandler
         runBlocking { if (client.isConnected()) client.close() }
         serverManager.shutdown()
+    }
+
+    @Test
+    fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
+        val tools = client.listTools().associateBy { it.name }
+        assertEquals(24, tools.size)
+
+        fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
+        assertTrue(tools.values.all { !it.description.isNullOrBlank() })
+        assertTrue(tools.values.all { it.description.orEmpty().length <= 512 })
+        tools.forEach { (toolName, tool) ->
+            tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
+                assertTrue(
+                    propertySchema.jsonObject["description"]?.jsonPrimitive?.content?.isNotBlank() == true,
+                    "$toolName.$propertyName lacks an input schema description",
+                )
+            }
+        }
+        assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
+        assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder routing is unsupported"))
+        assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
+        assertTrue(description("set_burp_options").contains("configuration-editing tools are enabled"))
+        assertTrue(description("search_http_messages").contains("Pass nextCursor as cursor"))
+        assertTrue(description("search_http_messages").contains("Requests sent by MCP are absent"))
+        assertTrue(description("update_scope").contains("before any approval prompt or policy bypass and before mutation"))
+        assertTrue(description("analyze_http_session_security").contains("privately inspect bounded body and header samples"))
+        assertTrue(description("save_workflow_preset").contains("Names are trimmed"))
+        assertTrue(description("list_workflow_presets").contains("stored workflow preset definitions"))
+        assertTrue(description("execute_workflow_preset").contains("runtime limit overrides the saved defaultLimit"))
+        assertTrue(description("route_http_message_from_id").contains("sends no network traffic"))
+        assertTrue(description("set_burp_control_state").contains("after explicit approval"))
+        assertTrue(description("get_active_editor_contents").contains("with an explanatory error"))
+        assertTrue(description("set_active_editor_contents").contains("status=not_editable"))
+
+        val catalogText = tools.values.joinToString("\n") { it.description.orEmpty() }
+        listOf(
+            "until verified",
+            "with no error",
+            "safe workflow preset",
+            "atomic project-bound add",
+            "coroutine cancellation",
+            "Montoya objects",
+            "oneOf",
+            "this extension instance",
+            "v4.8",
+        ).forEach { obsolete -> assertFalse(catalogText.contains(obsolete), obsolete) }
+
+        val rawSchema = requireNotNull(tools["send_raw_http_request"]).inputSchema.toString()
+        assertTrue(rawSchema.contains("request-line and header line endings"))
+        assertTrue(rawSchema.contains("content after the first blank line is preserved"))
+        assertTrue(rawSchema.contains("Protocol to use"))
+        assertTrue(rawSchema.contains("Connect to the destination using TLS"))
     }
 
     @Nested
@@ -770,9 +824,11 @@ class ToolsKtTest {
                 val readTool = tools.single { it.name == "get_burp_options" }
                 assertEquals(listOf("level"), readTool.inputSchema.required)
                 assertTrue(readTool.inputSchema.properties?.get("level").toString().contains("project"))
-                val description = tools.single { it.name == "set_burp_options" }.description.orEmpty()
-                assertTrue(description.contains("top-level 'project_options'"))
-                assertTrue(description.contains("top-level 'user_options'"))
+                val setTool = tools.single { it.name == "set_burp_options" }
+                assertTrue(setTool.description.orEmpty().contains("configuration-editing tools are enabled"))
+                val jsonSchema = setTool.inputSchema.properties?.get("json").toString()
+                assertTrue(jsonSchema.contains("project_options"))
+                assertTrue(jsonSchema.contains("user_options"))
             }
 
             verify(exactly = 1) { burpSuite.exportProjectOptionsAsJson() }
@@ -1003,6 +1059,35 @@ class ToolsKtTest {
     @Nested
     inner class HttpMessageSearchToolsTests {
         @Test
+        fun `HTTP search nextCursor continues through the cursor input`() = runBlocking {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<Proxy>()
+            val first = mockk<ProxyHttpRequestResponse>()
+            val second = mockk<ProxyHttpRequestResponse>()
+            stubProxyHistorySummary(first, 1)
+            stubProxyHistorySummary(second, 2)
+            every { api.project() } returns project
+            every { project.id() } returns "project-cursor-integration"
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns listOf(first, second)
+
+            val pageOne = client.callTool(
+                "search_http_messages",
+                mapOf("limit" to 1, "newestFirst" to false),
+            )
+            val cursor = pageOne?.structuredContent?.get("nextCursor")?.jsonPrimitive?.content
+            assertNotNull(cursor)
+            assertTrue(pageOne?.structuredContent?.get("items").toString().contains("\"id\":\"1\""))
+
+            val pageTwo = client.callTool(
+                "search_http_messages",
+                mapOf("cursor" to cursor!!, "limit" to 1),
+            )
+            assertEquals("ok", pageTwo?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertTrue(pageTwo?.structuredContent?.get("items").toString().contains("\"id\":\"2\""))
+        }
+
+        @Test
         fun `unified HTTP search returns structured compact results and precise schemas`() {
             val project = mockk<burp.api.montoya.project.Project>()
             val proxy = mockk<Proxy>()
@@ -1072,6 +1157,10 @@ class ToolsKtTest {
                 assertTrue(sourceSchema.contains("\"proxy\""))
                 assertTrue(sourceSchema.contains("\"site_map\""))
                 assertTrue(sourceSchema.contains("\"organizer\""))
+                val cursorSchema = searchTool.inputSchema.properties?.get("cursor").toString()
+                assertTrue(cursorSchema.contains("Returned nextCursor"))
+                assertTrue(cursorSchema.contains("repeat exactly the same filters"))
+                assertTrue(cursorSchema.contains("only limit may change"))
                 assertNotNull(searchTool.outputSchema?.properties?.get("items"))
                 assertEquals(true, searchTool.annotations?.readOnlyHint)
                 assertEquals(false, searchTool.annotations?.destructiveHint)

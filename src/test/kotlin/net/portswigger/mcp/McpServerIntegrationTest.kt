@@ -858,10 +858,28 @@ class McpServerIntegrationTest {
         assertTrue("analyze_http_without_sending" in prompts)
         assertTrue("compare_http_references" in prompts)
         assertTrue("review_auth_session_handling" in prompts)
+        val analyzeDescription = prompts.getValue("analyze_http_without_sending").description.orEmpty()
+        assertTrue(analyzeDescription.contains("with instructions not to send requests"))
+        assertFalse(analyzeDescription.contains("prohibit", ignoreCase = true))
+        assertFalse(analyzeDescription.contains("enforce", ignoreCase = true))
+        assertTrue(
+            prompts.getValue("analyze_http_without_sending").arguments
+                ?.single { it.name == "httpReference" }
+                ?.description.orEmpty()
+                .contains("maximum 2,048 characters"),
+        )
         val repeaterPromptDefinition = requireNotNull(prompts["plan_repeater_tests_without_sending"])
         assertEquals(listOf("httpReference", "focus"), repeaterPromptDefinition.arguments?.map { it.name })
         assertEquals(true, repeaterPromptDefinition.arguments?.first()?.required)
         assertEquals(false, repeaterPromptDefinition.arguments?.last()?.required)
+
+        val catalogDescriptions = resources.map { it.description.orEmpty() } +
+            templates.values.map { it.description.orEmpty() } +
+            prompts.values.map { it.description.orEmpty() }
+        assertTrue(catalogDescriptions.all { it.isNotBlank() && it.length <= 512 })
+        listOf("Montoya", "coroutine", "until verified").forEach { internalTerm ->
+            assertFalse(catalogDescriptions.any { it.contains(internalTerm, ignoreCase = true) }, internalTerm)
+        }
 
         val diagnostics = client.readResource(DIAGNOSTICS_RESOURCE_URI).singleTextResourceJson()
         assertEquals("ok", diagnostics["status"]?.jsonPrimitive?.content)

@@ -5,6 +5,7 @@ import burp.api.montoya.http.message.params.HttpParameterType
 import burp.api.montoya.http.message.requests.HttpRequest
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import java.nio.charset.StandardCharsets
 
 internal const val MAX_HTTP_INSERTION_POINTS = 32
@@ -14,9 +15,13 @@ private val INSERTION_HEADER_NAME_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 @Serializable
 data class HttpInsertionPointSelector(
+    @JsonSchemaMetadata(description = "Select a parameter value, header value, or entire request body.")
     val kind: HttpInsertionPointKind,
+    @JsonSchemaMetadata(description = "Exact parameter or header name; required for parameter and header selectors.")
     val name: String? = null,
+    @JsonSchemaMetadata(description = "Parameter location/type; required only for parameter selectors.")
     val parameterType: HttpActionParameterType? = null,
+    @JsonSchemaMetadata(description = "Zero-based matching parameter or header occurrence; defaults to zero and is not allowed for body selectors.")
     val occurrence: Int? = null,
 )
 

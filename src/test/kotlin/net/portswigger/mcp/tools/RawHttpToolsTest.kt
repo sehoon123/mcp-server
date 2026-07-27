@@ -338,7 +338,7 @@ class RawHttpToolsTest {
         )
 
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
-        assertTrue(result.error.orEmpty().contains("until verified"))
+        assertEquals("HTTP/2 Intruder routing is unsupported", result.error)
         verify(exactly = 0) { HttpService.httpService(any(), any(), any()) }
         verify(exactly = 0) { api.intruder() }
     }

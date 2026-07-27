@@ -39,7 +39,11 @@ enum class RawHttpProtocol {
 
 @Serializable
 data class RawHttp1Input(
-    @JsonSchemaMetadata(description = "Raw HTTP/1.1 request.", minLength = 1, maxLength = 2097152)
+    @JsonSchemaMetadata(
+        description = "Raw HTTP/1.1 request. For HTTP/1.1, request-line and header line endings, including literal \\r\\n and \\n escapes, are normalized to CRLF; content after the first blank line is preserved.",
+        minLength = 1,
+        maxLength = 2097152,
+    )
     val content: String,
 )
 
@@ -55,6 +59,7 @@ data class RawHttp2Input(
 
 @Serializable
 data class SendRawHttpRequest(
+    @JsonSchemaMetadata(description = "Protocol to use; provide only the matching http1 or http2 object.")
     val protocol: RawHttpProtocol,
     @JsonSchemaMetadata(description = "Required only for protocol=http_1; http2 must be absent.")
     val http1: RawHttp1Input? = null,
@@ -64,7 +69,7 @@ data class SendRawHttpRequest(
     val targetHostname: String,
     @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
     val targetPort: Int,
-    @JsonSchemaMetadata(description = "Use TLS for the destination.")
+    @JsonSchemaMetadata(description = "Connect to the destination using TLS.")
     val usesHttps: Boolean,
     @JsonSchemaMetadata(description = "Response timeout in milliseconds.", minimum = 100, maximum = 120000, defaultJson = "30000")
     val responseTimeoutMs: Int? = null,
@@ -88,7 +93,9 @@ enum class RawHttpRouteDestination {
 
 @Serializable
 data class RouteRawHttpRequest(
+    @JsonSchemaMetadata(description = "Burp tool in which to open the request without sending it.")
     val destination: RawHttpRouteDestination,
+    @JsonSchemaMetadata(description = "Protocol to use; provide only the matching http1 or http2 object.")
     val protocol: RawHttpProtocol,
     @JsonSchemaMetadata(description = "Required only for protocol=http_1; http2 must be absent.")
     val http1: RawHttp1Input? = null,
@@ -98,7 +105,7 @@ data class RouteRawHttpRequest(
     val targetHostname: String,
     @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
     val targetPort: Int,
-    @JsonSchemaMetadata(description = "Use TLS for the destination.")
+    @JsonSchemaMetadata(description = "Connect to the destination using TLS.")
     val usesHttps: Boolean,
     @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
     val tabName: String? = null,
@@ -285,7 +292,7 @@ internal class RawHttpActionService(
                 input.protocol,
                 destination,
                 target,
-                "HTTP/2 Intruder routing is unavailable until verified by the current Burp runtime",
+                "HTTP/2 Intruder routing is unsupported",
             )
         }
         val prepared = try {

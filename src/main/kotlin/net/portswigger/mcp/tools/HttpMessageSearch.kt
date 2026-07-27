@@ -95,7 +95,7 @@ data class SearchHttpMessages(
     val newestFirst: Boolean? = null,
     @JsonSchemaMetadata(description = "Maximum results in this page.", minimum = 1, maximum = 50, defaultJson = "25")
     val limit: Int? = null,
-    @JsonSchemaMetadata(description = "Opaque signed continuation cursor.", maxLength = 32768)
+    @JsonSchemaMetadata(description = "Returned nextCursor from the previous page. When set, omit filters to reuse its query or repeat exactly the same filters; only limit may change.", maxLength = 32768)
     val cursor: String? = null,
 )
 

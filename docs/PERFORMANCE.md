@@ -493,8 +493,8 @@ map. The parsed auto-approval target list is also reused until the persisted raw
 Each raw call accepts one nested protocol variant, computes request size from `bodyOffset + body.length`, and returns
 structured state. Network sends use an explicit HTTP mode, `RedirectionMode.NEVER`, a 100 ms–120 s timeout, and
 a body preview capped at 64 KiB. A post-delivery exception is `execution_uncertain`, preventing an unsafe model retry.
-Raw routing executes one approved destination and retains fixed destination audit kinds; HTTP/2-to-Intruder is rejected
-before approval or request construction until a supported Burp runtime is verified.
+Raw routing executes one approved destination and retains fixed destination audit kinds; HTTP/2-to-Intruder is unsupported
+and rejected before approval or request construction.
 
 A standalone Java 21 `ThreadMXBean` probe compared the previous replacement/substrings pipeline with the current
 compiled `normalizeHttpContent` implementation. After warm-up, the median of nine alternating rounds was:

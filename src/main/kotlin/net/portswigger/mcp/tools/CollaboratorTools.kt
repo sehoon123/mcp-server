@@ -61,7 +61,7 @@ data class GetCollaboratorInteractions(
     val projectId: String,
     @JsonSchemaMetadata(description = "Optional generated payload ID filter.", minLength = 1, maxLength = 256)
     val payloadId: String? = null,
-    @JsonSchemaMetadata(description = "Inclusive ISO-8601 interaction timestamp filter.", minLength = 1, maxLength = 64)
+    @JsonSchemaMetadata(description = "Exclusive ISO-8601 instant lower-bound filter, for example 2025-01-01T12:00:00Z.", minLength = 1, maxLength = 64)
     val since: String? = null,
     @JsonSchemaMetadata(description = "Bounded long-poll duration in seconds.", minimum = 0, maximum = 120, defaultJson = "0")
     val waitSeconds: Int? = null,

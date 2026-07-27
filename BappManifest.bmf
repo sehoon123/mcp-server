@@ -2,8 +2,8 @@ Uuid: c0a454c4079c4cecb627d928a92f9555
 ExtensionType: 1
 Name: Independent MCP Bridge
 RepoName: mcp-server
-ScreenVersion: 4.9.0-rc.1
-SerialVersion: 2
+ScreenVersion: 4.9.0-rc.2
+SerialVersion: 3
 MinPlatformVersion: 26
 ProOnly: False
 Author: SH Jung (sehoon123); based on work by Daniel S and Daniel Allen, PortSwigger

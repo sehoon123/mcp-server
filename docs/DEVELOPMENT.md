@@ -163,6 +163,34 @@ data class ExampleLookupResult(
 Prefer a dedicated service class for Montoya interaction. Keep registration declarative in `registerTools`; do not put a
 large implementation in the registration lambda.
 
+### Tool descriptions are model-facing contracts
+
+MCP tools are model-controlled and clients may rank them with keyword or embedding search over names and descriptions.
+The official MCP guidance also recommends clear descriptions, detailed JSON Schema parameter definitions, focused atomic
+operations, and brief catalog descriptions to limit context cost. Apply those principles as follows:
+
+- Start with one direct sentence that says what the tool does and identifies the data source or destination that
+  distinguishes it from neighboring tools.
+- State network transmission, Burp mutation, routing-only behavior, required approval or access policy, and ambiguous
+  execution retry guidance whenever they affect safe tool selection. Tool annotations reinforce these facts but do not
+  replace accurate prose.
+- Put field-specific formats, conditional requirements, continuation examples, defaults, and bounds in that field's JSON
+  Schema `description`. Use exact JSON field names, such as “pass returned `nextCursor` as `cursor`”.
+- Keep each catalog description self-contained and concise. The v4 catalog uses a project limit of 512 characters per
+  description because clients commonly inject all 24 or 31 definitions; this is a project convention, not an MCP wire
+  limit.
+- Describe observable behavior, not Kotlin, Montoya, compatibility-version, or internal resolver boundaries. Never claim
+  that prompt text technically enforces client/model behavior.
+- Keep input and output schemas precise enough that the model does not need implementation details in the catalog entry.
+  Add an example only when a format or continuation handoff is otherwise ambiguous.
+
+Review descriptions through `tools/list` and prompt descriptions through `prompts/list`. Test both positive contract
+phrases and the absence of known misleading wording.
+
+References: [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
+[MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts), and
+[MCP client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices).
+
 ### 2. Select accurate tool annotations
 
 Reuse or add annotations in `McpTool.kt`:

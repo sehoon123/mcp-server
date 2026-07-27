@@ -26,6 +26,8 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.tools.stableHistoryId
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -82,6 +84,7 @@ class McpProfessionalResourcesIntegrationTest {
         val issueId = issue.stableHistoryId()
         client.connectToServer("http://127.0.0.1:$port/mcp")
 
+        val tools = client.listTools()
         assertEquals(
             setOf(
                 "send_raw_http_request",
@@ -116,8 +119,37 @@ class McpProfessionalResourcesIntegrationTest {
                 "generate_collaborator_payload",
                 "get_collaborator_interactions",
             ),
-            client.listTools().map { it.name }.toSet(),
+            tools.map { it.name }.toSet(),
         )
+        val descriptions = tools.associate { it.name to it.description.orEmpty() }
+        assertTrue(descriptions.values.all { it.isNotBlank() && it.length <= 512 })
+        tools.forEach { tool ->
+            tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
+                assertTrue(
+                    propertySchema.jsonObject["description"]?.jsonPrimitive?.content?.isNotBlank() == true,
+                    "${tool.name}.$propertyName lacks an input schema description",
+                )
+            }
+        }
+        assertTrue(descriptions.getValue("get_scanner_issues").contains("pass nextCursor as cursor"))
+        assertTrue(descriptions.getValue("get_scanner_issue_by_id").contains("evidenceIndex is required"))
+        assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("Both modes reject out-of-scope requests"))
+        assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("active mode requires insertionPoints and can send requests"))
+        assertTrue(descriptions.getValue("get_collaborator_interactions").contains("payload ID returned by generate_collaborator_payload"))
+        assertFalse(descriptions.values.any { it.contains("until verified") })
+        assertFalse(descriptions.values.any { it.contains("with no error") })
+        assertFalse(descriptions.values.any { it.contains("safe workflow preset") })
+        assertFalse(descriptions.values.any { it.contains("atomic project-bound add") })
+        assertFalse(descriptions.values.any { it.contains("coroutine cancellation") })
+        assertFalse(descriptions.values.any { it.contains("Montoya objects") })
+
+        val scannerListSchema = tools.single { it.name == "get_scanner_issues" }.inputSchema.toString()
+        assertTrue(scannerListSchema.contains("does not enable cursor mode"))
+        val scannerReadSchema = tools.single { it.name == "get_scanner_issue_by_id" }.inputSchema.toString()
+        assertTrue(scannerReadSchema.contains("Required when `field` is `evidence_request` or `evidence_response`"))
+        val collaboratorSchema = tools.single { it.name == "get_collaborator_interactions" }.inputSchema.toString()
+        assertTrue(collaboratorSchema.contains("Exclusive ISO-8601 instant lower-bound filter"))
+
         val templates = client.listResourceTemplates().resourceTemplates.map { it.uriTemplate }.toSet()
         assertEquals(
             setOf(

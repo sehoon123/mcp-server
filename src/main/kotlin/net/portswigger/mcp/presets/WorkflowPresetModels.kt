@@ -29,18 +29,22 @@ internal data class WorkflowPresetEnvelope(
 
 @Serializable
 internal data class WorkflowPreset(
-    @JsonSchemaMetadata(minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
+    @JsonSchemaMetadata(description = "Stored preset name.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
-    @JsonSchemaMetadata(maxLength = MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS)
+    @JsonSchemaMetadata(description = "Optional caller-authored preset description.", maxLength = MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS)
     val description: String? = null,
+    @JsonSchemaMetadata(description = "Exactly one saved workflow definition.")
     val definition: WorkflowPresetDefinition,
 )
 
 @JsonSchemaExactlyOneOf("httpSearch", "webSocketSearch", "httpComparison")
 @Serializable
 internal data class WorkflowPresetDefinition(
+    @JsonSchemaMetadata(description = "Saved HTTP search; mutually exclusive with webSocketSearch and httpComparison.")
     val httpSearch: SavedHttpSearch? = null,
+    @JsonSchemaMetadata(description = "Saved WebSocket search; mutually exclusive with httpSearch and httpComparison.")
     val webSocketSearch: SavedWebSocketSearch? = null,
+    @JsonSchemaMetadata(description = "Saved HTTP comparison; mutually exclusive with httpSearch and webSocketSearch.")
     val httpComparison: SavedHttpComparison? = null,
 ) {
     fun kind(): WorkflowPresetType {
@@ -56,43 +60,51 @@ internal data class WorkflowPresetDefinition(
 
 @Serializable
 internal data class SavedHttpSearch(
-    @JsonSchemaMetadata(minItems = 1, maxItems = 3)
+    @JsonSchemaMetadata(description = "Stored HTTP sources to search.", minItems = 1, maxItems = 3)
     val sources: List<HttpMessageSource>? = null,
-    @JsonSchemaMetadata(minLength = 1, maxLength = 253)
+    @JsonSchemaMetadata(description = "Exact destination host filter.", minLength = 1, maxLength = 253)
     val host: String? = null,
-    @JsonSchemaMetadata(minLength = 1, maxLength = 2048)
+    @JsonSchemaMetadata(description = "Literal request-path substring filter.", minLength = 1, maxLength = 2048)
     val pathContains: String? = null,
-    @JsonSchemaMetadata(minItems = 1, maxItems = 32)
+    @JsonSchemaMetadata(description = "HTTP method filters.", minItems = 1, maxItems = 32)
     val methods: List<String>? = null,
-    @JsonSchemaMetadata(minItems = 1, maxItems = 32)
+    @JsonSchemaMetadata(description = "HTTP response status filters.", minItems = 1, maxItems = 32)
     val statusCodes: List<Int>? = null,
-    @JsonSchemaMetadata(minItems = 1, maxItems = 32)
+    @JsonSchemaMetadata(description = "Response MIME-type filters.", minItems = 1, maxItems = 32)
     val mimeTypes: List<String>? = null,
+    @JsonSchemaMetadata(description = "When true, return only in-scope messages.")
     val inScopeOnly: Boolean? = null,
+    @JsonSchemaMetadata(description = "Filter by response presence.")
     val hasResponse: Boolean? = null,
+    @JsonSchemaMetadata(description = "Return newest messages first.")
     val newestFirst: Boolean? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 50, defaultJson = "25")
+    @JsonSchemaMetadata(description = "Default page size when execution does not supply limit.", minimum = 1, maximum = 50, defaultJson = "25")
     val defaultLimit: Int? = null,
 )
 
 @Serializable
 internal data class SavedWebSocketSearch(
+    @JsonSchemaMetadata(description = "WebSocket message direction filter.")
     val direction: WebSocketSearchDirection? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 65535)
+    @JsonSchemaMetadata(description = "Proxy listener port filter.", minimum = 1, maximum = 65535)
     val listenerPort: Int? = null,
+    @JsonSchemaMetadata(description = "Return newest messages first.")
     val newestFirst: Boolean? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 50, defaultJson = "25")
+    @JsonSchemaMetadata(description = "Default page size when execution does not supply limit.", minimum = 1, maximum = 50, defaultJson = "25")
     val defaultLimit: Int? = null,
 )
 
 @Serializable
 internal data class SavedHttpComparison(
+    @JsonSchemaMetadata(description = "Request or response part to compare.")
     val part: HttpComparisonPart? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 1048576, defaultJson = "262144")
+    @JsonSchemaMetadata(description = "Maximum bytes inspected per message.", minimum = 1, maximum = 1048576, defaultJson = "262144")
     val limitBytesPerMessage: Int? = null,
+    @JsonSchemaMetadata(description = "Encoding for the bounded comparison excerpt.")
     val excerptEncoding: HttpComparisonEncoding? = null,
-    @JsonSchemaMetadata(maxItems = 32)
+    @JsonSchemaMetadata(description = "Header names excluded from comparison.", maxItems = 32)
     val ignoreHeaders: List<String>? = null,
+    @JsonSchemaMetadata(description = "Include Burp response-variation attributes when available.")
     val includeResponseVariations: Boolean? = null,
 )
 
@@ -116,14 +128,15 @@ internal enum class WorkflowPresetStatus {
 
 @Serializable
 internal data class SaveWorkflowPreset(
-    @JsonSchemaMetadata(minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
+    @JsonSchemaMetadata(description = "Preset name; trimmed before storage and matched case-insensitively.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
-    @JsonSchemaMetadata(maxLength = MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS)
+    @JsonSchemaMetadata(description = "Optional caller-authored description persisted verbatim.", maxLength = MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS)
     val description: String? = null,
+    @JsonSchemaMetadata(description = "Exactly one saved workflow definition.")
     val definition: WorkflowPresetDefinition,
-    @JsonSchemaMetadata(defaultJson = "false")
+    @JsonSchemaMetadata(description = "Replace an existing case-insensitive same-name preset.", defaultJson = "false")
     val overwrite: Boolean = false,
 )
 
@@ -142,12 +155,13 @@ internal data class SaveWorkflowPresetResult(
 
 @Serializable
 internal data class ListWorkflowPresets(
-    @JsonSchemaMetadata(minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
+    @JsonSchemaMetadata(description = "Optional preset-type filter.")
     val type: WorkflowPresetType? = null,
-    @JsonSchemaMetadata(minimum = 0, maximum = 64, defaultJson = "0")
+    @JsonSchemaMetadata(description = "Zero-based list offset.", minimum = 0, maximum = 64, defaultJson = "0")
     val offset: Int = 0,
-    @JsonSchemaMetadata(minimum = 1, maximum = 64, defaultJson = "25")
+    @JsonSchemaMetadata(description = "Maximum presets returned.", minimum = 1, maximum = 64, defaultJson = "25")
     val limit: Int = 25,
 )
 
@@ -165,9 +179,9 @@ internal data class ListWorkflowPresetsResult(
 
 @Serializable
 internal data class DeleteWorkflowPreset(
-    @JsonSchemaMetadata(minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
+    @JsonSchemaMetadata(description = "Case-insensitive preset name to delete.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
 )
 
@@ -184,15 +198,15 @@ internal data class DeleteWorkflowPresetResult(
 
 @Serializable
 internal data class ExecuteWorkflowPreset(
-    @JsonSchemaMetadata(minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
+    @JsonSchemaMetadata(description = "Case-insensitive preset name to execute.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
-    @JsonSchemaMetadata(minimum = 1, maximum = 50)
+    @JsonSchemaMetadata(description = "Runtime page size for HTTP or WebSocket search; overrides saved defaultLimit.", minimum = 1, maximum = 50)
     val limit: Int? = null,
-    @JsonSchemaMetadata(maxLength = 32768)
+    @JsonSchemaMetadata(description = "Runtime continuation cursor accepted only by HTTP or WebSocket search presets.", maxLength = 32768)
     val cursor: String? = null,
-    @JsonSchemaMetadata(minItems = 2, maxItems = 8)
+    @JsonSchemaMetadata(description = "Runtime message references required only for HTTP comparison presets.", minItems = 2, maxItems = 8)
     val refs: List<HttpMessageReference>? = null,
 )
 

@@ -157,6 +157,24 @@ class CollaboratorToolsTest {
     }
 
     @Test
+    fun `interaction exactly equal to since is excluded`() = runBlocking {
+        val boundary = ZonedDateTime.parse("2025-01-02T00:00:00Z")
+        every { client.getAllInteractions() } returns listOf(
+            interaction("equal", boundary),
+            interaction("after", boundary.plusSeconds(1)),
+        )
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.interactions(
+            GetCollaboratorInteractions(projectId = projectId, since = boundary.toInstant().toString()),
+            config(false),
+        ) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.OK, result.output.status)
+        assertEquals(listOf("after"), result.output.interactions.map { it.id })
+    }
+
+    @Test
     fun `long poll reports progress and returns as soon as an interaction arrives`() = runBlocking {
         val interaction = interaction("id-1", ZonedDateTime.parse("2025-01-02T00:00:00Z"))
         every { client.getAllInteractions() } returnsMany listOf(emptyList(), listOf(interaction))

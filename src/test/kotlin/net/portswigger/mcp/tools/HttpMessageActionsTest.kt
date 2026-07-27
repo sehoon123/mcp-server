@@ -113,6 +113,7 @@ class HttpMessageActionsTest {
         verify(exactly = 1) { fixture.request.bodyOffset() }
         verify(exactly = 0) { fixture.request.toString() }
         verify(exactly = 1) { repeater.sendToRepeater(fixture.request, "derived") }
+        verify(exactly = 0) { api.http() }
     }
 
     @Test

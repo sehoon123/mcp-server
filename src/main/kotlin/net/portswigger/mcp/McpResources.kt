@@ -143,7 +143,7 @@ internal fun Server.registerMcpResources(
     addResource(
         uri = SCOPE_SUMMARY_RESOURCE_URI,
         name = "burp_scope_summary",
-        description = "Current project binding and MCP scope policy. Montoya does not expose configured scope-rule enumeration.",
+        description = "Current project binding and MCP scope policy. Configured Target scope rules cannot be enumerated.",
         mimeType = RESOURCE_MIME_TYPE,
     ) { request ->
         featureServer.secureResourceRead(this, request, "scope_summary") {
@@ -268,10 +268,10 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         Prompt(
             name = "analyze_http_without_sending",
             title = "Analyze HTTP without sending",
-            description = "Analyze one Burp HTTP reference while prohibiting outbound requests, routing, and mutation.",
+            description = "Analyze one Burp HTTP reference with instructions not to send requests, route items, or mutate Burp state.",
             arguments = listOf(
-                PromptArgument("httpReference", "A burp://http/... resource URI.", required = true),
-                PromptArgument("focus", "Optional bounded analysis focus.", required = false),
+                PromptArgument("httpReference", "Canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = true),
+                PromptArgument("focus", "Optional analysis focus; maximum 512 characters.", required = false),
             ),
         ),
     ) { request ->
@@ -290,11 +290,11 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         Prompt(
             name = "compare_http_references",
             title = "Compare HTTP references",
-            description = "Compare two project-scoped Burp HTTP references without sending traffic.",
+            description = "Compare two stored HTTP messages without sending traffic or changing Burp state.",
             arguments = listOf(
-                PromptArgument("firstReference", "First burp://http/... resource URI.", required = true),
-                PromptArgument("secondReference", "Second burp://http/... resource URI.", required = true),
-                PromptArgument("focus", "Optional bounded comparison focus.", required = false),
+                PromptArgument("firstReference", "First canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = true),
+                PromptArgument("secondReference", "Second canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = true),
+                PromptArgument("focus", "Optional analysis focus; maximum 512 characters.", required = false),
             ),
         ),
     ) { request ->
@@ -318,11 +318,11 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         Prompt(
             name = "review_auth_session_handling",
             title = "Review authentication and session handling",
-            description = "Review authentication/session behavior in one or two existing HTTP references without active testing.",
+            description = "Passively review authentication and session handling in one or two stored HTTP messages.",
             arguments = listOf(
-                PromptArgument("httpReference", "Primary burp://http/... resource URI.", required = true),
-                PromptArgument("relatedReference", "Optional related burp://http/... resource URI.", required = false),
-                PromptArgument("focus", "Optional bounded review focus.", required = false),
+                PromptArgument("httpReference", "Primary canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = true),
+                PromptArgument("relatedReference", "Optional related canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = false),
+                PromptArgument("focus", "Optional analysis focus; maximum 512 characters.", required = false),
             ),
         ),
     ) { request ->
@@ -352,10 +352,10 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
         Prompt(
             name = "plan_repeater_tests_without_sending",
             title = "Plan Repeater tests without sending",
-            description = "Build a manual Repeater test plan from one existing project-scoped HTTP reference without routing, sending, or mutating requests.",
+            description = "Create a planning-only manual Repeater test plan from one stored HTTP message without routing or sending it.",
             arguments = listOf(
-                PromptArgument("httpReference", "A canonical burp://http/... resource URI.", required = true),
-                PromptArgument("focus", "Optional bounded test-planning focus.", required = false),
+                PromptArgument("httpReference", "Canonical `burp://http/...` resource URI; maximum 2,048 characters.", required = true),
+                PromptArgument("focus", "Optional analysis focus; maximum 512 characters.", required = false),
             ),
         ),
     ) { request ->
@@ -385,10 +385,10 @@ internal fun Server.registerMcpPrompts(api: MontoyaApi) {
             Prompt(
                 name = "summarize_scanner_issue",
                 title = "Summarize Scanner issue",
-                description = "Summarize one stable Scanner issue reference without starting or changing a scan.",
+                description = "Summarize one stored Scanner issue without sending traffic or starting, cancelling, or changing an audit.",
                 arguments = listOf(
-                    PromptArgument("issueReference", "A burp://scanner-issue/... resource URI.", required = true),
-                    PromptArgument("focus", "Optional bounded summary focus.", required = false),
+                    PromptArgument("issueReference", "Canonical `burp://scanner-issue/...` resource URI; maximum 2,048 characters.", required = true),
+                    PromptArgument("focus", "Optional analysis focus; maximum 512 characters.", required = false),
                 ),
             ),
         ) { request ->

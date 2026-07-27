@@ -112,6 +112,30 @@ class WorkflowPresetServiceTest {
     }
 
     @Test
+    fun `save trims names and propagates overwrite`() {
+        every { api.project().id() } returns "p"
+        val stored = slot<WorkflowPreset>()
+        val overwrite = slot<Boolean>()
+        every { store.save(capture(stored), capture(overwrite)) } returns Pair(false, true)
+
+        val result = service.save(
+            SaveWorkflowPreset(
+                projectId = "p",
+                name = "  Mixed Name  ",
+                description = " verbatim description ",
+                definition = WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+                overwrite = true,
+            ),
+        )
+
+        assertEquals(WorkflowPresetStatus.OK, result.status)
+        assertEquals("Mixed Name", stored.captured.name)
+        assertEquals(" verbatim description ", stored.captured.description)
+        assertTrue(overwrite.captured)
+        assertTrue(result.replaced)
+    }
+
+    @Test
     fun `save and delete are uncertain after attempted write or project switch`() {
         every { api.project().id() } returns "p"
         every { store.save(any(), any()) } throws WorkflowPresetStoreException(

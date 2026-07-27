@@ -18,15 +18,16 @@ data class GetHttpMessage(
     @JsonSchemaMetadata(description = "Proxy, Site Map, or Organizer reference returned by search_http_messages.")
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(
+        description = "HTTP message section to return.",
         enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body"],
         defaultJson = "\"metadata\"",
     )
     val part: String? = null,
-    @JsonSchemaMetadata(minimum = 0, defaultJson = "0")
+    @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0")
     val offset: Int? = null,
-    @JsonSchemaMetadata(minimum = 1, maximum = 262144, defaultJson = "32768")
+    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "32768")
     val limit: Int? = null,
-    @JsonSchemaMetadata(enumValues = ["text", "base64"], defaultJson = "\"text\"")
+    @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
 )
 

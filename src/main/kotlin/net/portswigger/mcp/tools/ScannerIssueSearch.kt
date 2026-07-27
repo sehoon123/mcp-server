@@ -53,11 +53,11 @@ data class GetScannerIssues(
     override val count: Int = DEFAULT_SCANNER_ISSUE_LIMIT,
     @JsonSchemaMetadata(description = "Legacy-mode offset; cursor mode requires zero.", minimum = 0, defaultJson = "0")
     override val offset: Int = 0,
-    @JsonSchemaMetadata(description = "Return compact issue summaries.", defaultJson = "false")
+    @JsonSchemaMetadata(description = "In legacy offset mode, return compact summary records instead of full details; does not enable cursor mode.", defaultJson = "false")
     val summariesOnly: Boolean? = null,
-    @JsonSchemaMetadata(description = "Use snapshot-bound signed cursor pagination.", defaultJson = "false")
+    @JsonSchemaMetadata(description = "Use signed snapshot cursor pagination; query filters also select this mode.", defaultJson = "false")
     val cursorMode: Boolean? = null,
-    @JsonSchemaMetadata(description = "Opaque signed continuation cursor.", maxLength = 16384)
+    @JsonSchemaMetadata(description = "Returned nextCursor from the previous page. Omit filters to reuse its query, or repeat the exact same filters.", maxLength = 16384)
     val cursor: String? = null,
     @JsonSchemaMetadata(description = "Severity filters.", minItems = 1, maxItems = 8)
     val severities: List<ScannerIssueSeverityFilter>? = null,
