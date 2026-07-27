@@ -328,7 +328,9 @@ The runner first requires a no-match baseline below 10,000 records. Each stage a
 10k, 50k, and 100k estimated history entries: one verified client message and one verified echo account for two entries.
 It checks RSS every 512 client messages, aborts above the configured whole-process limit, verifies the 10,000-record
 no-match cap and one-record recent path at every stage, and then checks cursor separation, tamper rejection, and stable-ID
-readability without recording IDs or cursors. Above 10,000, the current public search result cannot independently expose
+readability without recording IDs or cursors. Zero and false result fields may be omitted by the production serializer;
+the harness restores only those documented defaults before validating and recording bounded accounting. Above 10,000,
+the current public search result cannot independently expose
 total history size. The stage count is therefore fixture accounting, not an observed Burp source count; a release claim
 still requires separate bounded UI or reviewed fixture evidence that Burp retained the expected total. Client wall time
 and RSS cover the whole process and are not product or extension benchmarks.

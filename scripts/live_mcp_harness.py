@@ -215,14 +215,30 @@ def call_tool(client: McpClient, name: str, arguments: dict[str, Any], timeout: 
     return structured_content(response), elapsed
 
 
+def websocket_search_count(value: dict[str, Any], field: str) -> int:
+    """Read a non-negative count while honoring omitted Kotlin serialization defaults."""
+    raw = value.get(field, 0)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise HarnessError("WebSocket search returned invalid bounded accounting")
+    return raw
+
+
+def websocket_search_flag(value: dict[str, Any], field: str) -> bool:
+    """Read a Boolean while honoring omitted Kotlin serialization defaults."""
+    raw = value.get(field, False)
+    if not isinstance(raw, bool):
+        raise HarnessError("WebSocket search returned invalid bounded state")
+    return raw
+
+
 def bounded_search_summary(value: dict[str, Any], elapsed: float) -> dict[str, Any]:
     return {
         "status": value.get("status"),
-        "returned": value.get("returned"),
-        "scanned": value.get("scanned"),
-        "scanLimitReached": value.get("scanLimitReached"),
-        "contentLimitReached": value.get("contentLimitReached"),
-        "hasMore": value.get("hasMore"),
+        "returned": websocket_search_count(value, "returned"),
+        "scanned": websocket_search_count(value, "scanned"),
+        "scanLimitReached": websocket_search_flag(value, "scanLimitReached"),
+        "contentLimitReached": websocket_search_flag(value, "contentLimitReached"),
+        "hasMore": websocket_search_flag(value, "hasMore"),
         "nextCursorPresent": bool(value.get("nextCursor")),
         "clientWallSeconds": round(elapsed, 6),
     }

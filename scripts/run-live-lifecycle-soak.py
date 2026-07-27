@@ -21,6 +21,7 @@ from live_mcp_harness import (  # noqa: E402
     read_private_token,
     read_project_id,
     sha256_file,
+    websocket_search_count,
     write_private_json,
 )
 
@@ -160,7 +161,11 @@ def main() -> int:
                     "search_websocket_messages",
                     {"projectId": project_id, "limit": 1, "newestFirst": True},
                 )
-                if search.get("status") != "ok" or search.get("returned") not in {0, 1} or search.get("scanned") not in {0, 1}:
+                if (
+                    search.get("status") != "ok"
+                    or websocket_search_count(search, "returned") not in {0, 1}
+                    or websocket_search_count(search, "scanned") not in {0, 1}
+                ):
                     raise HarnessError("bounded WebSocket search failed during soak")
                 diagnostics = read_diagnostics(client)
                 if diagnostics.get("pendingSessions") != 0 or diagnostics.get("activeSessions") != 1:

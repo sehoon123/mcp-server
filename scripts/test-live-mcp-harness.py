@@ -139,6 +139,18 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             with self.assertRaises(Exception):
                 scale.parse_stages(value)
 
+    def test_websocket_search_omitted_defaults_are_valid_zero_and_false(self):
+        summary = harness.bounded_search_summary({"status": "ok", "scanned": 10_000}, 0.25)
+        self.assertEqual(0, summary["returned"])
+        self.assertEqual(10_000, summary["scanned"])
+        self.assertFalse(summary["scanLimitReached"])
+        self.assertFalse(summary["contentLimitReached"])
+        self.assertFalse(summary["hasMore"])
+        with self.assertRaises(harness.HarnessError):
+            harness.websocket_search_count({"returned": True}, "returned")
+        with self.assertRaises(harness.HarnessError):
+            harness.websocket_search_flag({"hasMore": 1}, "hasMore")
+
     def test_fixture_connection_failure_closes_its_listener_thread(self):
         def unused_port():
             with socket.socket() as listener:

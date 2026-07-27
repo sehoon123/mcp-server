@@ -24,6 +24,7 @@ from live_mcp_harness import (  # noqa: E402
     read_project_id,
     run_websocket_fixture,
     sha256_file,
+    websocket_search_count,
     write_private_json,
 )
 
@@ -167,9 +168,7 @@ def main() -> int:
             project_id,
             {"limit": 1, "regex": marker + "-absent", "caseSensitive": True, "newestFirst": True},
         )
-        baseline_entries = baseline.get("scanned")
-        if not isinstance(baseline_entries, int) or baseline_entries < 0:
-            raise HarnessError("could not establish a bounded history baseline")
+        baseline_entries = websocket_search_count(baseline, "scanned")
         if baseline.get("scanLimitReached") or baseline_entries >= 10_000:
             raise HarnessError("disposable project baseline is too large for exact staged accounting")
         report["baseline"] = bounded_search_summary(baseline, baseline_elapsed)
@@ -196,26 +195,27 @@ def main() -> int:
                 project_id,
                 {"limit": 1, "regex": marker + "-absent", "caseSensitive": True, "newestFirst": True},
             )
-            expected_scan = min(estimated_entries, 10_000)
-            if miss.get("scanned") != expected_scan or miss.get("returned") != 0:
-                raise HarnessError("bounded no-match search did not scan the expected limit")
             recent, recent_elapsed = search(client, project_id, {"limit": 1, "newestFirst": True})
-            if recent.get("returned") != 1 or recent.get("scanned") != 1:
-                raise HarnessError("bounded recent search did not return one record")
             rss_after = enforce_rss_limit(args.burp_pid, max_rss_kib)
-            report["stages"].append(
-                {
-                    "targetHistoryEntries": stage,
-                    "estimatedHistoryEntriesFromVerifiedFixture": estimated_entries,
-                    "fixtureMessagesSent": messages,
-                    "fixtureEchoesReceived": echoes,
-                    "fixtureClientWallSeconds": round(fixture_elapsed, 6),
-                    "rssBeforeKiB": rss_before,
-                    "rssAfterKiB": rss_after,
-                    "noMatch": bounded_search_summary(miss, miss_elapsed),
-                    "recentOne": bounded_search_summary(recent, recent_elapsed),
-                }
-            )
+            stage_observation = {
+                "targetHistoryEntries": stage,
+                "estimatedHistoryEntriesFromVerifiedFixture": estimated_entries,
+                "fixtureMessagesSent": messages,
+                "fixtureEchoesReceived": echoes,
+                "fixtureClientWallSeconds": round(fixture_elapsed, 6),
+                "rssBeforeKiB": rss_before,
+                "rssAfterKiB": rss_after,
+                "noMatch": bounded_search_summary(miss, miss_elapsed),
+                "recentOne": bounded_search_summary(recent, recent_elapsed),
+            }
+            report["lastObservedStageAttempt"] = stage_observation
+            expected_scan = min(estimated_entries, 10_000)
+            if websocket_search_count(miss, "scanned") != expected_scan or websocket_search_count(miss, "returned") != 0:
+                raise HarnessError("bounded no-match search did not scan the expected limit")
+            if websocket_search_count(recent, "returned") != 1 or websocket_search_count(recent, "scanned") != 1:
+                raise HarnessError("bounded recent search did not return one record")
+            report["stages"].append(stage_observation)
+            report.pop("lastObservedStageAttempt", None)
 
         report["cursorAndStableId"] = cursor_checks(client, project_id)
         report["status"] = "passed"
