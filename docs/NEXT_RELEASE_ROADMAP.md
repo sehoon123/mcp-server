@@ -1,6 +1,6 @@
 # Active release roadmap
 
-**Status date:** 2026-07-27<br>
+**Status date:** 2026-07-28<br>
 **Baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`  
 **Planning model:** gate-based; versions have no promised calendar date
 
@@ -353,8 +353,9 @@ Candidate work:
 
 ## v4.11.0 — Measured History Freshness and HTTP Activity Correlation
 
-Development uses the non-release identity `4.11.0-dev.1`. The immutable `v4.10.0-rc.1` tag, draft, notes, and assets
-remain unchanged. Work is ordered so measurement precedes scheduling changes and catalog growth.
+Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
+The immutable `v4.10.0-rc.1` tag, draft, notes, and assets remain unchanged. Work remains ordered so measurement
+precedes scheduling changes and catalog growth.
 
 Milestones:
 
@@ -369,13 +370,13 @@ Milestones:
 
 The first deliverable changes no MCP tool, prompt, resource, template, cursor, stable-ID, approval, or result schema.
 Metrics survive listener restart for the extension lifetime, retain no project/client/filter/reference/traffic value, and
-are diagnostic aggregates rather than Burp product benchmarks. The next development increment adds only advisory,
-value-free source revisions from passive Proxy/Scanner callbacks and approved Organizer attempts. Unit/race validation
-is complete; disposable live Community/Professional timing, visibility, project-replacement, and unload evidence remains
-open, so complete event-driven freshness is not claimed.
+are diagnostic aggregates rather than Burp product benchmarks. This candidate adds only advisory, value-free source
+revisions from passive Proxy/Scanner callbacks and approved Organizer attempts. Unit/race validation is complete;
+disposable live Community/Professional timing, visibility, project-replacement, and unload evidence remains open, so
+complete event-driven freshness is not claimed.
 
-The current development increment adds exactly one common read-only `correlate_http_activity` tool, bringing the
-development catalogs to 25 Community / 32 Professional tools while leaving prompts, resources, URI templates, cursors,
+This candidate also adds exactly one common read-only `correlate_http_activity` tool, bringing the candidate catalogs
+to 25 Community / 32 Professional tools while leaving prompts, resources, URI templates, cursors,
 and existing result schemas unchanged. It resolves one ordered batch of at most 16 distinct baseline plus 16 distinct
 comparison references through existing source approvals and stable-ID checks. It returns only bounded HTTP metadata,
 Proxy capture times when available, invocation-local cross-source similarity groups, and a complete deterministic

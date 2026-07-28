@@ -292,6 +292,7 @@ jobs:
           SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
           VERSION: ${{ needs.identity.outputs.version }}
           PREVIOUS_TAG: ${{ needs.identity.outputs.previous_tag }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -392,6 +393,7 @@ jobs:
           } > "$stage/RELEASE_NOTES.md"
 
           jq -n \
+            --arg repository "$REPOSITORY_URL" \
             --arg tag "$RELEASE_TAG" \
             --arg version "$VERSION" \
             --arg sourceCommit "$SOURCE_COMMIT" \
@@ -400,7 +402,7 @@ jobs:
             --arg buildContainer "eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a" \
             --arg jarSha256 "$jar_sha" \
             --arg sbomSha256 "$bom_sha" \
-            '{tag:$tag,version:$version,sourceCommit:$sourceCommit,previousTag:$previousTag,workflowRun:$workflowRun,build:{container:$buildContainer},artifacts:{jarSha256:$jarSha256,sbomSha256:$sbomSha256}}' \
+            '{repository:$repository,tag:$tag,version:$version,sourceCommit:$sourceCommit,previousTag:$previousTag,workflowRun:$workflowRun,build:{container:$buildContainer},artifacts:{jarSha256:$jarSha256,sbomSha256:$sbomSha256}}' \
             > "$stage/SOURCE_IDENTITY.json"
 
           JAR_PATH="$stage/independent-mcp-bridge-all.jar" python3 - <<'PY'
@@ -584,6 +586,7 @@ jobs:
           SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
           VERSION: ${{ needs.identity.outputs.version }}
           PREVIOUS_TAG: ${{ needs.identity.outputs.previous_tag }}
+          EXPECTED_REPOSITORY: https://github.com/${{ github.repository }}
           EXPECTED_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EXPECTED_BUILD_CONTAINER: eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a
         shell: bash
@@ -600,6 +603,7 @@ jobs:
           }
           stage="$RUNNER_TEMP/release-assets"
           (cd "$stage" && sha256sum -c SHA256SUMS)
+          [[ $(jq -r '.repository' "$stage/SOURCE_IDENTITY.json") == "$EXPECTED_REPOSITORY" ]]
           [[ $(jq -r '.tag' "$stage/SOURCE_IDENTITY.json") == "$RELEASE_TAG" ]]
           [[ $(jq -r '.version' "$stage/SOURCE_IDENTITY.json") == "$VERSION" ]]
           [[ $(jq -r '.sourceCommit' "$stage/SOURCE_IDENTITY.json") == "$SOURCE_COMMIT" ]]

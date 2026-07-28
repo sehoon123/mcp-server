@@ -86,7 +86,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current development catalog contains 25 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 25 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|

@@ -81,7 +81,7 @@ def main() -> int:
     parser.add_argument("--interval-seconds", type=float, default=1.0)
     parser.add_argument("--burp-pid", type=int, required=True)
     parser.add_argument("--max-rss-mib", type=int, default=6144)
-    parser.add_argument("--expected-tools", type=int, choices=(24, 31), required=True)
+    parser.add_argument("--expected-tools", type=int, choices=(25, 32), required=True)
     parser.add_argument("--expected-prompts", type=int, choices=(4, 5), required=True)
     args = parser.parse_args()
 

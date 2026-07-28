@@ -120,19 +120,52 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             "--candidate-jar", "missing-jar",
             "--expected-jar-sha256", "0" * 64,
             "--expected-source-commit", "0" * 40,
-            "--expected-server-version", "4.11.0-dev.1",
-            "--expected-tools", "31",
-            "--expected-prompts", "5",
+            "--expected-server-version", "4.11.0-rc.1",
         ]
         for script in ("run-live-websocket-scale.py", "run-live-lifecycle-soak.py"):
-            result = subprocess.run(
-                [sys.executable, str(SCRIPTS / script), *common],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            self.assertEqual(2, result.returncode)
-            self.assertIn("--burp-pid", result.stderr)
+            for expected_tools, expected_prompts in ((25, 4), (32, 5)):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / script),
+                        *common,
+                        "--expected-tools", str(expected_tools),
+                        "--expected-prompts", str(expected_prompts),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(2, result.returncode)
+                self.assertIn("--burp-pid", result.stderr)
+
+    def test_live_runners_reject_stale_catalog_counts(self):
+        common = [
+            "--approved-disposable-project",
+            "--token-file", "missing-token",
+            "--output", "missing-output",
+            "--candidate-jar", "missing-jar",
+            "--expected-jar-sha256", "0" * 64,
+            "--expected-source-commit", "0" * 40,
+            "--expected-server-version", "4.11.0-rc.1",
+            "--expected-prompts", "5",
+            "--burp-pid", "1",
+        ]
+        for script in ("run-live-websocket-scale.py", "run-live-lifecycle-soak.py"):
+            for stale_count in (24, 31):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / script),
+                        *common,
+                        "--expected-tools", str(stale_count),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(2, result.returncode)
+                self.assertIn("invalid choice", result.stderr)
 
     def test_fixed_scale_stage_parser_has_no_unbounded_values(self):
         scale = load_scale_module()
