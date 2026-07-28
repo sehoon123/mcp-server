@@ -65,6 +65,47 @@ private data class McpAuditDocument(
     val records: List<McpAuditRecord> = emptyList(),
 )
 
+internal data class BoundedAuditEncoding(
+    val text: String,
+    val droppedRecords: Int,
+)
+
+private val EMPTY_AUDIT_DOCUMENT = auditJson.encodeToString(McpAuditDocument())
+private val AUDIT_DOCUMENT_SUFFIX = "]}"
+private val AUDIT_DOCUMENT_PREFIX = EMPTY_AUDIT_DOCUMENT
+    .also { check(it.endsWith("[]}")) { "unexpected audit document encoding" } }
+    .removeSuffix(AUDIT_DOCUMENT_SUFFIX)
+
+/** Serializes each record once and retains the largest complete newest-record suffix within the character cap. */
+internal fun encodeBoundedAuditRecords(
+    records: List<McpAuditRecord>,
+    maxChars: Int = MAX_PERSISTED_AUDIT_CHARS,
+): BoundedAuditEncoding {
+    require(maxChars >= EMPTY_AUDIT_DOCUMENT.length) { "audit character cap cannot fit an empty document" }
+    val encodedRecords = records.map { record -> auditJson.encodeToString(record) }
+    var totalChars = AUDIT_DOCUMENT_PREFIX.length.toLong() + AUDIT_DOCUMENT_SUFFIX.length
+    for (encoded in encodedRecords) totalChars += encoded.length
+    if (encodedRecords.size > 1) totalChars += encodedRecords.size - 1L
+
+    var droppedRecords = 0
+    while (totalChars > maxChars && droppedRecords < encodedRecords.size) {
+        totalChars -= encodedRecords[droppedRecords].length
+        if (droppedRecords < encodedRecords.lastIndex) totalChars--
+        droppedRecords++
+    }
+
+    val text = buildString(totalChars.toInt()) {
+        append(AUDIT_DOCUMENT_PREFIX)
+        for (index in droppedRecords until encodedRecords.size) {
+            if (index > droppedRecords) append(',')
+            append(encodedRecords[index])
+        }
+        append(AUDIT_DOCUMENT_SUFFIX)
+    }
+    check(text.length <= maxChars) { "bounded audit encoding exceeded its character cap" }
+    return BoundedAuditEncoding(text, droppedRecords)
+}
+
 internal interface McpAuditSink : AutoCloseable {
     fun append(record: McpAuditRecord)
     fun recordLocalEvent(tool: String, outcome: String)
@@ -100,6 +141,7 @@ internal class PersistentMcpAuditLog(
     private val config: McpConfig,
     private val logging: Logging,
     private val clock: Clock = Clock.systemUTC(),
+    private val encodeSnapshot: (List<McpAuditRecord>) -> BoundedAuditEncoding = ::encodeBoundedAuditRecords,
 ) : McpAuditSink {
     private val lock = Any()
     private val records = ArrayDeque<McpAuditRecord>()
@@ -262,43 +304,42 @@ internal class PersistentMcpAuditLog(
     private fun flushLoop() {
         while (true) {
             val targetRevision: Long
-            val encoded: String
+            val snapshot: List<McpAuditRecord>
             synchronized(lock) {
                 targetRevision = revision
-                encoded = encodeBoundedLocked()
+                snapshot = records.toList()
             }
-            val succeeded = runCatching { storage.setString(AUDIT_STORAGE_KEY, encoded) }
-                .onFailure { logging.logToError("MCP audit persistence failed: ${safeExceptionSummary(it)}") }
-                .isSuccess
-            synchronized(lock) {
-                if (!succeeded || targetRevision == revision) {
-                    flushScheduled = false
-                    return
+            val encoding = runCatching {
+                encodeSnapshot(snapshot).also {
+                    require(it.droppedRecords in 0..snapshot.size) { "invalid bounded audit drop count" }
+                    require(it.text.length <= MAX_PERSISTED_AUDIT_CHARS) { "bounded audit encoding exceeded its cap" }
                 }
+            }.onFailure {
+                runCatching { logging.logToError("MCP audit encoding failed: ${safeExceptionSummary(it)}") }
+            }.getOrNull()
+            if (encoding == null) {
+                val retryCurrentRevision = synchronized(lock) {
+                    if (targetRevision == revision) flushScheduled = false
+                    targetRevision != revision
+                }
+                if (retryCurrentRevision) continue
+                return
             }
-        }
-    }
-
-    private fun encodeBoundedLocked(): String {
-        val snapshot = records.toList()
-        val encoded = auditJson.encodeToString(McpAuditDocument(records = snapshot))
-        if (encoded.length <= MAX_PERSISTED_AUDIT_CHARS) return encoded
-
-        var minimumDrop = 1
-        var maximumDrop = snapshot.size
-        while (minimumDrop < maximumDrop) {
-            val candidateDrop = minimumDrop + (maximumDrop - minimumDrop) / 2
-            val candidate = auditJson.encodeToString(McpAuditDocument(records = snapshot.drop(candidateDrop)))
-            if (candidate.length <= MAX_PERSISTED_AUDIT_CHARS) {
-                maximumDrop = candidateDrop
-            } else {
-                minimumDrop = candidateDrop + 1
+            val succeeded = runCatching { storage.setString(AUDIT_STORAGE_KEY, encoding.text) }
+                .onFailure {
+                    runCatching { logging.logToError("MCP audit persistence failed: ${safeExceptionSummary(it)}") }
+                }
+                .isSuccess
+            val retryCurrentRevision = synchronized(lock) {
+                if (succeeded && targetRevision == revision && encoding.droppedRecords > 0) {
+                    repeat(encoding.droppedRecords) { records.removeFirst() }
+                }
+                if (targetRevision == revision) flushScheduled = false
+                targetRevision != revision
             }
+            if (retryCurrentRevision) continue
+            return
         }
-        val retained = snapshot.drop(minimumDrop)
-        records.clear()
-        records.addAll(retained)
-        return auditJson.encodeToString(McpAuditDocument(records = retained))
     }
 
     private fun pruneExpiredAndScheduleLocked() {
