@@ -678,6 +678,38 @@ Latency is effectively neutral for the header-only synthetic case and about 5% l
 reliable gain is fewer temporary strings and substantially lower allocation. Both paths produced identical output,
 including byte-for-byte preservation of body text.
 
+## v4.11 post-RC1 request-path optimizations
+
+The `4.11.0-dev.4` follow-up applies four bounded changes without changing MCP names, descriptions, schemas,
+annotations, stable IDs, approvals, project checks, cancellation, or uncertain-execution semantics:
+
+- one invocation-local HTTP source view is reused across a warm search and its one allowed stale-index fallback;
+  Proxy and Organizer are each acquired at most once in the normal path and at most once more after a detected stale
+  index, while Site Map positional identity validation remains unchanged;
+- an ordered batch of at most 32 Proxy or Organizer references uses one filtered Montoya lookup per represented source,
+  rather than one filtered lookup per reference. Caller order, duplicates, missing/ambiguous-result rejection,
+  per-reference identity validation, cancellation, and final project checks remain explicit;
+- structured tool execution, Kotlin serialization, bounded fallback text construction, and SDK result construction all
+  run on the existing bounded serialization dispatcher. Request threads and the Swing EDT do not perform result
+  materialization; no second unbounded dispatcher or queue was introduced; and
+- audit flushes copy only `(revision, records)` under the audit lock. Each record is serialized once outside the lock,
+  the minimal oldest prefix is removed to satisfy the existing 1 MiB character cap, and in-memory trimming occurs only
+  after a successful write whose revision is still current. A racing append, clear, retention change, failed encoding,
+  or failed write either causes a current-revision retry or leaves later scheduling available.
+
+Deterministic regression tests verify source-acquisition cardinality, ordered batch resolution, malformed and duplicate
+lookup rejection, cancellation and project-transition checks, bounded-dispatch execution, byte-exact audit encoding,
+minimal complete-record retention, and audit flush races. These are extension-side cardinality and scheduling proofs,
+not Burp latency claims. A fresh dual-edition live run remains required before attributing wall-clock or allocation
+improvements to Montoya itself.
+
+Two higher-risk candidates were reviewed and intentionally not changed in this slice. Montoya's pinned Site Map API
+exposes no paginated or direct positional lookup, so replacing `requestResponses()` would either lose the list index
+embedded in existing stable IDs or weaken reorder/removal detection. The metadata index still serializes refresh under
+its mutex: moving acquisition outside that mutex requires generation-checked publication, unload/project-transition
+coordination, and live evidence that repeated same-generation acquisition is material. Neither change is suitable for an
+RC without its measurement and identity-preservation gate.
+
 ## Swing EDT queue-delay watchdog
 
 One daemon scheduler samples Swing queue delay every 500 ms. It posts at most one no-op probe to the event queue; while
@@ -714,10 +746,12 @@ diagnostics view samples one immutable snapshot per second, so it does not poll 
 The audit path constructs one small record at tool completion. Argument keys are capped at 16, approvals at 8, and all
 stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized.
 Consolidated routing, scope, configuration, and global-control tools retain only fixed approval classifications such
-as `request_routing:intruder` or `scope_change:include`, never the operation argument value. The
-in-memory deque holds 50–1,000 records (250 by default) for at most 30 days, the persisted JSON document is capped at 1 MiB, and copied
-JSONL is capped at 100 records/64 KiB. A single daemon writer coalesces completions for 250 ms, keeps persistence off
-request workers and the Swing event thread, and flushes synchronously only during explicit test/lifecycle barriers.
+as `request_routing:intruder` or `scope_change:include`, never the operation argument value. The in-memory deque holds
+50–1,000 records (250 by default) for at most 30 days, the persisted JSON document is capped at 1 MiB, and copied JSONL
+is capped at 100 records/64 KiB. A single daemon writer coalesces completions for 250 ms, keeps persistence and encoding
+off request workers and the Swing event thread, and flushes synchronously only during explicit test/lifecycle barriers.
+The writer snapshots revision and records under a short lock, performs linear complete-record JSON encoding and storage
+outside that lock, and applies cap-driven trimming only after successful current-revision persistence.
 
 ## Reproducible packaging
 
@@ -733,11 +767,16 @@ build and a forced rerun from identical inputs must produce byte-identical proxy
 The feature phase added compact stable-ID summaries, bounded field reads, signed HTTP/WebSocket cursors, complete-record
 Scanner compatibility pagination, and a constrained regex policy. Remaining performance work is deliberately narrower:
 
-1. Add hard timeouts to remaining long-running read/config tools only where they can work with Ktor receive behavior and
+1. Measure API-only Site Map acquisition in both editions before considering any identity-preserving alternative;
+   the pinned API has no bounded positional lookup.
+2. Add generation-checked metadata refresh publication or single-flight admission only after live contention evidence;
+   project replacement, mutation barriers, close, caller order, and first-failure behavior must remain fail-closed.
+3. Add hard timeouts to remaining long-running read/config tools only where they can work with Ktor receive behavior and
    without treating an ambiguous mutation as retryable.
-2. Add lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be
+4. Add lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be
    resolved and identity-checked against the current source.
-3. Evaluate a streaming structured-output encoder if future result types approach the current page-level character cap.
+5. Evaluate streaming structured-output encoding only if future result types approach the current page-level character
+   cap; current encoding already executes wholly on the bounded serialization dispatcher.
 
 ## Regression checks
 

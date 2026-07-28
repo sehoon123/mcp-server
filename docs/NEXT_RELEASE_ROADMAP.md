@@ -355,9 +355,9 @@ Candidate work:
 
 Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
 The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` tags, drafts, notes, and assets remain unchanged. Follow-up exact-smoke
-orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; the surface-reduction follow-up uses
-`4.11.0-dev.3` and targets a new candidate only. Work remains ordered so measurement precedes scheduling changes and
-catalog changes.
+orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; the surface-reduction follow-up used
+`4.11.0-dev.3`. The bounded performance follow-up uses `4.11.0-dev.4` and targets a new candidate only. Work remains
+ordered so measurement precedes scheduling changes and catalog changes.
 
 Milestones:
 
@@ -393,6 +393,14 @@ The subsequent surface-reduction slice removes `transform_data`, `generate_rando
 `get_active_editor_contents`, and `set_active_editor_contents`. Local shell utilities replace the first two; Burp's
 editor UI replaces the focus-dependent pair. The resulting catalogs contain 21 Community / 28 Professional tools, while
 all prompts, fixed resources, resource templates, and retained tool schemas remain unchanged.
+
+The `4.11.0-dev.4` performance slice reuses invocation-local Proxy/Organizer source views, resolves each represented
+source once for ordered batches of at most 32 stable references, keeps all structured-result materialization on the
+bounded serialization dispatcher, and moves linear bounded audit JSON encoding outside the audit lock. It changes no
+public catalog, stable-ID, approval, project, cancellation, or uncertain-execution contract. Complete per-edition tool
+fingerprints and a local/protected-workflow scenario-identity regression now fail closed on contract drift. Pinned
+Montoya Site Map acquisition and metadata-index refresh locking remain unchanged pending API-only and live contention
+measurements; neither has a safe RC optimization that preserves positional identity and project-transition semantics.
 
 The initial post-RC1 exact-smoke slice kept every tool, prompt, resource URI, template, and operation schema unchanged. It added
 three fixed fields to the existing diagnostics resource: a path-free loaded code-source JAR SHA-256 and saturation-safe
