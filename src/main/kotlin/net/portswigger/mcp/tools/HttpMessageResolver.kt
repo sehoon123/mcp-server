@@ -26,6 +26,12 @@ internal enum class HttpMessageResolutionStatus {
     BURP_ERROR,
 }
 
+internal enum class HttpSourceMetadataSelection {
+    NONE,
+    FULL,
+    PROXY_CAPTURE_TIME,
+}
+
 internal data class ResolvedHttpMessage(
     val ref: HttpMessageReference,
     val request: HttpRequest,
@@ -36,6 +42,7 @@ internal data class ResolvedHttpMessage(
 
 internal data class ResolvedHttpSourceMetadata(
     val time: String? = null,
+    val proxyCaptureTimeEpochMillis: Long? = null,
     val listenerPort: Int? = null,
     val edited: Boolean? = null,
     val inScope: Boolean? = null,
@@ -71,14 +78,14 @@ internal class HttpMessageResolver(
     suspend fun resolve(
         projectId: String,
         ref: HttpMessageReference,
-        includeSourceMetadata: Boolean = false,
-    ): HttpMessageBatchResolution = resolveAll(projectId, listOf(ref), 1, includeSourceMetadata)
+        sourceMetadata: HttpSourceMetadataSelection = HttpSourceMetadataSelection.NONE,
+    ): HttpMessageBatchResolution = resolveAll(projectId, listOf(ref), 1, sourceMetadata)
 
     suspend fun resolveAll(
         projectId: String,
         refs: List<HttpMessageReference>,
         maxRefs: Int = MAX_HTTP_REFERENCES_PER_BATCH,
-        includeSourceMetadata: Boolean = false,
+        sourceMetadata: HttpSourceMetadataSelection = HttpSourceMetadataSelection.NONE,
     ): HttpMessageBatchResolution {
         if (!isValidProjectId(projectId)) {
             return failure(
@@ -192,7 +199,7 @@ internal class HttpMessageResolver(
         }
 
         val resolution = try {
-            resolveValidated(currentProjectId, validated, includeSourceMetadata)
+            resolveValidated(currentProjectId, validated, sourceMetadata)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -232,7 +239,7 @@ internal class HttpMessageResolver(
     private suspend fun resolveValidated(
         projectId: String,
         refs: List<ValidatedHttpReference>,
-        includeSourceMetadata: Boolean,
+        sourceMetadataSelection: HttpSourceMetadataSelection,
     ): HttpMessageBatchResolution {
         val siteMapItems by lazy(LazyThreadSafetyMode.NONE) { api.siteMap().requestResponses() }
         val resolved = ArrayList<ResolvedHttpMessage>(refs.size)
@@ -245,16 +252,22 @@ internal class HttpMessageResolver(
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = if (includeSourceMetadata) {
-                        val notes = item.annotations().notes().boundedResolvedNotes()
-                        ResolvedHttpSourceMetadata(
-                            time = item.time().toString(),
-                            listenerPort = item.listenerPort(),
-                            edited = item.edited(),
-                            notes = notes.first,
-                            notesTruncated = notes.second,
+                    val sourceMetadata = when (sourceMetadataSelection) {
+                        HttpSourceMetadataSelection.NONE -> null
+                        HttpSourceMetadataSelection.FULL -> {
+                            val notes = item.annotations().notes().boundedResolvedNotes()
+                            ResolvedHttpSourceMetadata(
+                                time = item.time().toString(),
+                                listenerPort = item.listenerPort(),
+                                edited = item.edited(),
+                                notes = notes.first,
+                                notesTruncated = notes.second,
+                            )
+                        }
+                        HttpSourceMetadataSelection.PROXY_CAPTURE_TIME -> ResolvedHttpSourceMetadata(
+                            proxyCaptureTimeEpochMillis = item.time().toInstant().toEpochMilli(),
                         )
-                    } else null
+                    }
                     ResolvedHttpMessage(validated.ref, request, item.response(), null, sourceMetadata)
                 }
 
@@ -263,7 +276,7 @@ internal class HttpMessageResolver(
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = if (includeSourceMetadata) {
+                    val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
                         val notes = item.annotations().notes().boundedResolvedNotes()
                         ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
                     } else null
@@ -279,7 +292,7 @@ internal class HttpMessageResolver(
                     }
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = if (includeSourceMetadata) {
+                    val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
                         val notes = item.annotations().notes().boundedResolvedNotes()
                         ResolvedHttpSourceMetadata(
                             inScope = request.isInScope(),
@@ -297,6 +310,21 @@ internal class HttpMessageResolver(
     }
 }
 
+internal data class CanonicalHttpReferenceIdentity(
+    val source: HttpMessageSource,
+    val id: String,
+)
+
+internal fun canonicalHttpReferenceIdentity(ref: HttpMessageReference): CanonicalHttpReferenceIdentity? {
+    if (ref.id.isEmpty() || ref.id.length > MAX_HTTP_REFERENCE_ID_CHARS || ref.id.any(Char::isISOControl)) return null
+    return if (ref.source == HttpMessageSource.SITE_MAP) {
+        if (parseSiteMapId(ref.id) == null) null else CanonicalHttpReferenceIdentity(ref.source, ref.id)
+    } else {
+        val numeric = ref.id.toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        CanonicalHttpReferenceIdentity(ref.source, numeric.toString())
+    }
+}
+
 private data class ValidatedHttpReference(
     val ref: HttpMessageReference,
     val numericId: Int?,
@@ -304,13 +332,12 @@ private data class ValidatedHttpReference(
 )
 
 private fun validateReference(ref: HttpMessageReference): ValidatedHttpReference? {
-    if (ref.id.isEmpty() || ref.id.length > MAX_HTTP_REFERENCE_ID_CHARS || ref.id.any(Char::isISOControl)) return null
+    val canonical = canonicalHttpReferenceIdentity(ref) ?: return null
     return if (ref.source == HttpMessageSource.SITE_MAP) {
-        val parsed = parseSiteMapId(ref.id) ?: return null
+        val parsed = parseSiteMapId(canonical.id) ?: return null
         ValidatedHttpReference(ref, null, parsed)
     } else {
-        val numeric = ref.id.toIntOrNull()?.takeIf { it >= 0 } ?: return null
-        ValidatedHttpReference(ref, numeric, null)
+        ValidatedHttpReference(ref, canonical.id.toInt(), null)
     }
 }
 

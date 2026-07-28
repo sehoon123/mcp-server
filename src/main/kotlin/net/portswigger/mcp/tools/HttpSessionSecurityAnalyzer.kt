@@ -978,10 +978,8 @@ private fun classifyPathScope(
     return if (matchesRequestPath) SessionPathScope.REQUEST_PATH_PREFIX else SessionPathScope.OTHER
 }
 
-private fun HttpMessageReference.sessionAnalysisIdentity(): Pair<HttpMessageSource, String> = source to when (source) {
-    HttpMessageSource.SITE_MAP -> id
-    HttpMessageSource.PROXY, HttpMessageSource.ORGANIZER -> id.toIntOrNull()?.takeIf { it >= 0 }?.toString() ?: id
-}
+private fun HttpMessageReference.sessionAnalysisIdentity(): CanonicalHttpReferenceIdentity =
+    canonicalHttpReferenceIdentity(this) ?: CanonicalHttpReferenceIdentity(source, id)
 
 private fun classifyLifetime(
     maxAgePresent: Boolean,

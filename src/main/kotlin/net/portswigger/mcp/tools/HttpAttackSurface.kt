@@ -17,12 +17,9 @@ private const val MAX_ATTACK_SURFACE_SERVICE_LIMIT = 100
 private const val DEFAULT_ATTACK_SURFACE_PATH_LIMIT = 50
 private const val MAX_ATTACK_SURFACE_PATH_LIMIT = 200
 private const val DEFAULT_ATTACK_SURFACE_PATH_DEPTH = 2
-private const val MAX_ATTACK_SURFACE_PATH_DEPTH = 4
 private const val MAX_ATTACK_SURFACE_GLOBAL_COUNTS = 32
 private const val MAX_ATTACK_SURFACE_SERVICE_COUNTS = 16
 private const val MAX_ATTACK_SURFACE_PATH_COUNTS = 8
-private const val MAX_ATTACK_SURFACE_SEGMENT_CHARS = 128
-private const val MAX_ATTACK_SURFACE_PREFIX_CHARS = 512
 private const val MAX_ATTACK_SURFACE_SNAPSHOT_ATTEMPTS = 2
 
 @Serializable
@@ -336,9 +333,9 @@ internal class HttpAttackSurfaceService(
 
                 matchedRecords++
                 if (record.hasResponse) responseRecords++
-                val recordStatusClass = record.statusCode?.let(::statusClass)
+                val recordStatusClass = record.statusCode?.let(::httpStatusClass)
                 val recordMimeType = record.mimeType?.lowercase()
-                val recordExtension = fileExtension(record)
+                val recordExtension = httpFileExtension(record.path, record.pathTruncated)
                 increment(methods, record.method)
                 recordStatusClass?.let { increment(statusClasses, it) }
                 recordMimeType?.let { increment(mimeTypes, it) }
@@ -347,7 +344,7 @@ internal class HttpAttackSurfaceService(
                 val serviceKey = ServiceKey(record.scheme, record.host, record.port)
                 val pathKey = PathKey(
                     service = serviceKey,
-                    prefix = normalizedPathPrefix(record.path, normalized.pathDepth),
+                    prefix = normalizedHttpPathPrefix(record.path, normalized.pathDepth),
                 )
                 increment(serviceCounts, serviceKey)
                 increment(pathCounts, pathKey)
@@ -590,81 +587,6 @@ private fun HttpMessageSource.toDataAccessType(): DataAccessType = when (this) {
     HttpMessageSource.PROXY -> DataAccessType.HTTP_HISTORY
     HttpMessageSource.SITE_MAP -> DataAccessType.SITE_MAP
     HttpMessageSource.ORGANIZER -> DataAccessType.ORGANIZER
-}
-
-private fun normalizedPathPrefix(path: String, depth: Int): String {
-    val queryStart = path.indexOf('?').takeIf { it >= 0 } ?: path.length
-    val fragmentStart = path.indexOf('#').takeIf { it >= 0 } ?: path.length
-    val pathEnd = minOf(queryStart, fragmentStart)
-    val prefix = StringBuilder(minOf(pathEnd, MAX_ATTACK_SURFACE_PREFIX_CHARS))
-    var cursor = 0
-    var segments = 0
-    while (cursor < pathEnd && segments < depth) {
-        while (cursor < pathEnd && path[cursor] == '/') cursor++
-        if (cursor >= pathEnd) break
-        val nextSlash = path.indexOf('/', cursor).let { if (it < 0 || it > pathEnd) pathEnd else it }
-        if (nextSlash > cursor) {
-            prefix.append('/').append(normalizePathSegment(path.substring(cursor, nextSlash)))
-            segments++
-        }
-        cursor = nextSlash + 1
-    }
-    if (segments == 0) return "/"
-    return prefix.toString().take(MAX_ATTACK_SURFACE_PREFIX_CHARS)
-}
-
-private fun normalizePathSegment(raw: String): String {
-    val segment = raw.take(MAX_ATTACK_SURFACE_SEGMENT_CHARS)
-    return when {
-        segment.isAsciiNumber() -> "{number}"
-        segment.isUuid() -> "{uuid}"
-        segment.isLongHex() || segment.isLongToken() -> "{id}"
-        else -> segment
-    }
-}
-
-private fun String.isAsciiNumber(): Boolean = isNotEmpty() && all { it in '0'..'9' }
-
-private fun String.isUuid(): Boolean {
-    if (length != 36) return false
-    for (index in indices) {
-        val character = this[index]
-        when (index) {
-            8, 13, 18, 23 -> if (character != '-') return false
-            14 -> if (character !in '1'..'5') return false
-            19 -> if (character.lowercaseChar() !in "89ab") return false
-            else -> if (!character.isAsciiHex()) return false
-        }
-    }
-    return true
-}
-
-private fun String.isLongHex(): Boolean = length >= 16 && all(Char::isAsciiHex)
-
-private fun String.isLongToken(): Boolean = length >= 24 && all {
-    it.isAsciiAlphanumeric() || it == '_' || it == '-'
-}
-
-private fun Char.isAsciiHex(): Boolean = this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
-
-private fun Char.isAsciiAlphanumeric(): Boolean = this in '0'..'9' || this in 'a'..'z' || this in 'A'..'Z'
-
-private fun fileExtension(record: HttpMetadataRecord): String? {
-    if (record.pathTruncated) return null
-    val fileName = record.path.substringAfterLast('/')
-    if (fileName.startsWith('.') || '.' !in fileName) return null
-    return fileName.substringAfterLast('.')
-        .takeIf { it.length in 1..16 && it.all(Char::isAsciiAlphanumeric) }
-        ?.lowercase()
-}
-
-private fun statusClass(statusCode: Int): String = when (statusCode) {
-    in 100..199 -> "1xx"
-    in 200..299 -> "2xx"
-    in 300..399 -> "3xx"
-    in 400..499 -> "4xx"
-    in 500..599 -> "5xx"
-    else -> "other"
 }
 
 private fun <K> increment(target: MutableMap<K, Int>, key: K) {

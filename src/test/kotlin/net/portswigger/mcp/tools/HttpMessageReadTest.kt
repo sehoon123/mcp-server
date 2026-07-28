@@ -40,6 +40,25 @@ class HttpMessageReadTest {
     }
 
     @Test
+    fun `Proxy capture-time selection reads no full source metadata`() = runBlocking {
+        val fixture = fixture(projectIds = listOf("project-a", "project-a"))
+        val resolution = HttpMessageResolver(fixture.api, fixture.config).resolve(
+            projectId = "project-a",
+            ref = HttpMessageReference(HttpMessageSource.PROXY, "07"),
+            sourceMetadata = HttpSourceMetadataSelection.PROXY_CAPTURE_TIME,
+        )
+
+        val found = resolution as HttpMessageBatchResolution.Found
+        assertEquals(1_767_323_045_000L, found.messages.single().sourceMetadata?.proxyCaptureTimeEpochMillis)
+        verify(exactly = 1) { fixture.item.time() }
+        verify(exactly = 0) { fixture.item.annotations() }
+        verify(exactly = 0) { fixture.item.listenerPort() }
+        verify(exactly = 0) { fixture.item.edited() }
+        verify(exactly = 0) { fixture.request.body() }
+        verify(exactly = 0) { fixture.request.headers() }
+    }
+
+    @Test
     fun `invalid source ID is rejected before source lookup`() = runBlocking {
         val fixture = fixture(projectIds = listOf("project-a"))
 
@@ -92,11 +111,22 @@ class HttpMessageReadTest {
         every { service.port() } returns 443
         every { service.secure() } returns true
 
-        return ReadFixture(HttpMessageReadService(api, config), proxy)
+        return ReadFixture(
+            service = HttpMessageReadService(api, config),
+            api = api,
+            config = config,
+            proxy = proxy,
+            item = item,
+            request = request,
+        )
     }
 
     private data class ReadFixture(
         val service: HttpMessageReadService,
+        val api: MontoyaApi,
+        val config: McpConfig,
         val proxy: Proxy,
+        val item: ProxyHttpRequestResponse,
+        val request: HttpRequest,
     )
 }

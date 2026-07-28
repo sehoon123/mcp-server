@@ -3,7 +3,6 @@ package net.portswigger.mcp.tools
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpRequestResponse as MontoyaHttpRequestResponse
-import burp.api.montoya.http.message.MimeType
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.organizer.OrganizerItem
@@ -23,12 +22,11 @@ import java.util.HexFormat
 import java.util.concurrent.TimeUnit
 
 internal const val MAX_METADATA_INDEX_RECORDS_PER_SOURCE = 5_000
-internal const val MAX_METADATA_INDEX_PATH_CHARS = 512
+internal const val MAX_METADATA_INDEX_PATH_CHARS = MAX_INDEXED_HTTP_PATH_CHARS
 private const val MAX_METADATA_INDEX_ANCHORS = 16
 private const val DEFAULT_METADATA_INDEX_REUSE_MILLIS = 30_000L
 private const val METADATA_FINGERPRINT_HEX_CHARS = 32
 private val METADATA_HEX_FORMAT = HexFormat.of()
-private val NORMALIZED_METADATA_MIME_TYPES = MimeType.entries.associate { it.name to it.name.take(64).lowercase() }
 
 /** Describes whether a source snapshot was reused, incrementally updated, or rebuilt. */
 @Serializable
@@ -606,9 +604,9 @@ private fun metadataRecord(
     if (port !in 1..65_535) return null
     val method = request.method().trim().uppercase()
     if (method.isEmpty() || method.length > 32 || method.any(Char::isISOControl)) return null
-    val path = normalizeIndexedPath(request.path())
+    val path = normalizeHttpPath(request.path())
     val statusCode = response?.statusCode()?.toInt()
-    val mimeType = response?.mimeType()?.name?.let(NORMALIZED_METADATA_MIME_TYPES::get)
+    val mimeType = normalizeHttpMimeType(response?.mimeType())
     val scheme = if (service.secure()) "https" else "http"
     val hasResponse = response != null
     val inScope = request.isInScope()
@@ -620,8 +618,8 @@ private fun metadataRecord(
         host = host,
         port = port,
         method = method,
-        path = path.first,
-        pathTruncated = path.second,
+        path = path.value,
+        pathTruncated = path.truncated,
         statusCode = statusCode,
         mimeType = mimeType,
         timestampEpochMillis = timestampEpochMillis,
@@ -638,32 +636,14 @@ private fun metadataRecord(
         host = host,
         port = port,
         method = method,
-        path = path.first,
-        pathTruncated = path.second,
+        path = path.value,
+        pathTruncated = path.truncated,
         statusCode = statusCode,
         mimeType = mimeType,
         timestampEpochMillis = timestampEpochMillis,
         hasResponse = hasResponse,
         inScope = inScope,
     )
-}
-
-private fun normalizeIndexedPath(value: String): Pair<String, Boolean> {
-    if (
-        value.isNotEmpty() && value.startsWith('/') && value.length <= MAX_METADATA_INDEX_PATH_CHARS &&
-        '?' !in value && '#' !in value && value.none(Char::isISOControl)
-    ) {
-        return value to false
-    }
-    val withoutQuery = value.substringBefore('?').substringBefore('#').ifEmpty { "/" }
-    val normalized = buildString(minOf(withoutQuery.length, MAX_METADATA_INDEX_PATH_CHARS)) {
-        for (character in withoutQuery) {
-            if (length >= MAX_METADATA_INDEX_PATH_CHARS) break
-            append(if (character.isISOControl()) '_' else character)
-        }
-    }.let { if (it.startsWith('/')) it else "/$it" }
-    return normalized.take(MAX_METADATA_INDEX_PATH_CHARS) to
-        (withoutQuery.length > MAX_METADATA_INDEX_PATH_CHARS || normalized.length > MAX_METADATA_INDEX_PATH_CHARS)
 }
 
 private class MetadataFingerprinter {

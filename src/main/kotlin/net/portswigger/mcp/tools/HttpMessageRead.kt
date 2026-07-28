@@ -122,7 +122,11 @@ internal class HttpMessageReadService(
         }
 
         val found = when (
-            val resolution = resolver.resolve(input.projectId, input.ref, includeSourceMetadata = true)
+            val resolution = resolver.resolve(
+                input.projectId,
+                input.ref,
+                sourceMetadata = HttpSourceMetadataSelection.FULL,
+            )
         ) {
             is HttpMessageBatchResolution.Found -> resolution
             is HttpMessageBatchResolution.Failed -> return readError(
