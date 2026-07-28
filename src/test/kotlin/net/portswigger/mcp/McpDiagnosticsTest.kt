@@ -2,6 +2,8 @@ package net.portswigger.mcp
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
+import net.portswigger.mcp.tools.HistoryPerformanceSnapshot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -89,6 +91,35 @@ class McpDiagnosticsTest {
         assertFalse(publicJson.contains("initializedWithoutProtocolHeader"))
         assertFalse(publicJson.contains("historyPerformance"))
         assertFalse(publicJson.contains("latencyBuckets"))
+    }
+
+    @Test
+    fun `loaded artifact identity is fixed and path-free`() {
+        val digest = "a".repeat(64)
+        val metrics = McpRuntimeMetrics("dev", 64, 32, clock, loadedArtifactSha256 = digest)
+
+        assertEquals(digest, metrics.snapshot().loadedArtifactSha256)
+        val publicJson = Json.encodeToString(metrics.snapshot())
+        assertEquals(true, publicJson.contains(digest))
+        assertFalse(publicJson.contains("candidate.jar"))
+    }
+
+    @Test
+    fun `WebSocket outcome summary is fixed-cardinality and saturation-safe`() {
+        val empty = HistoryPerformanceSnapshot.empty()
+        val snapshot = empty.copy(
+            metrics = empty.metrics.map { metric ->
+                when (metric.metric) {
+                    HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION ->
+                        metric.copy(cancelled = Long.MAX_VALUE)
+                    HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING ->
+                        metric.copy(completed = 7, cancelled = 1)
+                    else -> metric
+                }
+            },
+        )
+
+        assertEquals(WebSocketSearchOutcomeSummary(completed = 7, cancelled = Long.MAX_VALUE), snapshot.webSocketSearchOutcomeSummary())
     }
 
     @Test

@@ -49,6 +49,11 @@ jobs:
           bash -n scripts/update-proxy.sh scripts/test-update-proxy-guards.sh
           scripts/test-update-proxy-guards.sh
 
+      - name: Run live-smoke harness contract tests
+        run: |
+          python3 scripts/test-live-mcp-harness.py
+          python3 scripts/test-exact-smoke-contract.py
+
       - name: Run tests
         run: ./gradlew test
 

@@ -272,6 +272,7 @@ internal fun formatMcpDiagnostics(
     appendLine("State: ${diagnostics.state}")
     appendLine("Endpoint: ${diagnostics.endpoint ?: "not bound"}")
     appendLine("Server: ${ProductIdentity.MCP_SERVER_NAME} ${diagnostics.serverVersion}")
+    appendLine("Loaded artifact SHA-256: ${diagnostics.loadedArtifactSha256 ?: "unavailable"}")
     appendLine("Protocol target: ${diagnostics.protocolVersion}")
     appendLine("Started: ${diagnostics.startedAtEpochMillis.asInstantOrNever()}")
     appendLine("Last MCP activity: ${diagnostics.lastActivityEpochMillis.asInstantOrNever()}")
@@ -290,6 +291,10 @@ internal fun formatMcpDiagnostics(
                 "buckets=${metric.latencyBuckets.formatHistoryBuckets()}",
         )
     }
+    appendLine(
+        "WebSocket search outcomes: completed=${diagnostics.webSocketSearchCompleted}, " +
+            "cancelled=${diagnostics.webSocketSearchCancelled}",
+    )
     appendLine("HTTP calls: ${diagnostics.activeHttpCalls}/${diagnostics.maxHttpCalls} active, peak ${diagnostics.peakHttpCalls}")
     appendLine(
         "Sessions: ${diagnostics.activeSessions} active + ${diagnostics.pendingSessions} pending / ${diagnostics.maxSessions}"

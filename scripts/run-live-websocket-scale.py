@@ -13,6 +13,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from exact_smoke_contract import validate_release_identity  # noqa: E402
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
@@ -21,6 +22,7 @@ from live_mcp_harness import (  # noqa: E402
     bounded_system_failure,
     call_tool,
     enforce_rss_limit,
+    read_bounded_diagnostics,
     read_private_token,
     read_project_id,
     run_websocket_fixture,
@@ -114,6 +116,11 @@ def main() -> int:
     parser.add_argument("--expected-prompts", type=int, choices=(4, 5), required=True)
     args = parser.parse_args()
 
+    validate_release_identity(
+        args.expected_source_commit,
+        args.expected_jar_sha256,
+        args.expected_server_version,
+    )
     if args.max_rss_mib < 1024 or args.max_rss_mib > 32768:
         raise HarnessError("RSS safety limit is outside the accepted range")
     if not args.candidate_jar.is_file() or args.candidate_jar.is_symlink():
@@ -151,8 +158,10 @@ def main() -> int:
     project_id = ""
     failure: str | None = None
     delete_status: int | None = None
+    private_session_id = ""
     try:
         initialized = client.initialize()
+        private_session_id = client.session_id or ""
         server_info = ((initialized.get("result") or {}).get("serverInfo") or {})
         if (
             server_info.get("name") != "independent-mcp-bridge"
@@ -168,6 +177,12 @@ def main() -> int:
         if tool_count != args.expected_tools or prompt_count != args.expected_prompts:
             raise HarnessError("catalog counts do not match the approved edition")
         report["catalog"] = {"tools": tool_count, "prompts": prompt_count}
+        diagnostics, diagnostics_text = read_bounded_diagnostics(client)
+        if diagnostics.get("loadedArtifactSha256") != actual_jar_sha256:
+            raise HarnessError("running extension artifact does not match the approved candidate JAR")
+        if any(value and value in diagnostics_text for value in (token, project_id, private_session_id)):
+            raise HarnessError("private runtime value reached diagnostics")
+        report["loadedArtifactSha256"] = "matched"
 
         baseline, baseline_elapsed = search(
             client,
@@ -232,6 +247,8 @@ def main() -> int:
         failure = bounded_system_failure(error)
         report["failure"] = failure
     finally:
+        if client.session_id:
+            private_session_id = client.session_id
         try:
             delete_status = client.close()
         except (HarnessError, OSError, subprocess.SubprocessError) as error:
@@ -251,7 +268,11 @@ def main() -> int:
         write_private_json(
             args.output,
             report,
-            forbidden_values=tuple(value for value in (token, project_id, marker, str(pathlib.Path.home())) if value),
+            forbidden_values=tuple(
+                value
+                for value in (token, project_id, marker, private_session_id, str(pathlib.Path.home()))
+                if value
+            ),
         )
 
     print(

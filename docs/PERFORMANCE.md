@@ -305,9 +305,11 @@ Burp-scale observation.
 
 The v4.11 development line records fixed-cardinality elapsed-time diagnostics for direct history source acquisition and
 extension processing. The measurements cover Proxy, Site Map, and Organizer metadata-index refreshes, unified HTTP
-search, and WebSocket search. They are visible only in the local Burp diagnostics panel. The in-process diagnostics
-snapshot carries them in a serialization-transient field; `burp://diagnostics`, MCP schemas, catalogs, audit records,
-logs, and persisted settings do not contain them.
+search, and WebSocket search. Full timing/bucket records are visible only in the local Burp diagnostics panel and remain
+serialization-transient; MCP schemas, catalogs, audit records, logs, and persisted settings do not contain them. For the
+future exact-candidate cancellation gate, `burp://diagnostics` projects only saturation-safe WebSocket-search completed
+and cancelled totals. These value-free extension-lifetime counters permit an observed delta without exposing filters,
+traffic, project/session identity, timing, or other metric records.
 
 An **acquisition** measurement starts immediately before the synchronous Burp/Montoya list call and ends when that call
 returns or throws. The Montoya subsystem accessor and the extension's lightweight source-view wrapper construction are
@@ -364,8 +366,9 @@ progressive/background indexing and does not claim immediate or complete event-d
 
 Two opt-in Python entry points exercise an already-running exact development JAR in a disposable Burp project. They do
 not launch Burp, accept a license, change a project, clear history, unload an extension, or download a dependency. Both
-require a clean exact source commit, an expected candidate-JAR SHA-256, a mode-0600 bearer file, an explicit disposable-
-project flag, loopback MCP/proxy endpoints, fixed catalog counts, and a non-existing private output path. Reports
+require a clean exact source commit, an expected candidate-JAR SHA-256 that matches the running extension's path-free
+code-source digest, a mode-0600 bearer file, an explicit disposable-project flag, loopback MCP/proxy endpoints, fixed
+catalog counts, and a non-existing private output path. Reports
 allowlist aggregate fields and fail before writing if the bearer, current project identifier, marker, home path, or
 credential-bearing header text reaches the serialized evidence.
 
@@ -420,9 +423,14 @@ scripts/run-live-lifecycle-soak.py \
   --output <new-private-output.json>
 ```
 
-The committed contract tests run with `python3 scripts/test-live-mcp-harness.py`. A bounded soak does not automate the
-remaining restart, project-replacement, cancellation, SSE-pressure, or extension unload/reload scenarios; those remain
-manual gates. Reports belong in private review evidence and are not release assets.
+The exact-candidate preflight, dual-edition evidence finalizer, and diagnostics-gated caller-disconnect runner are
+specified in [EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md). The cancellation runner accepts a result only after a separate
+observer sees the target bounded 10,000-record read in `activeHttpCalls`; a timeout, early completion, or `Ctrl-C` is not
+proof. It does not automate mutation cancellation, project replacement, SSE pressure, or unload/reload while work is
+active, which remain separate gates.
+
+The committed contract tests run with `python3 scripts/test-live-mcp-harness.py` and
+`python3 scripts/test-exact-smoke-contract.py`. Reports belong in private review evidence and are not release assets.
 
 ## Bounded WebSocket search
 
@@ -698,8 +706,10 @@ Runtime diagnostics use fixed-cardinality atomic counters and timestamps on the 
 and session-registry paths. In addition to calls and sessions, they count stream opens/closes/reopens, liveness
 pings/responses/timeouts/errors, heartbeat write failures, authenticated DELETE requests, and pressure evictions. They
 retain no request metadata, client names, identifiers, headers, bodies, or Montoya objects and reset on listener start.
-The Swing diagnostics view samples one immutable snapshot per second, so it does not poll Burp history or session
-transports.
+The path-free SHA-256 of the regular code-source JAR is scheduled once on the extension-owned server executor when the
+manager is constructed; an unavailable, directory, symlink, oversized, changing, or unreadable source yields no digest. The projected WebSocket completed/
+cancelled totals are saturation-safe extension-lifetime counters and therefore do not reset on listener restart. The Swing
+diagnostics view samples one immutable snapshot per second, so it does not poll Burp history or session transports.
 
 The audit path constructs one small record at tool completion. Argument keys are capped at 16, approvals at 8, and all
 stored fields are ASCII/value-free; raw arguments, outputs, exception messages, and traffic are never serialized.

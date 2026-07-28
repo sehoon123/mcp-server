@@ -354,8 +354,9 @@ Candidate work:
 ## v4.11.0 — Measured History Freshness and HTTP Activity Correlation
 
 Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
-The immutable `v4.10.0-rc.1` tag, draft, notes, and assets remain unchanged. Work remains ordered so measurement
-precedes scheduling changes and catalog growth.
+The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` tags, drafts, notes, and assets remain unchanged. Follow-up exact-smoke
+orchestration and diagnostics work uses the non-release `4.11.0-dev.2` identity and targets a new candidate only. Work remains ordered so measurement precedes scheduling
+changes and catalog growth.
 
 Milestones:
 
@@ -387,14 +388,21 @@ privately inspect bounded identity samples. Unit/schema validation covers bounds
 approval denial, cancellation, project replacement, accessor failure, and the intended one-tool catalog increase; exact
 Community/Professional live evidence remains open.
 
+The post-RC1 exact-smoke slice keeps every tool, prompt, resource URI, template, and operation schema unchanged. It adds
+three fixed fields to the existing diagnostics resource: a path-free loaded code-source JAR SHA-256 and saturation-safe
+WebSocket-search completed/cancelled totals. The digest is computed off the UI thread and omission fails the harness;
+the two value-free outcome counters prove cancellation deltas without exposing full timing metrics. Candidate-bound
+scenario records and both edition preflights are required before an all-pass protected-workflow input can exist.
+
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
 aliases or families.
 
 ### v4.11.0 gate
 
-- [x] Acquisition and extension-processing measurements are fixed-cardinality, local-only, cancellation-safe, and leave
-  public diagnostics serialization and the pre-correlation catalogs unchanged.
+- [x] RC1 acquisition and extension-processing measurements are fixed-cardinality, local-only, cancellation-safe, and
+  left public diagnostics serialization and the pre-correlation catalogs unchanged; post-RC1 harness fields are additive,
+  fixed-cardinality, path/value-free, and candidate-gated.
 - [ ] Event invalidation is live-validated without retaining or blocking traffic callbacks; unsupported Site Map and
   Organizer listener gaps remain documented.
 - [x] Correlation unit/schema validation is bounded, project-bound, read-only, value-limited, and makes no unsupported

@@ -403,7 +403,10 @@ editions:
 - extension unload during background work;
 - diagnostics and audit output for secret/value leakage.
 
-Record the Burp version, edition, OS, JAR SHA-256, commit SHA, client/version, and scenario result.
+Record the Burp version, edition, OS, JAR SHA-256, commit SHA, client/version, and scenario result. For a future exact
+release candidate, use the fail-closed preflight, diagnostics-gated read cancellation, dual-edition matrix finalizer, and
+cleanup contract in [EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md). Those helpers do not launch or control Burp and cannot
+retroactively validate an earlier immutable candidate.
 
 ## Updating dependencies and integrity metadata
 

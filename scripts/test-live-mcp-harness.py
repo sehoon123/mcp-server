@@ -44,6 +44,31 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             with self.assertRaises(harness.HarnessError):
                 harness.validate_loopback_endpoint(value)
 
+    def test_unauthenticated_probe_is_loopback_bounded(self):
+        class Unauthorized(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(401)
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Unauthorized)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(
+                401,
+                harness.unauthenticated_http_status(f"http://127.0.0.1:{server.server_port}/mcp"),
+            )
+            with self.assertRaises(harness.HarnessError):
+                harness.unauthenticated_http_status("http://example.com:9876/mcp")
+            with self.assertRaises(harness.HarnessError):
+                harness.unauthenticated_http_status(f"http://127.0.0.1:{server.server_port}/mcp", timeout=31)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_token_file_must_be_private_regular_and_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             token_file = pathlib.Path(directory) / "token"
@@ -53,6 +78,11 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             token_file.chmod(0o644)
             with self.assertRaises(harness.HarnessError):
                 harness.read_private_token(token_file)
+            token_file.chmod(0o600)
+            link = pathlib.Path(directory) / "token-link"
+            link.symlink_to(token_file)
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_token(link)
 
     def test_private_report_is_exclusive_redacted_and_mode_600(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -67,6 +97,66 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             with self.assertRaises(harness.HarnessError):
                 harness.write_private_json(leaked, {"value": "secret-value"}, forbidden_values=("secret-value",))
             self.assertFalse(leaked.exists())
+
+    def test_interruptible_call_reports_socket_abort_without_response_content(self):
+        request_received = threading.Event()
+        release_response = threading.Event()
+
+        class HangingTool(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                request_received.set()
+                release_response.wait(5)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"jsonrpc":"2.0","id":1,"result":{"private":"not-retained"}}')
+                except OSError:
+                    pass
+
+            def log_message(self, format, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), HangingTool)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = harness.McpClient(f"http://127.0.0.1:{server.server_port}/mcp", "s" * 48)
+            client.session_id = "private-session-value"
+            call = harness.InterruptibleMcpToolCall(
+                client,
+                "search_websocket_messages",
+                {"projectId": "private-project-value", "limit": 1},
+                request_id=1,
+                timeout=10,
+            )
+            call.start()
+            self.assertTrue(request_received.wait(2))
+            self.assertTrue(call.abort())
+            call.join(2)
+            self.assertEqual(
+                {"state": "aborted", "httpStatus": None, "jsonRpcResponse": False},
+                call.summary(),
+            )
+            self.assertNotIn("private", str(call.summary()))
+        finally:
+            release_response.set()
+            server.shutdown()
+            server.server_close()
+
+    def test_completed_server_work_with_lost_response_is_not_cancellation_proof(self):
+        before = {"webSocketSearchCompleted": 4, "webSocketSearchCancelled": 2}
+        completed_before_response = {"webSocketSearchCompleted": 5, "webSocketSearchCancelled": 2}
+        with self.assertRaises(harness.HarnessError):
+            harness.validate_websocket_search_cancellation_delta(before, completed_before_response)
+
+        cancelled = {"webSocketSearchCompleted": 4, "webSocketSearchCancelled": 3}
+        self.assertEqual(
+            {"cancelledDelta": 1, "completedDelta": 0},
+            harness.validate_websocket_search_cancellation_delta(before, cancelled),
+        )
 
     def test_http_redirect_is_returned_without_forwarding_the_bearer(self):
         forwarded_authorizations = []
@@ -139,6 +229,31 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
                 self.assertEqual(2, result.returncode)
                 self.assertIn("--burp-pid", result.stderr)
 
+        for script, extra in (
+            ("run-exact-burp-preflight.py", []),
+            ("run-live-cancellation-barrier.py", ["--operator-confirmed-data-read-approved"]),
+        ):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / script),
+                    "--approved-disposable-project",
+                    *extra,
+                    "--edition", "community",
+                    "--token-file", "missing-token",
+                    "--output", "missing-output",
+                    "--candidate-jar", "missing-jar",
+                    "--expected-jar-sha256", "0" * 64,
+                    "--expected-source-commit", "0" * 40,
+                    "--expected-server-version", "4.11.0-rc.1",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("--burp-pid", result.stderr)
+
     def test_live_runners_reject_stale_catalog_counts(self):
         common = [
             "--approved-disposable-project",
@@ -173,6 +288,69 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
         for value in ("", "1000", "50000,10000", "10000,10000", "100000,200000"):
             with self.assertRaises(Exception):
                 scale.parse_stages(value)
+
+    def test_diagnostics_reader_returns_only_fixed_cardinality_fields_and_raw_text(self):
+        class Client:
+            def rpc(self, method, params):
+                self.method = method
+                self.params = params
+                return {
+                    "result": {
+                        "contents": [{
+                            "text": json.dumps({
+                                "diagnostics": {
+                                    "activeHttpCalls": 1,
+                                    "activeSessions": 1,
+                                    "unapprovedFutureField": "not-copied",
+                                }
+                            })
+                        }]
+                    }
+                }
+
+        client = Client()
+        diagnostics, raw = harness.read_bounded_diagnostics(client)
+        self.assertEqual("resources/read", client.method)
+        self.assertEqual({"uri": "burp://diagnostics"}, client.params)
+        self.assertEqual(1, diagnostics["activeHttpCalls"])
+        self.assertEqual(1, diagnostics["activeSessions"])
+        self.assertNotIn("unapprovedFutureField", diagnostics)
+        self.assertIn("unapprovedFutureField", raw)
+
+    def test_active_call_barriers_require_observed_concurrency_and_cleanup(self):
+        completed = threading.Event()
+        snapshots = iter((
+            {"activeHttpCalls": 1},
+            {"activeHttpCalls": 2},
+        ))
+        barrier = harness.wait_for_active_http_call_barrier(
+            lambda: next(snapshots),
+            completed,
+            timeout=1,
+            poll_interval=0.001,
+        )
+        self.assertTrue(barrier["observed"])
+        self.assertEqual(2, barrier["maximumObservedActiveCalls"])
+
+        completed.set()
+        cleanup = harness.wait_for_http_call_cleanup(
+            lambda: {"activeHttpCalls": 1, "pendingSessions": 0},
+            completed,
+            timeout=1,
+            poll_interval=0.001,
+        )
+        self.assertTrue(cleanup["observed"])
+
+    def test_active_call_barrier_does_not_treat_early_completion_as_proof(self):
+        completed = threading.Event()
+        completed.set()
+        with self.assertRaises(harness.HarnessError):
+            harness.wait_for_active_http_call_barrier(
+                lambda: {"activeHttpCalls": 2},
+                completed,
+                timeout=1,
+                poll_interval=0.001,
+            )
 
     def test_websocket_search_omitted_defaults_are_valid_zero_and_false(self):
         summary = harness.bounded_search_summary({"status": "ok", "scanned": 10_000}, 0.25)

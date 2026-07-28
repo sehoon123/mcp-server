@@ -20,6 +20,7 @@ class DiagnosticsPanelTest {
                 state = "running",
                 serverVersion = "2.1.1",
                 protocolVersion = "2025-11-25",
+                loadedArtifactSha256 = "a".repeat(64),
                 endpoint = "http://127.0.0.1:9876/mcp",
                 startedAtEpochMillis = 1_784_678_400_000,
                 lastActivityEpochMillis = 1_784_678_401_000,
@@ -51,6 +52,8 @@ class DiagnosticsPanelTest {
                 pressureEvictions = 9,
                 sessionsWithApprovals = 2,
                 sessionApprovalGrants = 5,
+                webSocketSearchCompleted = 11,
+                webSocketSearchCancelled = 2,
                 projectBoundaryResets = 2,
                 initializedWithProtocol20250326 = 1,
                 initializedWithProtocol20250618 = 2,
@@ -95,6 +98,8 @@ class DiagnosticsPanelTest {
         )
 
         assertTrue(text.contains("State: running"))
+        assertTrue(text.contains("Loaded artifact SHA-256: ${"a".repeat(64)}"))
+        assertTrue(text.contains("WebSocket search outcomes: completed=11, cancelled=2"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertEquals(12, text.lineSequence().count { it.startsWith("History ") })
         assertTrue(text.contains("History index Proxy acquisition: attempts=1"))

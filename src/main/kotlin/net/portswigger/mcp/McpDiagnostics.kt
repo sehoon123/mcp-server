@@ -2,6 +2,7 @@ package net.portswigger.mcp
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import net.portswigger.mcp.tools.HistoryPerformanceSnapshot
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicInteger
@@ -9,12 +10,34 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 internal const val PRODUCTION_MCP_PROTOCOL_VERSION = "2025-11-25"
+private val ARTIFACT_SHA256_REGEX = Regex("[a-f0-9]{64}")
+
+private fun String?.validArtifactSha256OrNull(): String? = this?.takeIf(ARTIFACT_SHA256_REGEX::matches)
+
+internal data class WebSocketSearchOutcomeSummary(
+    val completed: Long,
+    val cancelled: Long,
+)
+
+internal fun HistoryPerformanceSnapshot.webSocketSearchOutcomeSummary(): WebSocketSearchOutcomeSummary {
+    val acquisition = metrics.first { it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION }
+    val processing = metrics.first { it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING }
+    val acquisitionCancelled = acquisition.cancelled.coerceAtLeast(0)
+    val processingCancelled = processing.cancelled.coerceAtLeast(0)
+    val cancelled = if (Long.MAX_VALUE - acquisitionCancelled < processingCancelled) {
+        Long.MAX_VALUE
+    } else {
+        acquisitionCancelled + processingCancelled
+    }
+    return WebSocketSearchOutcomeSummary(processing.completed.coerceAtLeast(0), cancelled)
+}
 
 @Serializable
 data class McpDiagnosticsSnapshot(
     val state: String,
     val serverVersion: String,
     val protocolVersion: String,
+    val loadedArtifactSha256: String? = null,
     val endpoint: String?,
     val startedAtEpochMillis: Long?,
     val lastActivityEpochMillis: Long?,
@@ -46,6 +69,8 @@ data class McpDiagnosticsSnapshot(
     val pressureEvictions: Long = 0,
     val sessionsWithApprovals: Int = 0,
     val sessionApprovalGrants: Int = 0,
+    val webSocketSearchCompleted: Long = 0,
+    val webSocketSearchCancelled: Long = 0,
     @Transient val projectBoundaryResets: Long = 0,
     @Transient val initializedWithProtocol20250326: Long = 0,
     @Transient val initializedWithProtocol20250618: Long = 0,
@@ -64,8 +89,10 @@ internal class McpRuntimeMetrics(
     private val maxHttpCalls: Int,
     private val maxSessions: Int,
     private val clock: Clock = Clock.systemUTC(),
+    loadedArtifactSha256: String? = null,
 ) {
     private val state = AtomicReference("stopped")
+    private val loadedArtifact = AtomicReference(loadedArtifactSha256.validArtifactSha256OrNull())
     private val endpoint = AtomicReference<String?>(null)
     private val startedAt = AtomicLong(0)
     private val lastActivity = AtomicLong(0)
@@ -135,6 +162,10 @@ internal class McpRuntimeMetrics(
         overloadRejections.set(0)
         sessionCapacityRejections.set(0)
         lastError.set(null)
+    }
+
+    fun setLoadedArtifactSha256(value: String?) {
+        loadedArtifact.set(value.validArtifactSha256OrNull())
     }
 
     fun markRunning() {
@@ -268,6 +299,7 @@ internal class McpRuntimeMetrics(
         state = state.get(),
         serverVersion = serverVersion,
         protocolVersion = PRODUCTION_MCP_PROTOCOL_VERSION,
+        loadedArtifactSha256 = loadedArtifact.get(),
         endpoint = endpoint.get(),
         startedAtEpochMillis = startedAt.get().takeIf { it > 0 },
         lastActivityEpochMillis = lastActivity.get().takeIf { it > 0 },

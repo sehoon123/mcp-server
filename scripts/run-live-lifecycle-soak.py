@@ -11,6 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from exact_smoke_contract import validate_release_identity  # noqa: E402
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
@@ -20,6 +21,7 @@ from live_mcp_harness import (  # noqa: E402
     call_tool,
     current_rss_kib,
     enforce_rss_limit,
+    read_bounded_diagnostics,
     read_private_token,
     read_project_id,
     sha256_file,
@@ -37,34 +39,6 @@ def git_output(root: pathlib.Path, *arguments: str) -> str:
         timeout=15,
     )
     return result.stdout.strip()
-
-
-def read_diagnostics(client: McpClient) -> dict:
-    response = client.rpc("resources/read", {"uri": "burp://diagnostics"})
-    try:
-        text = response["result"]["contents"][0]["text"]
-        value = json.loads(text)["diagnostics"]
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-        raise HarnessError("diagnostics resource did not contain its bounded snapshot")
-    allowed = {
-        "activeHttpCalls",
-        "peakHttpCalls",
-        "pendingSessions",
-        "activeSessions",
-        "activeEventStreams",
-        "openedEventStreams",
-        "closedEventStreams",
-        "reopenedEventStreams",
-        "initializedSessions",
-        "sessionDeleteRequests",
-        "pressureEvictions",
-        "idleEvictions",
-        "overloadRejections",
-        "sessionCapacityRejections",
-        "sessionsWithApprovals",
-        "sessionApprovalGrants",
-    }
-    return {key: value.get(key) for key in sorted(allowed)}
 
 
 def main() -> int:
@@ -85,6 +59,11 @@ def main() -> int:
     parser.add_argument("--expected-prompts", type=int, choices=(4, 5), required=True)
     args = parser.parse_args()
 
+    validate_release_identity(
+        args.expected_source_commit,
+        args.expected_jar_sha256,
+        args.expected_server_version,
+    )
     if args.duration_seconds not in range(60, 28_801):
         raise HarnessError("soak duration must be between one minute and eight hours")
     if not 0 <= args.interval_seconds <= 60:
@@ -175,13 +154,23 @@ def main() -> int:
                     or websocket_search_count(search, "scanned") not in {0, 1}
                 ):
                     raise HarnessError("bounded WebSocket search failed during soak")
-                diagnostics = read_diagnostics(client)
+                diagnostics, diagnostics_text = read_bounded_diagnostics(client)
+                if diagnostics.get("loadedArtifactSha256") != jar_sha256:
+                    raise HarnessError("running extension artifact does not match the approved candidate JAR")
+                if any(
+                    value and value in diagnostics_text
+                    for value in (token, project_id, client.session_id or "")
+                ):
+                    raise HarnessError("private runtime value reached diagnostics")
+                report["loadedArtifactSha256"] = "matched"
                 if diagnostics.get("pendingSessions") != 0 or diagnostics.get("activeSessions") != 1:
                     report["transportStatePlateauObserved"] = False
                     raise HarnessError("session state did not return to its single-cycle plateau")
                 if diagnostics.get("activeEventStreams") != 0 or diagnostics.get("sessionsWithApprovals") != 0:
                     report["transportStatePlateauObserved"] = False
                     raise HarnessError("event stream or approval state accumulated during soak")
+                if client.session_id and client.session_id in json.dumps(report, sort_keys=True):
+                    raise HarnessError("private session identifier reached the lifecycle report")
             finally:
                 session_was_created = client.session_id is not None
                 try:

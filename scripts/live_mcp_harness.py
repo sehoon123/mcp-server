@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import pathlib
@@ -21,6 +22,7 @@ from typing import Any, Callable
 
 SUPPORTED_PROTOCOLS = ("2025-03-26", "2025-06-18", "2025-11-25")
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+MAX_MCP_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class HarnessError(RuntimeError):
@@ -52,21 +54,94 @@ def validate_loopback_endpoint(value: str) -> str:
     return value
 
 
+def unauthenticated_http_status(endpoint: str, timeout: float = 5) -> int:
+    """Return one bounded loopback status without following redirects or retaining a response body."""
+    validate_loopback_endpoint(endpoint)
+    if timeout <= 0 or timeout > 30:
+        raise HarnessError("unauthenticated probe timeout is outside its safety bound")
+    opener = urllib.request.build_opener(_RejectRedirects())
+    request = urllib.request.Request(
+        endpoint,
+        headers={"Accept": "application/json, text/event-stream"},
+        method="GET",
+    )
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            response.read(4096)
+            return response.status
+    except urllib.error.HTTPError as error:
+        try:
+            try:
+                error.read(4096)
+            except OSError:
+                pass
+            return error.code
+        finally:
+            error.close()
+
+
+def read_private_text_file(path: pathlib.Path, *, min_chars: int, max_chars: int) -> str:
+    if min_chars < 1 or max_chars < min_chars or max_chars > 4096:
+        raise HarnessError("private file character bound is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise HarnessError("private input must be a regular non-symlink file") from error
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise HarnessError("private input must be a regular non-symlink file")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise HarnessError("private input permissions must not grant group or other access")
+        content = source.read(max_chars * 4 + 2)
+        if len(content) > max_chars * 4 + 1:
+            raise HarnessError("private input exceeded its safety bound")
+    try:
+        value = content.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise HarnessError("private input content is invalid") from error
+    if not min_chars <= len(value) <= max_chars or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise HarnessError("private input content is invalid")
+    return value
+
+
 def read_private_token(path: pathlib.Path) -> str:
-    if path.is_symlink() or not path.is_file():
-        raise HarnessError("token file must be a regular non-symlink file")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
-        raise HarnessError("token file permissions must not grant group or other access")
-    token = path.read_text(encoding="utf-8").strip()
-    if not 32 <= len(token) <= 128 or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in token):
+    token = read_private_text_file(path, min_chars=32, max_chars=128)
+    if any(character.isspace() for character in token):
         raise HarnessError("token file does not contain a valid local bearer value")
     return token
 
 
+def read_bounded_regular_file(path: pathlib.Path, max_bytes: int) -> bytes:
+    if max_bytes < 1 or max_bytes > 512 * 1024 * 1024:
+        raise HarnessError("file read bound is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise HarnessError("input must be a readable regular non-symlink file") from error
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+            raise HarnessError("input must be a bounded regular non-symlink file")
+        content = source.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise HarnessError("input exceeded its file read bound")
+        return content
+
+
 def sha256_file(path: pathlib.Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise HarnessError("hash input must be a readable regular non-symlink file") from error
     digest = hashlib.sha256()
-    with path.open("rb") as source:
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise HarnessError("hash input must be a readable regular non-symlink file")
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -142,7 +217,10 @@ class McpClient:
         request = urllib.request.Request(self.endpoint, data=data, headers=headers, method=method)
         try:
             with self._opener.open(request, timeout=timeout) as response:
-                raw = response.read().decode("utf-8", errors="replace")
+                payload = response.read(MAX_MCP_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_MCP_RESPONSE_BYTES:
+                    raise HarnessError("MCP response exceeded its safety bound")
+                raw = payload.decode("utf-8", errors="replace")
                 try:
                     parsed = json.loads(raw) if raw.strip() else None
                 except json.JSONDecodeError:
@@ -150,7 +228,13 @@ class McpClient:
                 return response.status, dict(response.headers.items()), parsed
         except urllib.error.HTTPError as error:
             try:
-                raw = error.read().decode("utf-8", errors="replace")
+                try:
+                    payload = error.read(MAX_MCP_RESPONSE_BYTES + 1)
+                except OSError:
+                    payload = b""
+                if len(payload) > MAX_MCP_RESPONSE_BYTES:
+                    raise HarnessError("MCP error response exceeded its safety bound")
+                raw = payload.decode("utf-8", errors="replace")
                 try:
                     parsed = json.loads(raw) if raw.strip() else None
                 except json.JSONDecodeError:
@@ -211,6 +295,129 @@ class McpClient:
             self.session_id = None
 
 
+class InterruptibleMcpToolCall:
+    """One bounded MCP tool POST whose socket can be closed after a diagnostics barrier."""
+
+    def __init__(
+        self,
+        client: McpClient,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        request_id: int,
+        timeout: float = 120,
+        max_response_bytes: int = 4 * 1024 * 1024,
+    ) -> None:
+        if not client.session_id:
+            raise HarnessError("interruptible call requires an initialized MCP session")
+        if not name or len(name) > 128 or any(ord(character) < 33 or ord(character) > 126 for character in name):
+            raise HarnessError("interruptible call tool name is invalid")
+        if request_id < 1 or request_id > 2_147_483_647:
+            raise HarnessError("interruptible call request ID is invalid")
+        if timeout <= 0 or timeout > 300 or max_response_bytes not in range(1024, 16 * 1024 * 1024 + 1):
+            raise HarnessError("interruptible call bound is invalid")
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(body) > 1024 * 1024:
+            raise HarnessError("interruptible call request exceeded its safety bound")
+        self._endpoint = urllib.parse.urlsplit(client.endpoint)
+        self._headers = {
+            "Accept": "application/json, text/event-stream",
+            "Authorization": "Bearer " + client.token,
+            "Content-Type": "application/json",
+            "Mcp-Protocol-Version": client.protocol,
+            "Mcp-Session-Id": client.session_id,
+        }
+        self._body = body
+        self._timeout = timeout
+        self._max_response_bytes = max_response_bytes
+        self._lock = threading.Lock()
+        self._connection: http.client.HTTPConnection | None = None
+        self._abort_requested = threading.Event()
+        self.completed = threading.Event()
+        self._summary: dict[str, Any] = {"state": "not_started"}
+        self._thread = threading.Thread(target=self._run, name="InterruptibleMcpToolCall", daemon=True)
+
+    def start(self) -> None:
+        with self._lock:
+            if self._summary["state"] != "not_started":
+                raise HarnessError("interruptible call can only be started once")
+            self._summary = {"state": "running"}
+        self._thread.start()
+
+    def _run(self) -> None:
+        connection = http.client.HTTPConnection(
+            self._endpoint.hostname,
+            self._endpoint.port,
+            timeout=self._timeout,
+        )
+        with self._lock:
+            self._connection = connection
+        try:
+            connection.request("POST", self._endpoint.path, body=self._body, headers=self._headers)
+            response = connection.getresponse()
+            payload = response.read(self._max_response_bytes + 1)
+            if len(payload) > self._max_response_bytes:
+                raise HarnessError("interruptible call response exceeded its safety bound")
+            try:
+                parsed = json.loads(payload.decode("utf-8")) if payload.strip() else None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            # A complete response is never reclassified as cancellation merely because abort raced with it.
+            summary = {
+                "state": "completed",
+                "httpStatus": response.status,
+                "jsonRpcResponse": isinstance(parsed, dict),
+            }
+        except (HarnessError, OSError, TimeoutError, http.client.HTTPException):
+            summary = {
+                "state": "aborted" if self._abort_requested.is_set() else "failed",
+                "httpStatus": None,
+                "jsonRpcResponse": False,
+            }
+        finally:
+            connection.close()
+            with self._lock:
+                self._connection = None
+                self._summary = summary
+            self.completed.set()
+
+    def abort(self) -> bool:
+        with self._lock:
+            connection = self._connection
+            sock = None if connection is None else connection.sock
+        if sock is None:
+            return False
+        self._abort_requested.set()
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        return True
+
+    def join(self, timeout: float = 10) -> None:
+        if timeout <= 0 or timeout > 120:
+            raise HarnessError("interruptible call join timeout is outside its safety bound")
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            raise HarnessError("interruptible call did not stop within its safety bound")
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._summary)
+
+
 def structured_content(response: Any) -> dict[str, Any]:
     try:
         value = response["result"]["structuredContent"]
@@ -232,6 +439,135 @@ def read_project_id(client: McpClient) -> str:
     if not isinstance(project_id, str) or not 1 <= len(project_id) <= 256 or any(ord(c) < 32 for c in project_id):
         raise HarnessError("project summary returned an invalid project binding")
     return project_id
+
+
+def read_bounded_diagnostics(client: McpClient) -> tuple[dict[str, Any], str]:
+    """Read the fixed-cardinality diagnostics resource and return its raw text for private leak checks."""
+    response = client.rpc("resources/read", {"uri": "burp://diagnostics"})
+    try:
+        text = response["result"]["contents"][0]["text"]
+        value = json.loads(text)["diagnostics"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        raise HarnessError("diagnostics resource did not contain its bounded snapshot")
+    if not isinstance(text, str) or not isinstance(value, dict):
+        raise HarnessError("diagnostics resource did not contain its bounded snapshot")
+    allowed = {
+        "activeHttpCalls",
+        "peakHttpCalls",
+        "pendingSessions",
+        "activeSessions",
+        "activeEventStreams",
+        "openedEventStreams",
+        "closedEventStreams",
+        "reopenedEventStreams",
+        "initializedSessions",
+        "sessionDeleteRequests",
+        "pressureEvictions",
+        "idleEvictions",
+        "overloadRejections",
+        "sessionCapacityRejections",
+        "sessionsWithApprovals",
+        "sessionApprovalGrants",
+        "loadedArtifactSha256",
+        "webSocketSearchCompleted",
+        "webSocketSearchCancelled",
+    }
+    return {key: value.get(key) for key in sorted(allowed)}, text
+
+
+def wait_for_active_http_call_barrier(
+    read_snapshot: Callable[[], dict[str, Any]],
+    operation_completed: threading.Event,
+    *,
+    minimum_active_calls: int = 2,
+    timeout: float = 10,
+    poll_interval: float = 0.01,
+) -> dict[str, Any]:
+    """Observe a real in-flight target call; the diagnostics observer itself accounts for one call."""
+    if minimum_active_calls not in range(2, 65):
+        raise HarnessError("active-call barrier threshold is outside its safety bound")
+    if timeout <= 0 or timeout > 120 or poll_interval < 0.001 or poll_interval > 1:
+        raise HarnessError("active-call barrier timing is outside its safety bound")
+    started = time.monotonic()
+    polls = 0
+    maximum_observed = 0
+    while time.monotonic() - started < timeout:
+        if operation_completed.is_set():
+            raise HarnessError("target operation completed before the active-call barrier")
+        snapshot = read_snapshot()
+        polls += 1
+        active = snapshot.get("activeHttpCalls")
+        if isinstance(active, bool) or not isinstance(active, int) or active < 1 or active > 64:
+            raise HarnessError("diagnostics returned an invalid active HTTP call count")
+        maximum_observed = max(maximum_observed, active)
+        if active >= minimum_active_calls:
+            return {
+                "observed": True,
+                "minimumActiveCalls": minimum_active_calls,
+                "maximumObservedActiveCalls": maximum_observed,
+                "polls": polls,
+                "clientWallSeconds": round(time.monotonic() - started, 6),
+                "targetCompletedBeforeBarrier": False,
+            }
+        time.sleep(min(poll_interval, max(0.0, timeout - (time.monotonic() - started))))
+    raise HarnessError("active-call barrier timed out before observing the target operation")
+
+
+def validate_websocket_search_cancellation_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, int]:
+    def counter(snapshot: dict[str, Any], key: str) -> int:
+        value = snapshot.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > (1 << 63) - 1:
+            raise HarnessError("diagnostics returned an invalid operation outcome counter")
+        return value
+
+    completed_before = counter(before, "webSocketSearchCompleted")
+    cancelled_before = counter(before, "webSocketSearchCancelled")
+    completed_after = counter(after, "webSocketSearchCompleted")
+    cancelled_after = counter(after, "webSocketSearchCancelled")
+    if completed_before == (1 << 63) - 1 or cancelled_before == (1 << 63) - 1:
+        raise HarnessError("WebSocket outcome counter is saturated")
+    if cancelled_after != cancelled_before + 1 or completed_after != completed_before:
+        raise HarnessError("server outcome counters did not prove cancellation before search completion")
+    return {"cancelledDelta": 1, "completedDelta": 0}
+
+
+def wait_for_http_call_cleanup(
+    read_snapshot: Callable[[], dict[str, Any]],
+    operation_completed: threading.Event,
+    *,
+    observer_active_calls: int = 1,
+    timeout: float = 10,
+    poll_interval: float = 0.02,
+) -> dict[str, Any]:
+    """Require target completion and the diagnostics observer to be the only active HTTP call."""
+    if observer_active_calls not in range(1, 65):
+        raise HarnessError("cleanup barrier threshold is outside its safety bound")
+    if timeout <= 0 or timeout > 120 or poll_interval < 0.001 or poll_interval > 1:
+        raise HarnessError("cleanup barrier timing is outside its safety bound")
+    started = time.monotonic()
+    polls = 0
+    while time.monotonic() - started < timeout:
+        snapshot = read_snapshot()
+        polls += 1
+        active = snapshot.get("activeHttpCalls")
+        pending = snapshot.get("pendingSessions")
+        if isinstance(active, bool) or not isinstance(active, int) or active < 1 or active > 64:
+            raise HarnessError("diagnostics returned an invalid active HTTP call count")
+        if isinstance(pending, bool) or not isinstance(pending, int) or pending < 0:
+            raise HarnessError("diagnostics returned an invalid pending session count")
+        if operation_completed.is_set() and active == observer_active_calls and pending == 0:
+            return {
+                "observed": True,
+                "activeHttpCalls": active,
+                "pendingSessions": pending,
+                "polls": polls,
+                "clientWallSeconds": round(time.monotonic() - started, 6),
+            }
+        time.sleep(min(poll_interval, max(0.0, timeout - (time.monotonic() - started))))
+    raise HarnessError("target operation did not reach the diagnostics cleanup barrier")
 
 
 def call_tool(client: McpClient, name: str, arguments: dict[str, Any], timeout: float = 180) -> tuple[dict[str, Any], float]:
@@ -448,6 +784,23 @@ def run_websocket_fixture(
     return message_count, echoes, time.perf_counter() - started
 
 
+def _open_canonical_directory(path: pathlib.Path) -> int:
+    canonical = path.resolve(strict=True)
+    if not canonical.is_absolute():
+        raise HarnessError("output parent must resolve to an absolute directory")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(canonical.anchor, flags)
+    try:
+        for part in canonical.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def write_private_json(
     output: pathlib.Path,
     report: dict[str, Any],
@@ -456,13 +809,39 @@ def write_private_json(
 ) -> None:
     if output.exists() or output.is_symlink():
         raise HarnessError("output path must not already exist")
+    if output.parent.is_symlink():
+        raise HarnessError("output parent must not be a symlink")
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if output.parent.is_symlink():
+        raise HarnessError("output parent must not be a symlink")
     serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
     for value in forbidden_values:
         if value and value in serialized:
             raise HarnessError("private runtime value reached the diagnostic report")
     if any(term in serialized.lower() for term in ("authorization:", "cookie:", "set-cookie:")):
         raise HarnessError("credential-bearing field reached the diagnostic report")
-    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
-        destination.write(serialized)
+    parent_descriptor = _open_canonical_directory(output.parent)
+    created = False
+    try:
+        descriptor = os.open(
+            output.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        created = True
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+                if destination.write(serialized) != len(serialized):
+                    raise HarnessError("private diagnostic report write was incomplete")
+                destination.flush()
+                os.fsync(destination.fileno())
+        except BaseException:
+            if created:
+                try:
+                    os.unlink(output.name, dir_fd=parent_descriptor)
+                except OSError:
+                    pass
+            raise
+    finally:
+        os.close(parent_descriptor)

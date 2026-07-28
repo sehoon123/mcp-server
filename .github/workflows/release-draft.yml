@@ -111,6 +111,11 @@ jobs:
           bash -n scripts/update-proxy.sh scripts/test-update-proxy-guards.sh
           scripts/test-update-proxy-guards.sh
 
+      - name: Validate exact-smoke harness contracts
+        run: |
+          python3 scripts/test-live-mcp-harness.py
+          python3 scripts/test-exact-smoke-contract.py
+
   client-matrix:
     name: Client matrix (${{ matrix.client }})
     needs: identity

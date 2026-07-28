@@ -1056,13 +1056,16 @@ class KtorServerManager internal constructor(
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
 
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val loadedArtifactSha256 = executor.submit<String?> {
+        LoadedArtifactIdentity.currentSha256(KtorServerManager::class.java)
+    }
     private val sessionApprovals = McpSessionApprovalRegistry(MCP_MAX_SESSIONS)
     @Volatile
     private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
     private val toolServices = ToolServices(api, extensionStorage)
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
         val requestedHost = config.host
@@ -1079,6 +1082,7 @@ class KtorServerManager internal constructor(
         executor.submit {
             try {
                 stopCurrentServer()
+                metrics.setLoadedArtifactSha256(loadedArtifactSha256.get(30, TimeUnit.SECONDS))
 
                 val bindHost = normalizedRequestedHost
                     ?: throw IllegalArgumentException(
@@ -1165,10 +1169,14 @@ class KtorServerManager internal constructor(
 
     override fun diagnostics(): McpDiagnosticsSnapshot {
         val approvalSummary = sessionApprovals.summary()
+        val performance = toolServices.performanceSnapshot()
+        val webSocketOutcomes = performance.webSocketSearchOutcomeSummary()
         return runtimeMetrics.snapshot().copy(
             sessionsWithApprovals = approvalSummary.sessionsWithApprovals,
             sessionApprovalGrants = approvalSummary.approvalGrants,
-            historyPerformance = toolServices.performanceSnapshot(),
+            webSocketSearchCompleted = webSocketOutcomes.completed,
+            webSocketSearchCancelled = webSocketOutcomes.cancelled,
+            historyPerformance = performance,
         )
     }
 

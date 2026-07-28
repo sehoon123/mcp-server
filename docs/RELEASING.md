@@ -186,12 +186,18 @@ Download the draft artifact into a clean environment and record:
 
 Do not rebuild for this step. Test the exact bytes that will be published.
 
-The evidence handoff must be authenticated and digest-bound. Use a protected `release-smoke` environment workflow that
-downloads the draft JAR itself, computes its digest, and emits `smoke-result.json` containing the tag, source SHA, JAR
-digest, tester GitHub identity, timestamp, environment versions, and per-scenario results. Attest that record, upload it
-as an immutable workflow artifact, and record its run ID and artifact digest. The publish job must independently download
-and verify the attestation, authorized tester identity, all-pass result, tag/source identity, and matching JAR digest;
-an unchecked workflow input or editable comment is not sufficient evidence.
+The evidence handoff must be authenticated and digest-bound. Use the exact-candidate helpers and cleanup contract in
+[EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md) to validate each edition, retain `PASS`/`FAIL`/`BLOCKED`/`NOT RUN` distinctly,
+and build the local matrix. The helper emits the protected workflow's single-line all-pass input only when both edition
+preflights and all 13 scenarios pass; it never creates that input for a withheld matrix. The helpers are candidate source
+and cannot retroactively validate an earlier immutable tag.
+
+Use a protected `release-smoke` environment workflow that downloads the draft JAR itself, computes its digest, and emits
+`smoke-result.json` containing the tag, source SHA, JAR digest, tester GitHub identity, timestamp, environment versions,
+and per-scenario results. Attest that record, upload it as an immutable workflow artifact, and record its run ID and
+artifact digest. The publish job must independently download and verify the attestation, authorized tester identity,
+all-pass result, tag/source identity, and matching JAR digest; an unchecked workflow input, local matrix, or editable
+comment is not sufficient evidence.
 
 ### Job G — protected publication
 
@@ -286,7 +292,9 @@ At minimum, exercise:
 12. audit, diagnostics, and error paths confirming no credentials, bodies, paths, or header values leak;
 13. extension unload while no job is active and while a cancellable background operation is active.
 
-A smoke test is invalid if the JAR digest differs from the draft asset.
+A smoke test is invalid if the JAR digest differs from the draft asset. A timeout, missing report, failed fresh-project
+baseline, completed-before-barrier call, `BLOCKED`, or `NOT RUN` result is not a pass. Do not dispatch the protected
+`release-smoke` workflow until the local exact matrix is eligible.
 
 ## Release notes
 
