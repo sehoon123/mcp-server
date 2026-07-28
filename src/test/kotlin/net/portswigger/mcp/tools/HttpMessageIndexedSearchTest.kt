@@ -171,6 +171,40 @@ class HttpMessageIndexedSearchTest {
     }
 
     @Test
+    fun `warm mixed source search acquires Proxy and Organizer once per call`() = runBlocking {
+        proxyHistory += fixture(
+            id = 1,
+            host = { "target.test" },
+            method = "GET",
+            path = "/proxy",
+            status = 200,
+        ).item
+        organizerItems += organizerFixture(2, "target.test", "/organizer")
+        val sources = listOf(HttpMessageSource.PROXY, HttpMessageSource.ORGANIZER)
+        val indexDiagnostics = HistoryPerformanceDiagnostics()
+        val searchDiagnostics = HistoryPerformanceDiagnostics()
+        val index = newIndex(maxRecords = 10, performanceDiagnostics = indexDiagnostics)
+        index.snapshot(currentProjectId, sources)
+
+        val result = service(index, searchDiagnostics).search(
+            SearchHttpMessages(sources = sources, host = "target.test")
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals(listOf(HttpMessageSource.PROXY, HttpMessageSource.ORGANIZER), result.items.map { it.ref.source })
+        val indexMetrics = indexDiagnostics.snapshot().metrics.associateBy { it.metric }
+        val searchMetrics = searchDiagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, indexMetrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
+        assertEquals(1, indexMetrics.getValue(HistoryPerformanceMetric.INDEX_ORGANIZER_ACQUISITION).attempts)
+        assertEquals(2, indexMetrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
+        assertEquals(2, indexMetrics.getValue(HistoryPerformanceMetric.INDEX_ORGANIZER_PROCESSING).attempts)
+        assertEquals(1, searchMetrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION).attempts)
+        assertEquals(1, searchMetrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_ORGANIZER_ACQUISITION).attempts)
+        verify(exactly = 2) { proxy.history() }
+        verify(exactly = 2) { organizer.items() }
+    }
+
+    @Test
     fun `Site Map filtering retains the raw path before issuing current opaque IDs`() = runBlocking {
         val requestAccesses = AtomicInteger()
         repeat(20) { index ->
@@ -322,6 +356,7 @@ class HttpMessageIndexedSearchTest {
 
         val indexed = service(index).search(SearchHttpMessages(host = "target.test"))
         val indexedRequestAccesses = requestAccesses.get()
+        verify(exactly = 2) { proxy.history() }
         requestAccesses.set(0)
         val raw = rawService().search(SearchHttpMessages(host = "target.test"))
         val rawRequestAccesses = requestAccesses.get()
@@ -402,6 +437,13 @@ class HttpMessageIndexedSearchTest {
     fun `invalidation after indexed aggregation retries once through the raw path`() = runBlocking {
         val index = newIndex(maxRecords = 10)
         val invalidateOnce = AtomicBoolean(true)
+        val replacement = fixture(
+            id = 2,
+            host = { "target.test" },
+            method = "GET",
+            path = "/replacement",
+            status = 200,
+        ).item
         proxyHistory += fixture(
             id = 1,
             host = { "target.test" },
@@ -409,7 +451,10 @@ class HttpMessageIndexedSearchTest {
             path = "/selected",
             status = 200,
             notes = {
-                if (invalidateOnce.compareAndSet(true, false)) runBlocking { index.invalidate() }
+                if (invalidateOnce.compareAndSet(true, false)) {
+                    proxyHistory[0] = replacement
+                    runBlocking { index.invalidate() }
+                }
                 "selected"
             },
         ).item
@@ -418,8 +463,8 @@ class HttpMessageIndexedSearchTest {
         val result = service(index).search(SearchHttpMessages(host = "target.test"))
 
         assertEquals(HttpMessageSearchStatus.OK, result.status)
-        assertEquals("1", result.items.single().ref.id)
-        verify(exactly = 4) { proxy.history() }
+        assertEquals("2", result.items.single().ref.id)
+        verify(exactly = 3) { proxy.history() }
     }
 
     @Test
@@ -446,7 +491,7 @@ class HttpMessageIndexedSearchTest {
 
         assertEquals(HttpMessageSearchStatus.OK, result.status)
         assertEquals("1", result.items.single().ref.id)
-        verify(exactly = 4) { proxy.history() }
+        verify(exactly = 3) { proxy.history() }
     }
 
     @Test
@@ -470,11 +515,15 @@ class HttpMessageIndexedSearchTest {
         assertTrue(result.items.isEmpty())
     }
 
-    private fun service(index: HttpMetadataIndex): HttpMessageSearchService = HttpMessageSearchService(
+    private fun service(
+        index: HttpMetadataIndex,
+        performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
+    ): HttpMessageSearchService = HttpMessageSearchService(
         api = api,
         config = config,
         metadataIndex = index,
         cursorSecret = CURSOR_SECRET,
+        performanceDiagnostics = performanceDiagnostics,
     )
 
     private fun rawService(): HttpMessageSearchService = HttpMessageSearchService(
@@ -486,11 +535,13 @@ class HttpMessageIndexedSearchTest {
     private fun newIndex(
         maxRecords: Int,
         changeSignals: MetadataChangeSignals = MetadataChangeSignals.NO_OP,
+        performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
     ): HttpMetadataIndex = HttpMetadataIndex(
         api = api,
         maxRecordsPerSource = maxRecords,
         reuseMillis = 60_000,
         changeSignals = changeSignals,
+        performanceDiagnostics = performanceDiagnostics,
     ).also(indexes::add)
 
     private fun fixture(

@@ -308,10 +308,14 @@ internal class HttpMessageSearchService(
             )
         }
 
+        progress.report(HttpSearchProgressStage.SCANNING.ordinal)
+        val initialRecords = loadRecords(query.sources)
+        val initialViews = initialRecords.map(HttpSourceRecords::toSearchView)
         val indexSources = query.metadataIndexSources()
         val indexSnapshot = if (metadataIndex != null && indexSources.isNotEmpty()) {
+            val recordsBySource = initialRecords.associateBy(HttpSourceRecords::source)
             try {
-                metadataIndex.searchHintsSnapshot(projectId, indexSources)
+                metadataIndex.searchHintsSnapshot(projectId, indexSources, recordsBySource)
             } catch (e: HttpMetadataProjectMismatchException) {
                 return searchError(
                     HttpMessageSearchStatus.PROJECT_MISMATCH,
@@ -325,9 +329,8 @@ internal class HttpMessageSearchService(
             null
         }
 
-        progress.report(HttpSearchProgressStage.SCANNING.ordinal)
         var result = try {
-            executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints))
+            executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints), initialViews)
         } catch (e: ExpectedSearchError) {
             return searchError(e.status, e.message, projectId)
         }
@@ -345,8 +348,9 @@ internal class HttpMessageSearchService(
                 false
             }
             if (!indexStillCurrent) {
+                val retryViews = loadRecords(query.sources).map(HttpSourceRecords::toSearchView)
                 result = try {
-                    executeSearch(query, cursor, limit, projectId, hints = null)
+                    executeSearch(query, cursor, limit, projectId, hints = null, views = retryViews)
                 } catch (e: ExpectedSearchError) {
                     return searchError(e.status, e.message, projectId)
                 }
@@ -372,20 +376,17 @@ internal class HttpMessageSearchService(
         limit: Int,
         projectId: String,
         hints: IndexedSearchHints?,
+        views: List<SourceView>,
     ): SearchHttpMessagesResult {
-        val views = ArrayList<SourceView>(query.sources.size)
-        for (source in query.sources) {
-            views += loadView(source)
-        }
         return performanceDiagnostics.measure(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING) {
             val snapshots = if (cursor == null) {
-            views.map { it.snapshot() }
-        } else {
-            validateCursor(cursor, views)
-            cursor.snapshots
-        }
+                views.map { it.snapshot() }
+            } else {
+                validateCursor(cursor, views)
+                cursor.snapshots
+            }
 
-        val position = if (cursor == null) {
+            val position = if (cursor == null) {
             SearchPosition(0, initialItemIndex(snapshots.firstOrNull()?.size ?: 0, query.newestFirst))
         } else {
             SearchPosition(cursor.sourceIndex, cursor.itemIndex)
@@ -585,34 +586,36 @@ internal class HttpMessageSearchService(
         return allowed
     }
 
-    private suspend fun loadView(source: HttpMessageSource): SourceView {
-        val coroutineContext = currentCoroutineContext()
-        coroutineContext.ensureActive()
-        val view = when (source) {
-            HttpMessageSource.PROXY -> {
-                val proxy = api.proxy()
-                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
-                    proxy.history()
+    private suspend fun loadRecords(sources: List<HttpMessageSource>): List<HttpSourceRecords> {
+        val loaded = ArrayList<HttpSourceRecords>(sources.size)
+        for (source in sources) {
+            val coroutineContext = currentCoroutineContext()
+            coroutineContext.ensureActive()
+            loaded += when (source) {
+                HttpMessageSource.PROXY -> {
+                    val proxy = api.proxy()
+                    HttpSourceRecords.Proxy(
+                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) { proxy.history() }
+                    )
                 }
-                ProxySourceView(records)
-            }
-            HttpMessageSource.SITE_MAP -> {
-                val siteMap = api.siteMap()
-                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
-                    siteMap.requestResponses()
+                HttpMessageSource.SITE_MAP -> {
+                    val siteMap = api.siteMap()
+                    HttpSourceRecords.SiteMap(
+                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
+                            siteMap.requestResponses()
+                        }
+                    )
                 }
-                SiteMapSourceView(records)
-            }
-            HttpMessageSource.ORGANIZER -> {
-                val organizer = api.organizer()
-                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
-                    organizer.items()
+                HttpMessageSource.ORGANIZER -> {
+                    val organizer = api.organizer()
+                    HttpSourceRecords.Organizer(
+                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) { organizer.items() }
+                    )
                 }
-                OrganizerSourceView(records)
             }
+            coroutineContext.ensureActive()
         }
-        coroutineContext.ensureActive()
-        return view
+        return loaded
     }
 
     private fun validateCursor(cursor: HttpSearchCursor, views: List<SourceView>) {
@@ -689,6 +692,12 @@ internal class HttpMessageSearchService(
     }
 
     private fun currentProjectId(): String = api.project().id()
+}
+
+private fun HttpSourceRecords.toSearchView(): SourceView = when (this) {
+    is HttpSourceRecords.Proxy -> ProxySourceView(items)
+    is HttpSourceRecords.SiteMap -> SiteMapSourceView(items)
+    is HttpSourceRecords.Organizer -> OrganizerSourceView(items)
 }
 
 private interface SourceView {

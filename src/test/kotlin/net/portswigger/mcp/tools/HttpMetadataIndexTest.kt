@@ -275,6 +275,31 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `search hint snapshot reuses request scoped records without a second acquisition`() = runBlocking {
+        history += proxyItem(1, "/warm").item
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            performanceDiagnostics = diagnostics,
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        val cached = index.searchHintsSnapshot(
+            "project-one",
+            listOf(HttpMessageSource.PROXY),
+            mapOf(HttpMessageSource.PROXY to HttpSourceRecords.Proxy(history.toList())),
+        )
+
+        assertEquals(MetadataIndexRefresh.REUSED, cached?.sources?.single()?.refresh)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
+        assertEquals(2, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
     fun `dirty search hints omit the source without acquisition or cold work`() = runBlocking {
         history += proxyItem(1, "/dirty").item
         val signals = MetadataChangeSignals()

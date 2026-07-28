@@ -168,9 +168,15 @@ internal class HttpMetadataIndex(
     suspend fun searchHintsSnapshot(
         expectedProjectId: String,
         sources: List<HttpMessageSource>,
+        requestScopedRecords: Map<HttpMessageSource, HttpSourceRecords>? = null,
     ): HttpMetadataIndexSnapshot? {
         require(sources.all { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }) {
             "Search hints support only Proxy and Organizer records"
+        }
+        require(
+            requestScopedRecords == null || sources.all { source -> requestScopedRecords[source]?.source == source }
+        ) {
+            "Request-scoped search records must contain every requested source"
         }
         if (!lock.tryLock()) return null
         return try {
@@ -193,7 +199,8 @@ internal class HttpMetadataIndex(
                     elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
                 if (!reusableAge || existing.sourceRevision != sourceRevision) continue
 
-                val view = loadView(source)
+                val view = requestScopedRecords?.getValue(source)?.toMetadataSourceView(fingerprinter)
+                    ?: loadView(source)
                 val reusable = performanceDiagnostics.measure(source.indexProcessingMetric()) {
                     if (view.size == existing.totalRecords && validateAnchors(view, existing.anchors)) {
                         existing.toSnapshot(MetadataIndexRefresh.REUSED)
@@ -492,6 +499,13 @@ private data class CachedMetadataSource(
 }
 
 private data class MetadataAnchor(val index: Int, val fingerprint: String?)
+
+private fun HttpSourceRecords.toMetadataSourceView(fingerprinter: MetadataFingerprinter): MetadataSourceView =
+    when (this) {
+        is HttpSourceRecords.Proxy -> ProxyMetadataSourceView(items, fingerprinter)
+        is HttpSourceRecords.SiteMap -> SiteMapMetadataSourceView(items, fingerprinter)
+        is HttpSourceRecords.Organizer -> OrganizerMetadataSourceView(items, fingerprinter)
+    }
 
 private interface MetadataSourceView {
     val source: HttpMessageSource
