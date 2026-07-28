@@ -4,6 +4,8 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.http.message.HttpRequestResponse as MontoyaHttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
+import burp.api.montoya.organizer.OrganizerItem
+import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -68,8 +70,9 @@ internal sealed interface HttpMessageBatchResolution {
 /**
  * Resolves project-scoped HTTP references through Montoya's filtered lookup APIs.
  *
- * Batch resolution checks project and data-access policy once, and snapshots Site Map at most once.
- * This avoids repeated approval prompts and O(reference count × Site Map size) lookups.
+ * Batch resolution checks project and data-access policy once, performs at most one bounded filtered Proxy/Organizer
+ * lookup per source, and snapshots Site Map at most once. This avoids repeated approval prompts and per-reference source
+ * acquisitions while preserving caller-order resolution and Site Map positional identity checks.
  */
 internal class HttpMessageResolver(
     private val api: MontoyaApi,
@@ -241,14 +244,17 @@ internal class HttpMessageResolver(
         refs: List<ValidatedHttpReference>,
         sourceMetadataSelection: HttpSourceMetadataSelection,
     ): HttpMessageBatchResolution {
-        val siteMapItems by lazy(LazyThreadSafetyMode.NONE) { api.siteMap().requestResponses() }
+        var proxyItems: Map<Int, ProxyHttpRequestResponse>? = null
+        var organizerItems: Map<Int, OrganizerItem>? = null
+        var siteMapItems: List<MontoyaHttpRequestResponse>? = null
         val resolved = ArrayList<ResolvedHttpMessage>(refs.size)
 
         refs.forEachIndexed { index, validated ->
             currentCoroutineContext().ensureActive()
             val message = when (validated.ref.source) {
                 HttpMessageSource.PROXY -> {
-                    val item = api.proxy().history { it.id() == validated.numericId }.firstOrNull()
+                    val items = proxyItems ?: acquireProxyItems(refs).also { proxyItems = it }
+                    val item = items[validated.numericId]
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
@@ -272,7 +278,8 @@ internal class HttpMessageResolver(
                 }
 
                 HttpMessageSource.ORGANIZER -> {
-                    val item = api.organizer().items { it.id() == validated.numericId }.firstOrNull()
+                    val items = organizerItems ?: acquireOrganizerItems(refs).also { organizerItems = it }
+                    val item = items[validated.numericId]
                         ?: return notFound(projectId, validated.ref, index)
                     val request = item.request()
                         ?: return requestUnavailable(projectId, validated.ref, index)
@@ -285,7 +292,8 @@ internal class HttpMessageResolver(
 
                 HttpMessageSource.SITE_MAP -> {
                     val parsed = requireNotNull(validated.siteMapId)
-                    val item = siteMapItems.getOrNull(parsed.index)
+                    val items = siteMapItems ?: acquireSiteMapItems().also { siteMapItems = it }
+                    val item = items.getOrNull(parsed.index)
                         ?: return notFound(projectId, validated.ref, index)
                     if (stableSiteMapId(projectId, parsed.index, item) != validated.ref.id) {
                         return notFound(projectId, validated.ref, index)
@@ -308,6 +316,50 @@ internal class HttpMessageResolver(
 
         return HttpMessageBatchResolution.Found(projectId, resolved)
     }
+
+    private suspend fun acquireProxyItems(refs: List<ValidatedHttpReference>): Map<Int, ProxyHttpRequestResponse> {
+        val requestedIds = refs.asSequence()
+            .filter { it.ref.source == HttpMessageSource.PROXY }
+            .map { requireNotNull(it.numericId) }
+            .toSet()
+        currentCoroutineContext().ensureActive()
+        val items = api.proxy().history { it.id() in requestedIds }
+        currentCoroutineContext().ensureActive()
+        return indexFilteredItems(items, requestedIds, ProxyHttpRequestResponse::id)
+    }
+
+    private suspend fun acquireOrganizerItems(refs: List<ValidatedHttpReference>): Map<Int, OrganizerItem> {
+        val requestedIds = refs.asSequence()
+            .filter { it.ref.source == HttpMessageSource.ORGANIZER }
+            .map { requireNotNull(it.numericId) }
+            .toSet()
+        currentCoroutineContext().ensureActive()
+        val items = api.organizer().items { it.id() in requestedIds }
+        currentCoroutineContext().ensureActive()
+        return indexFilteredItems(items, requestedIds, OrganizerItem::id)
+    }
+
+    private suspend fun acquireSiteMapItems(): List<MontoyaHttpRequestResponse> {
+        currentCoroutineContext().ensureActive()
+        val items = api.siteMap().requestResponses()
+        currentCoroutineContext().ensureActive()
+        return items
+    }
+}
+
+private fun <T> indexFilteredItems(
+    items: List<T>,
+    requestedIds: Set<Int>,
+    id: (T) -> Int,
+): Map<Int, T> {
+    check(items.size <= requestedIds.size) { "filtered lookup returned too many records" }
+    val indexed = HashMap<Int, T>(requestedIds.size)
+    for (item in items) {
+        val itemId = id(item)
+        check(itemId in requestedIds) { "filtered lookup returned an unexpected record" }
+        check(indexed.put(itemId, item) == null) { "filtered lookup returned duplicate records" }
+    }
+    return indexed
 }
 
 internal data class CanonicalHttpReferenceIdentity(

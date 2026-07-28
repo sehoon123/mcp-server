@@ -410,7 +410,10 @@ class ScannerAuditToolsTest {
         val first = proxyItem(1, response = mockk())
         val second = proxyItem(2, response = mockk())
         val audit = mockk<Audit>()
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            listOf(first, second).filter(filter::matches)
+        }
         every { scope.isInScope(any()) } returns true
         every { scanner.startAudit(configuration) } returns audit
         var submissions = 0

@@ -265,7 +265,7 @@ class HttpActivityCorrelationTest {
         assertEquals((1..32).map(Int::toString), result.timeline.map { it.ref.id })
         assertEquals(16, result.delta?.baselineRecords)
         assertEquals(16, result.delta?.comparisonRecords)
-        verify(exactly = 32) { proxy.history(any()) }
+        verify(exactly = 1) { proxy.history(any()) }
     }
 
     @Test

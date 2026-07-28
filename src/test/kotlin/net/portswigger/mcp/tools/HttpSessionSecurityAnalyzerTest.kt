@@ -65,7 +65,7 @@ class HttpSessionSecurityAnalyzerTest {
         val secondResponse = response(200, listOf(header("Set-Cookie", "sid=DELETE_VALUE_SENTINEL; Secure; HttpOnly; SameSite=None")))
         val first = proxyItem(1, firstRequest, firstResponse)
         val second = proxyItem(2, secondRequest, secondResponse)
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(listOf(first, second))
 
         val result = service().analyze(
             AnalyzeHttpSessionSecurity("project-session", refs(1, 2)),
@@ -269,7 +269,7 @@ class HttpSessionSecurityAnalyzerTest {
             }
         }
         val items = orderedIds.map { id -> proxyItem(id, request("GET", "/session/$id"), response(200)) }
-        every { proxy.history(any()) } returnsMany items.map(::listOf)
+        stubProxyHistory(items)
 
         val result = service().analyze(
             AnalyzeHttpSessionSecurity("project-session", refs(*orderedIds.toIntArray())),
@@ -281,7 +281,7 @@ class HttpSessionSecurityAnalyzerTest {
         assertEquals(32, result.messages.size)
         assertEquals(orderedIds.map(Int::toString), result.messages.map { it.ref.id })
         assertEquals(listOf("2", "1"), result.messages.takeLast(2).map { it.ref.id })
-        verify(exactly = 32) { proxy.history(any()) }
+        verify(exactly = 1) { proxy.history(any()) }
     }
 
     @Test
@@ -468,7 +468,7 @@ class HttpSessionSecurityAnalyzerTest {
         val items = locations.mapIndexed { index, location ->
             proxyItem(index + 1, request("GET", "/session"), response(302, listOf(location)))
         }
-        every { proxy.history(any()) } returnsMany items.map(::listOf)
+        stubProxyHistory(items)
 
         val result = service().analyze(
             AnalyzeHttpSessionSecurity("project-session", refs(*(1..items.size).toList().toIntArray())),
@@ -498,6 +498,13 @@ class HttpSessionSecurityAnalyzerTest {
 
     private fun refs(vararg ids: Int) = ids.map {
         HttpMessageReference(HttpMessageSource.PROXY, it.toString())
+    }
+
+    private fun stubProxyHistory(items: List<ProxyHttpRequestResponse>) {
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            items.filter(filter::matches)
+        }
     }
 
     private fun proxyItem(id: Int, request: HttpRequest, response: HttpResponse?): ProxyHttpRequestResponse =

@@ -56,7 +56,7 @@ class HttpMessageComparisonTest {
     fun `two response bodies return a bounded first difference`() = runBlocking {
         val first = proxyItem(1, "alpha-one")
         val second = proxyItem(2, "alpha-two")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -79,7 +79,7 @@ class HttpMessageComparisonTest {
     fun `project transition during comparison materialization discards results`() = runBlocking {
         val first = proxyItem(1, "alpha-one")
         val second = proxyItem(2, "alpha-two")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
         val response = requireNotNull(first.response())
         val body = response.body()
         var currentProjectId = "project-123"
@@ -107,7 +107,7 @@ class HttpMessageComparisonTest {
     fun `matching inspected prefixes report unknown equality when truncated`() = runBlocking {
         val first = proxyItem(1, "abcdef")
         val second = proxyItem(2, "abcdZZ")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -129,7 +129,7 @@ class HttpMessageComparisonTest {
     fun `length mismatch does not invent a first difference beyond a truncated prefix`() = runBlocking {
         val first = proxyItem(1, "abcdef")
         val second = proxyItem(2, "abcdefg")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -160,7 +160,7 @@ class HttpMessageComparisonTest {
         )
         val first = proxyItem(1, "body", firstHeaders)
         val second = proxyItem(2, "body", secondHeaders)
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -186,7 +186,7 @@ class HttpMessageComparisonTest {
         val common = (0 until 128).map { header("X-$it", "same") }
         val first = proxyItem(1, "body", common + header("X-Tail", "one"))
         val second = proxyItem(2, "body", common + header("X-Tail", "two"))
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -206,7 +206,7 @@ class HttpMessageComparisonTest {
     fun `Burp native response variations are bounded and returned structurally`() = runBlocking {
         val first = proxyItem(1, "one")
         val second = proxyItem(2, "two")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
         val analyzer = mockk<ResponseVariationsAnalyzer>(relaxed = true)
         every { http.createResponseVariationsAnalyzer() } returns analyzer
         every { analyzer.variantAttributes() } returns setOf(AttributeType.STATUS_CODE, AttributeType.BODY_CONTENT)
@@ -226,7 +226,7 @@ class HttpMessageComparisonTest {
     fun `missing response fails before attempting native variation analysis`() = runBlocking {
         val first = proxyItem(1, "one")
         val second = proxyItem(2, null)
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages("project-123", refs(1, 2), HttpComparisonPart.RESPONSE_BODY)
@@ -276,7 +276,7 @@ class HttpMessageComparisonTest {
         }
         val first = proxyItem(1, "one")
         val second = proxyItem(2, "two")
-        every { proxy.history(any()) } returnsMany listOf(listOf(first), listOf(second))
+        stubProxyHistory(first, second)
 
         val result = service.compare(
             CompareHttpMessages(
@@ -305,6 +305,13 @@ class HttpMessageComparisonTest {
 
     private fun refs(vararg ids: Int) = ids.map {
         HttpMessageReference(HttpMessageSource.PROXY, it.toString())
+    }
+
+    private fun stubProxyHistory(vararg items: ProxyHttpRequestResponse) {
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            items.filter(filter::matches)
+        }
     }
 
     private fun proxyItem(
