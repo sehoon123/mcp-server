@@ -464,13 +464,15 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
                 request.params.arguments ?: JsonObject(emptyMap()),
             )
             val context = ToolCallContext(connection, request.params.meta?.progressToken)
-            val response = withContext(toolExecutionDispatcher) { context.execute(input) }
-            val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
-            CallToolResult(
-                content = listOf(TextContent(response.text ?: structuredContent.toString())),
-                isError = response.isError,
-                structuredContent = structuredContent,
-            )
+            withContext(toolExecutionDispatcher) {
+                val response = context.execute(input)
+                val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
+                CallToolResult(
+                    content = listOf(TextContent(response.text ?: structuredContent.toString())),
+                    isError = response.isError,
+                    structuredContent = structuredContent,
+                )
+            }
         }
     }
 
@@ -509,13 +511,15 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
                 inputSerializer,
                 request.params.arguments ?: JsonObject(emptyMap()),
             )
-            val output = withContext(toolExecutionDispatcher) { execute(input) }
-            val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
-            CallToolResult(
-                content = listOf(TextContent(structuredContent.toString())),
-                isError = false,
-                structuredContent = structuredContent,
-            )
+            withContext(toolExecutionDispatcher) {
+                val output = execute(input)
+                val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
+                CallToolResult(
+                    content = listOf(TextContent(structuredContent.toString())),
+                    isError = false,
+                    structuredContent = structuredContent,
+                )
+            }
         }
     }
 
