@@ -683,9 +683,10 @@ including byte-for-byte preservation of body text.
 The `4.11.0-dev.4` follow-up applies four bounded changes without changing MCP names, descriptions, schemas,
 annotations, stable IDs, approvals, project checks, cancellation, or uncertain-execution semantics:
 
-- one invocation-local HTTP source view is reused across a warm search and its one allowed stale-index fallback;
-  Proxy and Organizer are each acquired at most once in the normal path and at most once more after a detected stale
-  index, while Site Map positional identity validation remains unchanged;
+- one invocation-local HTTP source view is shared by warm-index validation and the initial search; the one allowed
+  stale-index fallback deliberately reacquires a fresh view. Proxy and Organizer are therefore each acquired at most
+  once in the normal path and at most once more after detected staleness, while Site Map positional identity validation
+  remains unchanged;
 - an ordered batch of at most 32 Proxy or Organizer references uses one filtered Montoya lookup per represented source,
   rather than one filtered lookup per reference. Caller order, duplicates, missing/ambiguous-result rejection,
   per-reference identity validation, cancellation, and final project checks remain explicit;
