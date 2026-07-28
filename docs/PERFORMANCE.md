@@ -332,6 +332,34 @@ client, filter, reference, path, traffic, exception, or Montoya values. Counts s
 extension lifetime and disappear on extension unload. They are diagnostic attribution only and are not Burp product or
 extension latency benchmarks.
 
+## Advisory metadata source-change signals
+
+The v4.11 development line also uses fixed, value-free atomic source revisions to invalidate HTTP metadata reuse. One
+passive Proxy request handler, one passive Proxy response handler, and one Scanner audit-issue handler are registered
+independently for the extension lifetime. Proxy handlers perform only atomic category marks and return Montoya's
+continuation action with the exact received message and annotations. Scanner callbacks inspect no issue field. No
+callback queries history, hashes or retains a callback object, logs, blocks, waits, or launches a task. Registration or
+cleanup failure is isolated; missing callback coverage degrades to the existing bounded list, anchor, and age checks.
+
+Proxy request callbacks mark Proxy HTTP. Proxy response callbacks mark Proxy HTTP and conservatively Site Map. Scanner
+issue callbacks mark Scanner issues and conservatively Site Map. An approved Organizer mutation marks Organizer
+immediately before the Montoya call so an ambiguous execution is conservatively dirty. Montoya 2026.7 provides no
+external Site Map or Organizer item listener, and this milestone adds no WebSocket handler. External changes in those
+sources can therefore remain undetected until list-size or sampled-anchor validation finds them, or until the 30-second
+reuse limit expires.
+
+A revision is advisory, not a record or visibility authority. It stores no project, traffic, URL, reference, source size,
+callback, exception, or timing value. A callback can precede source-list visibility; every refresh still reads the
+current Montoya list, validates up to 16 anchors, and keeps the existing 5,000-record/source bound. A dirty warm search
+hint is omitted without waiting or building and the existing raw search path is used. A callback racing acquisition or
+aggregation makes that prepared snapshot non-current. Project generation, mutation barriers, project rechecks,
+cancellation, and at-most-one attack-surface rebuild remain authoritative.
+
+These callback semantics have deterministic unit and race coverage only at this development stage. Disposable live
+Community and Professional callback timing, thread category, list visibility, project replacement, and unload evidence
+remain a release gate. Until that evidence exists, this feature is described only as advisory invalidation; it is not
+progressive/background indexing and does not claim immediate or complete event-driven freshness.
+
 ## Disposable live WebSocket scale and lifecycle diagnostics
 
 Two opt-in Python entry points exercise an already-running exact development JAR in a disposable Burp project. They do

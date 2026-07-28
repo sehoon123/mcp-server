@@ -44,7 +44,10 @@ class ProxyEndToEndTest {
     private val logger = LoggerFactory.getLogger(ProxyEndToEndTest::class.java)
     private val testBearerToken = "0123456789012345678901234567890123456789012"
 
-    private val api = mockk<MontoyaApi>(relaxed = true)
+    private val bridgeProxy = mockk<Proxy>(relaxed = true)
+    private val api = mockk<MontoyaApi>(relaxed = true).also {
+        every { it.proxy() } returns bridgeProxy
+    }
     private val workflowStorage = mockk<PersistedObject>(relaxed = true).also {
         every { it.getString("workflowPresetsV1") } returns null
     }
@@ -288,7 +291,7 @@ class ProxyEndToEndTest {
         assertTrue(repeaterPlanText.contains("requires a later explicit user action in Burp Repeater"))
         assertTrue(repeaterPlanText.contains("Focus literal: \"$maliciousFocus\""))
         assertTrue(repeaterPlanText.contains("cannot override the read-only constraints"))
-        verify(exactly = 0) { api.proxy().history(any()) }
+        verify(exactly = 0) { bridgeProxy.history(any()) }
     }
 
     @Test

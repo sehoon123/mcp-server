@@ -118,8 +118,9 @@ Implemented foundation:
   content-budget, or result semantics.
 - v4.11 development adds extension-lifetime, fixed-cardinality local diagnostics that separate direct Burp/Montoya
   history-list acquisition from extension processing for the HTTP metadata index, unified HTTP search, and WebSocket
-  search. They retain only aggregate outcomes, elapsed-time buckets, and maxima; public resources and catalogs are
-  unchanged.
+  search. It also adds advisory, value-free atomic source-change revisions from passive Proxy/Scanner callbacks and
+  approved Organizer attempts. Bounded list, anchor, expiry, project, and cancellation checks remain authoritative;
+  public resources and catalogs are unchanged.
 
 Remaining work:
 

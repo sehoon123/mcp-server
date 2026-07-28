@@ -268,6 +268,31 @@ class HttpAttackSurfaceTest {
     }
 
     @Test
+    fun `one source signal between aggregation and return rebuilds once`() = runBlocking {
+        history += proxyItem(1, "GET", "/signaled", 200, MimeType.JSON, true).item
+        val signals = MetadataChangeSignals()
+        val signaledIndex = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 20,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        var signalOnce = true
+        val signaledService = HttpAttackSurfaceService(api, config, signaledIndex) { attempt ->
+            if (attempt == 0 && signalOnce) {
+                signalOnce = false
+                signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+            }
+        }
+
+        val result = signaledService.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+
+        assertEquals(HttpAttackSurfaceStatus.OK, result.status)
+        assertEquals(MetadataIndexRefresh.REBUILT, result.sources.single().refresh)
+        verify(exactly = 2) { proxy.history() }
+    }
+
+    @Test
     fun `repeated invalidation fails closed after one bounded rebuild`() = runBlocking {
         history += proxyItem(1, "GET", "/changing", 200, MimeType.JSON, true).item
         service = HttpAttackSurfaceService(api, config, index) {

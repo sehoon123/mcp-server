@@ -423,6 +423,33 @@ class HttpMessageIndexedSearchTest {
     }
 
     @Test
+    fun `source signal after indexed aggregation retries once through the raw path`() = runBlocking {
+        val signals = MetadataChangeSignals()
+        val index = newIndex(maxRecords = 10, changeSignals = signals)
+        val signalOnce = AtomicBoolean(true)
+        proxyHistory += fixture(
+            id = 1,
+            host = { "target.test" },
+            method = "GET",
+            path = "/selected",
+            status = 200,
+            notes = {
+                if (signalOnce.compareAndSet(true, false)) {
+                    signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+                }
+                "selected"
+            },
+        ).item
+        index.snapshot(currentProjectId, listOf(HttpMessageSource.PROXY))
+
+        val result = service(index).search(SearchHttpMessages(host = "target.test"))
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals("1", result.items.single().ref.id)
+        verify(exactly = 4) { proxy.history() }
+    }
+
+    @Test
     fun `final project check discards otherwise complete raw results`() = runBlocking {
         proxyHistory += fixture(
             id = 1,
@@ -456,10 +483,14 @@ class HttpMessageIndexedSearchTest {
         cursorSecret = CURSOR_SECRET,
     )
 
-    private fun newIndex(maxRecords: Int): HttpMetadataIndex = HttpMetadataIndex(
+    private fun newIndex(
+        maxRecords: Int,
+        changeSignals: MetadataChangeSignals = MetadataChangeSignals.NO_OP,
+    ): HttpMetadataIndex = HttpMetadataIndex(
         api = api,
         maxRecordsPerSource = maxRecords,
         reuseMillis = 60_000,
+        changeSignals = changeSignals,
     ).also(indexes::add)
 
     private fun fixture(

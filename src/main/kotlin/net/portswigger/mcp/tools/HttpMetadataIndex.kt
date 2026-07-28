@@ -70,6 +70,7 @@ internal data class HttpMetadataRecord(
 
 internal data class HttpMetadataSourceSnapshot(
     val source: HttpMessageSource,
+    val sourceRevision: Long,
     val totalRecords: Int,
     val indexedFrom: Int,
     val slots: List<HttpMetadataRecord?>,
@@ -102,6 +103,7 @@ internal class HttpMetadataIndex(
     reuseMillis: Long = DEFAULT_METADATA_INDEX_REUSE_MILLIS,
     private val nanoTime: () -> Long = System::nanoTime,
     private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
+    private val changeSignals: MetadataChangeSignals = MetadataChangeSignals.NO_OP,
 ) : AutoCloseable {
     private val lock = Mutex()
     // snapshot() serializes all source reads, so one digest can be safely reused without a ThreadLocal or per-record
@@ -142,9 +144,10 @@ internal class HttpMetadataIndex(
             val snapshots = ArrayList<HttpMetadataSourceSnapshot>(sources.size)
             for (source in sources) {
                 coroutineContext.ensureActive()
+                val sourceRevision = changeSignals.revision(source.metadataChangeSource())
                 val view = loadView(source)
                 snapshots += performanceDiagnostics.measure(source.indexProcessingMetric()) {
-                    refreshSourceLocked(source, view, coroutineContext)
+                    refreshSourceLocked(source, sourceRevision, view, coroutineContext)
                 }
                 val projectAfterSource = api.project().id()
                 if (projectAfterSource != expectedProjectId) {
@@ -187,9 +190,10 @@ internal class HttpMetadataIndex(
             for (source in sources) {
                 coroutineContext.ensureActive()
                 val existing = entries[source] ?: continue
+                val sourceRevision = changeSignals.revision(source.metadataChangeSource())
                 val reusableAge = maxReuseNanos > 0 &&
                     elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
-                if (!reusableAge) continue
+                if (!reusableAge || existing.sourceRevision != sourceRevision) continue
 
                 val view = loadView(source)
                 val reusable = performanceDiagnostics.measure(source.indexProcessingMetric()) {
@@ -229,7 +233,7 @@ internal class HttpMetadataIndex(
             if (currentProjectId != snapshot.projectId) {
                 throw HttpMetadataProjectMismatchException(currentProjectId)
             }
-            snapshot.generation == generation
+            snapshot.generation == generation && snapshot.hasCurrentSourceRevisions()
         } finally {
             lock.unlock()
         }
@@ -249,7 +253,11 @@ internal class HttpMetadataIndex(
         if (currentProjectId != snapshot.projectId) {
             throw HttpMetadataProjectMismatchException(currentProjectId)
         }
-        snapshot.generation == generation
+        snapshot.generation == generation && snapshot.hasCurrentSourceRevisions()
+    }
+
+    private fun HttpMetadataIndexSnapshot.hasCurrentSourceRevisions(): Boolean = sources.all { source ->
+        changeSignals.revision(source.source.metadataChangeSource()) == source.sourceRevision
     }
 
     /** Prevents snapshots from being built or returned while an MCP project/Scope mutation is executing. */
@@ -323,6 +331,7 @@ internal class HttpMetadataIndex(
 
     private fun refreshSourceLocked(
         source: HttpMessageSource,
+        sourceRevision: Long,
         view: MetadataSourceView,
         coroutineContext: kotlin.coroutines.CoroutineContext,
     ): HttpMetadataSourceSnapshot {
@@ -332,16 +341,19 @@ internal class HttpMetadataIndex(
             elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
         val anchorsValid = reusableAge && validateAnchors(view, existing.anchors)
 
-        if (existing != null && reusableAge && anchorsValid && view.size == existing.totalRecords) {
+        if (
+            existing != null && existing.sourceRevision == sourceRevision && reusableAge && anchorsValid &&
+            view.size == existing.totalRecords
+        ) {
             return existing.toSnapshot(MetadataIndexRefresh.REUSED)
         }
 
         val refreshed = if (
             existing != null && reusableAge && anchorsValid && view.size > existing.totalRecords
         ) {
-            appendToExisting(view, existing, coroutineContext, now)
+            appendToExisting(view, existing, sourceRevision, coroutineContext, now)
         } else {
-            rebuild(view, coroutineContext, now)
+            rebuild(view, sourceRevision, coroutineContext, now)
         }
         entries[source] = refreshed
         return refreshed.toSnapshot(
@@ -356,6 +368,7 @@ internal class HttpMetadataIndex(
     private fun appendToExisting(
         view: MetadataSourceView,
         existing: CachedMetadataSource,
+        sourceRevision: Long,
         coroutineContext: kotlin.coroutines.CoroutineContext,
         refreshedAtNanos: Long,
     ): CachedMetadataSource {
@@ -377,6 +390,7 @@ internal class HttpMetadataIndex(
         }
         return CachedMetadataSource(
             source = view.source,
+            sourceRevision = sourceRevision,
             totalRecords = view.size,
             indexedFrom = indexedFrom,
             slots = slots,
@@ -387,6 +401,7 @@ internal class HttpMetadataIndex(
 
     private fun rebuild(
         view: MetadataSourceView,
+        sourceRevision: Long,
         coroutineContext: kotlin.coroutines.CoroutineContext,
         refreshedAtNanos: Long,
     ): CachedMetadataSource {
@@ -398,6 +413,7 @@ internal class HttpMetadataIndex(
         }
         return CachedMetadataSource(
             source = view.source,
+            sourceRevision = sourceRevision,
             totalRecords = view.size,
             indexedFrom = indexedFrom,
             slots = slots,
@@ -460,6 +476,7 @@ private fun HttpMessageSource.indexProcessingMetric(): HistoryPerformanceMetric 
 
 private data class CachedMetadataSource(
     val source: HttpMessageSource,
+    val sourceRevision: Long,
     val totalRecords: Int,
     val indexedFrom: Int,
     val slots: List<HttpMetadataRecord?>,
@@ -468,6 +485,7 @@ private data class CachedMetadataSource(
 ) {
     fun toSnapshot(refresh: MetadataIndexRefresh) = HttpMetadataSourceSnapshot(
         source = source,
+        sourceRevision = sourceRevision,
         totalRecords = totalRecords,
         indexedFrom = indexedFrom,
         slots = slots,

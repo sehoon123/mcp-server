@@ -373,6 +373,8 @@ class HttpMessageActionsTest {
 
     @Test
     fun `Organizer action preserves an unmodified source response`() = runBlocking {
+        val events = mutableListOf<String>()
+        val measuredService = HttpMessageActionService(api, config) { events += "signal" }
         val organizer = mockk<Organizer>()
         val item = mockk<OrganizerItem>()
         val sourceRequest = request()
@@ -386,9 +388,9 @@ class HttpMessageActionsTest {
         every { item.request() } returns sourceRequest
         every { item.response() } returns sourceResponse
         every { item.httpService() } returns sourceRequest.httpService()
-        every { organizer.sendToOrganizer(item) } just Runs
+        every { organizer.sendToOrganizer(item) } answers { events += "send" }
 
-        val result = service.sendToOrganizer(
+        val result = measuredService.sendToOrganizer(
             SendToOrganizerFromId(
                 projectId = "project-123",
                 ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "14"),
@@ -397,8 +399,46 @@ class HttpMessageActionsTest {
 
         assertEquals(HttpMessageActionStatus.OK, result.status)
         assertEquals(true, result.preservedResponseInOrganizer)
+        assertEquals(listOf("signal", "send"), events)
         verify(exactly = 1) { organizer.sendToOrganizer(item) }
         verify(exactly = 0) { organizer.sendToOrganizer(any<HttpRequest>()) }
+    }
+
+    @Test
+    fun `Organizer signal precedes an uncertain call and invalid input never signals`() = runBlocking {
+        var signals = 0
+        val measuredService = HttpMessageActionService(api, config) { signals++ }
+        val organizer = mockk<Organizer>()
+        val item = mockk<OrganizerItem>()
+        val sourceRequest = request()
+        every { api.organizer() } returns organizer
+        every { organizer.items(any()) } answers {
+            val filter = firstArg<burp.api.montoya.organizer.OrganizerItemFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 15
+        every { item.request() } returns sourceRequest
+        every { item.response() } returns null
+        every { item.httpService() } returns sourceRequest.httpService()
+        every { organizer.sendToOrganizer(sourceRequest) } throws IllegalStateException("uncertain")
+
+        val uncertain = measuredService.sendToOrganizer(
+            SendToOrganizerFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
+            )
+        )
+        val invalid = measuredService.sendToOrganizer(
+            SendToOrganizerFromId(
+                projectId = "",
+                ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
+        assertEquals(1, signals)
+        verify(exactly = 1) { organizer.sendToOrganizer(sourceRequest) }
     }
 
     @Test

@@ -269,8 +269,8 @@ internal fun Server.registerTools(
         performanceDiagnostics = services.historyPerformanceDiagnostics,
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
-    val httpMessageActionService = HttpMessageActionService(api, config)
-    val rawHttpActionService = RawHttpActionService(api, config)
+    val httpMessageActionService = HttpMessageActionService(api, config, services::markOrganizerChanged)
+    val rawHttpActionService = RawHttpActionService(api, config, services::markOrganizerChanged)
     val httpMessageReadService = HttpMessageReadService(api, config)
     val webSocketMessageSearchService = WebSocketMessageSearchService(
         api,

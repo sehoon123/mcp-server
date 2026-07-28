@@ -332,6 +332,7 @@ data class HttpMessageActionResult(
 internal class HttpMessageActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
+    private val organizerChanged: () -> Unit = {},
 ) {
     private val resolver = HttpMessageResolver(api, config)
 
@@ -569,11 +570,21 @@ internal class HttpMessageActionService(
             null
         }
         if (envelope != null) {
+            markOrganizerChanged()
             api.organizer().sendToOrganizer(envelope)
         } else {
+            markOrganizerChanged()
             api.organizer().sendToOrganizer(patched.request)
         }
         envelope != null
+    }
+
+    private fun markOrganizerChanged() {
+        try {
+            organizerChanged()
+        } catch (_: Exception) {
+            // Invalidation diagnostics must never prevent the already-approved side effect.
+        }
     }
 
     private suspend fun route(

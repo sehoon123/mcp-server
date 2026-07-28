@@ -10,6 +10,7 @@ import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
+import burp.api.montoya.organizer.Organizer
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
 import burp.api.montoya.repeater.Repeater
@@ -318,6 +319,32 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
         assertEquals("project-raw", result.projectId)
         assertNull(result.response)
+    }
+
+    @Test
+    fun `raw Organizer routing signals immediately before success and uncertain failure`() = runBlocking {
+        val fixture = http1Fixture()
+        val events = mutableListOf<String>()
+        var fail = false
+        val measuredService = RawHttpActionService(api, config) { events += "signal" }
+        val organizer = mockk<Organizer>()
+        every { api.organizer() } returns organizer
+        every { organizer.sendToOrganizer(fixture.request) } answers {
+            events += "send"
+            if (fail) throw IllegalStateException("uncertain")
+        }
+        val input = defaultHttp1Route().copy(destination = RawHttpRouteDestination.ORGANIZER)
+
+        val completed = measuredService.route(input)
+        fail = true
+        val uncertain = measuredService.route(input)
+        val invalid = measuredService.route(input.copy(tabName = "not-allowed"))
+
+        assertEquals(HttpMessageActionStatus.OK, completed.status)
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
+        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
+        assertEquals(listOf("signal", "send", "signal", "send"), events)
+        verify(exactly = 2) { organizer.sendToOrganizer(fixture.request) }
     }
 
     @Test

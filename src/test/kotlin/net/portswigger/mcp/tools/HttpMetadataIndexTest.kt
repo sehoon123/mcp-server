@@ -147,6 +147,98 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `source signals invalidate captured snapshots and drive bounded append refresh`() = runBlocking {
+        history += proxyItem(1, "/one").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        val first = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        assertTrue(index.isSnapshotCurrent(first))
+
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+        assertFalse(index.isSnapshotCurrent(first))
+        history += proxyItem(2, "/two").item
+        val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(MetadataIndexRefresh.UPDATED, refreshed.sources.single().refresh)
+        assertEquals(1L, refreshed.sources.single().sourceRevision)
+        assertEquals(listOf(1, 2), refreshed.sources.single().availableRecords.map { it.numericSourceId })
+        assertTrue(index.isSnapshotCurrent(refreshed))
+    }
+
+    @Test
+    fun `same-size signal forces bounded rebuild while unrelated signals preserve currentness`() = runBlocking {
+        history += proxyItem(1, "/one").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        val first = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        signals.markChanged(MetadataChangeSource.ORGANIZER)
+        assertTrue(index.isSnapshotCurrent(first))
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+        val rebuilt = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(MetadataIndexRefresh.REBUILT, rebuilt.sources.single().refresh)
+        assertEquals(1L, rebuilt.sources.single().sourceRevision)
+    }
+
+    @Test
+    fun `event before list visibility remains advisory and later size change is detected`() = runBlocking {
+        history += proxyItem(1, "/old-visible").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+        val beforeVisibility = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        assertEquals(MetadataIndexRefresh.REBUILT, beforeVisibility.sources.single().refresh)
+        assertEquals(1, beforeVisibility.sources.single().totalRecords)
+        history += proxyItem(2, "/later-visible").item
+
+        val hints = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val afterVisibility = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(null, hints)
+        assertEquals(MetadataIndexRefresh.UPDATED, afterVisibility.sources.single().refresh)
+        assertEquals(2, afterVisibility.sources.single().totalRecords)
+    }
+
+    @Test
+    fun `signal racing acquisition prevents publication from becoming current`() = runBlocking {
+        history += proxyItem(1, "/raced").item
+        val signals = MetadataChangeSignals()
+        every { proxy.history() } answers {
+            signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+            history.toList()
+        }
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+
+        val snapshot = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(0L, snapshot.sources.single().sourceRevision)
+        assertFalse(index.isSnapshotCurrent(snapshot))
+    }
+
+    @Test
     fun `search hint snapshot never performs a cold source build`() = runBlocking {
         history += proxyItem(1, "/cold").item
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
@@ -183,6 +275,25 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `dirty search hints omit the source without acquisition or cold work`() = runBlocking {
+        history += proxyItem(1, "/dirty").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+
+        val hints = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertEquals(null, hints)
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
     fun `search hints never wait for a contended index build`() = runBlocking {
         val fixture = proxyItem(1, "/contended")
         val enteredRequest = CountDownLatch(1)
@@ -194,16 +305,20 @@ class HttpMetadataIndexTest {
         }
         history += fixture.item
         val diagnostics = HistoryPerformanceDiagnostics()
+        val signals = MetadataChangeSignals()
         val index = HttpMetadataIndex(
             api,
             maxRecordsPerSource = 2,
             nanoTime = { nowNanos },
             performanceDiagnostics = diagnostics,
+            changeSignals = signals,
         )
         val build = async(Dispatchers.Default) {
             index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
         }
         assertTrue(enteredRequest.await(5, TimeUnit.SECONDS))
+        repeat(100_000) { signals.markChanged(MetadataChangeSource.WEBSOCKET) }
+        assertEquals(100_000L, signals.revision(MetadataChangeSource.WEBSOCKET))
 
         try {
             assertEquals(
@@ -335,6 +450,30 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `late callback after project reset cannot revive an old snapshot`() = runBlocking {
+        history += proxyItem(1, "/old").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        val old = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        index.resetForProjectBoundary()
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+        history.clear()
+        history += proxyItem(2, "/new").item
+        val current = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        assertFalse(index.isSnapshotCurrent(old))
+        assertTrue(index.isSnapshotCurrent(current))
+        assertEquals("/new", current.sources.single().availableRecords.single().path)
+        assertEquals(1L, current.sources.single().sourceRevision)
+    }
+
+    @Test
     fun `snapshot generation detects invalidation before a response is returned`() = runBlocking {
         history += proxyItem(1, "/one").item
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
@@ -380,6 +519,33 @@ class HttpMetadataIndexTest {
                 throw IllegalStateException("simulated mutation failure")
             }
         }
+
+        val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+        assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)
+        assertEquals("/after", refreshed.availableRecords.single().path)
+    }
+
+    @Test
+    fun `cancelled signaled rebuild publishes no partial cache`() = runBlocking {
+        history += proxyItem(1, "/before").item
+        val signals = MetadataChangeSignals()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            changeSignals = signals,
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val cancelled = proxyItem(2, "/cancelled")
+        every { cancelled.item.request() } throws CancellationException("cancelled rebuild")
+        history[0] = cancelled.item
+        signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+
+        assertFailsWith<CancellationException> {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        history[0] = proxyItem(3, "/after").item
 
         val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
         assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)

@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.MimeType
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
+import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.websocket.Direction
@@ -51,7 +52,10 @@ class McpServerIntegrationTest {
     private val client = TestStreamableHttpMcpClient(
         mapOf("Authorization" to "Bearer $testBearerToken")
     )
-    private val api = mockk<MontoyaApi>(relaxed = true)
+    private val bridgeProxy = mockk<Proxy>(relaxed = true)
+    private val api = mockk<MontoyaApi>(relaxed = true).also {
+        every { it.proxy() } returns bridgeProxy
+    }
     private val auditRecords = CopyOnWriteArrayList<McpAuditRecord>()
     private val auditSink = object : McpAuditSink {
         override fun append(record: McpAuditRecord) {
@@ -940,7 +944,7 @@ class McpServerIntegrationTest {
         assertTrue(repeaterPlanText.contains("requires a later explicit user action in Burp Repeater"))
         assertTrue(repeaterPlanText.contains("Focus literal: \"$maliciousFocus\""))
         assertTrue(repeaterPlanText.contains("cannot override the read-only constraints"))
-        verify(exactly = 0) { api.proxy().history(any()) }
+        verify(exactly = 0) { bridgeProxy.history(any()) }
 
         val oversizedPrompt = runCatching {
             client.getPrompt(

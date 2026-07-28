@@ -9,6 +9,8 @@ import net.portswigger.mcp.presets.WorkflowPresetStore
 internal class ToolServices(private val api: MontoyaApi, extensionStorage: PersistedObject) {
     val workflowPresetStore = WorkflowPresetStore(extensionStorage)
     val historyPerformanceDiagnostics = HistoryPerformanceDiagnostics()
+    private val metadataChangeSignals = MetadataChangeSignals()
+    private val metadataEventBridge = MontoyaMetadataEventBridge(api, metadataChangeSignals)
     private val collaboratorDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         CollaboratorToolService(api)
     }
@@ -16,7 +18,11 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
         ScannerAuditService(api)
     }
     private val httpMetadataIndexDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        HttpMetadataIndex(api, performanceDiagnostics = historyPerformanceDiagnostics)
+        HttpMetadataIndex(
+            api,
+            performanceDiagnostics = historyPerformanceDiagnostics,
+            changeSignals = metadataChangeSignals,
+        )
     }
     private val httpSessionSecurityAnalyzerDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         HttpSessionSecurityAnalyzerService(api)
@@ -30,6 +36,10 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
 
     fun performanceSnapshot(): HistoryPerformanceSnapshot = historyPerformanceDiagnostics.snapshot()
 
+    fun markOrganizerChanged() {
+        metadataChangeSignals.markChanged(MetadataChangeSource.ORGANIZER)
+    }
+
     suspend fun resetForProjectBoundary() {
         if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
             scannerAuditsDelegate.value.resetForProjectBoundary()
@@ -39,8 +49,10 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
     }
 
     fun close() {
+        metadataEventBridge.close()
         if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.close()
         if (collaboratorDelegate.isInitialized()) collaboratorDelegate.value.close()
         if (httpMetadataIndexDelegate.isInitialized()) httpMetadataIndexDelegate.value.close()
+        metadataChangeSignals.close()
     }
 }

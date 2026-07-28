@@ -369,7 +369,10 @@ Milestones:
 
 The first deliverable changes no MCP tool, prompt, resource, template, cursor, stable-ID, approval, or result schema.
 Metrics survive listener restart for the extension lifetime, retain no project/client/filter/reference/traffic value, and
-are diagnostic aggregates rather than Burp product benchmarks.
+are diagnostic aggregates rather than Burp product benchmarks. The next development increment adds only advisory,
+value-free source revisions from passive Proxy/Scanner callbacks and approved Organizer attempts. Unit/race validation
+is complete; disposable live Community/Professional timing, visibility, project-replacement, and unload evidence remains
+open, so complete event-driven freshness is not claimed.
 
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool

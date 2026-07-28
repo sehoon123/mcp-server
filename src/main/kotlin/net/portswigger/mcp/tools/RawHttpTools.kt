@@ -130,6 +130,7 @@ data class RawHttpActionResult(
 internal class RawHttpActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
+    private val organizerChanged: () -> Unit = {},
 ) {
     suspend fun send(input: SendRawHttpRequest): RawHttpActionResult {
         val target = input.toTarget()
@@ -366,7 +367,10 @@ internal class RawHttpActionService(
                     if (tabName == null) api.intruder().sendToIntruder(prepared.request)
                     else api.intruder().sendToIntruder(prepared.request, tabName)
                 }
-                RawHttpRouteDestination.ORGANIZER -> api.organizer().sendToOrganizer(prepared.request)
+                RawHttpRouteDestination.ORGANIZER -> {
+                    markOrganizerChanged()
+                    api.organizer().sendToOrganizer(prepared.request)
+                }
             }
         } catch (e: CancellationException) {
             if (!callContext.isActive) throw e
@@ -393,6 +397,14 @@ internal class RawHttpActionService(
             requestBytes = prepared.requestBytes,
             tabName = tabName,
         )
+    }
+
+    private fun markOrganizerChanged() {
+        try {
+            organizerChanged()
+        } catch (_: Exception) {
+            // Invalidation diagnostics must never prevent the already-approved side effect.
+        }
     }
 
     private fun preExecutionProjectResult(
