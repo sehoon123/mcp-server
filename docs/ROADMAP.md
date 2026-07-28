@@ -336,6 +336,16 @@ Implemented on the v4.9 development branch:
 - The common catalog is 24 tools and Professional adds seven for 31 total; existing resources and URI templates remain
   unchanged, while prompt catalogs become 4 Community / 5 Professional.
 
+Implemented on the v4.11 development branch:
+
+- `correlate_http_activity` compares one to 16 distinct baseline references with one to 16 distinct comparison
+  references through existing project, source-approval, stable-ID, cancellation, and least-data resolver contracts.
+- Results preserve caller order, expose only available Proxy capture times, return complete bounded metadata-count
+  deltas, and treat cross-source matches as invocation-local similarity rather than identity, chronology, causality, or
+  vulnerability evidence. Records are never deduplicated.
+- The development catalogs contain 25 Community tools and 32 Professional tools. Existing prompts, resources, URI
+  templates, cursors, and prior result schemas remain unchanged; clients must reconnect and rediscover the additive tool.
+
 Implemented incrementally through v4.3.2:
 
 - The MCP settings viewport tracks the available width instead of silently hiding horizontally oversized content.

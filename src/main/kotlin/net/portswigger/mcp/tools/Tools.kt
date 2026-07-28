@@ -269,6 +269,7 @@ internal fun Server.registerTools(
         performanceDiagnostics = services.historyPerformanceDiagnostics,
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
+    val httpActivityCorrelationService = HttpActivityCorrelationService(api, config)
     val httpMessageActionService = HttpMessageActionService(api, config, services::markOrganizerChanged)
     val rawHttpActionService = RawHttpActionService(api, config, services::markOrganizerChanged)
     val httpMessageReadService = HttpMessageReadService(api, config)
@@ -1018,6 +1019,20 @@ internal fun Server.registerTools(
             httpAttackSurfaceService.summarize(input) { progress, total, message ->
                 reportProgress(progress, total, message)
             }
+        )
+    }
+
+    mcpStructuredToolWithContext<CorrelateHttpActivity, CorrelateHttpActivityResult>(
+        description = "Correlate two caller-selected cohorts of up to 16 stored HTTP references each. Source-access policy applies; no traffic or mutation occurs. Results keep caller order, expose Proxy capture times only, report bounded metadata similarity without identity or deduplication, and return a complete bounded attack-surface delta. Results do not retain or return query strings, headers, bodies, notes, or raw bytes; Site Map stable-ID validation may privately inspect bounded identity samples.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val result = httpActivityCorrelationService.correlate(input) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
+        StructuredToolResponse(
+            result,
+            text = null,
+            isError = result.status != HttpActivityCorrelationStatus.OK,
         )
     }
 

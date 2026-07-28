@@ -260,7 +260,7 @@ class ToolsKtTest {
     @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
-        assertEquals(24, tools.size)
+        assertEquals(25, tools.size)
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         assertTrue(tools.values.all { !it.description.isNullOrBlank() })
@@ -279,6 +279,8 @@ class ToolsKtTest {
         assertTrue(description("set_burp_options").contains("configuration-editing tools are enabled"))
         assertTrue(description("search_http_messages").contains("Pass nextCursor as cursor"))
         assertTrue(description("search_http_messages").contains("Requests sent by MCP are absent"))
+        assertTrue(description("correlate_http_activity").contains("similarity without identity or deduplication"))
+        assertTrue(description("correlate_http_activity").contains("Site Map stable-ID validation may privately inspect bounded identity samples"))
         assertTrue(description("update_scope").contains("before any approval prompt or policy bypass and before mutation"))
         assertTrue(description("analyze_http_session_security").contains("privately inspect bounded body and header samples"))
         assertTrue(description("save_workflow_preset").contains("Names are trimmed"))
@@ -1475,7 +1477,7 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(24, tools.size)
+        assertEquals(25, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertEquals(
@@ -1488,6 +1490,7 @@ class ToolsKtTest {
                 "set_burp_options",
                 "search_http_messages",
                 "summarize_http_attack_surface",
+                "correlate_http_activity",
                 "check_scope",
                 "update_scope",
                 "compare_http_messages",
@@ -1568,6 +1571,31 @@ class ToolsKtTest {
         assertNotNull(attackSurface.outputSchema?.properties?.get("availableInScopeRecords"))
         assertEquals(true, attackSurface.annotations?.readOnlyHint)
         assertEquals(false, attackSurface.annotations?.destructiveHint)
+
+        val correlation = tools.single { it.name == "correlate_http_activity" }
+        assertEquals(
+            setOf("projectId", "baselineRefs", "comparisonRefs"),
+            correlation.inputSchema.required?.toSet(),
+        )
+        assertTrue(correlation.inputSchema.properties?.get("baselineRefs").toString().contains("\"maxItems\":16"))
+        assertTrue(correlation.inputSchema.properties?.get("comparisonRefs").toString().contains("\"maxItems\":16"))
+        assertTrue(correlation.inputSchema.properties?.get("pathDepth").toString().contains("\"maximum\":4"))
+        assertNotNull(correlation.outputSchema?.properties?.get("timeline"))
+        assertNotNull(correlation.outputSchema?.properties?.get("similarityGroups"))
+        assertNotNull(correlation.outputSchema?.properties?.get("delta"))
+        assertNotNull(correlation.outputSchema?.properties?.get("evidence"))
+        assertEquals(true, correlation.annotations?.readOnlyHint)
+        assertEquals(false, correlation.annotations?.destructiveHint)
+        val invalidCorrelation = client.callTool(
+            "correlate_http_activity",
+            mapOf(
+                "projectId" to "project-schema",
+                "baselineRefs" to emptyList<Map<String, String>>(),
+                "comparisonRefs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+            ),
+        )
+        assertEquals("invalid_argument", invalidCorrelation?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(true, invalidCorrelation?.isError)
 
         val checkScope = tools.single { it.name == "check_scope" }
         assertEquals(setOf("projectId", "targets"), checkScope.inputSchema.required?.toSet())
@@ -1887,7 +1915,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(31, tools.size)
+            assertEquals(32, tools.size)
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }

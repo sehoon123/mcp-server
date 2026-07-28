@@ -45,12 +45,12 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 31 tools on Professional and 24 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 32 tools on Professional and 25 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
 - Fixed-stage MCP progress and cooperative cancellation checks for bounded HTTP/WebSocket searches and attack-surface preparation
-- Body-free, project-bounded HTTP metadata indexing and aggregate attack-surface summaries
+- Body-free, project-bounded HTTP metadata indexing, aggregate attack-surface summaries, and bounded two-cohort activity correlation
 - Value-free passive HTTP session-security analysis over up to 32 distinct stable references
 - Project-scoped saved HTTP/WebSocket metadata-search and HTTP comparison presets with runtime-only cursors/references
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
@@ -86,7 +86,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 24 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current development catalog contains 25 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|
@@ -96,7 +96,8 @@ the offset-based WebSocket list with `search_websocket_messages`. The current ca
 | `get_proxy_websocket_history` | `search_websocket_messages` with a signed snapshot cursor |
 
 The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transform_data`, `generate_random_string`,
-`get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`, `check_scope`,
+`get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`,
+`correlate_http_activity`, `check_scope`,
 `update_scope`, `compare_http_messages`, `analyze_http_session_security`, `save_workflow_preset`,
 `list_workflow_presets`, `delete_workflow_preset`, `execute_workflow_preset`, `get_http_message`,
 `send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
@@ -104,8 +105,9 @@ The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transf
 
 Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 31 total. Individual WebSocket and Scanner
-issue reads now require `projectId`; v3 aliases are not advertised.
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 32 total. Individual WebSocket and Scanner
+issue reads now require `projectId`; v3 aliases are not advertised. Clients must reconnect and rediscover capabilities
+after upgrading to a build that includes the additive correlation tool.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
@@ -390,6 +392,23 @@ rebuilt after at most 30 seconds, and Scope/project-option mutations performed t
 Counts represent records in each selected source; the same exchange appearing in multiple stores is not deduplicated.
 This aggregate is a discovery view, not an action authority. Continue to use the stable-reference tools for details or
 mutations; they resolve the current Burp record and verify its project/identity immediately before use.
+
+## Bounded HTTP activity correlation
+
+Use `correlate_http_activity` with the current `projectId`, one to 16 baseline references, and one to 16 comparison
+references. Every selected reference must be globally distinct after source ID canonicalization. The read-only tool
+resolves the complete ordered batch through the existing per-source data-access policy, preserves caller order, and
+returns a complete delta over bounded service, normalized path-prefix,
+method, status-class, MIME, and extension counts. Unchanged service and path-prefix key counts are reported separately;
+changed entries include baseline, comparison, and signed delta counts.
+
+Only Proxy references can expose a capture timestamp. Site Map and Organizer events explicitly report timestamp
+unavailability. Cohort membership and caller order do not establish chronology, causality, or vulnerability evidence.
+Cross-source records with the same bounded method, service, path, response status, MIME type, and response-presence
+metadata can share an invocation-local similarity group, but that is not exact identity and records are never
+deduplicated. Correlation results do not retain or return query strings, fragments, headers, bodies, notes, or raw message
+bytes; Site Map stable-ID validation may still inspect its existing bounded private identity samples. Any project change,
+access denial, missing record, accessor failure, or cancellation discards partial correlation output.
 
 ## Stable-ID request actions
 

@@ -96,6 +96,7 @@ class McpProfessionalResourcesIntegrationTest {
                 "set_burp_options",
                 "search_http_messages",
                 "summarize_http_attack_surface",
+                "correlate_http_activity",
                 "check_scope",
                 "update_scope",
                 "compare_http_messages",

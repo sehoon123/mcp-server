@@ -374,18 +374,30 @@ value-free source revisions from passive Proxy/Scanner callbacks and approved Or
 is complete; disposable live Community/Professional timing, visibility, project-replacement, and unload evidence remains
 open, so complete event-driven freshness is not claimed.
 
+The current development increment adds exactly one common read-only `correlate_http_activity` tool, bringing the
+development catalogs to 25 Community / 32 Professional tools while leaving prompts, resources, URI templates, cursors,
+and existing result schemas unchanged. It resolves one ordered batch of at most 16 distinct baseline plus 16 distinct
+comparison references through existing source approvals and stable-ID checks. It returns only bounded HTTP metadata,
+Proxy capture times when available, invocation-local cross-source similarity groups, and a complete deterministic
+attack-surface count delta. Caller order and cohort membership do not establish chronology or causality; similarity does
+not establish identity or vulnerability evidence, and records are never deduplicated. Correlation results do not retain
+or return query strings, fragments, headers, bodies, notes, or raw messages; existing Site Map stable-ID validation may
+privately inspect bounded identity samples. Unit/schema validation covers bounds, privacy,
+approval denial, cancellation, project replacement, accessor failure, and the intended one-tool catalog increase; exact
+Community/Professional live evidence remains open.
+
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
 aliases or families.
 
 ### v4.11.0 gate
 
-- [ ] Acquisition and extension-processing measurements are fixed-cardinality, local-only, cancellation-safe, and leave
-  public diagnostics serialization and exact catalogs unchanged.
+- [x] Acquisition and extension-processing measurements are fixed-cardinality, local-only, cancellation-safe, and leave
+  public diagnostics serialization and the pre-correlation catalogs unchanged.
 - [ ] Event invalidation is live-validated without retaining or blocking traffic callbacks; unsupported Site Map and
   Organizer listener gaps remain documented.
-- [ ] Any correlation result is bounded, project-bound, read-only, value-limited, and makes no unsupported chronology or
-  identity claim.
+- [x] Correlation unit/schema validation is bounded, project-bound, read-only, value-limited, and makes no unsupported
+  chronology, causality, identity, or vulnerability-evidence claim; exact live validation remains part of the RC gate.
 - [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
 - [ ] Exact Community/Professional, native HTTP, embedded stdio, project-transition, cancellation, scale, unload, SBOM,
   conformance, and reproducibility gates pass for a new immutable v4.11 candidate.
