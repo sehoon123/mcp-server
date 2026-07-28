@@ -45,7 +45,7 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 32 tools on Professional and 25 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 28 tools on Professional and 21 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
@@ -61,7 +61,6 @@ client-liveness, and capacity-pressure safeguards.
 - Project and user configuration tools with recursive API-key, token, Cookie, authorization, and certificate/private-key filtering
 - Live redacted diagnostics including event-stream, liveness, explicit-termination, and pressure-eviction counters;
   a bounded persistent audit trail; and an emergency read-only switch
-- URL/Base64 utilities and random data generation
 - Browser-client CORS support and SDK DNS-rebinding protection
 
 ## Compact tool catalog
@@ -86,7 +85,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 25 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 21 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|
@@ -95,19 +94,20 @@ the offset-based WebSocket list with `search_websocket_messages`. The current ca
 | `get_proxy_http_history`, `get_organizer_items` | `search_http_messages` with one selected source and optional safe `regex` |
 | `get_proxy_websocket_history` | `search_websocket_messages` with a signed snapshot cursor |
 
-The common catalog is `send_raw_http_request`, `route_raw_http_request`, `transform_data`, `generate_random_string`,
-`get_burp_options`, `set_burp_options`, `search_http_messages`, `summarize_http_attack_surface`,
+The common catalog is `send_raw_http_request`, `route_raw_http_request`, `get_burp_options`, `set_burp_options`,
+`search_http_messages`, `summarize_http_attack_surface`,
 `correlate_http_activity`, `check_scope`,
 `update_scope`, `compare_http_messages`, `analyze_http_session_security`, `save_workflow_preset`,
 `list_workflow_presets`, `delete_workflow_preset`, `execute_workflow_preset`, `get_http_message`,
 `send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
-`set_burp_control_state`, `get_active_editor_contents`, and `set_active_editor_contents`.
+and `set_burp_control_state`.
 
 Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 32 total. Individual WebSocket and Scanner
-issue reads now require `projectId`; v3 aliases are not advertised. Clients must reconnect and rediscover capabilities
-after upgrading to a build that includes the additive correlation tool.
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 28 total. Individual WebSocket and Scanner
+issue reads require `projectId`; v3 aliases are not advertised. The local-only `transform_data` and
+`generate_random_string` utilities and the focus-dependent active-editor read/write tools are no longer advertised;
+use local shell utilities or Burp's editor UI instead. Clients must reconnect and rediscover capabilities after upgrading.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
@@ -214,7 +214,7 @@ A client must also keep the optional `GET /mcp` stream connected to receive prog
 the same final structured result. Scan/content limits and continuation cursors remain the explicit non-cancellation
 partial-completion mechanism.
 
-State-changing HTTP, Scope, Scanner, configuration, control, and editor tools preserve their existing result schemas:
+State-changing HTTP, Scope, Scanner, configuration, and control tools preserve their existing result schemas:
 execution is not-started, completed, or uncertain. Every uncertain result carries bounded redacted guidance not to retry
 automatically and to reconcile Burp state first; this includes a timeout reported by Burp's synchronous execution API
 after dispatch or a partial multi-target mutation. Coroutine cancellation is propagated instead of being reformatted as a result. Scanner target submission also

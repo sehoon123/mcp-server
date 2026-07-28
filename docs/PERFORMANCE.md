@@ -389,7 +389,7 @@ scripts/run-live-websocket-scale.py \
   --expected-jar-sha256 <sha256> \
   --expected-source-commit <full-commit> \
   --expected-server-version <candidate-version> \
-  --expected-tools 32 --expected-prompts 5 \
+  --edition professional \
   --burp-pid <pid> --max-rss-mib 6144 \
   --output <new-private-output.json>
 ```
@@ -418,7 +418,7 @@ scripts/run-live-lifecycle-soak.py \
   --expected-jar-sha256 <sha256> \
   --expected-source-commit <full-commit> \
   --expected-server-version <candidate-version> \
-  --expected-tools 32 --expected-prompts 5 \
+  --edition professional \
   --duration-seconds 1800 --burp-pid <pid> --max-rss-mib 6144 \
   --output <new-private-output.json>
 ```

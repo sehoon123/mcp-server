@@ -6,7 +6,6 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.safeExceptionSummary
 
 internal const val MAX_STANDARD_TOOL_ERROR_CHARS = 384
-internal const val MAX_UTILITY_OUTPUT_CHARS = 1024 * 1024
 
 @Serializable
 internal enum class StandardToolStatus {
@@ -25,6 +24,7 @@ internal enum class StandardToolStatus {
     @SerialName("not_available")
     NOT_AVAILABLE,
 
+    // Retained so shared result-enum schemas stay compatible after the active-editor tools were removed.
     @SerialName("not_editable")
     NOT_EDITABLE,
 
@@ -69,31 +69,6 @@ internal enum class StandardExecutionState {
 }
 
 @Serializable
-internal data class TransformDataResult(
-    val status: StandardToolStatus,
-    val retry: ToolRetryGuidance,
-    val operation: DataTransformOperation,
-    @JsonSchemaMetadata(maxLength = MAX_UTILITY_OUTPUT_CHARS)
-    val content: String? = null,
-    @JsonSchemaMetadata(minimum = 0, maximum = 1048576)
-    val contentChars: Int? = null,
-    @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
-    val error: String? = null,
-)
-
-@Serializable
-internal data class GenerateRandomStringResult(
-    val status: StandardToolStatus,
-    val retry: ToolRetryGuidance,
-    @JsonSchemaMetadata(maxLength = 65536)
-    val content: String? = null,
-    @JsonSchemaMetadata(minimum = 0, maximum = 65536)
-    val contentChars: Int? = null,
-    @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
-    val error: String? = null,
-)
-
-@Serializable
 internal data class GetBurpOptionsResult(
     val status: StandardToolStatus,
     val retry: ToolRetryGuidance,
@@ -124,30 +99,6 @@ internal data class SetBurpControlStateResult(
     val executionState: StandardExecutionState,
     val control: BurpControl,
     val enabled: Boolean,
-    @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
-    val error: String? = null,
-)
-
-@Serializable
-internal data class GetActiveEditorContentsResult(
-    val status: StandardToolStatus,
-    val retry: ToolRetryGuidance,
-    @JsonSchemaMetadata(maxLength = 32768)
-    val content: String? = null,
-    @JsonSchemaMetadata(minimum = 0, maximum = 2147483647)
-    val totalChars: Int? = null,
-    val truncated: Boolean? = null,
-    @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
-    val error: String? = null,
-)
-
-@Serializable
-internal data class SetActiveEditorContentsResult(
-    val status: StandardToolStatus,
-    val retry: ToolRetryGuidance,
-    val executionState: StandardExecutionState,
-    @JsonSchemaMetadata(minimum = 0, maximum = 1048576)
-    val contentChars: Int? = null,
     @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
     val error: String? = null,
 )

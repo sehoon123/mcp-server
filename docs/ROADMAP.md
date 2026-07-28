@@ -61,8 +61,8 @@ Implemented for stable-ID and focused active actions:
   restricted to random IDs created by this extension instance.
 
 Unified raw Repeater/Intruder/Organizer routing uses the shared request-routing approval gate and executes one
-destination per call. Configuration imports, task engine state, Proxy Intercept, active-editor reads/writes, and
-configuration exports use explicit sensitive-action approval and accurate annotations.
+destination per call. Configuration imports, task engine state, Proxy Intercept, and configuration exports use explicit
+sensitive-action approval and accurate annotations.
 
 Implemented globally for v2.1.1:
 
@@ -101,7 +101,7 @@ Implemented foundation:
   path-prefix aggregates from explicitly approved Proxy, Site Map, or Organizer sources.
 - The initial compact v4 catalog consolidated same-policy transforms, configuration access, global controls,
   stable-reference routing, raw protocol/destination operations, and cross-source HTTP discovery into 26 Professional
-  tools (19 on Community). The reviewed additive v4.9 analyzer and four preset tools bring the current catalogs to 31/24.
+  tools (19 on Community). The reviewed additive v4.9 analyzer and four preset tools brought that development stage to 31/24.
   Deprecated v3 aliases are not registered. Each invocation retains one operation or destination, and fixed value-free
   audit classifications preserve operation context.
 - `send_raw_http_request` and `route_raw_http_request` use protocol-nested inputs, structured execution state, bounded
@@ -343,8 +343,9 @@ Implemented on the v4.11 development branch:
 - Results preserve caller order, expose only available Proxy capture times, return complete bounded metadata-count
   deltas, and treat cross-source matches as invocation-local similarity rather than identity, chronology, causality, or
   vulnerability evidence. Records are never deduplicated.
-- The development catalogs contain 25 Community tools and 32 Professional tools. Existing prompts, resources, URI
-  templates, cursors, and prior result schemas remain unchanged; clients must reconnect and rediscover the additive tool.
+- The development catalogs contain 21 Community tools and 28 Professional tools. The shell-replaceable local
+  transformation/random generators and focus-dependent active-editor read/write tools are no longer advertised. Prompts,
+  resources, URI templates, cursors, and retained tool schemas remain unchanged; clients must reconnect and rediscover.
 
 Implemented incrementally through v4.3.2:
 

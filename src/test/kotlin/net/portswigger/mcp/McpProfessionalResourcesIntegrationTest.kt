@@ -90,8 +90,6 @@ class McpProfessionalResourcesIntegrationTest {
             setOf(
                 "send_raw_http_request",
                 "route_raw_http_request",
-                "transform_data",
-                "generate_random_string",
                 "get_burp_options",
                 "set_burp_options",
                 "search_http_messages",
@@ -111,8 +109,6 @@ class McpProfessionalResourcesIntegrationTest {
                 "search_websocket_messages",
                 "get_websocket_message_by_id",
                 "set_burp_control_state",
-                "get_active_editor_contents",
-                "set_active_editor_contents",
                 "get_scanner_issues",
                 "get_scanner_issue_by_id",
                 "start_scanner_audit_from_ids",

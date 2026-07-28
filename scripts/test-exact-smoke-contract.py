@@ -20,12 +20,20 @@ import exact_smoke_contract as contract  # noqa: E402
 from live_mcp_harness import HarnessError  # noqa: E402
 
 
-def load_finalizer_module():
-    spec = importlib.util.spec_from_file_location("exact_smoke_finalizer", SCRIPTS / "finalize-exact-burp-smoke.py")
+def load_script_module(module_name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPTS / filename)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def load_finalizer_module():
+    return load_script_module("exact_smoke_finalizer", "finalize-exact-burp-smoke.py")
+
+
+def load_preflight_module():
+    return load_script_module("exact_smoke_preflight", "run-exact-burp-preflight.py")
 
 
 def correlation_tool() -> dict:
@@ -41,16 +49,18 @@ def correlation_tool() -> dict:
     }
 
 
-def catalog(edition: str) -> tuple[list[dict], list[dict], list[dict]]:
-    tools = [correlation_tool()]
-    if edition == "professional":
-        tools.extend({"name": name} for name in sorted(contract.PROFESSIONAL_ONLY_TOOLS))
-    expected = contract.EDITION_CATALOG_COUNTS[edition]
-    while len(tools) < expected["tools"]:
-        tools.append({"name": f"tool_{len(tools)}"})
-    prompts = [{"name": f"prompt_{index}"} for index in range(expected["prompts"])]
-    resources = [{"uri": f"burp://resource/{index}"} for index in range(expected["resources"])]
-    return tools, prompts, resources
+def catalog(edition: str) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    expected = contract.EDITION_CATALOG_IDENTIFIERS[edition]
+    tools = [
+        correlation_tool() if name == "correlate_http_activity" else {"name": name}
+        for name in sorted(expected["tools"])
+    ]
+    prompts = [{"name": name} for name in sorted(expected["prompts"])]
+    resources = [{"uri": uri} for uri in sorted(expected["resources"])]
+    resource_templates = [
+        {"uriTemplate": uri} for uri in sorted(expected["resourceTemplates"])
+    ]
+    return tools, prompts, resources, resource_templates
 
 
 def claims(status: str = "NOT RUN") -> dict[str, dict]:
@@ -80,6 +90,7 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
 
     for edition, expected in contract.EDITION_CATALOG_COUNTS.items():
         report = {
+            "schemaVersion": 1,
             "status": "passed",
             "edition": edition,
             "sourceCommit": source,
@@ -91,9 +102,18 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
             "bearerRecorded": False,
             "rawTrafficRecorded": False,
             "sessionDeleteAccepted": True,
-            "checks": {"loadedArtifactSha256": "matched"},
+            "checks": {
+                "authenticatedIdentity": "passed",
+                "loadedArtifactSha256": "matched",
+                "boundedReadOnlyToolCall": "passed",
+                "diagnosticsRedaction": "passed",
+                "projectBinding": "passed",
+                "resourceCatalog": "passed",
+                "unauthenticatedStatus401": "passed",
+            },
             "catalog": {
                 "counts": expected,
+                "identifierSets": "matched",
                 "professionalOnlyTools": "absent" if edition == "community" else "present",
                 "correlationReadOnly": True,
                 "correlationCohortMaxItems": 16,
@@ -144,22 +164,143 @@ class ExactSmokeContractTest(unittest.TestCase):
             with self.assertRaises(HarnessError):
                 contract.validate_release_identity(source, digest, version)
 
-    def test_edition_catalogs_enforce_counts_gating_and_correlation_bounds(self):
+    def test_edition_catalogs_enforce_exact_identifiers_and_correlation_bounds(self):
         for edition in contract.EDITION_CATALOG_COUNTS:
-            tools, prompts, resources = catalog(edition)
-            result = contract.validate_catalog(edition, tools, prompts, resources)
+            tools, prompts, resources, templates = catalog(edition)
+            result = contract.validate_catalog(edition, tools, prompts, resources, templates)
             self.assertEqual(contract.EDITION_CATALOG_COUNTS[edition], result["counts"])
+            self.assertEqual("matched", result["identifierSets"])
             self.assertTrue(result["correlationReadOnly"])
 
-        tools, prompts, resources = catalog("community")
-        tools[-1] = {"name": next(iter(contract.PROFESSIONAL_ONLY_TOOLS))}
-        with self.assertRaises(HarnessError):
-            contract.validate_catalog("community", tools, prompts, resources)
+        catalog_fields = ((0, "name"), (1, "name"), (2, "uri"), (3, "uriTemplate"))
+        for edition in contract.EDITION_CATALOG_IDENTIFIERS:
+            for catalog_index, field in catalog_fields:
+                values = list(catalog(edition))
+                values[catalog_index][-1] = {field: "count-preserving-substitution"}
+                with self.assertRaises(HarnessError):
+                    contract.validate_catalog(edition, *values)
 
-        tools, prompts, resources = catalog("professional")
-        tools[0]["inputSchema"]["properties"]["baselineRefs"]["maxItems"] = 17
+                values = list(catalog(edition))
+                values[catalog_index][-1] = dict(values[catalog_index][0])
+                with self.assertRaises(HarnessError):
+                    contract.validate_catalog(edition, *values)
+
+        community_catalog = catalog("community")
+        professional_catalog = catalog("professional")
+        for catalog_index, field, label in (
+            (0, "name", "tools"),
+            (1, "name", "prompts"),
+            (3, "uriTemplate", "resourceTemplates"),
+        ):
+            professional_only = (
+                contract.EDITION_CATALOG_IDENTIFIERS["professional"][label]
+                - contract.EDITION_CATALOG_IDENTIFIERS["community"][label]
+            )
+            community_values = list(catalog("community"))
+            community_values[catalog_index][-1] = {field: sorted(professional_only)[0]}
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog("community", *community_values)
+
+            professional_values = list(catalog("professional"))
+            professional_values[catalog_index] = community_catalog[catalog_index]
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog("professional", *professional_values)
+
+        tools, prompts, resources, templates = professional_catalog
+        correlation = next(tool for tool in tools if tool.get("name") == "correlate_http_activity")
+        correlation["inputSchema"]["properties"]["baselineRefs"]["maxItems"] = 17
         with self.assertRaises(HarnessError):
-            contract.validate_catalog("professional", tools, prompts, resources)
+            contract.validate_catalog("professional", tools, prompts, resources, templates)
+
+        for edition in contract.EDITION_CATALOG_IDENTIFIERS:
+            tools, prompts, resources, templates = catalog(edition)
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(edition, tools[:-1], prompts, resources, templates)
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(
+                    edition,
+                    tools + [{"name": "unexpected_tool"}],
+                    prompts,
+                    resources,
+                    templates,
+                )
+            malformed = list(catalog(edition))
+            malformed[1][-1] = "not-an-object"
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(edition, *malformed)
+
+    def test_catalog_response_rejects_pagination_instead_of_attesting_only_the_first_page(self):
+        response = {"result": {"tools": [{"name": "one"}]}}
+        self.assertEqual([{"name": "one"}], contract.catalog_items(response, "tools"))
+        for cursor in ("later-page", ""):
+            with self.assertRaises(HarnessError):
+                contract.catalog_items(
+                    {"result": {"tools": [{"name": "one"}], "nextCursor": cursor}},
+                    "tools",
+                )
+        with self.assertRaises(HarnessError):
+            contract.catalog_items({"result": {"tools": ["not-an-object"]}}, "tools")
+
+    def test_finalizer_requires_the_exact_current_preflight_check_set(self):
+        finalizer = load_finalizer_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source, jar, version = build_finalizer_fixture(root)
+            report = json.loads((root / "evidence/community-preflight.json").read_text(encoding="utf-8"))
+            finalizer.validate_preflight(report, "community", source, jar, version)
+
+            missing = json.loads(json.dumps(report))
+            missing["checks"].pop("boundedReadOnlyToolCall")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_preflight(missing, "community", source, jar, version)
+
+            for schema_version in (None, 999, True, False, 1.0, "1"):
+                unsupported = json.loads(json.dumps(report))
+                if schema_version is None:
+                    unsupported.pop("schemaVersion")
+                else:
+                    unsupported["schemaVersion"] = schema_version
+                with self.assertRaises(HarnessError):
+                    finalizer.validate_preflight(unsupported, "community", source, jar, version)
+
+            stale = json.loads(json.dumps(report))
+            stale["checks"]["boundedNoSideEffectToolCall"] = stale["checks"].pop("boundedReadOnlyToolCall")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_preflight(stale, "community", source, jar, version)
+
+            extra_catalog_field = json.loads(json.dumps(report))
+            extra_catalog_field["catalog"]["staleAssertion"] = True
+            with self.assertRaises(HarnessError):
+                finalizer.validate_preflight(extra_catalog_field, "community", source, jar, version)
+
+    def test_preflight_scope_probe_requires_exact_project_bound_result_identity(self):
+        preflight = load_preflight_module()
+        project_id = "private-project-id"
+        target_url = "https://example.invalid/"
+        valid = {
+            "status": "ok",
+            "projectId": project_id,
+            "targets": [{"index": 0, "url": target_url, "inScope": False}],
+        }
+        preflight.validate_scope_probe(valid, project_id, target_url)
+
+        invalid_results = []
+        for replacement in (
+            {"status": "burp_error"},
+            {"projectId": "other-project"},
+            {"targets": []},
+            {"targets": [{"index": 1, "url": target_url, "inScope": False}]},
+            {"targets": [{"index": 0, "url": "https://other.invalid/", "inScope": False}]},
+            {"targets": [{"index": 0, "url": target_url, "inScope": 0}]},
+        ):
+            candidate = json.loads(json.dumps(valid))
+            candidate.update(replacement)
+            invalid_results.append(candidate)
+        invalid_results.append("not-an-object")
+
+        for invalid in invalid_results:
+            with self.assertRaises(HarnessError):
+                preflight.validate_scope_probe(invalid, project_id, target_url)
 
     def test_scenario_contract_is_exact_and_never_infers_not_run_as_pass(self):
         not_run = contract.validate_scenario_claims(claims())
@@ -230,6 +371,15 @@ class ExactSmokeContractTest(unittest.TestCase):
             normalized = contract.validate_scenario_claims(value)
             paths = contract.validate_scenario_evidence_records(root, normalized, source, jar, version)
             self.assertEqual(2, len(paths))
+
+            record_document = json.loads(record.read_text(encoding="utf-8"))
+            record_document["schemaVersion"] = True
+            record.write_text(json.dumps(record_document), encoding="utf-8")
+            with self.assertRaises(HarnessError):
+                contract.validate_scenario_evidence_records(root, normalized, source, jar, version)
+            record_document["schemaVersion"] = 1
+            record.write_text(json.dumps(record_document), encoding="utf-8")
+
             proof.write_text('{"status":"changed"}\n', encoding="utf-8")
             with self.assertRaises(HarnessError):
                 contract.validate_scenario_evidence_records(root, normalized, source, jar, version)
@@ -248,6 +398,19 @@ class ExactSmokeContractTest(unittest.TestCase):
             second_record["checks"][0]["sha256"] = hashlib.sha256((root / first_proof).read_bytes()).hexdigest()
             second_record_path.write_text(json.dumps(second_record), encoding="utf-8")
             document["scenarios"][second]["evidence"][1] = first_proof
+            normalized = contract.validate_scenario_claims(document["scenarios"])
+            relative = list(dict.fromkeys(
+                path for claim in normalized.values() for path in claim["evidence"]
+            ))
+            snapshots = contract.snapshot_evidence_files(root, relative)
+            with self.assertRaises(HarnessError):
+                contract.validate_scenario_evidence_snapshots(snapshots, normalized, source, jar, version)
+
+            first_record = document["scenarios"][first]["evidence"][0]
+            second_record["checks"][0]["path"] = first_record
+            second_record["checks"][0]["sha256"] = hashlib.sha256((root / first_record).read_bytes()).hexdigest()
+            second_record_path.write_text(json.dumps(second_record), encoding="utf-8")
+            document["scenarios"][second]["evidence"][1] = first_record
             normalized = contract.validate_scenario_claims(document["scenarios"])
             relative = list(dict.fromkeys(
                 path for claim in normalized.values() for path in claim["evidence"]
@@ -280,6 +443,40 @@ class ExactSmokeContractTest(unittest.TestCase):
                 contract.snapshot_evidence_files(root, ["linked/proof.json"])
             with self.assertRaises(HarnessError):
                 contract.require_absent_below_root(root, "linked/new-output.json")
+
+            for alias in ("evidence//proof.json", "./evidence/proof.json", "evidence/./proof.json"):
+                with self.assertRaises(HarnessError):
+                    contract.snapshot_evidence_files(root, [alias])
+
+            hard_link = evidence / "hard-link.json"
+            hard_link.hardlink_to(proof)
+            with self.assertRaises(HarnessError):
+                contract.snapshot_evidence_files(
+                    root,
+                    ["evidence/proof.json", "evidence/hard-link.json"],
+                )
+            opened_file_identities: set[tuple[int, int]] = set()
+            contract.sha256_below_root(
+                root,
+                "evidence/proof.json",
+                opened_file_identities=opened_file_identities,
+            )
+            with self.assertRaises(HarnessError):
+                contract.snapshot_evidence_files(
+                    root,
+                    ["evidence/hard-link.json"],
+                    opened_file_identities=opened_file_identities,
+                )
+
+            aliased_claims = claims()
+            scenario = sorted(contract.SMOKE_SCENARIO_KEYS)[0]
+            aliased_claims[scenario] = {
+                "status": "PASS",
+                "evidence": ["evidence/record.json", "evidence//proof.json"],
+                "notes": "Non-canonical evidence path must fail closed.",
+            }
+            with self.assertRaises(HarnessError):
+                contract.validate_scenario_claims(aliased_claims)
 
     def test_finalizer_creates_workflow_input_only_for_candidate_bound_all_pass_evidence(self):
         finalizer = load_finalizer_module()
@@ -332,7 +529,59 @@ class ExactSmokeContractTest(unittest.TestCase):
             self.assertEqual("WITHHOLD", withheld_matrix["releaseDisposition"])
             self.assertFalse((root / "ABSENT_WORKFLOW.json").exists())
 
+    def test_finalizer_rejects_cross_batch_physical_file_aliases(self):
+        finalizer = load_finalizer_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source, jar, version = build_finalizer_fixture(root)
+            claims_document = json.loads((root / "SCENARIO_CLAIMS.json").read_text(encoding="utf-8"))
+            scenario = sorted(contract.SMOKE_SCENARIO_KEYS)[0]
+            claim = claims_document["scenarios"][scenario]
+            record_path = root / claim["evidence"][0]
+            proof_path = root / claim["evidence"][1]
+            preflight_path = root / "evidence/community-preflight.json"
+            proof_path.unlink()
+            proof_path.hardlink_to(preflight_path)
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["checks"][0]["sha256"] = hashlib.sha256(preflight_path.read_bytes()).hexdigest()
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+
+            arguments = [
+                "finalize-exact-burp-smoke.py",
+                "--root", str(root),
+                "--community-preflight", "evidence/community-preflight.json",
+                "--professional-preflight", "evidence/professional-preflight.json",
+                "--scenario-claims", "SCENARIO_CLAIMS.json",
+                "--candidate-jar", "assets/candidate.jar",
+                "--expected-jar-sha256", jar,
+                "--expected-source-commit", source,
+                "--expected-server-version", version,
+                "--forbidden-value-file", str(root / "private-forbidden-value"),
+                "--output", "MATRIX.json",
+                "--require-all-pass",
+            ]
+            with mock.patch.object(sys, "argv", arguments), mock.patch.object(
+                finalizer,
+                "git_output",
+                side_effect=lambda _root, *args: source if args[0] == "rev-parse" else "",
+            ), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(HarnessError):
+                    finalizer.main()
+            self.assertFalse((root / "MATRIX.json").exists())
+
     def test_privacy_scan_rejects_runtime_values_identifiers_and_credentials(self):
+        malformed_unicode_text = (
+            b"\xff\xfe" + '{"projectId":"'.encode("utf-16-le") + b"\x00\xd8" + '"}'.encode("utf-16-le"),
+            b"\xfe\xff" + '{"projectId":"'.encode("utf-16-be") + b"\xd8\x00" + '"}'.encode("utf-16-be"),
+            b"\xff\xfe\x00\x00" + '{"projectId":"'.encode("utf-32-le") + b"\x00\xd8\x00\x00" + '"}'.encode("utf-32-le"),
+            b"\x00\x00\xfe\xff" + '{"projectId":"'.encode("utf-32-be") + b"\x00\x00\xd8\x00" + '"}'.encode("utf-32-be"),
+            '{"projectId":"'.encode("utf-16-le") + b"\x00\xd8" + '"}'.encode("utf-16-le"),
+        )
+        nested_json_values = (
+            '{"projectId":"opaque"}',
+            r'{"session\u0049d":"opaque"}',
+            r'{"Authoriz\u0061tion":"Bearer redacted"}',
+        )
         bad_values = (
             b'{"value":"private-marker"}\n',
             b'{"projectId":"opaque"}\n',
@@ -343,7 +592,18 @@ class ExactSmokeContractTest(unittest.TestCase):
             b'{"Authoriz\\u0061tion":"Bearer redacted"}\n',
             b'{"session\\u0049d":"opaque"}\n',
             b'{"value":"private-\\u006darker"}\n',
-        )
+        ) + tuple(
+            json.dumps({"log": nested}).encode("utf-8")
+            for nested in nested_json_values
+        ) + (
+            b'\xef\xbb\xbf{"project\\u0049d":"opaque"}',
+            '{"projectId":"opaque"}'.encode("utf-16"),
+            '{"projectId":"opaque"}'.encode("utf-16-le"),
+            '{"value":"private-marker"}'.encode("utf-32"),
+            json.dumps({"log": '\ufeff' + r'{"project\u0049d":"opaque"}'}).encode("utf-8"),
+            b'{"value":"\\ud800"}',
+            b'{"safe\\ud800":"value"}',
+        ) + malformed_unicode_text
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             for index, value in enumerate(bad_values):
@@ -351,9 +611,25 @@ class ExactSmokeContractTest(unittest.TestCase):
                 path.write_bytes(value)
                 with self.assertRaises(HarnessError):
                     contract.scan_evidence_privacy([path], [b"private-marker"])
+            escaped_forbidden_key = json.dumps({"private😀": "value"}).encode("utf-8")
+            with self.assertRaises(HarnessError):
+                contract.validate_permanent_text(escaped_forbidden_key, ("private😀".encode("utf-8"),))
             good = root / "good.json"
             good.write_text('{"projectIdentifierRecorded":false,"status":"passed"}\n', encoding="utf-8")
             contract.scan_evidence_privacy([good], [b"private-marker"])
+
+    def test_privacy_json_parser_bounds_apply_before_dom_construction(self):
+        dense_array = ("[" + ",".join("0" for _ in range(100_001)) + "]").encode("utf-8")
+        with self.assertRaises(HarnessError):
+            contract.validate_permanent_text(dense_array, ())
+
+        deeply_nested = ("[" * 129 + "0" + "]" * 129).encode("utf-8")
+        with self.assertRaises(HarnessError):
+            contract.validate_permanent_text(deeply_nested, ())
+
+        oversized_json = b'{"value":"' + b"a" * (8 * 1024 * 1024) + b'"}'
+        with self.assertRaises(HarnessError):
+            contract.validate_permanent_text(oversized_json, ())
 
 
 if __name__ == "__main__":

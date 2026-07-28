@@ -12,7 +12,12 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from exact_smoke_contract import EDITION_CATALOG_COUNTS, validate_catalog, validate_release_identity  # noqa: E402
+from exact_smoke_contract import (  # noqa: E402
+    EDITION_CATALOG_COUNTS,
+    catalog_items,
+    validate_catalog,
+    validate_release_identity,
+)
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     InterruptibleMcpToolCall,
@@ -42,16 +47,6 @@ def git_output(root: pathlib.Path, *arguments: str) -> str:
         timeout=15,
     )
     return result.stdout.strip()
-
-
-def catalog_items(response: Any, key: str) -> list[dict[str, Any]]:
-    try:
-        items = response["result"][key]
-    except (KeyError, TypeError):
-        raise HarnessError("MCP catalog response was malformed")
-    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-        raise HarnessError("MCP catalog response was malformed")
-    return items
 
 
 def verify_server(client: McpClient, expected_version: str) -> None:
@@ -164,7 +159,17 @@ def main() -> int:
         tools = catalog_items(observer.rpc("tools/list", {}), "tools")
         prompts = catalog_items(observer.rpc("prompts/list", {}), "prompts")
         resources = catalog_items(observer.rpc("resources/list", {}), "resources")
-        report["catalog"] = validate_catalog(args.edition, tools, prompts, resources)
+        resource_templates = catalog_items(
+            observer.rpc("resources/templates/list", {}),
+            "resourceTemplates",
+        )
+        report["catalog"] = validate_catalog(
+            args.edition,
+            tools,
+            prompts,
+            resources,
+            resource_templates,
+        )
         initial_diagnostics, initial_diagnostics_text = read_bounded_diagnostics(observer)
         if initial_diagnostics.get("loadedArtifactSha256") != jar_sha256:
             raise HarnessError("running extension artifact does not match the approved candidate JAR")

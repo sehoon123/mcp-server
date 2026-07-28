@@ -99,13 +99,6 @@ internal val PROJECT_MUTATION_TOOL_ANNOTATIONS = ToolAnnotations(
     openWorldHint = false,
 )
 
-internal val LOCAL_TRANSFORM_TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint = true,
-    destructiveHint = false,
-    idempotentHint = true,
-    openWorldHint = false,
-)
-
 @PublishedApi
 internal val toolExecutionDispatcher = Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_TOOL_EXECUTIONS)
 private val lowerToUpperBoundary = Regex("([a-z0-9])([A-Z])")

@@ -355,8 +355,9 @@ Candidate work:
 
 Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
 The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` tags, drafts, notes, and assets remain unchanged. Follow-up exact-smoke
-orchestration and diagnostics work uses the non-release `4.11.0-dev.2` identity and targets a new candidate only. Work remains ordered so measurement precedes scheduling
-changes and catalog growth.
+orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; the surface-reduction follow-up uses
+`4.11.0-dev.3` and targets a new candidate only. Work remains ordered so measurement precedes scheduling changes and
+catalog changes.
 
 Milestones:
 
@@ -376,9 +377,9 @@ revisions from passive Proxy/Scanner callbacks and approved Organizer attempts. 
 disposable live Community/Professional timing, visibility, project-replacement, and unload evidence remains open, so
 complete event-driven freshness is not claimed.
 
-This candidate also adds exactly one common read-only `correlate_http_activity` tool, bringing the candidate catalogs
+The correlation slice added exactly one common read-only `correlate_http_activity` tool, initially bringing the catalogs
 to 25 Community / 32 Professional tools while leaving prompts, resources, URI templates, cursors,
-and existing result schemas unchanged. It resolves one ordered batch of at most 16 distinct baseline plus 16 distinct
+and then-existing result schemas unchanged. It resolves one ordered batch of at most 16 distinct baseline plus 16 distinct
 comparison references through existing source approvals and stable-ID checks. It returns only bounded HTTP metadata,
 Proxy capture times when available, invocation-local cross-source similarity groups, and a complete deterministic
 attack-surface count delta. Caller order and cohort membership do not establish chronology or causality; similarity does
@@ -388,7 +389,12 @@ privately inspect bounded identity samples. Unit/schema validation covers bounds
 approval denial, cancellation, project replacement, accessor failure, and the intended one-tool catalog increase; exact
 Community/Professional live evidence remains open.
 
-The post-RC1 exact-smoke slice keeps every tool, prompt, resource URI, template, and operation schema unchanged. It adds
+The subsequent surface-reduction slice removes `transform_data`, `generate_random_string`,
+`get_active_editor_contents`, and `set_active_editor_contents`. Local shell utilities replace the first two; Burp's
+editor UI replaces the focus-dependent pair. The resulting catalogs contain 21 Community / 28 Professional tools, while
+all prompts, fixed resources, resource templates, and retained tool schemas remain unchanged.
+
+The initial post-RC1 exact-smoke slice kept every tool, prompt, resource URI, template, and operation schema unchanged. It added
 three fixed fields to the existing diagnostics resource: a path-free loaded code-source JAR SHA-256 and saturation-safe
 WebSocket-search completed/cancelled totals. The digest is computed off the UI thread and omission fails the harness;
 the two value-free outcome counters prove cancellation deltas without exposing full timing metrics. Candidate-bound

@@ -200,8 +200,6 @@ class ProxyEndToEndTest {
                 setOf(
                     "send_raw_http_request",
                     "route_raw_http_request",
-                    "transform_data",
-                    "generate_random_string",
                     "get_burp_options",
                     "set_burp_options",
                     "search_http_messages",
@@ -221,8 +219,6 @@ class ProxyEndToEndTest {
                     "search_websocket_messages",
                     "get_websocket_message_by_id",
                     "set_burp_control_state",
-                    "get_active_editor_contents",
-                    "set_active_editor_contents",
                 ),
                 tools.map { it.name }.toSet(),
             )
@@ -366,19 +362,6 @@ class ProxyEndToEndTest {
             assertEquals("ok", action?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("completed", action?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             verify(exactly = 1) { repeater.sendToRepeater(request, "proxy-e2e") }
-        }
-    }
-
-    @Test
-    fun `proxy should call transform_data tool`() {
-        runBlocking {
-            val result = client.callTool(
-                "transform_data",
-                mapOf("operation" to "url_encode", "content" to "hello world"),
-            )
-            assertNotNull(result, "Tool call result should not be null")
-            assertFalse(result?.isError ?: false, "Tool call should not return an error")
-            assertTrue(result?.content?.first() is TextContent, "Result should contain TextContent")
         }
     }
 }

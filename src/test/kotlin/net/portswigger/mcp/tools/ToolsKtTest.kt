@@ -25,10 +25,6 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueConfidence
 import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import burp.api.montoya.sitemap.SiteMap
-import burp.api.montoya.utilities.Base64Utils
-import burp.api.montoya.utilities.RandomUtils
-import burp.api.montoya.utilities.URLUtils
-import burp.api.montoya.utilities.Utilities
 import burp.api.montoya.websocket.Direction
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -57,7 +53,6 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.time.ZonedDateTime
 import java.util.Optional
-import javax.swing.JTextArea
 
 class ToolsKtTest {
     private val testBearerToken = "0123456789012345678901234567890123456789012"
@@ -260,7 +255,7 @@ class ToolsKtTest {
     @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
-        assertEquals(25, tools.size)
+        assertEquals(21, tools.size)
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         assertTrue(tools.values.all { !it.description.isNullOrBlank() })
@@ -288,8 +283,6 @@ class ToolsKtTest {
         assertTrue(description("execute_workflow_preset").contains("runtime limit overrides the saved defaultLimit"))
         assertTrue(description("route_http_message_from_id").contains("sends no network traffic"))
         assertTrue(description("set_burp_control_state").contains("unless the local operator enabled YOLO mode"))
-        assertTrue(description("get_active_editor_contents").contains("with an explanatory error"))
-        assertTrue(description("set_active_editor_contents").contains("status=not_editable"))
 
         val catalogText = tools.values.joinToString("\n") { it.description.orEmpty() }
         listOf(
@@ -383,156 +376,6 @@ class ToolsKtTest {
         }
     }
 
-    @Nested
-    inner class UtilityToolsTests {
-        @Test
-        fun `url encode should work properly`() {
-            val urlUtils = mockk<URLUtils>()
-            val utilities = mockk<Utilities>()
-            
-            every { api.utilities() } returns utilities
-            every { utilities.urlUtils() } returns urlUtils
-            every { urlUtils.encode(any<String>()) } returns "test+string+with+spaces"
-            
-            runBlocking {
-                val result = client.callTool(
-                    "transform_data", mapOf(
-                        "operation" to "url_encode",
-                        "content" to "test string with spaces"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("test+string+with+spaces")
-                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("not_applicable", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
-                assertEquals("test+string+with+spaces", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
-                assertEquals(23, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
-            }
-            
-            verify(exactly = 1) { urlUtils.encode(any<String>()) }
-        }
-        
-        @Test
-        fun `url decode should work properly`() {
-            val urlUtils = mockk<URLUtils>()
-            val utilities = mockk<Utilities>()
-            
-            every { api.utilities() } returns utilities
-            every { utilities.urlUtils() } returns urlUtils
-            every { urlUtils.decode(any<String>()) } returns "test string with spaces"
-            
-            runBlocking {
-                val result = client.callTool(
-                    "transform_data", mapOf(
-                        "operation" to "url_decode",
-                        "content" to "test+string+with+spaces"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("test string with spaces")
-            }
-            
-            verify(exactly = 1) { urlUtils.decode(any<String>()) }
-        }
-        
-        @Test
-        fun `base64 encode should work properly`() {
-            val base64Utils = mockk<Base64Utils>()
-            val utilities = mockk<Utilities>()
-            
-            every { api.utilities() } returns utilities
-            every { utilities.base64Utils() } returns base64Utils
-            every { base64Utils.encodeToString(any<String>()) } returns "dGVzdCBzdHJpbmc="
-            
-            runBlocking {
-                val result = client.callTool(
-                    "transform_data", mapOf(
-                        "operation" to "base64_encode",
-                        "content" to "test string"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("dGVzdCBzdHJpbmc=")
-            }
-            
-            verify(exactly = 1) { base64Utils.encodeToString(any<String>()) }
-        }
-        
-        @Test
-        fun `base64 decode should work properly`() {
-            val base64Utils = mockk<Base64Utils>()
-            val utilities = mockk<Utilities>()
-            val burpByteArray = mockk<MontoyaByteArray>()
-            
-            every { api.utilities() } returns utilities
-            every { utilities.base64Utils() } returns base64Utils
-            every { base64Utils.decode(any<String>()) } returns burpByteArray
-            every { burpByteArray.length() } returns 11
-            every { burpByteArray.toString() } returns "test string"
-            
-            runBlocking {
-                val result = client.callTool(
-                    "transform_data", mapOf(
-                        "operation" to "base64_decode",
-                        "content" to "dGVzdCBzdHJpbmc="
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("test string")
-            }
-            
-            verify(exactly = 1) { base64Utils.decode(any<String>()) }
-        }
-        
-        @Test
-        fun `generate random string should work properly`() {
-            val randomUtils = mockk<RandomUtils>()
-            val utilities = mockk<Utilities>()
-            
-            every { api.utilities() } returns utilities
-            every { utilities.randomUtils() } returns randomUtils
-            every { randomUtils.randomString(any<Int>(), any<String>()) } returns "1a2b3c1a2b"
-            
-            runBlocking {
-                val result = client.callTool(
-                    "generate_random_string", mapOf(
-                        "length" to 10,
-                        "characterSet" to "abc123"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("1a2b3c1a2b")
-                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("1a2b3c1a2b", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
-                assertEquals(10, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
-            }
-            
-            verify(exactly = 1) { randomUtils.randomString(any<Int>(), any<String>()) }
-        }
-
-        @Test
-        fun `utility validation errors retain structured status and retry guidance`() = runBlocking {
-            val result = client.callTool(
-                "transform_data",
-                mapOf(
-                    "operation" to "url_encode",
-                    "content" to "x".repeat(262_145),
-                ),
-            )
-
-            assertEquals(true, result?.isError)
-            assertEquals("invalid_argument", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertEquals("after_correction", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
-            assertEquals("url_encode", result?.structuredContent?.get("operation")?.jsonPrimitive?.content)
-            assertNull(result?.structuredContent?.get("content"))
-        }
-    }
-    
     @Nested
     inner class ConfigurationToolsTests {
         @Test
@@ -859,205 +702,6 @@ class ToolsKtTest {
         }
     }
 
-    @Nested
-    inner class EditorTests {
-        @Test
-        fun `active editor read stops before resolving an editor when approval crosses projects`() = runBlocking {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            val project = mockk<burp.api.montoya.project.Project>()
-            var currentProjectId = "project-a"
-            every { api.project() } returns project
-            every { project.id() } answers { currentProjectId }
-            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
-                override suspend fun requestApproval(
-                    action: String,
-                    summary: String,
-                    reviewContent: String?,
-                    renderContentAsHttp: Boolean,
-                    api: MontoyaApi,
-                ): Boolean {
-                    currentProjectId = "project-b"
-                    return true
-                }
-            }
-
-            val result = client.callTool("get_active_editor_contents", emptyMap())
-
-            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertNull(result?.structuredContent?.get("content"))
-            verify(exactly = 0) { getActiveEditor(api) }
-        }
-
-        @Test
-        fun `active editor write stops before the setter when approval crosses projects`() = runBlocking {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            val project = mockk<burp.api.montoya.project.Project>()
-            var currentProjectId = "project-a"
-            every { api.project() } returns project
-            every { project.id() } answers { currentProjectId }
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.isEditable } returns true
-            SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
-                override suspend fun requestApproval(
-                    action: String,
-                    summary: String,
-                    reviewContent: String?,
-                    renderContentAsHttp: Boolean,
-                    api: MontoyaApi,
-                ): Boolean {
-                    currentProjectId = "project-b"
-                    return true
-                }
-            }
-
-            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
-
-            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
-            verify(exactly = 0) { textArea.text = any() }
-        }
-
-        @Test
-        fun `active editor transition after setter is execution uncertain`() = runBlocking {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            val project = mockk<burp.api.montoya.project.Project>()
-            var currentProjectId = "project-a"
-            every { api.project() } returns project
-            every { project.id() } answers { currentProjectId }
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.isEditable } returns true
-            every { textArea.text = any() } answers { currentProjectId = "project-b" }
-
-            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
-
-            assertEquals("project_mismatch", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
-            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
-            verify(exactly = 1) { textArea.text = "replacement" }
-        }
-
-        @Test
-        fun `active editor setter cancellation is execution uncertain`() = runBlocking {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.isEditable } returns true
-            every { textArea.text = any() } throws kotlinx.coroutines.CancellationException("cancelled")
-
-            val result = client.callTool("set_active_editor_contents", mapOf("text" to "replacement"))
-
-            assertEquals("burp_error", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
-            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
-        }
-
-        @Test
-        fun `get active editor contents should handle no editor`() {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            
-            every { getActiveEditor(api) } returns null
-            
-            runBlocking {
-                val result = client.callTool("get_active_editor_contents", emptyMap())
-                
-                delay(100)
-                result.expectTextContent("<No active editor>")
-                assertEquals("not_available", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("after_user_action", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
-            }
-        }
-        
-        @Test
-        fun `get active editor contents should return text`() {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.text } returns "Editor content"
-            
-            runBlocking {
-                val result = client.callTool("get_active_editor_contents", emptyMap())
-                
-                delay(100)
-                val text = result.expectTextContent()
-                assertTrue(text.contains("\"text\":\"Editor content\""))
-                assertTrue(text.contains("\"truncated\":false"))
-                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("Editor content", result?.structuredContent?.get("content")?.jsonPrimitive?.content)
-                assertEquals(14, result?.structuredContent?.get("totalChars")?.jsonPrimitive?.int)
-                assertEquals(false, result?.structuredContent?.get("truncated")?.jsonPrimitive?.boolean)
-            }
-        }
-        
-        @Test
-        fun `set active editor contents should handle no editor`() {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            
-            every { getActiveEditor(api) } returns null
-            
-            runBlocking {
-                val result = client.callTool(
-                    "set_active_editor_contents", mapOf(
-                        "text" to "New content"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("<No active editor>")
-            }
-        }
-        
-        @Test
-        fun `set active editor contents should handle non-editable editor`() {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.isEditable } returns false
-            
-            runBlocking {
-                val result = client.callTool(
-                    "set_active_editor_contents", mapOf(
-                        "text" to "New content"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("<Current editor is not editable>")
-                assertEquals("not_editable", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
-            }
-        }
-        
-        @Test
-        fun `set active editor contents should update text`() {
-            mockkStatic("net.portswigger.mcp.tools.ToolsKt")
-            
-            val textArea = mockk<JTextArea>()
-            every { getActiveEditor(api) } returns textArea
-            every { textArea.isEditable } returns true
-            every { textArea.text = any() } just runs
-            
-            runBlocking {
-                val result = client.callTool(
-                    "set_active_editor_contents", mapOf(
-                        "text" to "New content"
-                    )
-                )
-                
-                delay(100)
-                result.expectTextContent("Editor text has been set")
-                assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
-                assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
-                assertEquals(11, result?.structuredContent?.get("contentChars")?.jsonPrimitive?.int)
-            }
-            
-            verify(exactly = 1) { textArea.text = "New content" }
-        }
-    }
-    
     @Nested
     inner class HttpMessageSearchToolsTests {
         @Test
@@ -1477,15 +1121,13 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(25, tools.size)
+        assertEquals(21, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertEquals(
             setOf(
                 "send_raw_http_request",
                 "route_raw_http_request",
-                "transform_data",
-                "generate_random_string",
                 "get_burp_options",
                 "set_burp_options",
                 "search_http_messages",
@@ -1505,8 +1147,6 @@ class ToolsKtTest {
                 "search_websocket_messages",
                 "get_websocket_message_by_id",
                 "set_burp_control_state",
-                "get_active_editor_contents",
-                "set_active_editor_contents",
             ),
             toolNames,
         )
@@ -1546,20 +1186,12 @@ class ToolsKtTest {
 
         assertTrue(tools.all { it.outputSchema != null }, "Every v4.1 tool must advertise an output schema")
 
-        val transform = tools.single { it.name == "transform_data" }
-        assertEquals(setOf("operation", "content"), transform.inputSchema.required?.toSet())
-        assertTrue(transform.inputSchema.properties?.get("operation").toString().contains("base64_decode"))
-        assertNotNull(transform.outputSchema?.properties?.get("status"))
-        assertNotNull(transform.outputSchema?.properties?.get("retry"))
-        assertTrue(transform.outputSchema?.properties?.get("content").toString().contains("\"maxLength\":1048576"))
-
         val optionsMutation = tools.single { it.name == "set_burp_options" }
         assertTrue(optionsMutation.outputSchema?.properties?.get("executionState").toString().contains("uncertain"))
         assertTrue(optionsMutation.outputSchema?.properties?.get("retry").toString().contains("do_not_retry"))
-
-        val editorRead = tools.single { it.name == "get_active_editor_contents" }
-        assertNotNull(editorRead.outputSchema?.properties?.get("content"))
-        assertNotNull(editorRead.outputSchema?.properties?.get("truncated"))
+        val sharedStatusSchema = optionsMutation.outputSchema?.properties?.get("status").toString()
+        assertTrue(sharedStatusSchema.contains("not_available"))
+        assertTrue(sharedStatusSchema.contains("not_editable"))
 
         val attackSurface = tools.single { it.name == "summarize_http_attack_surface" }
         assertEquals(setOf("projectId"), attackSurface.inputSchema.required?.toSet())
@@ -1915,7 +1547,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(32, tools.size)
+            assertEquals(28, tools.size)
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }

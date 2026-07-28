@@ -195,7 +195,7 @@ References: [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18
 
 Reuse or add annotations in `McpTool.kt`:
 
-- read-only local operation: `READ_ONLY_TOOL_ANNOTATIONS` or `LOCAL_TRANSFORM_TOOL_ANNOTATIONS`
+- read-only local operation: `READ_ONLY_TOOL_ANNOTATIONS`
 - network request: `HTTP_REQUEST_ACTION_ANNOTATIONS`
 - Burp routing without transmission: `REQUEST_ROUTING_TOOL_ANNOTATIONS`
 - scope/config/project mutation: a destructive mutation annotation

@@ -34,14 +34,17 @@ Every runner requires:
 
 Reports contain only bounded aggregate state. A timeout, `Ctrl-C`, missing report, completed-before-barrier call, failed
 precondition, `BLOCKED`, or `NOT RUN` result is never promoted to `PASS`. The finalizer rejects symlink/path traversal,
-UUID-shaped values, decoded private/credential JSON keys (including Unicode escapes), credential-bearing text under any
-file suffix, and exact forbidden runtime values in permanent evidence.
+non-canonical path spellings, physical-file aliases, UUID-shaped values, decoded private/credential JSON keys (including
+BOM-aware UTF-8/16/32, Unicode escapes, and bounded nested JSON text), credential-bearing text under any file suffix, and
+exact forbidden runtime values in permanent evidence. JSON-looking text is lexically depth/token bounded and must fit the
+8 MiB pre-DOM parse limit.
 
 ## Edition preflight
 
 Run the preflight after the exact JAR is successfully loaded in each fresh edition. It verifies unauthenticated `401`,
-authenticated identity and protocol, ping, exact Community/Professional catalog counts and gating, the bounded read-only
-correlation schema, project binding, one no-side-effect tool call, fixed-cardinality diagnostics redaction, and session
+authenticated identity and protocol, ping, exact Community/Professional tool, prompt, fixed-resource, and resource-template
+identifier sets, the bounded read-only correlation schema, project binding, one no-side-effect read-only tool call,
+fixed-cardinality diagnostics redaction, and session
 `DELETE`. The running extension schedules a hash of its own regular non-symlink code-source JAR as soon as the server
 manager is constructed, off the UI thread, and the preflight requires that digest to equal the separately opened
 candidate file; version equality alone is not accepted.
@@ -112,7 +115,7 @@ Create one reviewed JSON document under the evidence root:
   "scenarios": {
     "catalogEditionGating": {
       "status": "PASS",
-      "evidence": ["evidence/catalog-gating.json"],
+      "evidence": ["evidence/catalog-gating-record.json", "evidence/catalog-gating.json"],
       "notes": "Both exact edition preflights passed."
     }
   }
@@ -149,8 +152,9 @@ record is candidate- and scenario-bound and hashes every following file in the s
 Professional Scanner/Collaborator and scope/Scanner-uncertain records require Professional evidence; every other record
 requires both editions. Scenario-record paths and every objective evidence path are unique across scenarios. A `PASS`
 record may contain only passing checks, while a `FAIL` record must contain a failed check.
-Evidence paths are relative to the root, may not traverse or contain symlink components, and must name bounded regular
-files. The finalizer requires POSIX directory-descriptor support, opens every component relative to stable directory
+Evidence paths are canonical POSIX-relative spellings below the root, may not traverse or contain symlink components,
+and must name bounded regular files. Distinct paths must also identify distinct physical files; hard-link aliases are
+rejected. The finalizer requires POSIX directory-descriptor support, opens every component relative to stable directory
 descriptors, captures each evidence file once under per-file/aggregate bounds, and uses those same bytes for schema
 checks, privacy checks, and the checksum index. A Windows Burp run may be finalized from a clean Linux/macOS evidence
 workspace after byte-preserving transfer. One

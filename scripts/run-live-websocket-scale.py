@@ -13,7 +13,12 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from exact_smoke_contract import validate_release_identity  # noqa: E402
+from exact_smoke_contract import (  # noqa: E402
+    EDITION_CATALOG_COUNTS,
+    catalog_items,
+    validate_catalog,
+    validate_release_identity,
+)
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
@@ -112,8 +117,7 @@ def main() -> int:
     parser.add_argument("--stages", type=parse_stages, default=parse_stages("10000,50000,100000"))
     parser.add_argument("--burp-pid", type=int, required=True)
     parser.add_argument("--max-rss-mib", type=int, default=6144)
-    parser.add_argument("--expected-tools", type=int, choices=(25, 32), required=True)
-    parser.add_argument("--expected-prompts", type=int, choices=(4, 5), required=True)
+    parser.add_argument("--edition", choices=tuple(EDITION_CATALOG_COUNTS), required=True)
     args = parser.parse_args()
 
     validate_release_identity(
@@ -142,6 +146,7 @@ def main() -> int:
     report: dict = {
         "schemaVersion": 1,
         "status": "failed",
+        "edition": args.edition,
         "fixture": "loopback-only deterministic WebSocket echo",
         "sourceCommit": source_commit,
         "candidateJarSha256": actual_jar_sha256,
@@ -170,13 +175,16 @@ def main() -> int:
             raise HarnessError("unexpected MCP server identity")
         project_id = read_project_id(client)
 
-        tools = client.rpc("tools/list", {})
-        prompts = client.rpc("prompts/list", {})
-        tool_count = len(((tools.get("result") or {}).get("tools") or []))
-        prompt_count = len(((prompts.get("result") or {}).get("prompts") or []))
-        if tool_count != args.expected_tools or prompt_count != args.expected_prompts:
-            raise HarnessError("catalog counts do not match the approved edition")
-        report["catalog"] = {"tools": tool_count, "prompts": prompt_count}
+        report["catalog"] = validate_catalog(
+            args.edition,
+            catalog_items(client.rpc("tools/list", {}), "tools"),
+            catalog_items(client.rpc("prompts/list", {}), "prompts"),
+            catalog_items(client.rpc("resources/list", {}), "resources"),
+            catalog_items(
+                client.rpc("resources/templates/list", {}),
+                "resourceTemplates",
+            ),
+        )
         diagnostics, diagnostics_text = read_bounded_diagnostics(client)
         if diagnostics.get("loadedArtifactSha256") != actual_jar_sha256:
             raise HarnessError("running extension artifact does not match the approved candidate JAR")

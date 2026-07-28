@@ -52,7 +52,10 @@ def validate_preflight(
     version: str,
 ) -> None:
     expected_counts = EDITION_CATALOG_COUNTS[edition]
+    if type(report.get("schemaVersion")) is not int or report.get("schemaVersion") != 1:
+        raise HarnessError("edition preflight has an unsupported schema")
     expected = {
+        "schemaVersion": 1,
         "status": "passed",
         "edition": edition,
         "sourceCommit": source_commit,
@@ -69,16 +72,26 @@ def validate_preflight(
         if report.get(key) != value:
             raise HarnessError("edition preflight identity or cleanup contract failed")
     checks = report.get("checks")
-    if not isinstance(checks, dict) or checks.get("loadedArtifactSha256") != "matched":
-        raise HarnessError("edition preflight did not bind the running extension to the candidate JAR")
-    catalog = report.get("catalog")
-    if not isinstance(catalog, dict) or catalog.get("counts") != expected_counts:
+    expected_checks = {
+        "authenticatedIdentity": "passed",
+        "loadedArtifactSha256": "matched",
+        "boundedReadOnlyToolCall": "passed",
+        "diagnosticsRedaction": "passed",
+        "projectBinding": "passed",
+        "resourceCatalog": "passed",
+        "unauthenticatedStatus401": "passed",
+    }
+    if checks != expected_checks:
+        raise HarnessError("edition preflight checks are incomplete or stale")
+    expected_catalog = {
+        "counts": expected_counts,
+        "identifierSets": "matched",
+        "professionalOnlyTools": "absent" if edition == "community" else "present",
+        "correlationReadOnly": True,
+        "correlationCohortMaxItems": 16,
+    }
+    if report.get("catalog") != expected_catalog:
         raise HarnessError("edition preflight catalog contract failed")
-    if catalog.get("correlationReadOnly") is not True or catalog.get("correlationCohortMaxItems") != 16:
-        raise HarnessError("edition preflight correlation contract failed")
-    expected_gating = "absent" if edition == "community" else "present"
-    if catalog.get("professionalOnlyTools") != expected_gating:
-        raise HarnessError("edition preflight gating contract failed")
 
 
 def main() -> int:
@@ -125,11 +138,21 @@ def main() -> int:
     if args.workflow_results_output is not None:
         require_absent_below_root(args.root, args.workflow_results_output)
 
-    jar_sha256 = sha256_below_root(args.root, args.candidate_jar)
+    opened_file_identities: set[tuple[int, int]] = set()
+    jar_sha256 = sha256_below_root(
+        args.root,
+        args.candidate_jar,
+        opened_file_identities=opened_file_identities,
+    )
     if jar_sha256 != args.expected_jar_sha256:
         raise HarnessError("candidate JAR checksum does not match")
 
-    primary_snapshots = snapshot_evidence_files(args.root, primary_relative, per_file_max_bytes=4 * 1024 * 1024)
+    primary_snapshots = snapshot_evidence_files(
+        args.root,
+        primary_relative,
+        per_file_max_bytes=4 * 1024 * 1024,
+        opened_file_identities=opened_file_identities,
+    )
     community = json_object_from_bytes(primary_snapshots[args.community_preflight])
     professional = json_object_from_bytes(primary_snapshots[args.professional_preflight])
     validate_preflight(
@@ -148,7 +171,11 @@ def main() -> int:
     )
 
     claims_document = json_object_from_bytes(primary_snapshots[args.scenario_claims])
-    if set(claims_document) != {"schemaVersion", "scenarios"} or claims_document.get("schemaVersion") != 1:
+    if (
+        set(claims_document) != {"schemaVersion", "scenarios"}
+        or type(claims_document.get("schemaVersion")) is not int
+        or claims_document.get("schemaVersion") != 1
+    ):
         raise HarnessError("scenario claims document has an unsupported schema")
     claims = validate_scenario_claims(claims_document.get("scenarios"))
     scenario_relative = list(dict.fromkeys(
@@ -157,9 +184,12 @@ def main() -> int:
         if claim["status"] in {"PASS", "FAIL"}
         for path in claim["evidence"]
     ))
+    if set(scenario_relative).intersection(primary_relative):
+        raise HarnessError("primary evidence files must not be reused as scenario evidence")
     scenario_snapshots = snapshot_evidence_files(
         args.root,
         [relative for relative in scenario_relative if relative not in primary_snapshots],
+        opened_file_identities=opened_file_identities,
     )
     snapshots = {**primary_snapshots, **scenario_snapshots}
     validate_scenario_evidence_snapshots(

@@ -21,12 +21,20 @@ sys.path.insert(0, str(SCRIPTS))
 import live_mcp_harness as harness  # noqa: E402
 
 
-def load_scale_module():
-    spec = importlib.util.spec_from_file_location("live_scale", SCRIPTS / "run-live-websocket-scale.py")
+def load_script_module(module_name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPTS / filename)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def load_scale_module():
+    return load_script_module("live_scale", "run-live-websocket-scale.py")
+
+
+def load_lifecycle_module():
+    return load_script_module("live_lifecycle", "run-live-lifecycle-soak.py")
 
 
 class LiveMcpHarnessContractTest(unittest.TestCase):
@@ -213,14 +221,13 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             "--expected-server-version", "4.11.0-rc.1",
         ]
         for script in ("run-live-websocket-scale.py", "run-live-lifecycle-soak.py"):
-            for expected_tools, expected_prompts in ((25, 4), (32, 5)):
+            for edition in ("community", "professional"):
                 result = subprocess.run(
                     [
                         sys.executable,
                         str(SCRIPTS / script),
                         *common,
-                        "--expected-tools", str(expected_tools),
-                        "--expected-prompts", str(expected_prompts),
+                        "--edition", edition,
                     ],
                     capture_output=True,
                     text=True,
@@ -254,7 +261,7 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertIn("--burp-pid", result.stderr)
 
-    def test_live_runners_reject_stale_catalog_counts(self):
+    def test_live_runners_reject_unknown_editions(self):
         common = [
             "--approved-disposable-project",
             "--token-file", "missing-token",
@@ -263,24 +270,18 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             "--expected-jar-sha256", "0" * 64,
             "--expected-source-commit", "0" * 40,
             "--expected-server-version", "4.11.0-rc.1",
-            "--expected-prompts", "5",
+            "--edition", "mixed",
             "--burp-pid", "1",
         ]
         for script in ("run-live-websocket-scale.py", "run-live-lifecycle-soak.py"):
-            for stale_count in (24, 31):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(SCRIPTS / script),
-                        *common,
-                        "--expected-tools", str(stale_count),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                self.assertEqual(2, result.returncode)
-                self.assertIn("invalid choice", result.stderr)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / script), *common],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("invalid choice", result.stderr)
 
     def test_fixed_scale_stage_parser_has_no_unbounded_values(self):
         scale = load_scale_module()
@@ -288,6 +289,19 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
         for value in ("", "1000", "50000,10000", "10000,10000", "100000,200000"):
             with self.assertRaises(Exception):
                 scale.parse_stages(value)
+
+    def test_lifecycle_pass_requires_every_supported_protocol_cycle(self):
+        lifecycle = load_lifecycle_module()
+        covered = {protocol: 1 for protocol in harness.SUPPORTED_PROTOCOLS}
+        lifecycle.require_all_protocol_cycles(covered)
+        for invalid in (
+            {protocol: (0 if index == 0 else 1) for index, protocol in enumerate(harness.SUPPORTED_PROTOCOLS)},
+            {protocol: 1 for protocol in harness.SUPPORTED_PROTOCOLS[:-1]},
+            {**covered, "unexpected": 1},
+            {protocol: True for protocol in harness.SUPPORTED_PROTOCOLS},
+        ):
+            with self.assertRaises(harness.HarnessError):
+                lifecycle.require_all_protocol_cycles(invalid)
 
     def test_diagnostics_reader_returns_only_fixed_cardinality_fields_and_raw_text(self):
         class Client:

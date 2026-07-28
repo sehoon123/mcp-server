@@ -11,7 +11,12 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from exact_smoke_contract import EDITION_CATALOG_COUNTS, validate_catalog, validate_release_identity  # noqa: E402
+from exact_smoke_contract import (  # noqa: E402
+    EDITION_CATALOG_COUNTS,
+    catalog_items,
+    validate_catalog,
+    validate_release_identity,
+)
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
@@ -28,15 +33,6 @@ from live_mcp_harness import (  # noqa: E402
     write_private_json,
 )
 
-EXPECTED_RESOURCE_URIS = frozenset(
-    {
-        "burp://diagnostics",
-        "burp://project/summary",
-        "burp://scope/summary",
-    }
-)
-
-
 def git_output(root: pathlib.Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(root), *arguments],
@@ -48,14 +44,21 @@ def git_output(root: pathlib.Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def catalog_items(response: Any, key: str) -> list[dict[str, Any]]:
-    try:
-        items = response["result"][key]
-    except (KeyError, TypeError):
-        raise HarnessError("MCP catalog response was malformed")
-    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-        raise HarnessError("MCP catalog response was malformed")
-    return items
+def validate_scope_probe(result: Any, project_id: str, target_url: str) -> None:
+    if not isinstance(result, dict):
+        raise HarnessError("bounded read-only tool call returned a malformed result")
+    targets = result.get("targets")
+    if not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict):
+        raise HarnessError("bounded read-only tool call returned malformed targets")
+    target = targets[0]
+    if (
+        result.get("status") != "ok"
+        or result.get("projectId") != project_id
+        or target.get("index") != 0
+        or target.get("url") != target_url
+        or type(target.get("inScope")) is not bool
+    ):
+        raise HarnessError("bounded read-only tool call failed its project-bound result contract")
 
 
 def main() -> int:
@@ -137,21 +140,28 @@ def main() -> int:
         tools = catalog_items(client.rpc("tools/list", {}), "tools")
         prompts = catalog_items(client.rpc("prompts/list", {}), "prompts")
         resources = catalog_items(client.rpc("resources/list", {}), "resources")
-        resource_uris = {resource.get("uri") for resource in resources}
-        if resource_uris != EXPECTED_RESOURCE_URIS:
-            raise HarnessError("resource catalog identifiers changed")
-        report["catalog"] = validate_catalog(args.edition, tools, prompts, resources)
+        resource_templates = catalog_items(
+            client.rpc("resources/templates/list", {}),
+            "resourceTemplates",
+        )
+        report["catalog"] = validate_catalog(
+            args.edition,
+            tools,
+            prompts,
+            resources,
+            resource_templates,
+        )
 
         project_id = read_project_id(client)
         private_values.append(project_id)
+        probe_url = "https://example.invalid/"
         result, _ = call_tool(
             client,
-            "generate_random_string",
-            {"length": 8, "characterSet": "abcdefghijkmnopqrstuvwxyz23456789"},
+            "check_scope",
+            {"projectId": project_id, "targets": [{"url": probe_url}]},
             timeout=30,
         )
-        if result.get("status") != "ok" or result.get("contentChars") != 8:
-            raise HarnessError("bounded no-side-effect tool call failed")
+        validate_scope_probe(result, project_id, probe_url)
 
         diagnostics, diagnostics_text = read_bounded_diagnostics(client)
         if any(value and value in diagnostics_text for value in private_values):
@@ -166,7 +176,7 @@ def main() -> int:
         report["checks"] = {
             "authenticatedIdentity": "passed",
             "loadedArtifactSha256": "matched",
-            "boundedNoSideEffectToolCall": "passed",
+            "boundedReadOnlyToolCall": "passed",
             "diagnosticsRedaction": "passed",
             "projectBinding": "passed",
             "resourceCatalog": "passed",

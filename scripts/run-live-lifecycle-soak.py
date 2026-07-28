@@ -11,7 +11,12 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from exact_smoke_contract import validate_release_identity  # noqa: E402
+from exact_smoke_contract import (  # noqa: E402
+    EDITION_CATALOG_COUNTS,
+    catalog_items,
+    validate_catalog,
+    validate_release_identity,
+)
 from live_mcp_harness import (  # noqa: E402
     HarnessError,
     McpClient,
@@ -41,6 +46,13 @@ def git_output(root: pathlib.Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def require_all_protocol_cycles(cycles_by_protocol: dict[str, int]) -> None:
+    if set(cycles_by_protocol) != set(SUPPORTED_PROTOCOLS) or any(
+        type(count) is not int or count <= 0 for count in cycles_by_protocol.values()
+    ):
+        raise HarnessError("lifecycle soak did not complete a cycle for every supported protocol")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--approved-disposable-project", action="store_true", required=True)
@@ -55,8 +67,7 @@ def main() -> int:
     parser.add_argument("--interval-seconds", type=float, default=1.0)
     parser.add_argument("--burp-pid", type=int, required=True)
     parser.add_argument("--max-rss-mib", type=int, default=6144)
-    parser.add_argument("--expected-tools", type=int, choices=(25, 32), required=True)
-    parser.add_argument("--expected-prompts", type=int, choices=(4, 5), required=True)
+    parser.add_argument("--edition", choices=tuple(EDITION_CATALOG_COUNTS), required=True)
     args = parser.parse_args()
 
     validate_release_identity(
@@ -88,6 +99,7 @@ def main() -> int:
     report: dict = {
         "schemaVersion": 1,
         "status": "failed",
+        "edition": args.edition,
         "fixture": "loopback-only existing disposable history",
         "sourceCommit": source_commit,
         "candidateJarSha256": jar_sha256,
@@ -133,15 +145,17 @@ def main() -> int:
                     raise HarnessError("unexpected MCP server identity")
                 project_id = read_project_id(client)
                 if cycle < len(SUPPORTED_PROTOCOLS):
-                    tools = client.rpc("tools/list", {})
-                    prompts = client.rpc("prompts/list", {})
-                    resources = client.rpc("resources/list", {})
-                    if len(((tools.get("result") or {}).get("tools") or [])) != args.expected_tools:
-                        raise HarnessError("tool catalog changed during soak")
-                    if len(((prompts.get("result") or {}).get("prompts") or [])) != args.expected_prompts:
-                        raise HarnessError("prompt catalog changed during soak")
-                    if len(((resources.get("result") or {}).get("resources") or [])) != 3:
-                        raise HarnessError("resource catalog changed during soak")
+                    catalog = validate_catalog(
+                        args.edition,
+                        catalog_items(client.rpc("tools/list", {}), "tools"),
+                        catalog_items(client.rpc("prompts/list", {}), "prompts"),
+                        catalog_items(client.rpc("resources/list", {}), "resources"),
+                        catalog_items(
+                            client.rpc("resources/templates/list", {}),
+                            "resourceTemplates",
+                        ),
+                    )
+                    report["catalog"] = catalog
 
                 search, _ = call_tool(
                     client,
@@ -200,6 +214,7 @@ def main() -> int:
             if remaining > 0 and args.interval_seconds:
                 time.sleep(min(args.interval_seconds, remaining))
 
+        require_all_protocol_cycles(report["cyclesByProtocol"])
         report["status"] = "passed"
     except HarnessError as error:
         report["failure"] = str(error)
