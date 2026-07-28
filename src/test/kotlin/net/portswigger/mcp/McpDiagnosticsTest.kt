@@ -87,6 +87,8 @@ class McpDiagnosticsTest {
         assertFalse(publicJson.contains("projectBoundaryResets"))
         assertFalse(publicJson.contains("initializedWithProtocol"))
         assertFalse(publicJson.contains("initializedWithoutProtocolHeader"))
+        assertFalse(publicJson.contains("historyPerformance"))
+        assertFalse(publicJson.contains("latencyBuckets"))
     }
 
     @Test

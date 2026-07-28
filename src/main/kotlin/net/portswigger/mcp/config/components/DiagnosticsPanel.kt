@@ -10,6 +10,8 @@ import net.portswigger.mcp.config.MIN_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ProxyProvenance
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.tools.HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import net.portswigger.mcp.security.safeSingleLine
 import java.awt.FlowLayout
 import java.awt.Font
@@ -281,6 +283,13 @@ internal fun formatMcpDiagnostics(
             ">=1s=${edtWatchdog.delaysAtLeast1Second}, " +
             "max=${edtWatchdog.maxDelayMillis}ms, errors=${edtWatchdog.errors}",
     )
+    diagnostics.historyPerformance.metrics.forEach { metric ->
+        appendLine(
+            "History ${metric.metric.displayLabel()}: attempts=${metric.attempts}, completed=${metric.completed}, " +
+                "failed=${metric.failed}, cancelled=${metric.cancelled}, max=${metric.maxNanos}ns, " +
+                "buckets=${metric.latencyBuckets.formatHistoryBuckets()}",
+        )
+    }
     appendLine("HTTP calls: ${diagnostics.activeHttpCalls}/${diagnostics.maxHttpCalls} active, peak ${diagnostics.peakHttpCalls}")
     appendLine(
         "Sessions: ${diagnostics.activeSessions} active + ${diagnostics.pendingSessions} pending / ${diagnostics.maxSessions}"
@@ -335,3 +344,28 @@ internal fun formatMcpDiagnostics(
 }.trimEnd()
 
 private fun Long?.asInstantOrNever(): String = this?.let { Instant.ofEpochMilli(it).toString() } ?: "never"
+
+private fun HistoryPerformanceMetric.displayLabel(): String = when (this) {
+    HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION -> "index Proxy acquisition"
+    HistoryPerformanceMetric.INDEX_PROXY_PROCESSING -> "index Proxy processing"
+    HistoryPerformanceMetric.INDEX_SITE_MAP_ACQUISITION -> "index Site Map acquisition"
+    HistoryPerformanceMetric.INDEX_SITE_MAP_PROCESSING -> "index Site Map processing"
+    HistoryPerformanceMetric.INDEX_ORGANIZER_ACQUISITION -> "index Organizer acquisition"
+    HistoryPerformanceMetric.INDEX_ORGANIZER_PROCESSING -> "index Organizer processing"
+    HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION -> "HTTP search Proxy acquisition"
+    HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION -> "HTTP search Site Map acquisition"
+    HistoryPerformanceMetric.HTTP_SEARCH_ORGANIZER_ACQUISITION -> "HTTP search Organizer acquisition"
+    HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING -> "HTTP search processing"
+    HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION -> "WebSocket search acquisition"
+    HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING -> "WebSocket search processing"
+}
+
+private fun List<Long>.formatHistoryBuckets(): String = buildString {
+    HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS.forEachIndexed { index, upperMillis ->
+        if (index > 0) append(',')
+        append('<').append(upperMillis).append("ms=")
+            .append(this@formatHistoryBuckets.getOrElse(index) { 0 })
+    }
+    append(',').append(">=5000ms=")
+        .append(this@formatHistoryBuckets.getOrElse(HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS.size) { 0 })
+}

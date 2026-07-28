@@ -301,6 +301,37 @@ to JVM compilation and fixture effects; it is diagnostic rather than benchmark e
 source API call separately and record the runtime collection behavior before these results are used to explain a
 Burp-scale observation.
 
+## Local history acquisition and processing attribution
+
+The v4.11 development line records fixed-cardinality elapsed-time diagnostics for direct history source acquisition and
+extension processing. The measurements cover Proxy, Site Map, and Organizer metadata-index refreshes, unified HTTP
+search, and WebSocket search. They are visible only in the local Burp diagnostics panel. The in-process diagnostics
+snapshot carries them in a serialization-transient field; `burp://diagnostics`, MCP schemas, catalogs, audit records,
+logs, and persisted settings do not contain them.
+
+An **acquisition** measurement starts immediately before the synchronous Burp/Montoya list call and ends when that call
+returns or throws. The Montoya subsystem accessor and the extension's lightweight source-view wrapper construction are
+outside this interval. Acquisition therefore includes whatever Burp and Montoya do to produce the returned list, but no
+subsequent extension scan or wrapper allocation. Cancellation is checked immediately before and after the call, but
+cannot interrupt a synchronous Montoya call before it returns. If cancellation arrives while that call is blocked and
+the call later returns normally, acquisition is recorded as completed before the surrounding operation propagates
+cancellation; a `cancelled` acquisition means the call itself propagated `CancellationException`.
+
+**Processing** includes extension-owned bounded validation, indexing, filtering, materialization, cursor preparation,
+and the sequential-list defensive copy where applicable. Unified HTTP search begins processing after all selected
+acquisitions; WebSocket search has one acquisition; and metadata-index processing follows each corresponding source
+acquisition in source order. Metadata-index warm hint validation records paired acquisition and processing attempts. A
+WebSocket processing result other than `ok`
+counts as failed; thrown failures and cancellation retain their corresponding outcome. Existing locks, dispatchers,
+source order, retry behavior, and access bounds are unchanged.
+
+Each fixed metric retains only attempts, completed/failed/cancelled outcomes, one maximum monotonic duration, and eleven
+elapsed-time buckets with upper bounds below 1, 5, 10, 25, 50, 100, 250, 500, 1,000, and 5,000 milliseconds plus a final
+5,000-millisecond-or-greater bucket. These aggregates are not percentiles and retain no samples, source sizes, project,
+client, filter, reference, path, traffic, exception, or Montoya values. Counts survive MCP listener restart for the
+extension lifetime and disappear on extension unload. They are diagnostic attribution only and are not Burp product or
+extension latency benchmarks.
+
 ## Disposable live WebSocket scale and lifecycle diagnostics
 
 Two opt-in Python entry points exercise an already-running exact development JAR in a disposable Burp project. They do

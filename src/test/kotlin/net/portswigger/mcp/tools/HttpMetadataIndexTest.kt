@@ -96,7 +96,12 @@ class HttpMetadataIndexTest {
             }
         }
         every { proxy.history() } returns syntheticHistory
-        val index = HttpMetadataIndex(api, nanoTime = { nowNanos })
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val index = HttpMetadataIndex(
+            api,
+            nanoTime = { nowNanos },
+            performanceDiagnostics = diagnostics,
+        )
 
         val snapshot = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
 
@@ -104,7 +109,41 @@ class HttpMetadataIndexTest {
         assertEquals(95_000, snapshot.omittedRecords)
         assertEquals(MAX_METADATA_INDEX_RECORDS_PER_SOURCE, snapshot.availableRecords.size)
         assertTrue(getCalls <= MAX_METADATA_INDEX_RECORDS_PER_SOURCE + 16)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
         verify(exactly = 0) { fixture.request.body() }
+    }
+
+    @Test
+    fun `index records source acquisition and processing as separate fixed metrics`() = runBlocking {
+        history += proxyItem(1, "/measured").item
+        var clock = 0L
+        every { api.proxy() } answers {
+            clock += 100L
+            proxy
+        }
+        every { proxy.history() } answers {
+            clock += 7L
+            history.toList()
+        }
+        val diagnostics = HistoryPerformanceDiagnostics { clock }
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            performanceDiagnostics = diagnostics,
+        )
+
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
+        assertEquals(0, metrics.getValue(HistoryPerformanceMetric.INDEX_SITE_MAP_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).completed)
+        assertEquals(7L, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).maxNanos)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).completed)
     }
 
     @Test
@@ -124,13 +163,22 @@ class HttpMetadataIndexTest {
     @Test
     fun `search hint snapshot returns recent same-size anchor-validated metadata`() = runBlocking {
         history += proxyItem(1, "/warm").item
-        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            performanceDiagnostics = diagnostics,
+        )
         index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
 
         val cached = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
 
         assertEquals(MetadataIndexRefresh.REUSED, cached?.sources?.single()?.refresh)
         assertEquals(1, cached?.sources?.single()?.availableRecords?.size)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(2, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
+        assertEquals(2, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
         verify(exactly = 2) { proxy.history() }
     }
 
@@ -145,7 +193,13 @@ class HttpMetadataIndexTest {
             fixture.request
         }
         history += fixture.item
-        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 2,
+            nanoTime = { nowNanos },
+            performanceDiagnostics = diagnostics,
+        )
         val build = async(Dispatchers.Default) {
             index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
         }
@@ -160,6 +214,12 @@ class HttpMetadataIndexTest {
             releaseRequest.countDown()
         }
         assertEquals("project-one", build.await().projectId)
+        assertEquals(
+            1,
+            diagnostics.snapshot().metrics.single {
+                it.metric == HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION
+            }.attempts,
+        )
     }
 
     @Test

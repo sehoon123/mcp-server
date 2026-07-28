@@ -8,6 +8,7 @@ import net.portswigger.mcp.presets.WorkflowPresetStore
 /** Extension-lifetime state that must survive MCP HTTP server restarts. */
 internal class ToolServices(private val api: MontoyaApi, extensionStorage: PersistedObject) {
     val workflowPresetStore = WorkflowPresetStore(extensionStorage)
+    val historyPerformanceDiagnostics = HistoryPerformanceDiagnostics()
     private val collaboratorDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         CollaboratorToolService(api)
     }
@@ -15,7 +16,7 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
         ScannerAuditService(api)
     }
     private val httpMetadataIndexDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        HttpMetadataIndex(api)
+        HttpMetadataIndex(api, performanceDiagnostics = historyPerformanceDiagnostics)
     }
     private val httpSessionSecurityAnalyzerDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         HttpSessionSecurityAnalyzerService(api)
@@ -26,6 +27,8 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
     val httpMetadataIndex: HttpMetadataIndex get() = httpMetadataIndexDelegate.value
     val httpSessionSecurityAnalyzer: HttpSessionSecurityAnalyzerService
         get() = httpSessionSecurityAnalyzerDelegate.value
+
+    fun performanceSnapshot(): HistoryPerformanceSnapshot = historyPerformanceDiagnostics.snapshot()
 
     suspend fun resetForProjectBoundary() {
         if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {

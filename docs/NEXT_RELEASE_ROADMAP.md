@@ -351,6 +351,42 @@ Candidate work:
 - [x] The selected YOLO UI feature has an explicit secret, project, filesystem, rollback, and accessibility contract.
 - [ ] HTTP/2 behavior is either live-verified or remains explicitly unavailable.
 
+## v4.11.0 — Measured History Freshness and HTTP Activity Correlation
+
+Development uses the non-release identity `4.11.0-dev.1`. The immutable `v4.10.0-rc.1` tag, draft, notes, and assets
+remain unchanged. Work is ordered so measurement precedes scheduling changes and catalog growth.
+
+Milestones:
+
+1. Attribute Proxy, Site Map, Organizer, and WebSocket history work to direct Burp/Montoya source acquisition versus
+   extension processing with fixed-cardinality, value-free elapsed-time buckets shown only in the local diagnostics UI.
+2. Add constant-time source-change signals only where the pinned Montoya API has mutation-neutral callbacks, while
+   retaining bounded anchors and expiry as the freshness authority.
+3. Add at most one distinct common read-only `correlate_http_activity` operation after shared metadata and least-data
+   resolver seams are proven. Mixed-source similarity must not be presented as identity or chronology.
+4. Consider bounded single-flight refresh admission only after disposable 10k/50k/100k evidence shows repeated
+   same-generation acquisition and proves the required Montoya calls safe on one extension-owned worker.
+
+The first deliverable changes no MCP tool, prompt, resource, template, cursor, stable-ID, approval, or result schema.
+Metrics survive listener restart for the extension lifetime, retain no project/client/filter/reference/traffic value, and
+are diagnostic aggregates rather than Burp product benchmarks.
+
+Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
+subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
+aliases or families.
+
+### v4.11.0 gate
+
+- [ ] Acquisition and extension-processing measurements are fixed-cardinality, local-only, cancellation-safe, and leave
+  public diagnostics serialization and exact catalogs unchanged.
+- [ ] Event invalidation is live-validated without retaining or blocking traffic callbacks; unsupported Site Map and
+  Organizer listener gaps remain documented.
+- [ ] Any correlation result is bounded, project-bound, read-only, value-limited, and makes no unsupported chronology or
+  identity claim.
+- [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
+- [ ] Exact Community/Professional, native HTTP, embedded stdio, project-transition, cancellation, scale, unload, SBOM,
+  conformance, and reproducibility gates pass for a new immutable v4.11 candidate.
+
 ## v5.0.0 — Modern MCP gate
 
 There is no target date. [V5_READINESS.md](V5_READINESS.md) and

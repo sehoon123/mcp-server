@@ -101,6 +101,7 @@ internal class HttpMetadataIndex(
     private val maxRecordsPerSource: Int = MAX_METADATA_INDEX_RECORDS_PER_SOURCE,
     reuseMillis: Long = DEFAULT_METADATA_INDEX_REUSE_MILLIS,
     private val nanoTime: () -> Long = System::nanoTime,
+    private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
 ) : AutoCloseable {
     private val lock = Mutex()
     // snapshot() serializes all source reads, so one digest can be safely reused without a ThreadLocal or per-record
@@ -142,7 +143,9 @@ internal class HttpMetadataIndex(
             for (source in sources) {
                 coroutineContext.ensureActive()
                 val view = loadView(source)
-                snapshots += refreshSourceLocked(source, view, coroutineContext)
+                snapshots += performanceDiagnostics.measure(source.indexProcessingMetric()) {
+                    refreshSourceLocked(source, view, coroutineContext)
+                }
                 val projectAfterSource = api.project().id()
                 if (projectAfterSource != expectedProjectId) {
                     observeProjectLocked(projectAfterSource)
@@ -189,12 +192,18 @@ internal class HttpMetadataIndex(
                 if (!reusableAge) continue
 
                 val view = loadView(source)
-                if (view.size == existing.totalRecords && validateAnchors(view, existing.anchors)) {
-                    snapshots += existing.toSnapshot(MetadataIndexRefresh.REUSED)
-                } else if (view.size == existing.totalRecords) {
-                    entries.remove(source)
-                    generation++
+                val reusable = performanceDiagnostics.measure(source.indexProcessingMetric()) {
+                    if (view.size == existing.totalRecords && validateAnchors(view, existing.anchors)) {
+                        existing.toSnapshot(MetadataIndexRefresh.REUSED)
+                    } else {
+                        if (view.size == existing.totalRecords) {
+                            entries.remove(source)
+                            generation++
+                        }
+                        null
+                    }
                 }
+                if (reusable != null) snapshots += reusable
                 val projectAfterSource = api.project().id()
                 if (projectAfterSource != expectedProjectId) {
                     observeProjectLocked(projectAfterSource)
@@ -406,11 +415,47 @@ internal class HttpMetadataIndex(
         return anchors.all { anchor -> view.anchor(anchor.index) == anchor.fingerprint }
     }
 
-    private fun loadView(source: HttpMessageSource): MetadataSourceView = when (source) {
-        HttpMessageSource.PROXY -> ProxyMetadataSourceView(api.proxy().history(), fingerprinter)
-        HttpMessageSource.SITE_MAP -> SiteMapMetadataSourceView(api.siteMap().requestResponses(), fingerprinter)
-        HttpMessageSource.ORGANIZER -> OrganizerMetadataSourceView(api.organizer().items(), fingerprinter)
+    private suspend fun loadView(source: HttpMessageSource): MetadataSourceView {
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
+        val view = when (source) {
+            HttpMessageSource.PROXY -> {
+                val proxy = api.proxy()
+                val records = performanceDiagnostics.measure(source.indexAcquisitionMetric()) {
+                    proxy.history()
+                }
+                ProxyMetadataSourceView(records, fingerprinter)
+            }
+            HttpMessageSource.SITE_MAP -> {
+                val siteMap = api.siteMap()
+                val records = performanceDiagnostics.measure(source.indexAcquisitionMetric()) {
+                    siteMap.requestResponses()
+                }
+                SiteMapMetadataSourceView(records, fingerprinter)
+            }
+            HttpMessageSource.ORGANIZER -> {
+                val organizer = api.organizer()
+                val records = performanceDiagnostics.measure(source.indexAcquisitionMetric()) {
+                    organizer.items()
+                }
+                OrganizerMetadataSourceView(records, fingerprinter)
+            }
+        }
+        coroutineContext.ensureActive()
+        return view
     }
+}
+
+private fun HttpMessageSource.indexAcquisitionMetric(): HistoryPerformanceMetric = when (this) {
+    HttpMessageSource.PROXY -> HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION
+    HttpMessageSource.SITE_MAP -> HistoryPerformanceMetric.INDEX_SITE_MAP_ACQUISITION
+    HttpMessageSource.ORGANIZER -> HistoryPerformanceMetric.INDEX_ORGANIZER_ACQUISITION
+}
+
+private fun HttpMessageSource.indexProcessingMetric(): HistoryPerformanceMetric = when (this) {
+    HttpMessageSource.PROXY -> HistoryPerformanceMetric.INDEX_PROXY_PROCESSING
+    HttpMessageSource.SITE_MAP -> HistoryPerformanceMetric.INDEX_SITE_MAP_PROCESSING
+    HttpMessageSource.ORGANIZER -> HistoryPerformanceMetric.INDEX_ORGANIZER_PROCESSING
 }
 
 private data class CachedMetadataSource(

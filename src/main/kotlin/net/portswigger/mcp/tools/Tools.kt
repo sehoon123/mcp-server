@@ -266,12 +266,17 @@ internal fun Server.registerTools(
         api = api,
         config = config,
         metadataIndex = services.httpMetadataIndex,
+        performanceDiagnostics = services.historyPerformanceDiagnostics,
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
     val httpMessageActionService = HttpMessageActionService(api, config)
     val rawHttpActionService = RawHttpActionService(api, config)
     val httpMessageReadService = HttpMessageReadService(api, config)
-    val webSocketMessageSearchService = WebSocketMessageSearchService(api, config)
+    val webSocketMessageSearchService = WebSocketMessageSearchService(
+        api,
+        config,
+        performanceDiagnostics = services.historyPerformanceDiagnostics,
+    )
     val webSocketMessageReadService = WebSocketMessageReadService(api, config)
     val scopeToolService = ScopeToolService(api, config, services.httpMetadataIndex)
     val httpMessageComparisonService = HttpMessageComparisonService(api, config)

@@ -226,6 +226,7 @@ internal class HttpMessageSearchService(
     cursorSecret: ByteArray = ByteArray(32).also(SecureRandom()::nextBytes),
     private val maxScannedItems: Int = MAX_HTTP_SEARCH_SCANNED_ITEMS,
     private val maxTextBytes: Long = MAX_HTTP_SEARCH_TEXT_BYTES,
+    private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
 ) {
     private val cursorKey = SecretKeySpec(
         cursorSecret.copyOf().also { require(it.size >= 32) { "cursorSecret must contain at least 32 bytes" } },
@@ -372,8 +373,12 @@ internal class HttpMessageSearchService(
         projectId: String,
         hints: IndexedSearchHints?,
     ): SearchHttpMessagesResult {
-        val views = query.sources.map(::loadView)
-        val snapshots = if (cursor == null) {
+        val views = ArrayList<SourceView>(query.sources.size)
+        for (source in query.sources) {
+            views += loadView(source)
+        }
+        return performanceDiagnostics.measure(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING) {
+            val snapshots = if (cursor == null) {
             views.map { it.snapshot() }
         } else {
             validateCursor(cursor, views)
@@ -458,19 +463,20 @@ internal class HttpMessageSearchService(
             null
         }
 
-        return SearchHttpMessagesResult(
-            status = HttpMessageSearchStatus.OK,
-            projectId = projectId,
-            items = results,
-            returned = results.size,
-            scanned = scanned,
-            scannedContentBytes = scannedContentBytes,
-            oversizedContentSkipped = oversizedContentSkipped,
-            scanLimitReached = stoppedByScanBudget,
-            hasMore = hasMore,
-            nextCursor = nextCursor,
-            error = null,
-        )
+            SearchHttpMessagesResult(
+                status = HttpMessageSearchStatus.OK,
+                projectId = projectId,
+                items = results,
+                returned = results.size,
+                scanned = scanned,
+                scannedContentBytes = scannedContentBytes,
+                oversizedContentSkipped = oversizedContentSkipped,
+                scanLimitReached = stoppedByScanBudget,
+                hasMore = hasMore,
+                nextCursor = nextCursor,
+                error = null,
+            )
+        }
     }
 
     suspend fun readSiteMapMessage(input: GetSitemapMessageById): SiteMapMessageReadResult {
@@ -579,10 +585,34 @@ internal class HttpMessageSearchService(
         return allowed
     }
 
-    private fun loadView(source: HttpMessageSource): SourceView = when (source) {
-        HttpMessageSource.PROXY -> ProxySourceView(api.proxy().history())
-        HttpMessageSource.SITE_MAP -> SiteMapSourceView(api.siteMap().requestResponses())
-        HttpMessageSource.ORGANIZER -> OrganizerSourceView(api.organizer().items())
+    private suspend fun loadView(source: HttpMessageSource): SourceView {
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
+        val view = when (source) {
+            HttpMessageSource.PROXY -> {
+                val proxy = api.proxy()
+                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
+                    proxy.history()
+                }
+                ProxySourceView(records)
+            }
+            HttpMessageSource.SITE_MAP -> {
+                val siteMap = api.siteMap()
+                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
+                    siteMap.requestResponses()
+                }
+                SiteMapSourceView(records)
+            }
+            HttpMessageSource.ORGANIZER -> {
+                val organizer = api.organizer()
+                val records = performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
+                    organizer.items()
+                }
+                OrganizerSourceView(records)
+            }
+        }
+        coroutineContext.ensureActive()
+        return view
     }
 
     private fun validateCursor(cursor: HttpSearchCursor, views: List<SourceView>) {
@@ -1126,6 +1156,12 @@ private fun HttpMessageSource.displayName(): String = when (this) {
     HttpMessageSource.PROXY -> "HTTP history"
     HttpMessageSource.SITE_MAP -> "Site Map"
     HttpMessageSource.ORGANIZER -> "Organizer"
+}
+
+private fun HttpMessageSource.httpSearchAcquisitionMetric(): HistoryPerformanceMetric = when (this) {
+    HttpMessageSource.PROXY -> HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION
+    HttpMessageSource.SITE_MAP -> HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION
+    HttpMessageSource.ORGANIZER -> HistoryPerformanceMetric.HTTP_SEARCH_ORGANIZER_ACQUISITION
 }
 
 private fun messageBytes(request: HttpRequest): Long =

@@ -1168,6 +1168,7 @@ class KtorServerManager internal constructor(
         return runtimeMetrics.snapshot().copy(
             sessionsWithApprovals = approvalSummary.sessionsWithApprovals,
             sessionApprovalGrants = approvalSummary.approvalGrants,
+            historyPerformance = toolServices.performanceSnapshot(),
         )
     }
 

@@ -2,6 +2,7 @@ package net.portswigger.mcp
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import net.portswigger.mcp.tools.HistoryPerformanceSnapshot
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -51,6 +52,7 @@ data class McpDiagnosticsSnapshot(
     @Transient val initializedWithProtocol20251125: Long = 0,
     @Transient val initializedWithOtherProtocol: Long = 0,
     @Transient val initializedWithoutProtocolHeader: Long = 0,
+    @Transient val historyPerformance: HistoryPerformanceSnapshot = HistoryPerformanceSnapshot.empty(),
 )
 
 internal fun unavailableMcpDiagnosticsSnapshot(): McpDiagnosticsSnapshot =

@@ -3,6 +3,11 @@ package net.portswigger.mcp.config.components
 import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.providers.ProxyProvenance
+import net.portswigger.mcp.tools.HISTORY_PERFORMANCE_BUCKET_COUNT
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
+import net.portswigger.mcp.tools.HistoryPerformanceMetricSnapshot
+import net.portswigger.mcp.tools.HistoryPerformanceSnapshot
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -52,6 +57,21 @@ class DiagnosticsPanelTest {
                 initializedWithProtocol20251125 = 3,
                 initializedWithOtherProtocol = 4,
                 initializedWithoutProtocolHeader = 5,
+                historyPerformance = HistoryPerformanceSnapshot(
+                    HistoryPerformanceMetric.entries.mapIndexed { index, metric ->
+                        HistoryPerformanceMetricSnapshot(
+                            metric = metric,
+                            attempts = (index + 1).toLong(),
+                            completed = index.toLong(),
+                            failed = 1,
+                            cancelled = 0,
+                            latencyBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT) { bucket ->
+                                (index + bucket).toLong()
+                            },
+                            maxNanos = 1_000_000L + index,
+                        )
+                    },
+                ),
             ),
             readOnlyMode = true,
             yoloMode = true,
@@ -76,6 +96,11 @@ class DiagnosticsPanelTest {
 
         assertTrue(text.contains("State: running"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
+        assertEquals(12, text.lineSequence().count { it.startsWith("History ") })
+        assertTrue(text.contains("History index Proxy acquisition: attempts=1"))
+        assertTrue(text.contains("History WebSocket search processing: attempts=12"))
+        assertTrue(text.contains("<1ms=0,<5ms=1"))
+        assertTrue(text.contains(">=5000ms=10"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))
         assertTrue(text.contains("Session approvals: 5 grants across 2 active sessions"))
         assertTrue(text.contains("Project changes observed: 2"))

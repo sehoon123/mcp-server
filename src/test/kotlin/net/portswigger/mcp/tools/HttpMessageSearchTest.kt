@@ -17,7 +17,10 @@ import burp.api.montoya.sitemap.SiteMap
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.mockk.verifyOrder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -27,6 +30,8 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -115,13 +120,127 @@ class HttpMessageSearchTest {
 
     @Test
     fun `search progress cancellation stops before history acquisition`() = runBlocking {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val measuredService = HttpMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 8 },
+            performanceDiagnostics = diagnostics,
+        )
+
         assertFailsWith<CancellationException> {
-            service.search(SearchHttpMessages()) { progress, _, _ ->
+            measuredService.search(SearchHttpMessages()) { progress, _, _ ->
                 if (progress == 3.0) throw CancellationException("client cancelled")
             }
         }
 
         verify(exactly = 0) { proxy.history() }
+        assertEquals(0, diagnostics.snapshot().metrics.sumOf { it.attempts })
+    }
+
+    @Test
+    fun `HTTP search records ordered source acquisition separately from processing`() = runBlocking {
+        var clock = 0L
+        every { api.proxy() } answers {
+            clock += 100L
+            proxy
+        }
+        every { proxy.history() } answers {
+            clock += 7L
+            proxyHistory.toList()
+        }
+        every { api.siteMap() } answers {
+            clock += 200L
+            siteMap
+        }
+        every { siteMap.requestResponses() } answers {
+            clock += 11L
+            siteMapItems.toList()
+        }
+        val diagnostics = HistoryPerformanceDiagnostics { clock }
+        val measuredService = HttpMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 8 },
+            performanceDiagnostics = diagnostics,
+        )
+
+        val result = measuredService.search(
+            SearchHttpMessages(sources = listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP)),
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION).attempts)
+        assertEquals(7L, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION).maxNanos)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION).attempts)
+        assertEquals(11L, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION).maxNanos)
+        assertEquals(0, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_ORGANIZER_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING).attempts)
+        verifyOrder {
+            proxy.history()
+            siteMap.requestResponses()
+        }
+    }
+
+    @Test
+    fun `HTTP source cancellation is recorded once and propagated`() = runBlocking {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val cancellation = CancellationException("source cancelled")
+        every { proxy.history() } throws cancellation
+        val measuredService = HttpMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 9 },
+            performanceDiagnostics = diagnostics,
+        )
+
+        val observed = assertFailsWith<CancellationException> {
+            measuredService.search(SearchHttpMessages())
+        }
+
+        assertEquals(cancellation, observed)
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION
+        }
+        assertEquals(1, acquisition.attempts)
+        assertEquals(1, acquisition.cancelled)
+        assertEquals(0, diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING
+        }.attempts)
+    }
+
+    @Test
+    fun `cancellation during synchronous acquisition records the returned call before propagation`() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        every { proxy.history() } answers {
+            entered.countDown()
+            check(release.await(5, TimeUnit.SECONDS)) { "timed out waiting to release history" }
+            proxyHistory.toList()
+        }
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val measuredService = HttpMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 10 },
+            performanceDiagnostics = diagnostics,
+        )
+
+        val search = async(Dispatchers.Default) {
+            measuredService.search(SearchHttpMessages())
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        search.cancel(CancellationException("client cancelled while Montoya was blocked"))
+        release.countDown()
+
+        assertFailsWith<CancellationException> { search.await() }
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        val acquisition = metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION)
+        assertEquals(1, acquisition.attempts)
+        assertEquals(1, acquisition.completed)
+        assertEquals(0, acquisition.cancelled)
+        assertEquals(0, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING).attempts)
     }
 
     @Test

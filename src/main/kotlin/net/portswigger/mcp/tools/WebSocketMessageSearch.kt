@@ -154,6 +154,7 @@ internal class WebSocketMessageSearchService(
     cursorSecret: ByteArray = ByteArray(32).also(SecureRandom()::nextBytes),
     private val maxScannedItems: Int = DEFAULT_WEBSOCKET_SCAN_LIMIT,
     private val maxContentBytes: Long = DEFAULT_WEBSOCKET_CONTENT_LIMIT,
+    private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
 ) {
     private val secret = cursorSecret.copyOf().also {
         require(it.size >= 32) { "cursorSecret must contain at least 32 bytes" }
@@ -257,8 +258,41 @@ internal class WebSocketMessageSearchService(
         }
 
         progress.report(WebSocketSearchProgressStage.LOADING.ordinal)
+        val history = try {
+            val coroutineContext = currentCoroutineContext()
+            coroutineContext.ensureActive()
+            val proxy = api.proxy()
+            val acquired = performanceDiagnostics.measure(HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION) {
+                proxy.webSocketHistory()
+            }
+            coroutineContext.ensureActive()
+            acquired
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return burpError(expectedProjectId, e)
+        }
+        return performanceDiagnostics.measure(
+            metric = HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING,
+            outcomeForResult = { result ->
+                if (result.status == WebSocketSearchStatus.OK) HistoryPerformanceOutcome.COMPLETED
+                else HistoryPerformanceOutcome.FAILED
+            },
+        ) {
+            processLoadedHistory(history, expectedProjectId, query, regex, decodedCursor, limit, progress)
+        }
+    }
+
+    private suspend fun processLoadedHistory(
+        history: List<ProxyWebSocketMessage>,
+        expectedProjectId: String,
+        query: NormalizedWebSocketQuery,
+        regex: Pattern?,
+        decodedCursor: WebSocketSearchCursor?,
+        limit: Int,
+        progress: FixedStageProgress,
+    ): SearchWebsocketMessagesResult {
         val source = try {
-            val history = api.proxy().webSocketHistory()
             if (history is RandomAccess) {
                 WebSocketHistorySource(history, revalidateScanWindow = true)
             } else {

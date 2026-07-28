@@ -116,6 +116,10 @@ Implemented foundation:
   anchor-validated index entries as advisory hints. Every predicted mismatch is rechecked on the current source field and numeric ID. Stale, reordered,
   unindexed, Site Map, text, regex, and oldest-first records fall back to the raw matcher without changing scan, cursor,
   content-budget, or result semantics.
+- v4.11 development adds extension-lifetime, fixed-cardinality local diagnostics that separate direct Burp/Montoya
+  history-list acquisition from extension processing for the HTTP metadata index, unified HTTP search, and WebSocket
+  search. They retain only aggregate outcomes, elapsed-time buckets, and maxima; public resources and catalogs are
+  unchanged.
 
 Remaining work:
 

@@ -106,8 +106,15 @@ class WebSocketMessageSearchTest {
             }
         }
         every { proxy.webSocketHistory() } returns syntheticHistory
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val measuredService = WebSocketMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 6 },
+            performanceDiagnostics = diagnostics,
+        )
 
-        val result = service.search(
+        val result = measuredService.search(
             SearchWebsocketMessages(projectId = currentProjectId, newestFirst = false, limit = 1)
         )
 
@@ -116,6 +123,9 @@ class WebSocketMessageSearchTest {
         assertEquals(1, result.scanned)
         assertTrue(result.hasMore)
         assertTrue(getCalls <= 6, "expected two boundary pairs plus one captured and revalidated record, got $getCalls")
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING).attempts)
         verify(exactly = 1) { proxy.webSocketHistory() }
     }
 
@@ -133,8 +143,15 @@ class WebSocketMessageSearchTest {
             }
         }
         every { proxy.webSocketHistory() } returns syntheticHistory
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val measuredService = WebSocketMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 7 },
+            performanceDiagnostics = diagnostics,
+        )
 
-        val result = service.search(
+        val result = measuredService.search(
             SearchWebsocketMessages(
                 projectId = currentProjectId,
                 webSocketId = 2,
@@ -147,6 +164,40 @@ class WebSocketMessageSearchTest {
         assertEquals(10_000, result.scanned)
         assertTrue(result.scanLimitReached)
         assertEquals(20_004, getCalls)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING).attempts)
+    }
+
+    @Test
+    fun `processing error result is recorded as failed`() = runBlocking {
+        val throwingHistory = object : AbstractList<ProxyWebSocketMessage>() {
+            override val size = 1
+
+            override fun get(index: Int): ProxyWebSocketMessage {
+                error("synthetic sequential access failure")
+            }
+        }
+        every { proxy.webSocketHistory() } returns throwingHistory
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val measuredService = WebSocketMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 8 },
+            performanceDiagnostics = diagnostics,
+        )
+
+        val result = measuredService.search(
+            SearchWebsocketMessages(projectId = currentProjectId),
+        )
+
+        assertEquals(WebSocketSearchStatus.BURP_ERROR, result.status)
+        val processing = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
+        }
+        assertEquals(1, processing.attempts)
+        assertEquals(0, processing.completed)
+        assertEquals(1, processing.failed)
     }
 
     @Test
@@ -161,15 +212,62 @@ class WebSocketMessageSearchTest {
                 return backing[index]
             }
         }
-        every { proxy.webSocketHistory() } returns sequentialHistory
+        var clock = 0L
+        every { api.proxy() } answers {
+            clock += 100L
+            proxy
+        }
+        every { proxy.webSocketHistory() } answers {
+            clock += 13L
+            sequentialHistory
+        }
+        val diagnostics = HistoryPerformanceDiagnostics { clock }
+        val measuredService = WebSocketMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 6 },
+            performanceDiagnostics = diagnostics,
+        )
 
-        val result = service.search(
+        val result = measuredService.search(
             SearchWebsocketMessages(projectId = currentProjectId, newestFirst = false, limit = 1)
         )
 
         assertEquals(WebSocketSearchStatus.OK, result.status)
         assertEquals(listOf(1), result.items.map { it.id })
         assertEquals(backing.size, getCalls)
+        val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION).attempts)
+        assertEquals(13L, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION).maxNanos)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING).attempts)
+        assertEquals(1, metrics.getValue(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING).completed)
+    }
+
+    @Test
+    fun `WebSocket source cancellation is recorded once and propagated`() = runBlocking {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val cancellation = CancellationException("source cancelled")
+        every { proxy.webSocketHistory() } throws cancellation
+        val measuredService = WebSocketMessageSearchService(
+            api,
+            config,
+            cursorSecret = ByteArray(32) { 7 },
+            performanceDiagnostics = diagnostics,
+        )
+
+        val observed = assertFailsWith<CancellationException> {
+            measuredService.search(SearchWebsocketMessages(projectId = currentProjectId))
+        }
+
+        assertEquals(cancellation, observed)
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION
+        }
+        assertEquals(1, acquisition.attempts)
+        assertEquals(1, acquisition.cancelled)
+        assertEquals(0, diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
+        }.attempts)
     }
 
     @Test
