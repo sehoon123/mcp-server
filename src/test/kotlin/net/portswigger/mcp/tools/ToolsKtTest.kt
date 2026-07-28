@@ -28,9 +28,14 @@ import burp.api.montoya.sitemap.SiteMap
 import burp.api.montoya.websocket.Direction
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.mockk.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -51,7 +56,9 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.security.MessageDigest
 import java.time.ZonedDateTime
+import java.util.HexFormat
 import java.util.Optional
 
 class ToolsKtTest {
@@ -78,6 +85,7 @@ class ToolsKtTest {
     private val mockHeaders = mutableListOf<HttpHeader>()
     private lateinit var originalRequestActionHandler: RequestActionApprovalHandler
     private lateinit var originalSensitiveActionHandler: SensitiveActionApprovalHandler
+    private val catalogJson = Json { encodeDefaults = true; explicitNulls = true }
 
     init {
         val persistedObject = mockk<PersistedObject>().apply {
@@ -139,6 +147,38 @@ class ToolsKtTest {
 
         return text!!
     }
+
+    private fun assertCatalogFingerprint(edition: String, tools: Collection<Tool>, expected: String) {
+        val canonicalTools = tools.sortedBy { it.name }.map(::canonicalTool)
+        val canonicalCatalog = JsonArray(canonicalTools).toString()
+        val actual = sha256(canonicalCatalog)
+        val perTool = canonicalTools.joinToString("\n") { tool ->
+            val name = tool.jsonObject.getValue("name").jsonPrimitive.content
+            "  $name ${sha256(tool.toString())}"
+        }
+        assertEquals(
+            expected,
+            actual,
+            "$edition catalog fingerprint changed. Review every intended contract change, then update the " +
+                "expected fingerprint.\nActual: $actual\nPer-tool fingerprints:\n$perTool",
+        )
+    }
+
+    private fun canonicalTool(tool: Tool): JsonObject = canonicalJson(
+        catalogJson.encodeToJsonElement(Tool.serializer(), tool),
+    ).jsonObject
+
+    private fun canonicalJson(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> JsonObject(
+            element.entries.sortedBy { it.key }.associate { (key, value) -> key to canonicalJson(value) },
+        )
+        is JsonArray -> JsonArray(element.map(::canonicalJson))
+        else -> element
+    }
+
+    private fun sha256(value: String): String = HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)),
+    )
 
     private fun montoyaBytes(raw: ByteArray): MontoyaByteArray = mockk<MontoyaByteArray>().also { bytes ->
         every { bytes.length() } returns raw.size
@@ -256,6 +296,11 @@ class ToolsKtTest {
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(21, tools.size)
+        assertCatalogFingerprint(
+            "Community",
+            tools.values,
+            "91a76077a86f5286edc65caa60c5f26e181675327d418687e8aeb7440f2b06c4",
+        )
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         assertTrue(tools.values.all { !it.description.isNullOrBlank() })
@@ -1548,6 +1593,11 @@ class ToolsKtTest {
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
             assertEquals(28, tools.size)
+            assertCatalogFingerprint(
+                "Professional",
+                tools,
+                "fc286e275a407cdb4b6b020ca36834eb322e7e106cedbc91236854ef4dd8664d",
+            )
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }

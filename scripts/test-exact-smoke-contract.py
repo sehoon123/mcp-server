@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import stat
 import sys
 import tempfile
@@ -153,6 +154,25 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
 
 
 class ExactSmokeContractTest(unittest.TestCase):
+    def test_protected_workflow_scenario_identifiers_match_the_local_contract(self):
+        workflow = (SCRIPTS.parent / ".github/workflows/release-smoke.yml").read_text(encoding="utf-8")
+        step_marker = "      - name: Download and verify the immutable draft bytes\n"
+        self.assertEqual(1, workflow.count(step_marker))
+        protected_step = workflow.split(step_marker, maxsplit=1)[1].split("\n      - name: ", maxsplit=1)[0]
+        self.assertIn("jq -e --arg version", protected_step)
+        self.assertIn("' <<<\"$RESULTS_JSON\" > \"$RUNNER_TEMP/smoke-claims.json\"", protected_step)
+        match = re.search(
+            r"\(\.scenarios \| keys \| sort\) == \[(.*?)\]\s+and\s+\(\[\.scenarios\[\]\]",
+            protected_step,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "protected workflow scenario assertion was not found")
+        scenario_array = match.group(1)
+        workflow_scenarios = re.findall(r'^\s+"([A-Za-z][A-Za-z0-9]+)",?\s*$', scenario_array, flags=re.MULTILINE)
+        self.assertEqual(len(contract.SMOKE_SCENARIO_KEYS), len(workflow_scenarios))
+        self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), workflow_scenarios)
+        self.assertEqual(",".join(f'\n              \"{key}\"' for key in workflow_scenarios), scenario_array.rstrip())
+
     def test_release_identity_is_exact_and_bounded(self):
         contract.validate_release_identity("a" * 40, "b" * 64, "4.11.0-rc.2")
         for source, digest, version in (
