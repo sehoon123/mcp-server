@@ -15,11 +15,11 @@ class StandardToolResultsTest {
 
         assertTrue(result.length <= MAX_STANDARD_TOOL_ERROR_CHARS)
         assertFalse(result.any(Char::isISOControl))
-        assertTrue(result.startsWith("Burp operation failed: IllegalStateException: first second"))
+        assertEquals("Burp operation failed: IllegalStateException", result)
     }
 
     @Test
-    fun `standard exception errors retain safe logging redaction`() {
+    fun `standard exception errors never expose arbitrary exception messages`() {
         val token = "A".repeat(43)
         val result = standardToolException(
             "Burp operation failed",
@@ -28,7 +28,7 @@ class StandardToolResultsTest {
 
         assertFalse(result.contains(token))
         assertFalse(result.contains("/home/user/private.json"))
-        assertTrue(result.startsWith("Burp operation failed: IllegalStateException:"))
+        assertEquals("Burp operation failed: IllegalStateException", result)
     }
 
     @Test

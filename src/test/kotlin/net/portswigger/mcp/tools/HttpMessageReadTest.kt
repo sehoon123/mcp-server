@@ -18,6 +18,7 @@ import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class HttpMessageReadTest {
@@ -59,18 +60,57 @@ class HttpMessageReadTest {
     }
 
     @Test
-    fun `invalid source ID is rejected before source lookup`() = runBlocking {
+    fun `invalid source ID is rejected before source lookup without echoing an unverified project`() = runBlocking {
         val fixture = fixture(projectIds = listOf("project-a"))
 
         val result = fixture.service.read(
             GetHttpMessage(
-                projectId = "project-a",
+                projectId = "caller-forged",
                 ref = HttpMessageReference(HttpMessageSource.PROXY, "not-numeric"),
             )
         )
 
         assertEquals(HttpMessageReadStatus.INVALID_ID, result.status)
+        assertNull(result.projectId)
+        verify(exactly = 0) { fixture.api.project() }
         verify(exactly = 0) { fixture.proxy.history(any()) }
+    }
+
+    @Test
+    fun `pre-capture page validation does not echo the caller project`() = runBlocking {
+        val fixture = fixture(projectIds = listOf("project-a"))
+
+        val result = fixture.service.read(
+            GetHttpMessage(
+                projectId = "caller-forged",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                limit = 0,
+            )
+        )
+
+        assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, result.status)
+        assertNull(result.projectId)
+        verify(exactly = 0) { fixture.api.project() }
+        verify(exactly = 0) { fixture.proxy.history(any()) }
+    }
+
+    @Test
+    fun `request accessor IllegalArgumentException is a sanitized Burp error`() = runBlocking {
+        val fixture = fixture(projectIds = listOf("project-a", "project-a", "project-a"))
+        every { fixture.request.url() } throws IllegalArgumentException("PRIVATE_SENTINEL")
+
+        val result = fixture.service.read(
+            GetHttpMessage(
+                projectId = "project-a",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+            )
+        )
+
+        assertEquals(HttpMessageReadStatus.BURP_ERROR, result.status)
+        assertEquals("project-a", result.projectId)
+        assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        assertNull(result.metadata)
+        assertNull(result.content)
     }
 
     private fun fixture(projectIds: List<String>): ReadFixture {

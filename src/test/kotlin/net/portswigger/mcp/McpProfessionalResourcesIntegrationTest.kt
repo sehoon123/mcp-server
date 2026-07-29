@@ -129,11 +129,12 @@ class McpProfessionalResourcesIntegrationTest {
                 )
             }
         }
-        assertTrue(descriptions.getValue("get_scanner_issues").contains("pass nextCursor as cursor"))
+        assertTrue(descriptions.getValue("get_scanner_issues").contains("hasMore=true"))
+        assertTrue(descriptions.getValue("get_scanner_issues").contains("nextCursor as cursor"))
         assertTrue(descriptions.getValue("get_scanner_issue_by_id").contains("evidenceIndex is required"))
         assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("Both modes reject out-of-scope requests"))
         assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("active mode requires insertionPoints and can send requests"))
-        assertTrue(descriptions.getValue("get_collaborator_interactions").contains("payload ID returned by generate_collaborator_payload"))
+        assertTrue(descriptions.getValue("get_collaborator_interactions").contains("payload ID from generate_collaborator_payload"))
         assertFalse(descriptions.values.any { it.contains("until verified") })
         assertFalse(descriptions.values.any { it.contains("with no error") })
         assertFalse(descriptions.values.any { it.contains("safe workflow preset") })

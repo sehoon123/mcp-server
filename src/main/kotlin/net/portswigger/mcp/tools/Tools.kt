@@ -56,6 +56,129 @@ private const val MAX_RAW_HEADER_VALUE_CHARS = 16 * 1024
 private const val MAX_CONFIGURATION_JSON_CHARS = 1024 * 1024
 private const val MAX_SAFE_REGEX_CHARS = 512
 
+/**
+ * Retained-tool MCP error classification. Approval/policy denials and unavailable data remain ordinary structured
+ * outcomes for wire compatibility; correction-required, private-safe Burp, and uncertain outcomes are MCP errors.
+ */
+private fun HttpMessageActionStatus.isMcpError(): Boolean = when (this) {
+    HttpMessageActionStatus.INVALID_ARGUMENT,
+    HttpMessageActionStatus.INVALID_ID,
+    HttpMessageActionStatus.PROJECT_MISMATCH,
+    HttpMessageActionStatus.NOT_FOUND,
+    HttpMessageActionStatus.BURP_ERROR,
+    HttpMessageActionStatus.EXECUTION_UNCERTAIN -> true
+
+    else -> false
+}
+
+private fun HttpMessageReadStatus.isMcpError(): Boolean = when (this) {
+    HttpMessageReadStatus.INVALID_ARGUMENT,
+    HttpMessageReadStatus.INVALID_ID,
+    HttpMessageReadStatus.PROJECT_MISMATCH,
+    HttpMessageReadStatus.NOT_FOUND,
+    HttpMessageReadStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun HttpComparisonStatus.isMcpError(): Boolean = when (this) {
+    HttpComparisonStatus.INVALID_ARGUMENT,
+    HttpComparisonStatus.INVALID_ID,
+    HttpComparisonStatus.PROJECT_MISMATCH,
+    HttpComparisonStatus.NOT_FOUND,
+    HttpComparisonStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun ScopeToolStatus.isMcpError(): Boolean = when (this) {
+    ScopeToolStatus.INVALID_ARGUMENT,
+    ScopeToolStatus.INVALID_ID,
+    ScopeToolStatus.PROJECT_MISMATCH,
+    ScopeToolStatus.NOT_FOUND,
+    ScopeToolStatus.BURP_ERROR,
+    ScopeToolStatus.EXECUTION_UNCERTAIN -> true
+
+    else -> false
+}
+
+private fun ScannerAuditToolStatus.isMcpError(): Boolean = when (this) {
+    ScannerAuditToolStatus.INVALID_ARGUMENT,
+    ScannerAuditToolStatus.INVALID_ID,
+    ScannerAuditToolStatus.PROJECT_MISMATCH,
+    ScannerAuditToolStatus.NOT_FOUND,
+    ScannerAuditToolStatus.BURP_ERROR,
+    ScannerAuditToolStatus.EXECUTION_UNCERTAIN -> true
+
+    else -> false
+}
+
+private fun HistoryReadStatus.isMcpError(): Boolean = when (this) {
+    HistoryReadStatus.INVALID_ARGUMENT,
+    HistoryReadStatus.NOT_FOUND,
+    HistoryReadStatus.PROJECT_MISMATCH,
+    HistoryReadStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun CollaboratorToolStatus.isMcpError(): Boolean = when (this) {
+    CollaboratorToolStatus.INVALID_ARGUMENT,
+    CollaboratorToolStatus.PROJECT_MISMATCH,
+    CollaboratorToolStatus.BURP_ERROR,
+    CollaboratorToolStatus.EXECUTION_UNCERTAIN -> true
+
+    else -> false
+}
+
+private fun HttpMessageSearchStatus.isMcpError(): Boolean = when (this) {
+    HttpMessageSearchStatus.INVALID_ARGUMENT,
+    HttpMessageSearchStatus.INVALID_CURSOR,
+    HttpMessageSearchStatus.STALE_CURSOR,
+    HttpMessageSearchStatus.PROJECT_MISMATCH,
+    HttpMessageSearchStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun WebSocketSearchStatus.isMcpError(): Boolean = when (this) {
+    WebSocketSearchStatus.INVALID_ARGUMENT,
+    WebSocketSearchStatus.INVALID_CURSOR,
+    WebSocketSearchStatus.STALE_CURSOR,
+    WebSocketSearchStatus.PROJECT_MISMATCH,
+    WebSocketSearchStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun HttpAttackSurfaceStatus.isMcpError(): Boolean = when (this) {
+    HttpAttackSurfaceStatus.INVALID_ARGUMENT,
+    HttpAttackSurfaceStatus.PROJECT_MISMATCH,
+    HttpAttackSurfaceStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun HttpActivityCorrelationStatus.isMcpError(): Boolean = when (this) {
+    HttpActivityCorrelationStatus.INVALID_ARGUMENT,
+    HttpActivityCorrelationStatus.INVALID_ID,
+    HttpActivityCorrelationStatus.PROJECT_MISMATCH,
+    HttpActivityCorrelationStatus.NOT_FOUND,
+    HttpActivityCorrelationStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
+private fun HttpSessionAnalysisStatus.isMcpError(): Boolean = when (this) {
+    HttpSessionAnalysisStatus.INVALID_ARGUMENT,
+    HttpSessionAnalysisStatus.INVALID_ID,
+    HttpSessionAnalysisStatus.PROJECT_MISMATCH,
+    HttpSessionAnalysisStatus.NOT_FOUND,
+    HttpSessionAnalysisStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
 private fun MontoyaApi.isCurrentProject(expectedProjectId: String?): Boolean =
     expectedProjectId == null || project().id() == expectedProjectId
 
@@ -281,22 +404,24 @@ internal fun Server.registerTools(
         httpMessageComparisonService,
     )
 
-    mcpStructuredTool<SendRawHttpRequest, RawHttpActionResult>(
-        description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. Request-action approval applies; redirects are disabled, the response preview is bounded, and the exchange is not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+    mcpStructuredToolWithContext<SendRawHttpRequest, RawHttpActionResult>(
+        description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
-    ) {
-        rawHttpActionService.send(this)
+    ) { input ->
+        val output = rawHttpActionService.send(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
-    mcpStructuredTool<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, or Organizer without sending it. Routing approval applies, and no Proxy or Site Map history is added. HTTP/2 Intruder routing is unsupported. If executionState is uncertain, the destination item may already exist; do not retry automatically.",
+    mcpStructuredToolWithContext<RouteRawHttpRequest, RawHttpActionResult>(
+        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, or Organizer without sending it. The derived-request/routing policy applies. The call binds to the Burp project current when execution starts and returns that projectId. No Proxy or Site Map history is added; HTTP/2 Intruder routing is unsupported. If executionState is uncertain, the destination item may exist; do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        rawHttpActionService.route(this)
+    ) { input ->
+        val output = rawHttpActionService.route(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
     mcpStructuredToolWithContext<GetBurpOptions, GetBurpOptionsResult>(
-        description = "Return bounded project- or user-level Burp configuration after approval unless the local operator enabled YOLO mode. Credentials are filtered by default; if the operator disables credential filtering, the returned JSON may contain sensitive values. This changes no Burp state.",
+        description = "Return bounded project- or user-level Burp configuration after approval unless YOLO mode allows it. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Credentials are filtered by default; disabling filtering may return sensitive values. This changes no Burp state.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage =
@@ -536,7 +661,7 @@ internal fun Server.registerTools(
         "User has disabled configuration editing. They can enable it in Burp's ${ProductIdentity.SUITE_TAB_NAME} tab by selecting 'Enable tools that can edit your config'"
 
     mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
-        description = "Import bounded project- or user-level Burp configuration when configuration-editing tools are enabled. Approval is required unless the local operator enabled YOLO mode. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
+        description = "Import bounded project- or user-level Burp configuration when editing tools are enabled. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Approval is required unless YOLO mode allows it. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         if (input.json.length > MAX_CONFIGURATION_JSON_CHARS) {
@@ -792,65 +917,80 @@ internal fun Server.registerTools(
         val scannerIssueReadService = ScannerIssueReadService(api, config)
         val collaboratorToolService = services.collaborator
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
-            description = "List or filter Scanner issues in the current project, subject to Scanner-issue access policy. Legacy offset mode returns newline-separated JSON records with a blank line between records: bounded details by default, or summaries when summariesOnly=true. Signed-cursor mode returns compact structured summaries; pass nextCursor as cursor to continue. Use get_scanner_issue_by_id for bounded detail or evidence from a known issue ID.",
+            description = "List or filter Scanner issues in the project current at call start; the captured project is rechecked and returned as projectId. Scanner-issue access policy applies. Legacy offset mode returns blank-line-separated JSON records, or exactly 'Reached end of items' for an empty page. Signed-cursor mode returns compact summaries; continue whenever hasMore=true by passing nextCursor as cursor. Use get_scanner_issue_by_id for bounded detail or evidence.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             scannerIssueSearchService.get(input)
         }
 
-        mcpStructuredTool<GetScannerIssueById, ScannerIssueReadResult>(
-            description = "Read one Scanner issue by stable ID from the specified project after Scanner-issue access approval. Selected detail or evidence content is bounded and byte-paginated. For evidence_request or evidence_response, evidenceIndex is required.",
+        mcpStructuredToolWithContext<GetScannerIssueById, ScannerIssueReadResult>(
+            description = "Read one Scanner issue by stable ID from the specified project after Scanner-issue access approval. Use the opaque projectId from burp://project/summary or the producing list result; IDs are not portable across projects. Selected detail or evidence is bounded and byte-paginated. evidenceIndex is required for evidence_request or evidence_response. burp_error is a read failure and no mutation occurred.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
-        ) {
-            scannerIssueReadService.read(this)
+        ) { input ->
+            val output = scannerIssueReadService.read(input)
+            StructuredToolResponse(
+                output = output,
+                text = null,
+                isError = output.status.isMcpError(),
+            )
         }
 
-        mcpStructuredTool<StartScannerAuditFromIds, ScannerAuditResult>(
+        mcpStructuredToolWithContext<StartScannerAuditFromIds, ScannerAuditResult>(
             description = "Start one passive or focused active Scanner audit from stored HTTP references after approval unless the local operator enabled YOLO mode. Both modes reject out-of-scope requests. Passive mode requires responses and sends no target traffic; active mode requires insertionPoints and can send requests. Passive mode accepts up to 16 targets and active mode up to 4. If actionState is uncertain, do not start another audit automatically.",
             annotations = SCANNER_START_TOOL_ANNOTATIONS,
-        ) {
-            services.scannerAudits.start(this, config)
+        ) { input ->
+            val output = services.scannerAudits.start(input, config)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
         }
 
-        mcpStructuredTool<GetScannerAudit, ScannerAuditResult>(
-            description = "Read status and bounded issue summaries for a Scanner audit started by this MCP server. Reading status refreshes the 6-hour inactivity lease but not the 24-hour maximum lifetime; requesting issues is subject to Scanner-issue access approval. Treat statusMessage as authoritative when it differs from taskState.",
+        mcpStructuredToolWithContext<GetScannerAudit, ScannerAuditResult>(
+            description = "Read status and bounded issue summaries for a Scanner audit started by this MCP server. Reading status refreshes the 6-hour inactivity lease but not the 24-hour maximum lifetime; requesting issues is subject to Scanner-issue access approval. issuesAccessDenied identifies an operator denial, while issuesUnavailable identifies a skipped or technically failed issue read. Treat normalized actionState and taskState as authoritative; bounded Burp statusMessage text may lag.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
-        ) {
-            services.scannerAudits.get(this, config)
+        ) { input ->
+            val output = services.scannerAudits.get(input, config)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
         }
 
-        mcpStructuredTool<CancelScannerAudit, ScannerAuditResult>(
+        mcpStructuredToolWithContext<CancelScannerAudit, ScannerAuditResult>(
             description = "Cancel a retained Scanner audit started by this MCP server after approval unless the local operator enabled YOLO mode. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
             annotations = SCANNER_CANCEL_TOOL_ANNOTATIONS,
-        ) {
-            services.scannerAudits.cancel(this, config)
+        ) { input ->
+            val output = services.scannerAudits.cancel(input, config)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
         }
 
         mcpStructuredToolWithContext<GenerateCollaboratorPayload, GenerateCollaboratorPayloadResult>(
             description = "Generate a project-bound Collaborator payload for out-of-band testing. This allocates and returns a payload but does not inject or send it. If executionState is uncertain, a payload may already have been allocated; do not retry automatically.",
             annotations = COLLABORATOR_GENERATE_TOOL_ANNOTATIONS,
         ) { input ->
-            collaboratorToolService.generate(input)
+            val response = collaboratorToolService.generate(input)
+            response.copy(
+                isError = response.isError || response.output.status.isMcpError(),
+            )
         }
 
         mcpStructuredToolWithContext<GetCollaboratorInteractions, GetCollaboratorInteractionsResult>(
-            description = "Poll for bounded DNS, HTTP, or SMTP interactions received by the current project's Collaborator client, subject to Collaborator-interaction access policy. Long polling is limited to 120 seconds; use the payload ID returned by generate_collaborator_payload to filter one payload.",
+            description = "Poll bounded DNS, HTTP, or SMTP interactions for the specified current project, subject to Collaborator-interaction access policy. Long polling is limited to 120 seconds and scanning to 10,000 interactions; use the payload ID from generate_collaborator_payload to filter one payload. hasMore only reports known matching interactions omitted inside the scanned window and has no continuation cursor; scanLimitReached separately means unscanned interactions have unknown match status.",
             annotations = COLLABORATOR_READ_TOOL_ANNOTATIONS,
         ) { input ->
-            collaboratorToolService.interactions(input, config) { progress, total, message ->
+            val response = collaboratorToolService.interactions(input, config) { progress, total, message ->
                 reportProgress(progress, total, message)
             }
+            response.copy(isError = response.isError || response.output.status.isMcpError())
         }
     }
 
     mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Search stored HTTP messages in Proxy history, Site Map, or Organizer; Proxy is the default. Supports metadata filters and bounded literal or regular-expression search over requests and responses. Source-access policy applies, and no traffic or mutation occurs. Results are limited to 50 and content inspection to 32 MiB. Pass nextCursor as cursor; omit filters and optionally change only limit, or repeat the same filters. Requests sent by MCP are absent unless Burp recorded them.",
+        description = "Search Proxy, Site Map, or Organizer in the project current at call start; Proxy is default and the rechecked projectId is returned. Source-access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and content inspection to 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor, omitting filters or repeating them exactly. MCP sends are absent unless Burp recorded them.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
+        val output = httpMessageSearchService.search(input) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
         StructuredToolResponse(
-            httpMessageSearchService.search(input) { progress, total, message ->
-                reportProgress(progress, total, message)
-            }
+            output = output,
+            text = null,
+            isError = output.status.isMcpError(),
         )
     }
 
@@ -858,11 +998,10 @@ internal fun Server.registerTools(
         description = "Summarize services, methods, statuses, MIME types, extensions, and normalized paths from stored HTTP metadata; the default is in-scope Proxy records. Source-access policy applies, and no traffic or mutation occurs. Query strings, bodies, header values, and notes are not retained. If burp_error reports changing HTTP metadata, retry the read.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
-        StructuredToolResponse(
-            httpAttackSurfaceService.summarize(input) { progress, total, message ->
-                reportProgress(progress, total, message)
-            }
-        )
+        val output = httpAttackSurfaceService.summarize(input) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
     mcpStructuredToolWithContext<CorrelateHttpActivity, CorrelateHttpActivityResult>(
@@ -875,29 +1014,32 @@ internal fun Server.registerTools(
         StructuredToolResponse(
             result,
             text = null,
-            isError = result.status != HttpActivityCorrelationStatus.OK,
+            isError = result.status.isMcpError(),
         )
     }
 
-    mcpStructuredTool<CheckScope, CheckScopeResult>(
+    mcpStructuredToolWithContext<CheckScope, CheckScopeResult>(
         description = "Check whether up to 32 URLs or stored HTTP references are currently in Target scope. This never changes scope; stored references remain subject to their source-access approval.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        scopeToolService.check(this)
+    ) { input ->
+        val output = scopeToolService.check(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
-    mcpStructuredTool<UpdateScope, UpdateScopeResult>(
+    mcpStructuredToolWithContext<UpdateScope, UpdateScopeResult>(
         description = "Include or exclude up to 16 URLs or stored HTTP references in Target scope. All targets are validated before any approval prompt or policy bypass and before mutation. The scope change requires approval unless an existing policy allows it. If executionState is uncertain, some changes may already exist; do not retry automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
-    ) {
-        scopeToolService.update(this)
+    ) { input ->
+        val output = scopeToolService.update(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
-    mcpStructuredTool<CompareHttpMessages, CompareHttpMessagesResult>(
+    mcpStructuredToolWithContext<CompareHttpMessages, CompareHttpMessagesResult>(
         description = "Compare selected parts of 2–8 stored HTTP messages without returning complete messages. Source-access approval applies, and no traffic or mutation occurs. If allEqual is null, inspected prefixes matched but at least one part was truncated.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageComparisonService.compare(this)
+    ) { input ->
+        val output = httpMessageComparisonService.compare(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
     mcpStructuredToolWithContext<AnalyzeHttpSessionSecurity, AnalyzeHttpSessionSecurityResult>(
@@ -910,39 +1052,45 @@ internal fun Server.registerTools(
         StructuredToolResponse(
             output = output,
             text = null,
-            isError = output.status != HttpSessionAnalysisStatus.OK,
+            isError = output.status.isMcpError(),
         )
     }
 
-    mcpStructuredTool<GetHttpMessage, GetHttpMessageResult>(
+    mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
         description = "Read metadata or a selected request or response part from a stored Proxy, Site Map, or Organizer message. Source-access approval and matching project ID apply; content is bounded and byte-paginated.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageReadService.read(this)
+    ) { input ->
+        val output = httpMessageReadService.read(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
-    mcpStructuredTool<SendHttpRequestFromId, HttpMessageActionResult>(
-        description = "Send one stored HTTP request, optionally with bounded structured changes. Source-access and request-action approvals apply; redirects are rejected and direct MCP sends are not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+    mcpStructuredToolWithContext<SendHttpRequestFromId, HttpMessageActionResult>(
+        description = "Send one stored HTTP request, optionally with bounded changes. Source access, the derived-request/request-action policy, and the independent outbound-target policy apply; each policy may allow without prompting. Redirects are rejected and direct MCP sends are not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
-    ) {
-        httpMessageActionService.send(this)
+    ) { input ->
+        val output = httpMessageActionService.send(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
-    mcpStructuredTool<RouteHttpMessageFromId, HttpMessageActionResult>(
+    mcpStructuredToolWithContext<RouteHttpMessageFromId, HttpMessageActionResult>(
         description = "Open one stored HTTP request in Repeater, Intruder, or Organizer, optionally after bounded structured changes. Source-access and routing approvals apply; no Intruder attack is started. Routing only opens the destination tab or Organizer item; it sends no network traffic. If executionState is uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
-    ) {
-        httpMessageActionService.route(this)
+    ) { input ->
+        val output = httpMessageActionService.route(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
     mcpStructuredToolWithContext<SearchWebsocketMessages, SearchWebsocketMessagesResult>(
-        description = "Search stored Proxy WebSocket payload metadata in the specified project. WebSocket-history access policy applies, and no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and 32 MiB. Pass nextCursor as cursor to continue; only projectId and optional limit may also be supplied.",
+        description = "Search Proxy WebSocket metadata using the opaque projectId from burp://project/summary or a producing result. WebSocket-history access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor and only the same projectId plus optional limit.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
+        val output = webSocketMessageSearchService.search(input) { progress, total, message ->
+            reportProgress(progress, total, message)
+        }
         StructuredToolResponse(
-            webSocketMessageSearchService.search(input) { progress, total, message ->
-                reportProgress(progress, total, message)
-            }
+            output = output,
+            text = null,
+            isError = output.status.isMcpError(),
         )
     }
 
@@ -980,15 +1128,20 @@ internal fun Server.registerTools(
         StructuredToolResponse(output, isError = !output.delegatedSuccess(), text = null)
     }
 
-    mcpStructuredTool<GetWebsocketMessageById, WebSocketMessageReadResult>(
-        description = "Read one original or edited Proxy WebSocket payload by stable ID from the specified project. WebSocket-history access approval applies; content is bounded and byte-paginated.",
+    mcpStructuredToolWithContext<GetWebsocketMessageById, WebSocketMessageReadResult>(
+        description = "Read one original or edited Proxy WebSocket payload by stable ID. Use the opaque projectId from burp://project/summary or the producing search result; IDs are not portable across projects. WebSocket-history access approval applies; content is bounded and byte-paginated. burp_error is a read failure and no mutation occurred.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
-    ) {
-        webSocketMessageReadService.read(this)
+    ) { input ->
+        val output = webSocketMessageReadService.read(input)
+        StructuredToolResponse(
+            output = output,
+            text = null,
+            isError = output.status.isMcpError(),
+        )
     }
 
     mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(
-        description = "Change exactly one Burp global control—the task execution engine or Proxy Intercept state—after approval unless the local operator enabled YOLO mode. If executionState is uncertain, the change may have occurred; do not retry automatically.",
+        description = "Change one Burp-wide control—the task execution engine or Proxy Intercept state—after approval unless YOLO mode allows it. This is intentionally not project-scoped, takes no projectId, and is not reverted by a project switch. If executionState is uncertain, the change may have occurred; do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage = when (input.control) {
@@ -1182,7 +1335,7 @@ data class SetBurpControlState(
 @Serializable
 data class GetWebsocketMessageById(
     @JsonSchemaMetadata(description = "Stable WebSocket history ID.", minimum = 0) val id: Int,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String,
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(description = "Read the edited payload variant.", defaultJson = "false") val edited: Boolean? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0") val offset: Int? = null,
     @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
@@ -1197,7 +1350,7 @@ data class GetScannerIssueById(
         maxLength = 128,
     )
     val id: String,
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256) val projectId: String,
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(description = "Scanner issue section to return.", enumValues = ["metadata", "detail", "remediation", "evidence_request", "evidence_response"], defaultJson = "\"metadata\"") val field: String? = null,
     @JsonSchemaMetadata(description = "Required when `field` is `evidence_request` or `evidence_response`.", minimum = 0) val evidenceIndex: Int? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0") val offset: Int? = null,
@@ -1207,7 +1360,7 @@ data class GetScannerIssueById(
 
 @Serializable
 data class GenerateCollaboratorPayload(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Optional ASCII alphanumeric custom data embedded in the generated Collaborator payload.", minLength = 1, maxLength = 16, pattern = "^[A-Za-z0-9]{1,16}$")
     val customData: String? = null,

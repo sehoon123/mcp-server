@@ -18,6 +18,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.DataAccessApprovalHandler
+import net.portswigger.mcp.security.DataAccessSecurity
+import net.portswigger.mcp.security.DataAccessType
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
@@ -37,9 +41,11 @@ class HttpAttackSurfaceTest {
     private lateinit var service: HttpAttackSurfaceService
     private var projectId = "project-attack"
     private var nowNanos = 1L
+    private lateinit var originalDataHandler: DataAccessApprovalHandler
 
     @BeforeEach
     fun setUp() {
+        originalDataHandler = DataAccessSecurity.approvalHandler
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } returns false
         every { storage.getString(any()) } returns ""
@@ -51,6 +57,11 @@ class HttpAttackSurfaceTest {
         config = McpConfig(storage, logging)
         index = HttpMetadataIndex(api, maxRecordsPerSource = 20, nanoTime = { nowNanos })
         service = HttpAttackSurfaceService(api, config, index)
+    }
+
+    @AfterEach
+    fun tearDown() {
+        DataAccessSecurity.approvalHandler = originalDataHandler
     }
 
     @Test
@@ -217,6 +228,40 @@ class HttpAttackSurfaceTest {
     }
 
     @Test
+    fun `current project capture failure does not echo the caller project ID`() = runBlocking {
+        every { project.id() } throws IllegalStateException("synthetic project failure")
+
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = "caller-supplied-project"))
+
+        assertEquals(HttpAttackSurfaceStatus.BURP_ERROR, result.status)
+        assertEquals(null, result.projectId)
+        verify(exactly = 0) { api.proxy() }
+    }
+
+    @Test
+    fun `denial after project transition returns mismatch before source access`() = runBlocking {
+        val approvalStorage = mockk<PersistedObject>(relaxed = true)
+        every { approvalStorage.getBoolean("requireDataAccessApproval") } returns true
+        every { approvalStorage.getString(any()) } returns ""
+        config = McpConfig(approvalStorage, logging)
+        service = HttpAttackSurfaceService(api, config, index)
+        var currentProjectId = projectId
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "project-after-denial"
+                return false
+            }
+        }
+
+        val result = service.summarize(SummarizeHttpAttackSurface(projectId = projectId))
+
+        assertEquals(HttpAttackSurfaceStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("project-after-denial", result.projectId)
+        verify(exactly = 0) { api.proxy() }
+    }
+
+    @Test
     fun `project mismatch is rejected before any source is read`() = runBlocking {
         projectId = "other-project"
 
@@ -333,6 +378,7 @@ class HttpAttackSurfaceTest {
         ) { progress, _, _ -> events += progress }
 
         assertEquals(HttpAttackSurfaceStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(null, result.projectId)
         assertEquals(listOf(0.0), events)
         verify(exactly = 0) { api.project() }
         verify(exactly = 0) { api.proxy() }

@@ -17,6 +17,8 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WebSocketMessageReadTest {
     private val api = mockk<MontoyaApi>()
@@ -47,6 +49,42 @@ class WebSocketMessageReadTest {
     @AfterEach
     fun tearDown() {
         DataAccessSecurity.approvalHandler = originalApprovalHandler
+    }
+
+    @Test
+    fun `invalid input returns structured invalid_argument before Burp access`() = runBlocking {
+        val result = service.read(GetWebsocketMessageById(id = -1, projectId = "project-ws"))
+
+        assertEquals(HistoryReadStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(null, result.projectId)
+        assertTrue(result.error.orEmpty().contains("non-negative"))
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { proxy.webSocketHistory(any()) }
+    }
+
+    @Test
+    fun `project capture failure does not echo an unverified caller project`() = runBlocking {
+        every { api.project() } throws IllegalStateException("synthetic project failure")
+
+        val result = service.read(GetWebsocketMessageById(id = 7, projectId = "caller-project"))
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals(null, result.projectId)
+        assertTrue(result.error.orEmpty().contains("capture the current project"))
+        verify(exactly = 0) { proxy.webSocketHistory(any()) }
+    }
+
+    @Test
+    fun `Burp accessor failure returns structured burp_error`() = runBlocking {
+        config.requireDataAccessApproval = false
+        every { api.proxy() } throws IllegalStateException("PRIVATE_SENTINEL")
+
+        val result = service.read(GetWebsocketMessageById(id = 7, projectId = "project-ws"))
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals("project-ws", result.projectId)
+        assertTrue(result.error.orEmpty().contains("Burp could not read the WebSocket message"))
+        assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
     }
 
     @Test

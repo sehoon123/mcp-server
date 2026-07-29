@@ -19,13 +19,10 @@ private val NAMED_CREDENTIAL = Regex(
 private val WINDOWS_ABSOLUTE_PATH = Regex("(?i)\\b[A-Z]:[\\\\/](?:[^\\s:;]+[\\\\/])*[^\\s:;]*")
 private val UNIX_ABSOLUTE_PATH = Regex("(?<![A-Za-z0-9:/])/(?:[^/\\s:;]+/)*[^/\\s:;]+")
 
-/** Produces one bounded, single-line, credential- and path-redacted exception summary. */
+/** Produces a bounded type-only external summary; exception messages may contain arbitrary project data. */
 @PublishedApi
-internal fun safeExceptionSummary(error: Throwable): String {
-    val message = sanitizeForExternalOutput(error.message.orEmpty(), MAX_SAFE_EXCEPTION_CHARS)
-    val type = error::class.simpleName ?: "Exception"
-    return (if (message.isEmpty()) type else "$type: $message").take(MAX_SAFE_EXCEPTION_CHARS)
-}
+internal fun safeExceptionSummary(error: Throwable): String =
+    (error::class.simpleName ?: "Exception").take(MAX_SAFE_EXCEPTION_CHARS)
 
 internal fun safeSingleLine(value: String, limit: Int = MAX_SAFE_EXCEPTION_CHARS): String =
     sanitizeForExternalOutput(value, limit.coerceIn(1, MAX_SAFE_EXCEPTION_CHARS))

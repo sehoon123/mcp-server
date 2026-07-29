@@ -8,9 +8,14 @@ import net.portswigger.mcp.tools.HttpComparisonEncoding
 import net.portswigger.mcp.tools.HttpComparisonPart
 import net.portswigger.mcp.tools.HttpMessageReference
 import net.portswigger.mcp.tools.HttpMessageSource
+import net.portswigger.mcp.tools.MCP_PROJECT_ID_INPUT_DESCRIPTION
+import net.portswigger.mcp.tools.READ_ONLY_TOOL_STATUS_DESCRIPTION
 import net.portswigger.mcp.tools.SearchHttpMessagesResult
 import net.portswigger.mcp.tools.SearchWebsocketMessagesResult
 import net.portswigger.mcp.tools.StandardExecutionState
+import net.portswigger.mcp.tools.TOOL_EXECUTION_STATE_DESCRIPTION
+import net.portswigger.mcp.tools.TOOL_RETRY_DESCRIPTION
+import net.portswigger.mcp.tools.TOOL_STATUS_RETRY_DESCRIPTION
 import net.portswigger.mcp.tools.ToolRetryGuidance
 import net.portswigger.mcp.tools.CompareHttpMessagesResult
 import net.portswigger.mcp.tools.WebSocketSearchDirection
@@ -128,7 +133,7 @@ internal enum class WorkflowPresetStatus {
 
 @Serializable
 internal data class SaveWorkflowPreset(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Preset name; trimmed before storage and matched case-insensitively.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
@@ -142,8 +147,11 @@ internal data class SaveWorkflowPreset(
 
 @Serializable
 internal data class SaveWorkflowPresetResult(
+    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION)
     val status: WorkflowPresetStatus,
+    @JsonSchemaMetadata(description = TOOL_RETRY_DESCRIPTION)
     val retry: ToolRetryGuidance,
+    @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: StandardExecutionState,
     val projectId: String?,
     val preset: WorkflowPreset? = null,
@@ -155,7 +163,7 @@ internal data class SaveWorkflowPresetResult(
 
 @Serializable
 internal data class ListWorkflowPresets(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Optional preset-type filter.")
     val type: WorkflowPresetType? = null,
@@ -167,6 +175,7 @@ internal data class ListWorkflowPresets(
 
 @Serializable
 internal data class ListWorkflowPresetsResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: WorkflowPresetStatus,
     val projectId: String?,
     val items: List<WorkflowPreset>,
@@ -179,7 +188,7 @@ internal data class ListWorkflowPresetsResult(
 
 @Serializable
 internal data class DeleteWorkflowPreset(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Case-insensitive preset name to delete.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
@@ -187,8 +196,11 @@ internal data class DeleteWorkflowPreset(
 
 @Serializable
 internal data class DeleteWorkflowPresetResult(
+    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION)
     val status: WorkflowPresetStatus,
+    @JsonSchemaMetadata(description = TOOL_RETRY_DESCRIPTION)
     val retry: ToolRetryGuidance,
+    @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: StandardExecutionState,
     val projectId: String?,
     val deleted: Boolean,
@@ -198,7 +210,7 @@ internal data class DeleteWorkflowPresetResult(
 
 @Serializable
 internal data class ExecuteWorkflowPreset(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Case-insensitive preset name to execute.", minLength = 1, maxLength = MAX_WORKFLOW_PRESET_NAME_CHARS)
     val name: String,
@@ -212,6 +224,7 @@ internal data class ExecuteWorkflowPreset(
 
 @Serializable
 internal data class ExecuteWorkflowPresetResult(
+    @JsonSchemaMetadata(description = "Preset lookup outcome; burp_error is a read failure, and delegated result status remains authoritative.")
     val status: WorkflowPresetStatus,
     val projectId: String?,
     val presetName: String? = null,

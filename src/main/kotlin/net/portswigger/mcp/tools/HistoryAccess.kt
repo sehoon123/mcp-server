@@ -8,6 +8,7 @@ import burp.api.montoya.scanner.audit.issues.AuditIssue
 import burp.api.montoya.websocket.Direction
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import net.portswigger.mcp.schema.JsonSchemaMetadata
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
@@ -19,6 +20,8 @@ import kotlin.math.min
 internal const val DEFAULT_HISTORY_SLICE_BYTES = 32 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
 internal const val MAX_NOTES_CHARS = 2_000
+internal const val MCP_PROJECT_ID_INPUT_DESCRIPTION =
+    "Opaque ID from burp://project/summary or the producing search/list result; it must match the current project and every supplied reference or cursor."
 private const val SCANNER_IDENTITY_CHUNK_CHARS = 8 * 1024
 private const val SCANNER_TEXT_ENCODING_BUFFER_BYTES = 8 * 1024
 private val HTTP_MESSAGE_PARTS = setOf(
@@ -53,7 +56,9 @@ data class ProxyHttpHistorySummary(
     val edited: Boolean,
     val requestBodyBytes: Int,
     val responseBodyBytes: Int?,
+    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
     val notesTruncated: Boolean,
 )
 
@@ -65,7 +70,9 @@ data class WebSocketHistorySummary(
     val direction: String,
     val payloadBytes: Int,
     val listenerPort: Int,
+    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
     val notesTruncated: Boolean,
 )
 
@@ -77,19 +84,27 @@ data class OrganizerItemSummary(
     val statusCode: Int?,
     val requestBodyBytes: Int,
     val responseBodyBytes: Int?,
+    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
     val notesTruncated: Boolean,
 )
 
 @Serializable
 data class ScannerIssueSummary(
     val id: String,
+    @JsonSchemaMetadata(maxLength = 512)
     val name: String?,
-    val nameTruncated: Boolean = false,
+    @JsonSchemaMetadata(description = "True when name was truncated to its 512-character output bound.")
+    val nameTruncated: Boolean,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_URL_CHARS)
     val baseUrl: String?,
-    val baseUrlTruncated: Boolean = false,
+    @JsonSchemaMetadata(description = "True when baseUrl was truncated to its 2,048-character output bound.")
+    val baseUrlTruncated: Boolean,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_HOST_CHARS)
     val host: String?,
-    val hostTruncated: Boolean = false,
+    @JsonSchemaMetadata(description = "True when host was truncated to its 253-character output bound.")
+    val hostTruncated: Boolean,
     val port: Int?,
     val secure: Boolean?,
     val severity: String,
@@ -103,6 +118,9 @@ data class ScannerIssueSummary(
 enum class HistoryReadStatus {
     @SerialName("ok")
     OK,
+
+    @SerialName("invalid_argument")
+    INVALID_ARGUMENT,
 
     @SerialName("access_denied")
     ACCESS_DENIED,
@@ -121,6 +139,9 @@ enum class HistoryReadStatus {
 
     @SerialName("field_unavailable")
     FIELD_UNAVAILABLE,
+
+    @SerialName("burp_error")
+    BURP_ERROR,
 }
 
 @Serializable
@@ -148,7 +169,9 @@ data class HttpMessageMetadata(
     val mimeType: String?,
     val listenerPort: Int?,
     val edited: Boolean?,
+    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
     val notesTruncated: Boolean,
 )
 
@@ -170,29 +193,37 @@ data class WebSocketMessageMetadata(
     val direction: String,
     val listenerPort: Int,
     val payloadVariant: String,
+    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
     val notesTruncated: Boolean,
 )
 
 @Serializable
 data class WebSocketMessageReadResult(
+    @JsonSchemaMetadata(description = "Outcome; invalid_argument and burp_error set MCP isError=true, and no mutation occurs.")
     val status: HistoryReadStatus,
     val id: Int,
+    @JsonSchemaMetadata(description = "Effective project binding when safely known.")
     val projectId: String? = null,
     val metadata: WebSocketMessageMetadata? = null,
     val content: HistoryContentSlice? = null,
+    @JsonSchemaMetadata(maxLength = MAX_STRUCTURED_TOOL_ERROR_CHARS)
     val error: String? = null,
 )
 
 @Serializable
 data class ScannerIssueReadResult(
+    @JsonSchemaMetadata(description = "Outcome; invalid_argument and burp_error set MCP isError=true, and no mutation occurs.")
     val status: HistoryReadStatus,
     val id: String,
     val field: String,
+    @JsonSchemaMetadata(description = "Effective project binding when safely known.")
     val projectId: String? = null,
     val summary: ScannerIssueSummary? = null,
     val evidenceIndex: Int? = null,
     val content: HistoryContentSlice? = null,
+    @JsonSchemaMetadata(maxLength = MAX_STRUCTURED_TOOL_ERROR_CHARS)
     val error: String? = null,
 )
 
@@ -474,9 +505,25 @@ internal fun AuditIssue.readField(
     val content = when (normalizedField) {
         "detail", "remediation" -> textField?.toHistorySlice(offset, limit, encoding)
         "evidence_request", "evidence_response" -> {
-            val index = requireNotNull(evidenceIndex) { "evidenceIndex is required for $normalizedField" }
+            val index = evidenceIndex ?: return ScannerIssueReadResult(
+                status = HistoryReadStatus.INVALID_ARGUMENT,
+                id = id,
+                field = normalizedField,
+                summary = summary,
+                evidenceIndex = null,
+                error = "evidenceIndex is required for $normalizedField",
+            )
             val evidence = requestResponses()
-            require(index in evidence.indices) { "evidenceIndex must be between 0 and ${evidence.lastIndex}" }
+            if (index !in evidence.indices) {
+                return ScannerIssueReadResult(
+                    status = HistoryReadStatus.INVALID_ARGUMENT,
+                    id = id,
+                    field = normalizedField,
+                    summary = summary,
+                    evidenceIndex = index,
+                    error = "evidenceIndex must be between 0 and ${evidence.lastIndex}",
+                )
+            }
             val message = if (normalizedField == "evidence_request") {
                 evidence[index].request()?.toByteArray()
             } else {

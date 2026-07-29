@@ -46,7 +46,7 @@ enum class WebSocketSearchDirection {
 
 @Serializable
 data class SearchWebsocketMessages(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Returned nextCursor from the previous page. When set, supply only projectId, cursor, and optional limit.", maxLength = 4096)
     val cursor: String? = null,
@@ -92,18 +92,30 @@ enum class WebSocketSearchStatus {
 
 @Serializable
 data class SearchWebsocketMessagesResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: WebSocketSearchStatus,
-    val projectId: String,
-    val items: List<WebSocketHistorySummary> = emptyList(),
-    val returned: Int = 0,
-    val scanned: Int = 0,
-    val scannedContentBytes: Long = 0,
-    val oversizedContentSkipped: Int = 0,
-    val scanLimitReached: Boolean = false,
-    val contentLimitReached: Boolean = false,
-    val hasMore: Boolean = false,
-    val nextCursor: String? = null,
-    val error: String? = null,
+    @JsonSchemaMetadata(description = "Captured current project ID; null when no current project was safely observed. On project_mismatch this is the newly observed project.")
+    val projectId: String?,
+    @JsonSchemaMetadata(description = "Compact summaries returned by this page; always present and possibly empty.")
+    val items: List<WebSocketHistorySummary>,
+    @JsonSchemaMetadata(description = "Number of summaries in items.", minimum = 0, maximum = 50)
+    val returned: Int,
+    @JsonSchemaMetadata(description = "Raw history records inspected by this page.", minimum = 0, maximum = 10000)
+    val scanned: Int,
+    @JsonSchemaMetadata(description = "Payload bytes inspected by this page.", minimum = 0, maximum = 33554432)
+    val scannedContentBytes: Long,
+    @JsonSchemaMetadata(description = "Individually oversized records skipped without inspecting payload content.", minimum = 0)
+    val oversizedContentSkipped: Int,
+    @JsonSchemaMetadata(description = "True when the 10,000-record scan budget stopped this page.")
+    val scanLimitReached: Boolean,
+    @JsonSchemaMetadata(description = "True when the 32 MiB payload-inspection budget stopped this page.")
+    val contentLimitReached: Boolean,
+    @JsonSchemaMetadata(description = "True when this signed snapshot has more records, even if items is empty.")
+    val hasMore: Boolean,
+    @JsonSchemaMetadata(description = "Opaque continuation cursor when hasMore is true; null otherwise.", maxLength = 4096)
+    val nextCursor: String?,
+    @JsonSchemaMetadata(description = "Bounded explanation for a non-ok outcome; null on success.", maxLength = 512)
+    val error: String?,
 )
 
 @Serializable
@@ -180,10 +192,9 @@ internal class WebSocketMessageSearchService(
     ): SearchWebsocketMessagesResult {
         val progress = FixedStageProgress(WEBSOCKET_SEARCH_PROGRESS_MESSAGES, reportProgress)
         progress.report(WebSocketSearchProgressStage.VALIDATING.ordinal)
-        val boundedInputProject = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS)
         val limit = input.limit ?: DEFAULT_WEBSOCKET_SEARCH_LIMIT
         if (!validProjectId(input.projectId) || limit !in 1..MAX_WEBSOCKET_SEARCH_LIMIT) {
-            return invalidArgument(boundedInputProject, "projectId or limit is invalid")
+            return invalidArgument(null, "projectId or limit is invalid")
         }
 
         val decodedCursor = if (input.cursor == null) {
@@ -194,13 +205,13 @@ internal class WebSocketMessageSearchService(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                return invalidCursor(boundedInputProject, e)
+                return invalidCursor(null, e)
             }
         }
         if (decodedCursor != null &&
             (decodedCursor.version != WEBSOCKET_CURSOR_VERSION || decodedCursor.projectId != input.projectId)
         ) {
-            return invalidCursor(boundedInputProject, "cursor version or project does not match")
+            return invalidCursor(null, "cursor version or project does not match")
         }
 
         val query = try {
@@ -212,13 +223,13 @@ internal class WebSocketMessageSearchService(
                 else -> decodedCursor.query
             }
         } catch (e: IllegalArgumentException) {
-            return if (decodedCursor == null) invalidArgument(boundedInputProject, e)
-            else invalidCursor(boundedInputProject, e)
+            return if (decodedCursor == null) invalidArgument(null, e)
+            else invalidCursor(null, e)
         }
         val regex = try {
             query.regex?.let { validateSafeRegex(it, query.caseSensitive) }
         } catch (e: IllegalArgumentException) {
-            return invalidArgument(boundedInputProject, e)
+            return invalidArgument(null, e)
         }
 
         progress.report(WebSocketSearchProgressStage.AUTHORIZING.ordinal)
@@ -227,7 +238,7 @@ internal class WebSocketMessageSearchService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return burpError(boundedInputProject, e)
+            return burpError(null, e)
         }
         if (expectedProjectId != input.projectId) {
             return projectMismatch(expectedProjectId, "WebSocket cursor or projectId belongs to a different Burp project")
@@ -251,9 +262,9 @@ internal class WebSocketMessageSearchService(
             return projectMismatch(projectAfterApproval, "Burp project changed during WebSocket history approval")
         }
         if (!allowed) {
-            return SearchWebsocketMessagesResult(
+            return emptyWebSocketSearchResult(
                 status = WebSocketSearchStatus.ACCESS_DENIED,
-                projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                projectId = expectedProjectId,
                 error = "WebSocket history access denied by Burp Suite",
             )
         }
@@ -319,7 +330,7 @@ internal class WebSocketMessageSearchService(
         val snapshot = try {
             decodedCursor?.also { validateSnapshot(it, records) } ?: newCursorSnapshot(expectedProjectId, query, records)
         } catch (e: StaleWebSocketCursorException) {
-            return if (decodedCursor == null) burpError(expectedProjectId, e) else staleCursor(expectedProjectId, e)
+            return if (decodedCursor == null) changedDuringPage(expectedProjectId) else staleCursor(expectedProjectId, e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -388,7 +399,7 @@ internal class WebSocketMessageSearchService(
             if (source.revalidateScanWindow) validateScanWindow(scanWindow, scanned, records)
             validateSnapshot(snapshot.copy(itemIndex = itemIndex), records)
         } catch (e: StaleWebSocketCursorException) {
-            return if (decodedCursor == null) burpError(expectedProjectId, e) else staleCursor(expectedProjectId, e)
+            return if (decodedCursor == null) changedDuringPage(expectedProjectId) else staleCursor(expectedProjectId, e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -428,6 +439,7 @@ internal class WebSocketMessageSearchService(
             contentLimitReached = contentLimitReached,
             hasMore = hasMore,
             nextCursor = nextCursor,
+            error = null,
         )
     }
 
@@ -616,38 +628,66 @@ private fun advance(index: Int, newestFirst: Boolean): Int = if (newestFirst) in
 private fun validProjectId(value: String): Boolean =
     value.length in 1..MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && value.none(Char::isISOControl)
 
-private fun invalidArgument(projectId: String, error: Exception) =
+private fun invalidArgument(projectId: String?, error: Exception) =
     invalidArgument(projectId, safeExceptionSummary(error))
 
-private fun invalidArgument(projectId: String, message: String) = SearchWebsocketMessagesResult(
+private fun invalidArgument(projectId: String?, message: String) = emptyWebSocketSearchResult(
     status = WebSocketSearchStatus.INVALID_ARGUMENT,
     projectId = projectId,
-    error = message.take(512),
+    error = message,
 )
 
-private fun invalidCursor(projectId: String, error: Exception) =
+private fun invalidCursor(projectId: String?, error: Exception) =
     invalidCursor(projectId, safeExceptionSummary(error))
 
-private fun invalidCursor(projectId: String, message: String) = SearchWebsocketMessagesResult(
+private fun invalidCursor(projectId: String?, message: String) = emptyWebSocketSearchResult(
     status = WebSocketSearchStatus.INVALID_CURSOR,
     projectId = projectId,
-    error = message.take(512),
+    error = message,
 )
 
-private fun staleCursor(projectId: String, error: StaleWebSocketCursorException) = SearchWebsocketMessagesResult(
+private fun staleCursor(projectId: String, error: StaleWebSocketCursorException) = emptyWebSocketSearchResult(
     status = WebSocketSearchStatus.STALE_CURSOR,
-    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
-    error = error.message.orEmpty().take(512),
+    projectId = projectId,
+    error = error.message.orEmpty(),
 )
 
-private fun projectMismatch(projectId: String, message: String) = SearchWebsocketMessagesResult(
-    status = WebSocketSearchStatus.PROJECT_MISMATCH,
-    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
-    error = message.take(512),
-)
-
-private fun burpError(projectId: String, error: Exception) = SearchWebsocketMessagesResult(
+private fun changedDuringPage(projectId: String) = emptyWebSocketSearchResult(
     status = WebSocketSearchStatus.BURP_ERROR,
-    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
-    error = "Burp could not search WebSocket history: ${safeExceptionSummary(error)}".take(512),
+    projectId = projectId,
+    error = "WebSocket history was cleared, reordered, or replaced while the page was prepared",
+)
+
+private fun projectMismatch(projectId: String, message: String) = emptyWebSocketSearchResult(
+    status = WebSocketSearchStatus.PROJECT_MISMATCH,
+    projectId = projectId,
+    error = message,
+)
+
+private fun burpError(
+    projectId: String?,
+    @Suppress("UNUSED_PARAMETER") error: Exception,
+) = emptyWebSocketSearchResult(
+    status = WebSocketSearchStatus.BURP_ERROR,
+    projectId = projectId,
+    error = "Burp could not search WebSocket history",
+)
+
+private fun emptyWebSocketSearchResult(
+    status: WebSocketSearchStatus,
+    projectId: String?,
+    error: String,
+) = SearchWebsocketMessagesResult(
+    status = status,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    items = emptyList(),
+    returned = 0,
+    scanned = 0,
+    scannedContentBytes = 0,
+    oversizedContentSkipped = 0,
+    scanLimitReached = false,
+    contentLimitReached = false,
+    hasMore = false,
+    nextCursor = null,
+    error = error.take(512),
 )

@@ -279,7 +279,18 @@ class WorkflowPresetServiceTest {
         ))))
         val wsInput = slot<SearchWebsocketMessages>()
         coEvery { webSocket.search(capture(wsInput), any()) } returns SearchWebsocketMessagesResult(
-            WebSocketSearchStatus.OK, "p"
+            status = WebSocketSearchStatus.OK,
+            projectId = "p",
+            items = emptyList(),
+            returned = 0,
+            scanned = 0,
+            scannedContentBytes = 0,
+            oversizedContentSkipped = 0,
+            scanLimitReached = false,
+            contentLimitReached = false,
+            hasMore = false,
+            nextCursor = null,
+            error = null,
         )
         val ws = service.execute(ExecuteWorkflowPreset("p", "ws", cursor = "runtime"), NO_TOOL_PROGRESS_REPORTER)
         assertTrue(ws.delegatedSuccess())

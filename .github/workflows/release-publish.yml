@@ -58,16 +58,21 @@ jobs:
           expected_assets=$(cat <<'EOF'
           Apache-2.0.txt
           CORRESPONDING_SOURCE.md
+          DEPENDABOT-ALERTS.json
           FORK_NOTICE.md
           LICENSE
           MIGRATION_V4_8.md
           MIT-SLF4J.txt
           NOTICE.md
+          NPM-AUDIT.json
+          OSV-COORDINATES.txt
+          OSV-RESPONSE.json
           RELEASE_NOTES.md
           SHA256SUMS
           SOURCE_IDENTITY.json
           runtime-licenses.properties
           THIRD_PARTY_NOTICES.md
+          VULNERABILITY_EVIDENCE.json
           VULNERABILITY_REPORT.md
           bom.cdx.json
           independent-mcp-bridge-all.jar
@@ -108,10 +113,10 @@ jobs:
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
           done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 17 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 22 ]]
           (cd "$stage" && sha256sum -c SHA256SUMS)
           [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
-          [[ $(wc -l < "$stage/SHA256SUMS") -eq 15 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 20 ]]
           expected_checksums=$(printf '%s\n' "$expected_assets" | sed 's/^          //' | \
             grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
@@ -128,9 +133,24 @@ jobs:
             .repository == ("https://github.com/" + $repo) and .tag == $tag and .version == $version and
             .sourceCommit == $sha and
             (.workflowRun | test("^https://github.com/" + $repo + "/actions/runs/[1-9][0-9]*$")) and
-            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom
+            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom and
+            .artifacts.vulnerabilityEvidenceSha256 == $vulnerability
           ' --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
-            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" "$identity" >/dev/null
+            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" \
+            --arg vulnerability "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" "$identity" >/dev/null
+          [[ $(sha256sum "$stage/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
+            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$SOURCE_COMMIT" '
+            .schemaVersion == 1 and .repository == $repository and .sourceCommit == $sourceCommit and
+            (.proxyCommit | test("^[a-f0-9]{40}$")) and .coordinateSet.count == 204 and
+            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .osv.queried == 204 and .osv.findings == 0 and
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and
+            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31 and
+            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and .result == "pass"
+          ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
+          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+            "$stage/OSV-RESPONSE.json" >/dev/null
           grep -Fx "**Source commit:** \`$SOURCE_COMMIT\`<br>" "$stage/VULNERABILITY_REPORT.md" >/dev/null
           jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
           cmp "$RUNNER_TEMP/release-body" "$stage/RELEASE_NOTES.md"
@@ -264,23 +284,25 @@ jobs:
           [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
 
           version=${RELEASE_TAG#v}
-          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md FORK_NOTICE.md LICENSE \
-            MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
-            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_REPORT.md bom.cdx.json \
-            "independent-mcp-bridge-$version-source.tar.gz" independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md DEPENDABOT-ALERTS.json \
+            FORK_NOTICE.md LICENSE MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md NPM-AUDIT.json \
+            OSV-COORDINATES.txt OSV-RESPONSE.json RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
+            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_EVIDENCE.json \
+            VULNERABILITY_REPORT.md bom.cdx.json "independent-mcp-bridge-$version-source.tar.gz" \
+            independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
           actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
           diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets")
 
           stage="$RUNNER_TEMP/release-assets"
           mkdir -p "$stage"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$stage"
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 17 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 22 ]]
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
           done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
           (cd "$stage" && sha256sum -c SHA256SUMS)
           [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
-          [[ $(wc -l < "$stage/SHA256SUMS") -eq 15 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 20 ]]
           expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
           diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
@@ -290,10 +312,25 @@ jobs:
           done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' <<<"$release_json")
           jq -e --arg tag "$RELEASE_TAG" --arg version "$version" --arg sha "$SOURCE_COMMIT" \
             --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
-            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" '
+            --arg sbom "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" \
+            --arg vulnerability "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" '
             .tag == $tag and .version == $version and .sourceCommit == $sha and
-            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom
+            .artifacts.jarSha256 == $jar and .artifacts.sbomSha256 == $sbom and
+            .artifacts.vulnerabilityEvidenceSha256 == $vulnerability
           ' "$stage/SOURCE_IDENTITY.json" >/dev/null
+          [[ $(sha256sum "$stage/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
+            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$SOURCE_COMMIT" '
+            .schemaVersion == 1 and .repository == $repository and .sourceCommit == $sourceCommit and
+            (.proxyCommit | test("^[a-f0-9]{40}$")) and .coordinateSet.count == 204 and
+            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .osv.queried == 204 and .osv.findings == 0 and
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and
+            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31 and
+            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and .result == "pass"
+          ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
+          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+            "$stage/OSV-RESPONSE.json" >/dev/null
           jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
           cmp "$RUNNER_TEMP/release-body" "$stage/RELEASE_NOTES.md"
           for subject in "$stage"/*; do
@@ -383,6 +420,7 @@ jobs:
             echo "- Source: \`$SOURCE_COMMIT\`"
             echo "- JAR SHA-256: \`$(sha256sum "$RUNNER_TEMP/release-assets/independent-mcp-bridge-all.jar" | cut -d' ' -f1)\`"
             echo "- SBOM SHA-256: \`$(sha256sum "$RUNNER_TEMP/release-assets/bom.cdx.json" | cut -d' ' -f1)\`"
+            echo "- Vulnerability evidence SHA-256: \`$(sha256sum "$RUNNER_TEMP/release-assets/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   public-check:
@@ -409,10 +447,12 @@ jobs:
             all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
           ' <<<"$release_json" >/dev/null
           version=${RELEASE_TAG#v}
-          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md FORK_NOTICE.md LICENSE \
-            MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
-            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_REPORT.md bom.cdx.json \
-            "independent-mcp-bridge-$version-source.tar.gz" independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md DEPENDABOT-ALERTS.json \
+            FORK_NOTICE.md LICENSE MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md NPM-AUDIT.json \
+            OSV-COORDINATES.txt OSV-RESPONSE.json RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
+            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_EVIDENCE.json \
+            VULNERABILITY_REPORT.md bom.cdx.json "independent-mcp-bridge-$version-source.tar.gz" \
+            independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
           actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
           diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets")
           stage="$RUNNER_TEMP/public-assets"
@@ -421,7 +461,7 @@ jobs:
             [[ "$name" != */* && "$name" != *\\* ]]
             curl --fail --silent --show-error --location "$url" --output "$stage/$name"
           done < <(jq -r '.assets[] | [.name, .browser_download_url] | @tsv' <<<"$release_json")
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 17 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 22 ]]
           (cd "$stage" && sha256sum -c SHA256SUMS)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
           expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
@@ -431,6 +471,14 @@ jobs:
             [[ "sha256:$(sha256sum "$stage/$name" | cut -d' ' -f1)" == "$digest" ]]
           done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' <<<"$release_json")
           [[ $(jq -r '.sourceCommit' "$stage/SOURCE_IDENTITY.json") == "$SOURCE_COMMIT" ]]
+          [[ $(jq -r '.artifacts.vulnerabilityEvidenceSha256' "$stage/SOURCE_IDENTITY.json") == \
+            "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" ]]
+          [[ $(sha256sum "$stage/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
+            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$SOURCE_COMMIT" '
+            .repository == $repository and .sourceCommit == $sourceCommit and .result == "pass" and
+            .coordinateSet.count == 204 and .osv.findings == 0 and .dependabot.openAlerts == 1
+          ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           for subject in "$stage"/*; do
             [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue
             gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \

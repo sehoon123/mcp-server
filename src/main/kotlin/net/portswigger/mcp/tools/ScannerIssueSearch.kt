@@ -21,7 +21,6 @@ import net.portswigger.mcp.schema.IssueDetails
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
-import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -129,17 +128,26 @@ enum class ScannerIssuePageStatus {
 
 @Serializable
 data class ScannerIssuePageResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: ScannerIssuePageStatus,
+    @JsonSchemaMetadata(description = "Captured current project ID; null only when capture did not complete safely.")
     val projectId: String?,
     val items: List<ScannerIssueSummary>,
     val returned: Int,
     val scanned: Int,
     val snapshotSize: Int?,
     val scanLimitReached: Boolean,
+    @JsonSchemaMetadata(description = "True when more issues remain; in cursor mode continue even when items is empty.")
     val hasMore: Boolean,
+    @JsonSchemaMetadata(
+        description = "Opaque continuation cursor when hasMore is true in cursor mode; null otherwise.",
+        maxLength = MAX_SCANNER_CURSOR_CHARS,
+    )
     val nextCursor: String?,
     val legacyMode: Boolean,
-    val legacyTextTruncated: Boolean = false,
+    @JsonSchemaMetadata(description = "True when the compatibility text page was truncated; always present.")
+    val legacyTextTruncated: Boolean,
+    @JsonSchemaMetadata(maxLength = MAX_STRUCTURED_TOOL_ERROR_CHARS)
     val error: String? = null,
 )
 
@@ -254,20 +262,10 @@ internal class ScannerIssueSearchService(
             return responseError(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp could not check Scanner issue access: ${safeScannerSearchException(e)}",
+                projectId,
                 legacyMode = !input.usesCursorMode(),
             )
         }
-        if (!allowed) {
-            return StructuredToolResponse(
-                output = scannerIssuePageError(
-                    ScannerIssuePageStatus.ACCESS_DENIED,
-                    "Scanner issue access denied by Burp Suite",
-                    legacyMode = !input.usesCursorMode(),
-                ),
-                text = "Scanner issue access denied by Burp Suite",
-            )
-        }
-
         val projectAfterApproval = try {
             api.project().id()
         } catch (e: CancellationException) {
@@ -286,6 +284,17 @@ internal class ScannerIssueSearchService(
                 "Burp project changed during Scanner issue approval",
                 projectAfterApproval,
                 legacyMode = preparedCursor == null,
+            )
+        }
+        if (!allowed) {
+            return StructuredToolResponse(
+                output = scannerIssuePageError(
+                    ScannerIssuePageStatus.ACCESS_DENIED,
+                    "Scanner issue access denied by Burp Suite",
+                    projectId,
+                    legacyMode = !input.usesCursorMode(),
+                ),
+                text = "Scanner issue access denied by Burp Suite",
             )
         }
         if (preparedCursor?.cursor != null && preparedCursor.cursor.projectId != projectId) {
@@ -480,6 +489,7 @@ internal class ScannerIssueSearchService(
             hasMore = hasMore,
             nextCursor = nextCursor,
             legacyMode = false,
+            legacyTextTruncated = false,
         )
         return StructuredToolResponse(result)
     }
@@ -765,13 +775,25 @@ private fun AuditIssue.matches(compiled: CompiledScannerIssueQuery): Boolean {
     return true
 }
 
+private fun ScannerIssuePageStatus.isMcpError(): Boolean = when (this) {
+    ScannerIssuePageStatus.INVALID_ARGUMENT,
+    ScannerIssuePageStatus.INVALID_CURSOR,
+    ScannerIssuePageStatus.STALE_CURSOR,
+    ScannerIssuePageStatus.PROJECT_MISMATCH,
+    ScannerIssuePageStatus.BURP_ERROR -> true
+
+    else -> false
+}
+
 private fun ScannerIssueSearchService.responseError(
     status: ScannerIssuePageStatus,
     error: String,
     projectId: String? = null,
     legacyMode: Boolean,
 ): StructuredToolResponse<ScannerIssuePageResult> = StructuredToolResponse(
-    scannerIssuePageError(status, error, projectId, legacyMode)
+    output = scannerIssuePageError(status, error, projectId, legacyMode),
+    text = null,
+    isError = status.isMcpError(),
 )
 
 private fun scannerIssuePageError(
@@ -790,7 +812,10 @@ private fun scannerIssuePageError(
     hasMore = false,
     nextCursor = null,
     legacyMode = legacyMode,
-    error = error.take(512),
+    legacyTextTruncated = false,
+    error = error.take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
 )
 
-private fun safeScannerSearchException(error: Exception): String = safeExceptionSummary(error)
+private fun safeScannerSearchException(
+    @Suppress("UNUSED_PARAMETER") error: Exception,
+): String = "internal Burp API failure"

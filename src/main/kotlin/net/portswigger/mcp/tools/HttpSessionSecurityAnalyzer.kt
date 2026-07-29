@@ -38,7 +38,7 @@ private val SESSION_ANALYSIS_PROGRESS_MESSAGES = listOf(
 
 @Serializable
 data class AnalyzeHttpSessionSecurity(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(
         description = "One to 32 distinct ordered stable Proxy, Site Map, or Organizer HTTP references.",
@@ -371,9 +371,12 @@ data class SessionCookieCrossMessageSummary(
 
 @Serializable
 data class HttpSessionEvidenceBounds(
-    val proposedFlowOnly: Boolean = true,
-    val chronologyOrCausalityEstablished: Boolean = false,
-    val vulnerabilityAssessment: Boolean = false,
+    @JsonSchemaMetadata(description = "Always true: input order is only a caller-proposed flow.")
+    val proposedFlowOnly: Boolean,
+    @JsonSchemaMetadata(description = "Always false: this analysis does not establish chronology or causality.")
+    val chronologyOrCausalityEstablished: Boolean,
+    @JsonSchemaMetadata(description = "Always false: this analysis does not determine vulnerabilities or severity.")
+    val vulnerabilityAssessment: Boolean,
     val selectedMessages: Int,
     val messagesWithResponses: Int,
     val headersScanned: Int,
@@ -381,31 +384,25 @@ data class HttpSessionEvidenceBounds(
     val selectedHeaderCharsInspected: Int,
     val cookiesObserved: Int,
     val redirectHopsInspected: Int,
-    val maxMessages: Int = MAX_SESSION_ANALYSIS_MESSAGES,
-    val maxHeadersPerRequestOrResponse: Int = MAX_SESSION_HEADERS_PER_PART,
-    val maxHeaderLineChars: Int = MAX_SESSION_HEADER_LINE_CHARS,
-    val maxSelectedHeaderChars: Int = MAX_SESSION_SELECTED_HEADER_CHARS,
-    val maxRequestCookieNamesPerMessage: Int = MAX_SESSION_COOKIES_PER_MESSAGE,
-    val maxResponseCookiesPerMessage: Int = MAX_SESSION_COOKIES_PER_MESSAGE,
-    val maxCookiesPerAnalysis: Int = MAX_SESSION_COOKIES_PER_ANALYSIS,
-    val maxRedirectHops: Int = MAX_SESSION_REDIRECT_HOPS,
+    val maxMessages: Int,
+    val maxHeadersPerRequestOrResponse: Int,
+    val maxHeaderLineChars: Int,
+    val maxSelectedHeaderChars: Int,
+    val maxRequestCookieNamesPerMessage: Int,
+    val maxResponseCookiesPerMessage: Int,
+    val maxCookiesPerAnalysis: Int,
+    val maxRedirectHops: Int,
     val headersTruncated: Boolean,
     val selectedCharsTruncated: Boolean,
     val cookiesTruncated: Boolean,
     val redirectHopsTruncated: Boolean,
-    val limitations: List<String> = listOf(
-        "Input order is only a proposed flow and does not prove chronology or causality.",
-        "Header and cookie presence does not prove authentication, browser acceptance, or session behavior.",
-        "Truncated or missing evidence is omitted from invariant and variant conclusions.",
-        "Cookie summaries correlate by case-sensitive name and may combine cookies with distinct private scopes.",
-        "Expires is syntax-checked but not compared with wall-clock time; deletion requires non-positive Max-Age evidence.",
-        "Site Map stable-ID verification may inspect bounded identity samples before body-free analysis.",
-        "This result reports passive observations only, without severity or vulnerability claims.",
-    ),
+    @JsonSchemaMetadata(description = "Authoritative interpretation limits; always present.")
+    val limitations: List<String>,
 )
 
 @Serializable
 data class AnalyzeHttpSessionSecurityResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpSessionAnalysisStatus,
     val projectId: String?,
     val refs: List<HttpMessageReference>,
@@ -429,7 +426,7 @@ internal class HttpSessionSecurityAnalyzerService(private val api: MontoyaApi) {
         if (input.refs.size !in 1..MAX_SESSION_ANALYSIS_MESSAGES) {
             return sessionAnalysisError(
                 HttpSessionAnalysisStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 input.refs,
                 "refs must contain between 1 and $MAX_SESSION_ANALYSIS_MESSAGES items",
             )
@@ -437,7 +434,7 @@ internal class HttpSessionSecurityAnalyzerService(private val api: MontoyaApi) {
         if (input.refs.map { it.sessionAnalysisIdentity() }.distinct().size != input.refs.size) {
             return sessionAnalysisError(
                 HttpSessionAnalysisStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 input.refs,
                 "refs must not contain duplicates",
             )
@@ -686,7 +683,7 @@ private suspend fun analyzeResolvedSessionMessages(messages: List<ResolvedHttpMe
         cookieSummaries = cookieSummaries,
         invariants = invariants,
         variants = variants,
-        evidence = HttpSessionEvidenceBounds(
+        evidence = sessionEvidenceBounds(
             selectedMessages = summaries.size,
             messagesWithResponses = summaries.count { it.hasResponse },
             headersScanned = budget.headersScanned,
@@ -1170,6 +1167,52 @@ private fun HttpMessageResolutionStatus.toSessionAnalysisStatus(): HttpSessionAn
     HttpMessageResolutionStatus.BURP_ERROR -> HttpSessionAnalysisStatus.BURP_ERROR
 }
 
+private fun sessionEvidenceBounds(
+    selectedMessages: Int,
+    messagesWithResponses: Int,
+    headersScanned: Int,
+    selectedHeaderValuesInspected: Int,
+    selectedHeaderCharsInspected: Int,
+    cookiesObserved: Int,
+    redirectHopsInspected: Int,
+    headersTruncated: Boolean,
+    selectedCharsTruncated: Boolean,
+    cookiesTruncated: Boolean,
+    redirectHopsTruncated: Boolean,
+) = HttpSessionEvidenceBounds(
+    proposedFlowOnly = true,
+    chronologyOrCausalityEstablished = false,
+    vulnerabilityAssessment = false,
+    selectedMessages = selectedMessages,
+    messagesWithResponses = messagesWithResponses,
+    headersScanned = headersScanned,
+    selectedHeaderValuesInspected = selectedHeaderValuesInspected,
+    selectedHeaderCharsInspected = selectedHeaderCharsInspected,
+    cookiesObserved = cookiesObserved,
+    redirectHopsInspected = redirectHopsInspected,
+    maxMessages = MAX_SESSION_ANALYSIS_MESSAGES,
+    maxHeadersPerRequestOrResponse = MAX_SESSION_HEADERS_PER_PART,
+    maxHeaderLineChars = MAX_SESSION_HEADER_LINE_CHARS,
+    maxSelectedHeaderChars = MAX_SESSION_SELECTED_HEADER_CHARS,
+    maxRequestCookieNamesPerMessage = MAX_SESSION_COOKIES_PER_MESSAGE,
+    maxResponseCookiesPerMessage = MAX_SESSION_COOKIES_PER_MESSAGE,
+    maxCookiesPerAnalysis = MAX_SESSION_COOKIES_PER_ANALYSIS,
+    maxRedirectHops = MAX_SESSION_REDIRECT_HOPS,
+    headersTruncated = headersTruncated,
+    selectedCharsTruncated = selectedCharsTruncated,
+    cookiesTruncated = cookiesTruncated,
+    redirectHopsTruncated = redirectHopsTruncated,
+    limitations = listOf(
+        "Input order is only a proposed flow and does not prove chronology or causality.",
+        "Header and cookie presence does not prove authentication, browser acceptance, or session behavior.",
+        "Truncated or missing evidence is omitted from invariant and variant conclusions.",
+        "Cookie summaries correlate by case-sensitive name and may combine cookies with distinct private scopes.",
+        "Expires is syntax-checked but not compared with wall-clock time; deletion requires non-positive Max-Age evidence.",
+        "Site Map stable-ID verification may inspect bounded identity samples before body-free analysis.",
+        "This result reports passive observations only, without severity or vulnerability claims.",
+    ),
+)
+
 private fun sessionAnalysisError(
     status: HttpSessionAnalysisStatus,
     projectId: String?,
@@ -1186,7 +1229,7 @@ private fun sessionAnalysisError(
     cookieSummaries = emptyList(),
     invariants = emptyList(),
     variants = emptyList(),
-    evidence = HttpSessionEvidenceBounds(
+    evidence = sessionEvidenceBounds(
         selectedMessages = 0,
         messagesWithResponses = 0,
         headersScanned = 0,

@@ -305,6 +305,7 @@ class HttpActivityCorrelationTest {
         assertEquals(1, duplicateAlias.errorRefIndex)
         assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, invalidDepth.status)
         listOf(empty, invalidProject, tooMany, invalidId, duplicateAlias, invalidDepth).forEach {
+            assertNull(it.projectId, "pre-capture validation must not echo the caller project")
             assertTrue(it.timeline.isEmpty())
             assertNull(it.delta)
             assertEquals(0, it.evidence.selectedReferences)

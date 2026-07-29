@@ -108,6 +108,8 @@ Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_
 issue reads require `projectId`; v3 aliases are not advertised. The local-only `transform_data` and
 `generate_random_string` utilities and the focus-dependent active-editor read/write tools are no longer advertised;
 use local shell utilities or Burp's editor UI instead. Clients must reconnect and rediscover capabilities after upgrading.
+Some client hosts flatten the three fixed MCP resources into their callable UI, so Professional may visually show 31
+entries (28 tools plus 3 resources); the protocol `tools/list` catalog remains exactly 28.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
@@ -128,9 +130,14 @@ transform, and random-data tools preserve their bounded legacy text block for cl
   automatically.
 
 Expected validation, approval, disabled-feature, availability, output-limit, and Burp errors are represented in the
-structured result. Correction-required validation, output-limit, and Burp failures also set MCP `isError=true`; ordinary
-approval, disabled, and unavailable outcomes remain non-protocol structured outcomes. Malformed MCP arguments that
-cannot be deserialized still use the protocol-level tool error path.
+structured result. `burp_error` means a bounded Burp/API/storage operation failed or, for Scanner project binding, that
+an older project observation was deliberately discarded after a newer concurrent boundary check; it is not itself
+retry guidance. When
+`retry` exists it is authoritative, and `executionState: "uncertain"` or Scanner `actionState: "uncertain"` always means
+do not retry automatically. Read-only tools have no side effect to duplicate, but callers must still reconcile project
+and cursor state before retrying. Correction-required validation, output-limit, and selected Burp failures set MCP
+`isError=true`; ordinary approval, disabled, and unavailable outcomes remain structured non-protocol outcomes. Malformed
+MCP arguments that cannot be deserialized still use the protocol-level tool error path.
 
 ### v4.3 session-scoped approvals
 
@@ -237,8 +244,9 @@ Starting with v4.8, download `independent-mcp-bridge-all.jar` and `SHA256SUMS` f
 [releases page](https://github.com/sehoon123/mcp-server/releases). Do not use a moving asset URL when verifying a
 candidate. Releases also include a CycloneDX SBOM, source archive, [`FORK_NOTICE.md`](FORK_NOTICE.md),
 [`NOTICE.md`](NOTICE.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md),
-[`CORRESPONDING_SOURCE.md`](CORRESPONDING_SOURCE.md), [`LICENSE`](LICENSE), and the point-in-time
-[`vulnerability report`](docs/VULNERABILITY_REPORT.md). Install the JAR
+[`CORRESPONDING_SOURCE.md`](CORRESPONDING_SOURCE.md), [`LICENSE`](LICENSE), the point-in-time
+[`vulnerability report`](docs/VULNERABILITY_REPORT.md), and checksummed OSV/npm/authenticated-Dependabot evidence from
+the immutable candidate workflow. Install the JAR
 through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR. Existing MCP Server users must
 follow the [v4.8 identity and side-by-side migration guide](docs/MIGRATION_V4_8.md); the new UUID does not overwrite the
 old extension.
@@ -332,8 +340,10 @@ exact host, literal path, literal request/response content, or one conservativel
 status codes, MIME types, in-scope state, and response presence. Literal text and regex are mutually exclusive. Results
 default to newest-first within each source; regex is case-sensitive unless `caseSensitive: false` is explicit.
 
-The default page size is 25 and the maximum is 50. If `hasMore` is true, call the tool again with `cursor` set to the
-returned `nextCursor` (and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original
+The default page size is 25 and the maximum is 50. `items`, counters, budget flags, `hasMore`, `nextCursor`, and `error`
+are present on every result, including empty and error results. A budget-limited page can have `items: []` while
+`hasMore: true`; only `hasMore` determines whether to continue. If it is true, call the tool again with `cursor` set to
+the returned `nextCursor` (and optionally a new `limit`). Cursors are signed, bound to the current Burp project and original
 query, and preserve
 the source sizes seen by the first page. Appended traffic does not leak into an existing snapshot; cleared or reordered
 sources return `stale_cursor` instead of silently skipping or duplicating records. Cursors are intentionally invalidated
@@ -371,8 +381,10 @@ individually oversized records, and default to case-sensitive matching.
 
 The signed cursor binds the project, query, order, original source size, raw source index, and source-boundary anchors.
 Appended messages are excluded from an existing snapshot; a shrunken or boundary-reordered history returns
-`stale_cursor`. Continue with only `projectId`, `cursor` set to the returned `nextCursor`, and optional `limit`. Cursors
-are invalidated when the MCP server restarts. Use the returned numeric ID and the same required `projectId` with
+`stale_cursor`. Every result explicitly includes `items`, counters, budget flags, `hasMore`, `nextCursor`, and `error`.
+A budget-limited page can have `items: []` while `hasMore: true`; only `hasMore` determines whether to continue. Continue
+with only `projectId`, `cursor` set to `nextCursor`, and optional `limit`. Cursors are invalidated when the MCP server
+restarts. Use the returned numeric ID and the same required `projectId` with
 `get_websocket_message_by_id` for a bounded original or edited payload slice.
 
 ## Body-free attack-surface summary
@@ -506,15 +518,31 @@ Burp Professional additionally exposes:
 These tools do not crawl. Every target must already be in Burp Target scope. Passive mode accepts only messages with a
 response and sends no target traffic. Active mode accepts at most four targets and requires explicit semantic insertion
 points for every target; no implicit whole-request audit is permitted. Starting and cancelling require explicit Burp
-approval unless the local operator enabled YOLO mode. Task IDs are random, project-bound, retained only by this extension instance, and status/cancellation
-cannot address unrelated Burp tasks. Some Burp runtimes do not expose issue objects while an audit is live; in that
-case status and counters still return `status: "ok"` with `issuesUnavailable: true` and a bounded warning. If start or
-cancellation returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID and Burp
-Scanner UI first. A bounded one-minute sweeper detaches an unreturned task record after five minutes, a published task
+approval unless the local operator enabled YOLO mode. Task IDs are random, project-bound, retained only by this extension
+instance, and status/cancellation cannot address unrelated Burp tasks. `issuesAccessDenied` means the operator denied
+issue-summary access; `issuesUnavailable` instead means the requested read was skipped for an already-cancelled task,
+failed technically, or could not obtain issue objects from the current Burp runtime. Runtime issue-object limitations can
+therefore return `status: "ok"`, `issuesUnavailable: true`, and a bounded warning while status and counters remain usable.
+A concurrent definitive cancellation suppresses issue summaries, counters, and counts sampled by an older status read and
+marks requested issue material unavailable, including when cancellation completes after the response candidate was first
+snapshotted. Project observations, reset tombstones, record attachment, and result publication are ordered at one
+fail-closed boundary, so detached task metadata is scrubbed even when a project ID is reused. Status and issue
+observations are sequenced: an older sample cannot demote a newer terminal state, overwrite a newer retained issue count or
+payload, or republish its telemetry. A superseded issue payload is unavailable, not `issuesTruncated`, because its omission
+was not caused by the caller's result limit. Treat `actionState` and `taskState` as authoritative because bounded Burp
+status text may lag.
+If start or cancellation
+returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID when present and use the
+Burp Scanner UI when project-bound task details were scrubbed. Burp deletion and cancellation publication are serialized;
+once the delete call returns, cancellation remains `completed`/`cancelled` even if the independent post-delete project
+accessor fails with a scrubbed `burp_error`. A bounded
+one-minute sweeper detaches an unreturned task record after five minutes, a published task
 after six hours without a status/cancel call, every task after 24 hours, and an observed terminal record after one hour.
 Status and cancel calls renew only the inactivity lease. Expiration and detected project transitions make at most one
-best-effort deletion attempt, so an ambiguous failed deletion is not retried automatically. An unresolved cleanup keeps
-one of the eight owned-task capacity slots reserved until the extension is reloaded rather than hiding a possible orphan.
+best-effort deletion attempt, so an ambiguous failed deletion is not retried automatically. An unresolved live cleanup
+keeps one of the eight owned-task capacity slots reserved until the extension is reloaded rather than hiding a possible
+orphan; if an already-sampled ordered observation later proves that detached task terminal, its reservation is released
+exactly once.
 
 ## Collaborator polling
 
@@ -524,7 +552,9 @@ its interaction ID; optional `customData` follows Burp's 1–16 ASCII-alphanumer
 interaction-ID filter, `waitSeconds` from 0 to 120, up to 50 results, newest/oldest ordering, and text or base64 detail
 slices. At most four waits run concurrently. Polling emits MCP progress when the client supplies a progress token and
 propagates cancellation; returned metadata, per-field details, total detail bytes, and scanned interactions are bounded.
-Collaborator interaction reads use their own **Always allow** data-access option in the MCP Bridge tab.
+Collaborator interaction reads use their own **Always allow** data-access option in the MCP Bridge tab. `hasMore` is an
+omission signal, not a pagination promise: the current contract has no continuation cursor for older omitted
+interactions, so narrow the payload or time filter when possible.
 
 ## Stable history access
 

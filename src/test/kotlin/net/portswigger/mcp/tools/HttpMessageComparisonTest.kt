@@ -53,6 +53,21 @@ class HttpMessageComparisonTest {
     }
 
     @Test
+    fun `pre-capture comparison validation does not echo the caller project`() = runBlocking {
+        val result = service.compare(
+            CompareHttpMessages(
+                projectId = "caller-forged",
+                refs = emptyList(),
+            )
+        )
+
+        assertEquals(HttpComparisonStatus.INVALID_ARGUMENT, result.status)
+        assertNull(result.projectId)
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { proxy.history(any()) }
+    }
+
+    @Test
     fun `two response bodies return a bounded first difference`() = runBlocking {
         val first = proxyItem(1, "alpha-one")
         val second = proxyItem(2, "alpha-two")

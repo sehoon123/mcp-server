@@ -113,11 +113,14 @@ data class RouteRawHttpRequest(
 
 @Serializable
 data class RawHttpActionResult(
+    @JsonSchemaMetadata(description = "Outcome category; execution_uncertain means the side effect may already exist.")
     val status: HttpMessageActionStatus,
+    @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
     val protocol: RawHttpProtocol,
     val destination: HttpMessageActionDestination,
     val target: HttpActionTarget,
+    @JsonSchemaMetadata(description = "Project current when execution started; null when capture failed.")
     val projectId: String? = null,
     val requestBytes: Int? = null,
     val tabName: String? = null,
@@ -156,7 +159,7 @@ internal class RawHttpActionService(
                 input.targetPort,
                 input.usesHttps,
             )
-        } catch (e: IllegalArgumentException) {
+        } catch (e: RawHttpInputValidationException) {
             return invalid(input.protocol, HttpMessageActionDestination.HTTP, target, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
@@ -250,6 +253,8 @@ internal class RawHttpActionService(
         var warning: String? = recording.warning
         val response = try {
             exchange?.response()?.toActionSummary(bodyLimit, encoding)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val previewWarning = "request completed but its response preview could not be created: ${safeExceptionSummary(e)}"
             warning = listOfNotNull(warning, previewWarning).joinToString("; ").take(512)
@@ -305,7 +310,7 @@ internal class RawHttpActionService(
                 input.targetPort,
                 input.usesHttps,
             )
-        } catch (e: IllegalArgumentException) {
+        } catch (e: RawHttpInputValidationException) {
             return invalid(input.protocol, destination, target, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
@@ -461,6 +466,18 @@ private data class PreparedRawHttpRequest(
     val requestBytes: Int,
 )
 
+private class RawHttpInputValidationException(message: String) : IllegalArgumentException(message)
+
+private inline fun requireRawHttpInput(condition: Boolean, lazyMessage: () -> String) {
+    if (!condition) throw RawHttpInputValidationException(lazyMessage())
+}
+
+private inline fun <T> validateRawHttpInput(block: () -> T): T = try {
+    block()
+} catch (e: IllegalArgumentException) {
+    throw RawHttpInputValidationException(e.message.orEmpty())
+}
+
 private fun prepare(
     protocol: RawHttpProtocol,
     http1: RawHttp1Input?,
@@ -470,42 +487,54 @@ private fun prepare(
     usesHttps: Boolean,
 ): PreparedRawHttpRequest {
     when (protocol) {
-        RawHttpProtocol.HTTP_1 -> require(http1 != null && http2 == null) {
+        RawHttpProtocol.HTTP_1 -> requireRawHttpInput(http1 != null && http2 == null) {
             "protocol=http_1 requires only the http1 object"
         }
-        RawHttpProtocol.HTTP_2 -> require(http2 != null && http1 == null) {
+        RawHttpProtocol.HTTP_2 -> requireRawHttpInput(http2 != null && http1 == null) {
             "protocol=http_2 requires only the http2 object"
         }
     }
-    validateRawTarget(targetHostname, targetPort)
+    validateRawHttpInput { validateRawTarget(targetHostname, targetPort) }
+    val normalizedHttp1 = if (protocol == RawHttpProtocol.HTTP_1) {
+        val content = requireNotNull(http1).content
+        requireRawHttpInput(content.isNotEmpty() && content.length <= MAX_RAW_HTTP1_CHARS) {
+            "HTTP/1 content must contain 1 to $MAX_RAW_HTTP1_CHARS characters"
+        }
+        normalizeHttpContent(content)
+    } else {
+        null
+    }
+    if (protocol == RawHttpProtocol.HTTP_2) {
+        requireNotNull(http2).also { input ->
+            validateRawHttpInput { validateRawHttp2Input(input.pseudoHeaders, input.headers, input.requestBody) }
+        }
+    }
+
+    // All caller validation above is deliberately separated from Montoya construction/accessor calls below.
+    // A Montoya IllegalArgumentException is a private-safe Burp failure, not caller-authored validation text.
     val service = HttpService.httpService(targetHostname, targetPort, usesHttps)
     val request: HttpRequest
     val review: String
     when (protocol) {
         RawHttpProtocol.HTTP_1 -> {
-            require(http1 != null && http2 == null) { "protocol=http_1 requires only the http1 object" }
-            require(http1.content.isNotEmpty() && http1.content.length <= MAX_RAW_HTTP1_CHARS) {
-                "HTTP/1 content must contain 1 to $MAX_RAW_HTTP1_CHARS characters"
-            }
-            review = normalizeHttpContent(http1.content)
+            review = requireNotNull(normalizedHttp1)
             request = HttpRequest.httpRequest(service, review)
         }
         RawHttpProtocol.HTTP_2 -> {
-            require(http2 != null && http1 == null) { "protocol=http_2 requires only the http2 object" }
-            validateRawHttp2Input(http2.pseudoHeaders, http2.headers, http2.requestBody)
-            val headerList = buildHttp2HeaderList(http2.pseudoHeaders, http2.headers)
+            val input = requireNotNull(http2)
+            val headerList = buildHttp2HeaderList(input.pseudoHeaders, input.headers)
             review = buildString {
                 headerList.forEach { appendLine("${it.name()}: ${it.value()}") }
-                if (http2.requestBody.isNotEmpty()) {
+                if (input.requestBody.isNotEmpty()) {
                     appendLine()
-                    append(http2.requestBody)
+                    append(input.requestBody)
                 }
             }
-            request = HttpRequest.http2Request(service, headerList, http2.requestBody)
+            request = HttpRequest.http2Request(service, headerList, input.requestBody)
         }
     }
     val requestBytes = requestByteLength(request)
-    require(requestBytes <= MAX_ACTION_REQUEST_BYTES) {
+    requireRawHttpInput(requestBytes <= MAX_ACTION_REQUEST_BYTES) {
         "request exceeds the $MAX_ACTION_REQUEST_BYTES-byte action limit"
     }
     return PreparedRawHttpRequest(request, review, requestBytes)

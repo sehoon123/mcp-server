@@ -102,6 +102,26 @@ class HttpMessageSearchTest {
     }
 
     @Test
+    fun `HTTP denial after a project transition returns mismatch without history access`() = runBlocking {
+        config.requireDataAccessApproval = true
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "project-after-denial"
+                return false
+            }
+        }
+
+        val result = service.search(SearchHttpMessages())
+
+        assertEquals(HttpMessageSearchStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("project-after-denial", result.projectId)
+        assertTrue(result.items.isEmpty())
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
     fun `search reports only fixed monotonic stages without project or filter values`() = runBlocking {
         val events = mutableListOf<Triple<Double, Double?, String?>>()
 
@@ -208,6 +228,36 @@ class HttpMessageSearchTest {
         assertEquals(0, diagnostics.snapshot().metrics.single {
             it.metric == HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING
         }.attempts)
+    }
+
+    @Test
+    fun `Burp source failure returns a complete structured read error`() = runBlocking {
+        every { proxy.history() } throws IllegalStateException("PRIVATE_SENTINEL")
+
+        val result = service.search(SearchHttpMessages())
+
+        assertEquals(HttpMessageSearchStatus.BURP_ERROR, result.status)
+        assertEquals("project-123", result.projectId)
+        assertTrue(result.items.isEmpty())
+        assertEquals(0, result.returned)
+        assertEquals(0, result.scanned)
+        assertEquals(false, result.hasMore)
+        assertEquals(null, result.nextCursor)
+        assertTrue(result.error.orEmpty().contains("Burp could not read HTTP history"))
+        assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+    }
+
+    @Test
+    fun `project capture failure returns bounded burp_error without accessing history`() = runBlocking {
+        every { project.id() } throws IllegalStateException("synthetic project failure")
+
+        val result = service.search(SearchHttpMessages())
+
+        assertEquals(HttpMessageSearchStatus.BURP_ERROR, result.status)
+        assertEquals(null, result.projectId)
+        assertTrue(result.items.isEmpty())
+        assertTrue(result.error.orEmpty().contains("capture the current project"))
+        verify(exactly = 0) { proxy.history() }
     }
 
     @Test
@@ -417,6 +467,7 @@ class HttpMessageSearchTest {
             SearchHttpMessages(pathContains = "/missing", newestFirst = false)
         )
         assertEquals(2, first.scanned)
+        assertTrue(first.items.isEmpty())
         assertTrue(first.scanLimitReached)
         assertTrue(first.hasMore)
 

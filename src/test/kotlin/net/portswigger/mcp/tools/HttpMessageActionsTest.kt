@@ -50,6 +50,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HttpMessageActionsTest {
@@ -137,7 +138,9 @@ class HttpMessageActionsTest {
 
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, repeater.status)
         assertEquals(HttpMessageExecutionState.NOT_STARTED, repeater.executionState)
+        assertNull(repeater.projectId)
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, organizer.status)
+        assertNull(organizer.projectId)
         verify(exactly = 0) { proxy.history(any()) }
     }
 
@@ -226,8 +229,9 @@ class HttpMessageActionsTest {
             )
         )
 
-        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
-        assertTrue(result.error.orEmpty().contains("destination service"))
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertFalse(result.error.orEmpty().contains("destination service"))
         verify(exactly = 0) { intruder.sendToIntruder(any<HttpRequest>()) }
     }
 
@@ -316,8 +320,9 @@ class HttpMessageActionsTest {
             )
         )
 
-        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
-        assertTrue(result.error.orEmpty().contains("action limit"))
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertFalse(result.error.orEmpty().contains("action limit"))
         verify(exactly = 0) { repeater.sendToRepeater(any<HttpRequest>()) }
     }
 
@@ -1038,9 +1043,41 @@ class HttpMessageActionsTest {
 
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
         assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertNull(result.projectId)
         assertTrue(result.error.orEmpty().contains("redirected destinations"))
         verify(exactly = 0) { http.sendRequest(any<HttpRequest>(), any<RequestOptions>()) }
         verify(exactly = 0) { proxy.history(any()) }
+    }
+
+    @Test
+    fun `stored request accessor IllegalArgumentException is a sanitized Burp error for send and route`() = runBlocking {
+        val sendFixture = proxyFixture(14)
+        val routeFixture = proxyFixture(15)
+        filteredHistory(sendFixture.item, routeFixture.item)
+        every { sendFixture.request.httpService() } throws IllegalArgumentException("SEND_PRIVATE_SENTINEL")
+        every { routeFixture.request.httpService() } throws IllegalArgumentException("ROUTE_PRIVATE_SENTINEL")
+
+        val sent = service.send(
+            SendHttpRequestFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "14"),
+            )
+        )
+        val routed = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "15"),
+                destination = HttpMessageRouteDestination.REPEATER,
+            )
+        )
+
+        listOf(sent, routed).forEach { result ->
+            assertEquals(HttpMessageActionStatus.BURP_ERROR, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        }
+        verify(exactly = 0) { api.http() }
+        verify(exactly = 0) { api.repeater() }
     }
 
     @Test
@@ -1078,11 +1115,36 @@ class HttpMessageActionsTest {
 
             assertEquals(HttpMessageActionStatus.OK, result.status)
             assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
-            assertTrue(result.error.orEmpty().contains("preview unavailable"))
+            assertTrue(result.error.orEmpty().contains("response preview could not be created"))
+            assertFalse(result.error.orEmpty().contains("preview unavailable"))
             assertEquals(null, result.response)
             verify(exactly = 1) { http.sendRequest(fixture.request, options) }
         } finally {
             unmockkStatic(RequestOptions::class)
+        }
+    }
+
+    @Test
+    fun `response preview cancellation propagates after the HTTP send`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(17)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            val envelope = mockk<HttpRequestResponse>()
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } returns envelope
+            every { envelope.response() } throws CancellationException("preview cancelled")
+
+            assertFailsWith<CancellationException> {
+                service.send(
+                    SendHttpRequestFromId(
+                        projectId = "project-123",
+                        ref = HttpMessageReference(HttpMessageSource.PROXY, "17"),
+                    )
+                )
+            }
+
+            verify(exactly = 1) { http.sendRequest(fixture.request, options) }
         }
     }
 
@@ -1173,7 +1235,7 @@ class HttpMessageActionsTest {
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
         assertTrue(result.error.orEmpty().contains(UNCERTAIN_RETRY_GUIDANCE))
-        assertTrue(result.error.orEmpty().contains("UI unavailable"))
+        assertFalse(result.error.orEmpty().contains("UI unavailable"))
         verify(exactly = 1) { intruder.sendToIntruder(fixture.request) }
     }
 

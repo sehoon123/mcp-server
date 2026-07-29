@@ -18,7 +18,6 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.SensitiveActionSecurity
-import net.portswigger.mcp.security.safeExceptionSummary
 import java.security.SecureRandom
 import java.time.Duration
 import java.time.Instant
@@ -29,7 +28,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 
 private const val MAX_ACTIVE_SCANNER_AUDITS = 8
 private const val MAX_RETAINED_SCANNER_AUDITS = 32
@@ -43,7 +42,40 @@ private const val MAX_SCANNER_TASK_ISSUE_LIMIT = 50
 private const val MAX_SCANNER_TASK_ID_CHARS = 128
 private const val MAX_SCANNER_STATUS_MESSAGE_CHARS = 512
 private const val SCANNER_CLEANUP_SHUTDOWN_MILLIS = 2_000L
+private const val MAX_RETAINED_RESULT_SNAPSHOT_ATTEMPTS = 16
 private val SCANNER_TASK_ID_PATTERN = Regex("scanner_audit_[0-9a-f]{32}")
+
+private data class ScannerProjectObservation(
+    val sequence: Long,
+    val projectId: String?,
+)
+
+private data class ScannerProjectSnapshot(
+    val projectId: String,
+    val boundaryGeneration: Long,
+)
+
+private data class ScannerRecordBoundaryResult(
+    val retained: Boolean,
+    val currentProjectId: String?,
+)
+
+private data class ScannerStatusObservationUpdate(
+    val state: ScannerAuditTaskState,
+    val cleanupReservationReleased: Boolean,
+)
+
+private data class ScannerIssueObservationUpdate(
+    val accepted: Boolean,
+    val count: Int?,
+)
+
+private data class ScannerRecordResultSnapshot(
+    val result: ScannerAuditResult,
+    val version: Long,
+)
+
+private class StaleScannerProjectObservationException : IllegalStateException()
 
 internal data class ScannerAuditRetentionPolicy(
     val unpublishedTaskRetention: Duration = Duration.ofMinutes(5),
@@ -83,7 +115,7 @@ data class ScannerAuditTarget(
 
 @Serializable
 data class StartScannerAuditFromIds(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Passive or focused active audit mode.")
     val mode: ScannerAuditMode,
@@ -93,7 +125,7 @@ data class StartScannerAuditFromIds(
 
 @Serializable
 data class GetScannerAudit(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Extension-owned Scanner task ID.", maxLength = 128, pattern = "^scanner_audit_[0-9a-f]{32}$")
     val taskId: String,
@@ -103,7 +135,7 @@ data class GetScannerAudit(
 
 @Serializable
 data class CancelScannerAudit(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Extension-owned Scanner task ID.", maxLength = 128, pattern = "^scanner_audit_[0-9a-f]{32}$")
     val taskId: String,
@@ -203,7 +235,9 @@ data class ScannerAuditTargetSummary(
 
 @Serializable
 data class ScannerAuditResult(
+    @JsonSchemaMetadata(description = "Outcome category; burp_error alone does not determine whether a Scanner side effect occurred.")
     val status: ScannerAuditToolStatus,
+    @JsonSchemaMetadata(description = "Authoritative Scanner side-effect state; uncertain must not be retried automatically.")
     val actionState: ScannerAuditActionState,
     val projectId: String?,
     val taskId: String? = null,
@@ -212,18 +246,26 @@ data class ScannerAuditResult(
     val statusMessage: String? = null,
     val startedAt: String? = null,
     val cancelledAt: String? = null,
-    val targets: List<ScannerAuditTargetSummary> = emptyList(),
-    val targetCount: Int = 0,
-    val insertionPointCount: Int = 0,
+    @JsonSchemaMetadata(description = "Validated audit targets retained by this extension; always present and possibly empty.")
+    val targets: List<ScannerAuditTargetSummary>,
+    @JsonSchemaMetadata(description = "Number of retained targets.", minimum = 0, maximum = 16)
+    val targetCount: Int,
+    @JsonSchemaMetadata(description = "Total selected insertion points across retained targets.", minimum = 0)
+    val insertionPointCount: Int,
     val auditedInsertionPointCount: Int? = null,
     val requestCount: Int? = null,
     val errorCount: Int? = null,
     val discoveredIssueCount: Int? = null,
-    val issues: List<ScannerIssueSummary> = emptyList(),
-    val issuesTruncated: Boolean = false,
-    val issuesAccessDenied: Boolean = false,
-    val issuesUnavailable: Boolean = false,
+    @JsonSchemaMetadata(description = "Bounded issue summaries requested for this status read; always present and possibly empty.")
+    val issues: List<ScannerIssueSummary>,
+    @JsonSchemaMetadata(description = "True when additional issue summaries were omitted by the result limit.")
+    val issuesTruncated: Boolean,
+    @JsonSchemaMetadata(description = "True when issue-summary access was denied; an empty issues list alone does not imply denial.")
+    val issuesAccessDenied: Boolean,
+    @JsonSchemaMetadata(description = "True when requested issue summaries could not be read because access failed technically, the audit was already cancelled, or Burp could not expose issue objects.")
+    val issuesUnavailable: Boolean,
     val errorTargetIndex: Int? = null,
+    @JsonSchemaMetadata(maxLength = MAX_STRUCTURED_TOOL_ERROR_CHARS)
     val error: String? = null,
 )
 
@@ -233,11 +275,16 @@ internal class ScannerAuditService(
     private val ticker: () -> Long = System::nanoTime,
     private val retention: ScannerAuditRetentionPolicy = ScannerAuditRetentionPolicy(),
     cleanupExecutor: ScheduledExecutorService? = newScannerCleanupExecutor(),
+    private val retainedResultPublicationHook: (() -> Unit)? = null,
 ) {
     private val records = ConcurrentHashMap<String, ScannerAuditRecord>()
     private val startMutex = Mutex()
     private val random = SecureRandom()
-    private val observedProjectId = AtomicReference<String?>()
+    private val projectObservationSequence = AtomicLong()
+    private val projectObservationLock = Any()
+    private var latestProjectObservationSequence = 0L
+    private var projectBoundaryGeneration = 0L
+    private var observedProject: ScannerProjectObservation? = null
     private val cleanupReservations = AtomicInteger()
     private val cleanupExecutor = cleanupExecutor
     private val cleanupLifecycle = Any()
@@ -269,7 +316,7 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ARGUMENT,
                 ScannerAuditActionState.NOT_STARTED,
-                input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                null,
                 input.mode,
                 "projectId is empty, too long, or contains control characters",
             )
@@ -278,7 +325,7 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ARGUMENT,
                 ScannerAuditActionState.NOT_STARTED,
-                input.projectId,
+                null,
                 input.mode,
                 "${input.mode.name.lowercase()} audit targets must contain between 1 and $targetLimit items",
             )
@@ -288,7 +335,7 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ARGUMENT,
                 ScannerAuditActionState.NOT_STARTED,
-                input.projectId,
+                null,
                 input.mode,
                 "audit targets must not contain duplicate references",
             )
@@ -314,15 +361,24 @@ internal class ScannerAuditService(
             currentCoroutineContext().ensureActive()
             val size = try {
                 scannerRequestBytes(message)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
+            } catch (e: ScannerAuditValidationException) {
                 return scannerAuditError(
                     ScannerAuditToolStatus.INVALID_ARGUMENT,
                     ScannerAuditActionState.NOT_STARTED,
                     input.projectId,
                     input.mode,
-                    e.message ?: "invalid request size",
+                    e.message.orEmpty(),
+                    index,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return scannerAuditError(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.NOT_STARTED,
+                    input.projectId,
+                    input.mode,
+                    "Burp could not read the Scanner target request size",
                     index,
                 )
             }
@@ -348,7 +404,7 @@ internal class ScannerAuditService(
                 )
             }
             val projectBeforeScope = try {
-                api.project().id()
+                captureProjectId()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -386,7 +442,7 @@ internal class ScannerAuditService(
                 )
             }
             val projectAfterScope = try {
-                api.project().id()
+                captureProjectId()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -434,13 +490,20 @@ internal class ScannerAuditService(
                         )
                     }
                     try {
-                        prepareInsertionPoints(message.request, selectors).also {
-                            totalInsertionPoints += it.ranges.size
-                            require(totalInsertionPoints <= MAX_TOTAL_SCANNER_INSERTION_POINTS) {
-                                "active audit targets can contain at most $MAX_TOTAL_SCANNER_INSERTION_POINTS total insertion points"
-                            }
+                        val resolved = prepareInsertionPoints(message.request, selectors)
+                        if (totalInsertionPoints + resolved.ranges.size > MAX_TOTAL_SCANNER_INSERTION_POINTS) {
+                            return scannerAuditError(
+                                ScannerAuditToolStatus.INVALID_ARGUMENT,
+                                ScannerAuditActionState.NOT_STARTED,
+                                input.projectId,
+                                input.mode,
+                                "active audit targets can contain at most $MAX_TOTAL_SCANNER_INSERTION_POINTS total insertion points",
+                                index,
+                            )
                         }
-                    } catch (e: IllegalArgumentException) {
+                        totalInsertionPoints += resolved.ranges.size
+                        resolved
+                    } catch (e: HttpInsertionPointValidationException) {
                         return scannerAuditError(
                             ScannerAuditToolStatus.INVALID_ARGUMENT,
                             ScannerAuditActionState.NOT_STARTED,
@@ -506,12 +569,28 @@ internal class ScannerAuditService(
             prepared += PreparedScannerAuditTarget(message, insertionPoints, requestResponse)
         }
 
-        val targetSummaries = prepared.map { it.summary() }
-        val review = buildScannerReview(input.mode, prepared)
+        val approvalMaterial = try {
+            Triple(
+                prepared.map { it.summary() },
+                buildScannerReview(input.mode, prepared),
+                buildScannerApprovalSummary(input.projectId, input.mode, prepared),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.BURP_ERROR,
+                ScannerAuditActionState.NOT_STARTED,
+                input.projectId,
+                input.mode,
+                "Burp could not prepare Scanner approval material",
+            )
+        }
+        val (targetSummaries, review, approvalSummary) = approvalMaterial
         val approved = try {
             SensitiveActionSecurity.checkPermission(
                 action = "start a focused ${input.mode.name.lowercase()} Scanner audit",
-                summary = buildScannerApprovalSummary(input.projectId, input.mode, prepared),
+                summary = approvalSummary,
                 reviewContent = review.content,
                 renderContentAsHttp = review.renderAsHttp,
                 api = api,
@@ -529,7 +608,7 @@ internal class ScannerAuditService(
             )
         }
         val projectAfterApproval = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -541,7 +620,6 @@ internal class ScannerAuditService(
                 "Burp could not recheck the project after Scanner approval: ${safeScannerAuditException(e)}",
             )
         }
-        observeProject(projectAfterApproval)
         if (projectAfterApproval != input.projectId) {
             return scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
@@ -561,6 +639,10 @@ internal class ScannerAuditService(
                 targets = targetSummaries,
                 targetCount = prepared.size,
                 insertionPointCount = targetSummaries.sumOf { it.insertionPointCount },
+                issues = emptyList(),
+                issuesTruncated = false,
+                issuesAccessDenied = false,
+                issuesUnavailable = false,
                 error = "Scanner audit denied by Burp Suite",
             )
         }
@@ -569,8 +651,8 @@ internal class ScannerAuditService(
         callContext.ensureActive()
         return startMutex.withLock {
             callContext.ensureActive()
-            val currentProjectId = try {
-                api.project().id()
+            var boundaryBeforeStart = try {
+                captureProject()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -582,12 +664,11 @@ internal class ScannerAuditService(
                     "Burp could not recheck the project before Scanner start: ${safeScannerAuditException(e)}",
                 )
             }
-            observeProject(currentProjectId)
-            if (currentProjectId != input.projectId) {
+            if (boundaryBeforeStart.projectId != input.projectId) {
                 return@withLock scannerAuditError(
                     ScannerAuditToolStatus.PROJECT_MISMATCH,
                     ScannerAuditActionState.NOT_STARTED,
-                    currentProjectId,
+                    boundaryBeforeStart.projectId,
                     input.mode,
                     "Burp project changed before the Scanner audit started",
                 )
@@ -619,7 +700,7 @@ internal class ScannerAuditService(
                     )
                 }
                 val projectAfterScopeRecheck = try {
-                    api.project().id()
+                    captureProject()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -632,11 +713,12 @@ internal class ScannerAuditService(
                         index,
                     )
                 }
-                if (projectAfterScopeRecheck != input.projectId) {
+                boundaryBeforeStart = projectAfterScopeRecheck
+                if (projectAfterScopeRecheck.projectId != input.projectId) {
                     return@withLock scannerAuditError(
                         ScannerAuditToolStatus.PROJECT_MISMATCH,
                         ScannerAuditActionState.NOT_STARTED,
-                        projectAfterScopeRecheck,
+                        projectAfterScopeRecheck.projectId,
                         input.mode,
                         "Burp project changed during final Scanner scope inspection",
                         index,
@@ -677,12 +759,11 @@ internal class ScannerAuditService(
                     throw e
                 }
                 auditScanner(input.mode, prepared.size, null, "start cancellation uncertain")
-                return@withLock scannerAuditError(
-                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    ScannerAuditActionState.UNCERTAIN,
-                    input.projectId,
-                    input.mode,
-                    uncertainExecutionError(
+                return@withLock uncertainStartWithoutHandleResult(
+                    projectId = input.projectId,
+                    mode = input.mode,
+                    callContext = callContext,
+                    error = uncertainExecutionError(
                         "Burp may have started the Scanner audit but did not return a task handle",
                         e,
                         preserveCancellation = false,
@@ -690,12 +771,11 @@ internal class ScannerAuditService(
                 )
             } catch (e: Exception) {
                 auditScanner(input.mode, prepared.size, null, "start execution uncertain")
-                return@withLock scannerAuditError(
-                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    ScannerAuditActionState.UNCERTAIN,
-                    input.projectId,
-                    input.mode,
-                    uncertainExecutionError(
+                return@withLock uncertainStartWithoutHandleResult(
+                    projectId = input.projectId,
+                    mode = input.mode,
+                    callContext = callContext,
+                    error = uncertainExecutionError(
                         "Burp may have started the Scanner audit but did not return a task handle",
                         e,
                     ),
@@ -711,8 +791,16 @@ internal class ScannerAuditService(
                 targets = targetSummaries,
                 startedAt = clock(),
                 startedTick = startedTick,
+                boundaryGeneration = boundaryBeforeStart.boundaryGeneration,
             )
-            records[taskId] = record
+            val attachment = attachRecordAtBoundary(record)
+            if (!attachment.retained) {
+                return@withLock startedRecordBoundaryFailure(
+                    record,
+                    attachment.currentProjectId,
+                    "Scanner audit started after its authenticated project boundary was superseded",
+                )
+            }
 
             try {
                 prepared.forEach { target ->
@@ -731,88 +819,99 @@ internal class ScannerAuditService(
                 if (!callContext.isActive) {
                     auditScanner(input.mode, prepared.size, taskId, "target submission cancelled by caller")
                     val deleted = cleanupOwnedAuditOnce(record)
-                    if (deleted) records.remove(taskId, record)
+                    if (deleted) detachRecord(record)
                     throw e
                 }
-                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "target submission cancellation uncertain")
-                return@withLock record.toResult(
-                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    actionState = ScannerAuditActionState.UNCERTAIN,
+                return@withLock uncertainStartedRecordResult(
+                    record = record,
+                    callContext = callContext,
                     error = uncertainExecutionError(
                         "Scanner audit started, but one or more targets may not have been submitted",
                         e,
                         preserveCancellation = false,
                     ),
+                    projectFailureSummary =
+                        "Scanner audit target submission became uncertain and the project boundary could not be rechecked",
+                    projectTransitionSummary =
+                        "Scanner audit target submission became uncertain while the Burp project changed",
                 )
             } catch (e: Exception) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "target submission uncertain")
-                return@withLock record.toResult(
-                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    actionState = ScannerAuditActionState.UNCERTAIN,
+                return@withLock uncertainStartedRecordResult(
+                    record = record,
+                    callContext = callContext,
                     error = uncertainExecutionError(
                         "Scanner audit started, but one or more targets may not have been submitted",
                         e,
                     ),
+                    projectFailureSummary =
+                        "Scanner audit target submission became uncertain and the project boundary could not be rechecked",
+                    projectTransitionSummary =
+                        "Scanner audit target submission became uncertain while the Burp project changed",
                 )
             }
 
             val projectAfterStart = try {
-                api.project().id()
+                captureProject()
             } catch (e: CancellationException) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
                 if (!callContext.isActive) {
                     auditScanner(input.mode, prepared.size, taskId, "post-start project check cancelled by caller")
                     val deleted = cleanupOwnedAuditOnce(record)
-                    if (deleted) records.remove(taskId, record)
+                    if (deleted) detachRecord(record)
                     throw e
                 }
-                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "post-start project check uncertain")
-                return@withLock record.toResult(
-                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    actionState = ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit started, but the project boundary could not be rechecked",
+                return@withLock startedRecordBoundaryFailure(
+                    record,
+                    null,
+                    "Scanner audit started, but the project boundary could not be rechecked",
+                    uncertainExecutionError(
+                        "Scanner audit started, but its returned task handle could not be safely retained",
                         e,
                         preserveCancellation = false,
                     ),
                 )
             } catch (e: Exception) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "post-start project check uncertain")
-                return@withLock record.toResult(
-                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    actionState = ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit started, but the project boundary could not be rechecked",
+                return@withLock startedRecordBoundaryFailure(
+                    record,
+                    null,
+                    "Scanner audit started, but the project boundary could not be rechecked",
+                    uncertainExecutionError(
+                        "Scanner audit started, but its returned task handle could not be safely retained",
                         e,
                         preserveCancellation = false,
                     ),
                 )
             }
-            if (projectAfterStart != input.projectId) {
+            if (projectAfterStart.projectId != input.projectId) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                record.markPublished(ticker())
                 auditScanner(input.mode, prepared.size, taskId, "project changed during start")
-                observeProject(projectAfterStart)
-                return@withLock record.toResult(
-                    status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    actionState = ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit started while the Burp project changed; reconcile the task manually and do not retry automatically",
-                    ),
+                return@withLock cancellationProjectTransition(
+                    record,
+                    projectAfterStart.projectId,
+                    "Scanner audit started while the Burp project changed",
                 )
             }
-            record.markPublished(ticker())
+            val publication = publishRecordAtBoundary(record)
+            if (!publication.retained) {
+                return@withLock startedRecordBoundaryFailure(
+                    record,
+                    publication.currentProjectId,
+                    "Scanner audit completed target submission after its authenticated project boundary was superseded",
+                )
+            }
             auditScanner(input.mode, prepared.size, taskId, "started")
-            record.toResult(
-                status = ScannerAuditToolStatus.OK,
-                actionState = ScannerAuditActionState.COMPLETED,
-            )
+            retainedRecordResult(record, "Scanner audit task was detached before its start result was published") {
+                record.toResult(
+                    status = ScannerAuditToolStatus.OK,
+                    actionState = ScannerAuditActionState.COMPLETED,
+                )
+            }
         }
     }
 
@@ -838,13 +937,30 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
                 ScannerAuditActionState.NOT_STARTED,
-                api.project().id(),
+                input.projectId,
                 error = "Scanner audit task belongs to a different Burp project",
             )
         }
+        val initialBoundary = currentRecordBoundary(record)
+        if (!initialBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                initialBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary",
+            )
+        }
 
-        if (record.lastState == ScannerAuditTaskState.CANCELLED) {
-            return record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+        val statusObservationSequence = record.nextStatusObservationSequence()
+        val stateBeforeProbe = record.lastState
+        if (stateBeforeProbe == ScannerAuditTaskState.CANCELLED) {
+            return retainedRecordResult(record, "Scanner audit task was detached before its status result was published") {
+                record.toResult(
+                    ScannerAuditToolStatus.OK,
+                    ScannerAuditActionState.COMPLETED,
+                    issuesRequested = issueLimit > 0,
+                    issuesUnavailable = issueLimit > 0,
+                )
+            }
         }
         val errors = ArrayList<String>(4)
         val statusMessage = runCatchingPreservingCancellation {
@@ -861,25 +977,36 @@ internal class ScannerAuditService(
         val errorCount = runCatchingPreservingCancellation { record.audit.errorCount() }
             .onFailure { errors += "error count unavailable: ${safeScannerAuditException(it.asException())}" }
             .getOrNull()
-        record.updateState(classifyTaskState(statusMessage, record.lastState), ticker())
-        record.lastStatusMessage = statusMessage
-        record.lastAuditedInsertionPointCount = auditedInsertionPointCount
-        record.lastRequestCount = requestCount
-        record.lastErrorCount = errorCount
+        val observedState = classifyTaskState(statusMessage, stateBeforeProbe)
+        val observation = record.updateObservation(
+            sequence = statusObservationSequence,
+            state = observedState,
+            now = ticker(),
+            statusMessage = statusMessage,
+            auditedInsertionPointCount = auditedInsertionPointCount,
+            requestCount = requestCount,
+            errorCount = errorCount,
+        )
+        if (observation.cleanupReservationReleased) cleanupReservations.decrementAndGet()
+        val effectiveState = observation.state
 
-        var issuesAllowed = if (issueLimit == 0) {
+        var issuePermissionDenied = false
+        var issueAccessUnavailable = issueLimit > 0 && effectiveState == ScannerAuditTaskState.CANCELLED
+        var issuesAllowed = if (issueLimit == 0 || effectiveState == ScannerAuditTaskState.CANCELLED) {
             false
         } else try {
-            DataAccessSecurity.checkDataAccessPermission(DataAccessType.SCANNER_ISSUES, config)
+            DataAccessSecurity.checkDataAccessPermission(DataAccessType.SCANNER_ISSUES, config).also { allowed ->
+                issuePermissionDenied = !allowed
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             errors += "issue access check failed: ${safeScannerAuditException(e)}"
+            issueAccessUnavailable = true
             false
         }
-        val issuePermissionDenied = issueLimit > 0 && !issuesAllowed
         val projectBeforeIssues = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -887,14 +1014,21 @@ internal class ScannerAuditService(
             null
         }
         if (projectBeforeIssues == null) {
+            if (issueLimit > 0) issueAccessUnavailable = true
             issuesAllowed = false
         } else if (projectBeforeIssues != record.projectId) {
-            return scannerAuditError(
-                ScannerAuditToolStatus.PROJECT_MISMATCH,
-                ScannerAuditActionState.NOT_STARTED,
+            return cancellationProjectTransition(
+                record,
                 projectBeforeIssues,
-                record.mode,
-                "Burp project changed while reading the Scanner audit",
+                "Scanner audit cleanup may have been scheduled while the project changed during a status read",
+            )
+        }
+        val preIssueBoundary = currentRecordBoundary(record)
+        if (!preIssueBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                preIssueBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary during a status read",
             )
         }
 
@@ -902,6 +1036,8 @@ internal class ScannerAuditService(
         var issues = emptyList<ScannerIssueSummary>()
         var truncated = false
         var issueWarning: String? = null
+        var acceptedIssueObservationSequence: Long? = null
+        var issueObservationSuperseded = false
         if (issuesAllowed) {
             try {
                 val allIssues = record.audit.issues()
@@ -913,48 +1049,75 @@ internal class ScannerAuditService(
                     }
                 }
                 truncated = allIssues.size > issues.size
-                record.lastIssueCount = issueCount
+                val issueObservation = record.updateIssueCount(statusObservationSequence, issueCount)
+                issueCount = issueObservation.count
+                if (issueObservation.accepted) {
+                    acceptedIssueObservationSequence = statusObservationSequence
+                } else {
+                    issueObservationSuperseded = true
+                    issues = emptyList()
+                    truncated = false
+                    issueWarning = "issues unavailable: superseded by a newer Scanner status observation"
+                }
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: UnsupportedOperationException) {
+                issueWarning = "issues unavailable: unsupported by this Burp runtime"
             } catch (e: Exception) {
                 issueWarning = "issues unavailable: ${safeScannerAuditException(e)}"
             }
         }
 
         val projectAfterIssues = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return scannerAuditError(
+            return record.toScrubbedResult(
                 ScannerAuditToolStatus.BURP_ERROR,
                 ScannerAuditActionState.NOT_STARTED,
-                record.projectId,
-                record.mode,
+                null,
                 "Burp could not recheck the project after reading Scanner audit issues: ${safeScannerAuditException(e)}",
             )
         }
         if (projectAfterIssues != record.projectId) {
-            return scannerAuditError(
-                ScannerAuditToolStatus.PROJECT_MISMATCH,
-                ScannerAuditActionState.NOT_STARTED,
+            return cancellationProjectTransition(
+                record,
                 projectAfterIssues,
-                record.mode,
-                "Burp project changed while Scanner audit issues were materialized",
+                "Scanner audit cleanup may have been scheduled while the project changed during issue materialization",
+            )
+        }
+        val finalBoundary = currentRecordBoundary(record)
+        if (!finalBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                finalBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary during issue materialization",
             )
         }
 
-        return record.toResult(
-            status = if (errors.isEmpty()) ScannerAuditToolStatus.OK else ScannerAuditToolStatus.BURP_ERROR,
-            actionState = ScannerAuditActionState.COMPLETED,
-            issues = issues,
-            discoveredIssueCount = issueCount ?: record.lastIssueCount,
-            issuesTruncated = truncated,
-            issuesAccessDenied = issuePermissionDenied,
-            issuesUnavailable = issueWarning != null,
-            error = (errors + listOfNotNull(issueWarning)).takeIf { it.isNotEmpty() }
-                ?.joinToString("; ")?.take(512),
-        )
+        return retainedRecordResult(record, "Scanner audit task was detached before its status result was published") {
+            val issueObservationCurrent = !issueObservationSuperseded &&
+                acceptedIssueObservationSequence?.let(record::isCurrentIssueObservation) != false
+            val publishedIssueWarning = if (issueObservationCurrent) {
+                issueWarning
+            } else {
+                "issues unavailable: superseded by a newer Scanner status observation"
+            }
+            record.toResult(
+                status = if (errors.isEmpty()) ScannerAuditToolStatus.OK else ScannerAuditToolStatus.BURP_ERROR,
+                actionState = ScannerAuditActionState.COMPLETED,
+                issues = issues.takeIf { issueObservationCurrent } ?: emptyList(),
+                discoveredIssueCount = issueCount.takeIf { issueObservationCurrent } ?: record.lastIssueCount,
+                issuesTruncated = truncated && issueObservationCurrent,
+                issuesAccessDenied = issuePermissionDenied,
+                issuesUnavailable = issueAccessUnavailable || publishedIssueWarning != null,
+                issuesRequested = issueLimit > 0,
+                preserveFailureAfterCancellation = true,
+                error = (errors + listOfNotNull(publishedIssueWarning)).takeIf { it.isNotEmpty() }
+                    ?.joinToString("; ")?.take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        }
     }
 
     suspend fun cancel(input: CancelScannerAudit, config: McpConfig): ScannerAuditResult {
@@ -970,12 +1133,22 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
                 ScannerAuditActionState.NOT_STARTED,
-                api.project().id(),
+                input.projectId,
                 error = "Scanner audit task belongs to a different Burp project",
             )
         }
+        val initialBoundary = currentRecordBoundary(record)
+        if (!initialBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                initialBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary before cancellation",
+            )
+        }
         if (record.lastState == ScannerAuditTaskState.CANCELLED) {
-            return record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+            return retainedRecordResult(record, "Scanner audit task was detached before its cancellation result was published") {
+                record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+            }
         }
 
         val approved = try {
@@ -988,144 +1161,413 @@ internal class ScannerAuditService(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            return record.toResult(
-                ScannerAuditToolStatus.BURP_ERROR,
-                ScannerAuditActionState.NOT_STARTED,
-                error = "Burp could not request Scanner cancellation approval: ${safeScannerAuditException(e)}",
-            )
+        } catch (_: Exception) {
+            val projectAfterFailure = try {
+                captureProjectId()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return record.toScrubbedResult(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.NOT_STARTED,
+                    null,
+                    "Burp could not safely establish the project after Scanner cancellation approval failed",
+                )
+            }
+            if (projectAfterFailure != record.projectId) {
+                return cancellationProjectTransition(
+                    record,
+                    projectAfterFailure,
+                    "Scanner audit cleanup may have been scheduled after cancellation approval failed during a project transition",
+                )
+            }
+            val approvalFailureBoundary = currentRecordBoundary(record)
+            if (!approvalFailureBoundary.retained) {
+                return retainedRecordBoundaryFailure(
+                    record,
+                    approvalFailureBoundary.currentProjectId,
+                    "Scanner audit task was detached after cancellation approval failed",
+                )
+            }
+            return retainedRecordResult(record, "Scanner audit task was detached after cancellation approval failed") {
+                record.toResult(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.NOT_STARTED,
+                    error = "Burp could not request Scanner cancellation approval",
+                )
+            }
         }
         val projectAfterApproval = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            return record.toResult(
+        } catch (_: Exception) {
+            return record.toScrubbedResult(
                 ScannerAuditToolStatus.BURP_ERROR,
                 ScannerAuditActionState.NOT_STARTED,
-                error = "Burp could not recheck the project after Scanner cancellation approval: ${safeScannerAuditException(e)}",
+                null,
+                "Burp could not safely recheck the project after Scanner cancellation approval",
             )
         }
-        observeProject(projectAfterApproval)
         if (projectAfterApproval != record.projectId) {
-            return scannerAuditError(
-                ScannerAuditToolStatus.PROJECT_MISMATCH,
-                ScannerAuditActionState.NOT_STARTED,
+            return cancellationProjectTransition(
+                record,
                 projectAfterApproval,
-                record.mode,
-                "Burp project changed during Scanner cancellation approval",
+                "Scanner audit cleanup may have been scheduled while the project changed during cancellation approval",
+            )
+        }
+        val postApprovalBoundary = currentRecordBoundary(record)
+        if (!postApprovalBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                postApprovalBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary during cancellation approval",
             )
         }
         if (!approved) {
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation denied")
-            return record.toResult(
-                ScannerAuditToolStatus.ACTION_DENIED,
-                ScannerAuditActionState.NOT_STARTED,
-                error = "Scanner audit cancellation denied by Burp Suite",
-            )
+            return retainedRecordResult(record, "Scanner audit task was detached before cancellation denial was published") {
+                record.toResult(
+                    ScannerAuditToolStatus.ACTION_DENIED,
+                    ScannerAuditActionState.NOT_STARTED,
+                    error = "Scanner audit cancellation denied by Burp Suite",
+                )
+            }
         }
 
         val callContext = currentCoroutineContext()
         callContext.ensureActive()
         val currentProjectId = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            return record.toResult(
+        } catch (_: Exception) {
+            return record.toScrubbedResult(
                 ScannerAuditToolStatus.BURP_ERROR,
                 ScannerAuditActionState.NOT_STARTED,
-                error = "Burp could not recheck the project before Scanner cancellation: ${safeScannerAuditException(e)}",
+                null,
+                "Burp could not safely recheck the project before Scanner cancellation",
             )
         }
-        observeProject(currentProjectId)
         if (currentProjectId != record.projectId) {
-            return scannerAuditError(
-                ScannerAuditToolStatus.PROJECT_MISMATCH,
-                ScannerAuditActionState.NOT_STARTED,
+            return cancellationProjectTransition(
+                record,
                 currentProjectId,
-                record.mode,
-                "Burp project changed before Scanner cancellation",
+                "Scanner audit cleanup may have been scheduled while the project changed before cancellation",
+            )
+        }
+        val preDeleteBoundary = currentRecordBoundary(record)
+        if (!preDeleteBoundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                preDeleteBoundary.currentProjectId,
+                "Scanner audit task was detached at a concurrent project boundary before cancellation",
             )
         }
         callContext.ensureActive()
         if (!record.claimCleanup()) {
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-            return record.toResult(
-                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                ScannerAuditActionState.UNCERTAIN,
-                error = uncertainExecutionError("Scanner audit cleanup was already attempted"),
-            )
+            return retainedRecordResult(record, "Scanner audit task was detached while cleanup was already in progress") {
+                record.toResult(
+                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                    ScannerAuditActionState.UNCERTAIN,
+                    error = uncertainExecutionError("Scanner audit cleanup was already attempted"),
+                )
+            }
         }
         return try {
-            record.audit.delete()
+            val reservationReleased = record.deleteAndMarkCancelled(ticker(), clock())
+            if (reservationReleased) cleanupReservations.decrementAndGet()
             val projectAfterDelete = try {
-                api.project().id()
+                captureProjectId()
             } catch (e: CancellationException) {
                 if (!callContext.isActive) throw e
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check uncertain")
-                return record.toResult(
-                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit may have been cancelled but the project boundary could not be rechecked",
-                        e,
-                        preserveCancellation = false,
-                    ),
+                val uncertainty = uncertainExecutionError(
+                    "Scanner audit may have been cancelled but the project boundary could not be rechecked",
+                    e,
+                    preserveCancellation = false,
+                )
+                record.retainActionUncertainty(uncertainty)
+                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check failed")
+                return record.toScrubbedResult(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.COMPLETED,
+                    null,
+                    uncertainty,
                 )
             } catch (e: Exception) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
-                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check uncertain")
-                return record.toResult(
-                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit may have been cancelled but the project boundary could not be rechecked",
-                        e,
-                        preserveCancellation = false,
-                    ),
+                val uncertainty = uncertainExecutionError(
+                    "Scanner audit may have been cancelled but the project boundary could not be rechecked",
+                    e,
+                    preserveCancellation = false,
+                )
+                record.retainActionUncertainty(uncertainty)
+                auditScanner(record.mode, record.targets.size, record.taskId, "post-cancellation project check failed")
+                return record.toScrubbedResult(
+                    ScannerAuditToolStatus.BURP_ERROR,
+                    ScannerAuditActionState.COMPLETED,
+                    null,
+                    uncertainty,
                 )
             }
             if (projectAfterDelete != record.projectId) {
                 record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
                 auditScanner(record.mode, record.targets.size, record.taskId, "project changed during cancellation")
-                observeProject(projectAfterDelete)
-                return record.toResult(
-                    ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                    ScannerAuditActionState.UNCERTAIN,
-                    error = uncertainExecutionError(
-                        "Scanner audit may have been cancelled while the Burp project changed; do not retry automatically",
-                    ),
+                return cancellationProjectTransition(
+                    record,
+                    projectAfterDelete,
+                    "Scanner audit may have been cancelled while the Burp project changed",
                 )
             }
-            record.updateState(ScannerAuditTaskState.CANCELLED, ticker())
-            record.cancelledAt = clock()
+            val postDeleteBoundary = currentRecordBoundary(record)
+            if (!postDeleteBoundary.retained) {
+                return retainedRecordBoundaryFailure(
+                    record,
+                    postDeleteBoundary.currentProjectId,
+                    "Scanner audit may have been cancelled while a concurrent project boundary detached its task",
+                )
+            }
             auditScanner(record.mode, record.targets.size, record.taskId, "cancelled")
-            record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+            retainedRecordResult(record, "Scanner audit task was detached before cancellation was published") {
+                record.toResult(ScannerAuditToolStatus.OK, ScannerAuditActionState.COMPLETED)
+            }
         } catch (e: CancellationException) {
+            val uncertainty = uncertainExecutionError(
+                "Scanner audit may have been cancelled",
+                e,
+                preserveCancellation = false,
+            )
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             if (!callContext.isActive) {
+                record.retainActionUncertainty(uncertainty)
                 auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted by caller")
                 throw e
             }
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation interrupted with uncertain outcome")
-            record.toResult(
-                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
-                ScannerAuditActionState.UNCERTAIN,
-                error = uncertainExecutionError(
-                    "Scanner audit may have been cancelled",
-                    e,
-                    preserveCancellation = false,
-                ),
-            )
+            uncertainCancellationRecordResult(record, callContext, uncertainty)
         } catch (e: Exception) {
             record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
             auditScanner(record.mode, record.targets.size, record.taskId, "cancellation uncertain")
+            uncertainCancellationRecordResult(
+                record,
+                callContext,
+                uncertainExecutionError("Scanner audit may have been cancelled", e),
+            )
+        }
+    }
+
+    private fun uncertainStartWithoutHandleResult(
+        projectId: String,
+        mode: ScannerAuditMode,
+        callContext: kotlin.coroutines.CoroutineContext,
+        error: String,
+    ): ScannerAuditResult {
+        val currentProjectId = try {
+            captureProjectId()
+        } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
+            return scannerAuditError(
+                status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                actionState = ScannerAuditActionState.UNCERTAIN,
+                projectId = null,
+                error = "$error; Burp could not safely recheck the project after the uncertain Scanner start"
+                    .take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        } catch (_: Exception) {
+            return scannerAuditError(
+                status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                actionState = ScannerAuditActionState.UNCERTAIN,
+                projectId = null,
+                error = "$error; Burp could not safely recheck the project after the uncertain Scanner start"
+                    .take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        }
+        if (currentProjectId != projectId) {
+            return scannerAuditError(
+                status = ScannerAuditToolStatus.PROJECT_MISMATCH,
+                actionState = ScannerAuditActionState.UNCERTAIN,
+                projectId = currentProjectId,
+                error = "$error; the Burp project changed before the uncertain Scanner start could be reconciled"
+                    .take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        }
+        callContext.ensureActive()
+        return scannerAuditError(
+            status = ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+            actionState = ScannerAuditActionState.UNCERTAIN,
+            projectId = projectId,
+            mode = mode,
+            error = error,
+        )
+    }
+
+    private fun cancellationProjectTransition(
+        record: ScannerAuditRecord,
+        currentProjectId: String,
+        summary: String,
+    ): ScannerAuditResult {
+        val error = uncertainExecutionError(summary)
+        record.retainActionUncertainty(error)
+        return record.toScrubbedResult(
+            ScannerAuditToolStatus.PROJECT_MISMATCH,
+            ScannerAuditActionState.UNCERTAIN,
+            currentProjectId,
+            error,
+        )
+    }
+
+    private fun retainedRecordBoundaryFailure(
+        record: ScannerAuditRecord,
+        currentProjectId: String?,
+        summary: String,
+    ): ScannerAuditResult {
+        val error = uncertainExecutionError(summary)
+        record.retainActionUncertainty(error)
+        return record.toScrubbedResult(
+            ScannerAuditToolStatus.PROJECT_MISMATCH,
+            ScannerAuditActionState.UNCERTAIN,
+            currentProjectId,
+            error,
+        )
+    }
+
+    private fun startedRecordBoundaryFailure(
+        record: ScannerAuditRecord,
+        currentProjectId: String?,
+        summary: String,
+        priorError: String? = null,
+    ): ScannerAuditResult {
+        record.updateState(ScannerAuditTaskState.UNKNOWN, ticker())
+        detachRecord(record)
+        val reserved = reserveCleanupSlot(record)
+        enqueueCleanup(record, "superseded project boundary", reserved)
+        val boundaryError = uncertainExecutionError(summary)
+        val error = if (priorError == null) {
+            boundaryError
+        } else {
+            "$priorError; $boundaryError".take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+        }
+        record.retainActionUncertainty(error)
+        auditScanner(record.mode, record.targets.size, record.taskId, "project boundary superseded")
+        return record.toScrubbedResult(
+            status = if (currentProjectId != null && currentProjectId != record.projectId) {
+                ScannerAuditToolStatus.PROJECT_MISMATCH
+            } else {
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN
+            },
+            actionState = ScannerAuditActionState.UNCERTAIN,
+            projectId = currentProjectId,
+            error = error,
+        )
+    }
+
+    private fun uncertainStartedRecordResult(
+        record: ScannerAuditRecord,
+        callContext: kotlin.coroutines.CoroutineContext,
+        error: String,
+        projectFailureSummary: String,
+        projectTransitionSummary: String,
+    ): ScannerAuditResult {
+        record.retainActionUncertainty(error)
+        val currentProject = try {
+            captureProject()
+        } catch (e: CancellationException) {
+            if (!callContext.isActive) {
+                val deleted = cleanupOwnedAuditOnce(record)
+                if (deleted) detachRecord(record)
+                throw e
+            }
+            return startedRecordBoundaryFailure(
+                record,
+                null,
+                projectFailureSummary,
+                "$error; ${safeScannerAuditException(e)}".take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        } catch (e: Exception) {
+            return startedRecordBoundaryFailure(
+                record,
+                null,
+                projectFailureSummary,
+                "$error; ${safeScannerAuditException(e)}".take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
+            )
+        }
+        if (currentProject.projectId != record.projectId) {
+            return cancellationProjectTransition(record, currentProject.projectId, projectTransitionSummary)
+        }
+        if (!callContext.isActive) {
+            val deleted = cleanupOwnedAuditOnce(record)
+            if (deleted) detachRecord(record)
+            callContext.ensureActive()
+        }
+        val publication = publishRecordAtBoundary(record)
+        if (!publication.retained) {
+            return startedRecordBoundaryFailure(record, publication.currentProjectId, projectTransitionSummary)
+        }
+        return retainedRecordResult(record, "Scanner audit task was detached before its uncertain start result was published") {
             record.toResult(
                 ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
                 ScannerAuditActionState.UNCERTAIN,
-                error = uncertainExecutionError("Scanner audit may have been cancelled", e),
+                error = error,
+            )
+        }
+    }
+
+    private fun uncertainCancellationRecordResult(
+        record: ScannerAuditRecord,
+        callContext: kotlin.coroutines.CoroutineContext,
+        error: String,
+    ): ScannerAuditResult {
+        record.retainActionUncertainty(error)
+        val currentProjectId = try {
+            captureProjectId()
+        } catch (e: CancellationException) {
+            if (!callContext.isActive) throw e
+            val projectError = uncertainExecutionError(
+                "Scanner audit cleanup became uncertain and the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+            )
+            return record.toScrubbedResult(
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                ScannerAuditActionState.UNCERTAIN,
+                null,
+                projectError,
+            )
+        } catch (e: Exception) {
+            val projectError = uncertainExecutionError(
+                "Scanner audit cleanup became uncertain and the project boundary could not be rechecked",
+                e,
+                preserveCancellation = false,
+            )
+            return record.toScrubbedResult(
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                ScannerAuditActionState.UNCERTAIN,
+                null,
+                projectError,
+            )
+        }
+        if (currentProjectId != record.projectId) {
+            return cancellationProjectTransition(
+                record,
+                currentProjectId,
+                "Scanner audit cleanup became uncertain while the Burp project changed",
+            )
+        }
+        val boundary = currentRecordBoundary(record)
+        if (!boundary.retained) {
+            return retainedRecordBoundaryFailure(
+                record,
+                boundary.currentProjectId,
+                "Scanner audit cleanup became uncertain while a concurrent project boundary detached its task",
+            )
+        }
+        return retainedRecordResult(record, "Scanner audit task was detached before its uncertain cancellation result was published") {
+            record.toResult(
+                ScannerAuditToolStatus.EXECUTION_UNCERTAIN,
+                ScannerAuditActionState.UNCERTAIN,
+                error = error,
             )
         }
     }
@@ -1135,7 +1577,7 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ARGUMENT,
                 ScannerAuditActionState.NOT_STARTED,
-                projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                null,
                 error = "projectId is empty, too long, or contains control characters",
             )
         }
@@ -1143,47 +1585,229 @@ internal class ScannerAuditService(
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ID,
                 ScannerAuditActionState.NOT_STARTED,
-                projectId,
+                null,
                 error = "taskId must be copied from start_scanner_audit_from_ids",
             )
         }
+        val matchingRecord = records[taskId]?.takeIf { it.projectId == projectId }
+        val taskMayRequireBoundaryCleanup = matchingRecord?.lastState?.isTerminal() == false
         val currentProjectId = try {
-            api.project().id()
+            captureProjectId()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return scannerAuditError(
+            val error = if (e is StaleScannerProjectObservationException) {
+                "Burp project observation was superseded by a newer concurrent boundary check"
+            } else {
+                "Burp could not read the current project"
+            }
+            return matchingRecord?.toScrubbedResult(
                 ScannerAuditToolStatus.BURP_ERROR,
                 ScannerAuditActionState.NOT_STARTED,
                 null,
-                error = "Burp could not read the current project: ${safeScannerAuditException(e)}",
+                error,
+            ) ?: scannerAuditError(
+                ScannerAuditToolStatus.BURP_ERROR,
+                ScannerAuditActionState.NOT_STARTED,
+                null,
+                error = error,
             )
         }
-        observeProject(currentProjectId)
         if (currentProjectId != projectId) {
-            return scannerAuditError(
+            val error = if (taskMayRequireBoundaryCleanup) {
+                uncertainExecutionError(
+                    "Scanner audit cleanup may have been scheduled when the current project changed",
+                )
+            } else {
+                "Scanner audit task belongs to a different Burp project"
+            }
+            if (taskMayRequireBoundaryCleanup) matchingRecord?.retainActionUncertainty(error)
+            return matchingRecord?.toScrubbedResult(
+                ScannerAuditToolStatus.PROJECT_MISMATCH,
+                if (taskMayRequireBoundaryCleanup) ScannerAuditActionState.UNCERTAIN else ScannerAuditActionState.NOT_STARTED,
+                currentProjectId,
+                error,
+            ) ?: scannerAuditError(
                 ScannerAuditToolStatus.PROJECT_MISMATCH,
                 ScannerAuditActionState.NOT_STARTED,
                 currentProjectId,
-                error = "Scanner audit task belongs to a different Burp project",
+                error = error,
             )
         }
         return null
     }
 
-    private fun observeProject(currentProjectId: String) {
-        val previous = observedProjectId.getAndSet(currentProjectId)
-        if (previous == null || previous == currentProjectId) return
+    private fun captureProjectId(): String = captureProject().projectId
 
-        detachRecords { it.projectId != currentProjectId }
-            .forEach { (record, reserved) -> enqueueCleanup(record, "project transition", reserved) }
+    private fun captureProject(): ScannerProjectSnapshot {
+        val sequence = projectObservationSequence.incrementAndGet()
+        val projectId = try {
+            api.project().id()
+        } catch (e: CancellationException) {
+            supersedeFailedProjectObservation(sequence)
+            throw e
+        } catch (e: Exception) {
+            supersedeFailedProjectObservation(sequence)
+            throw e
+        }
+        return observeProject(ScannerProjectObservation(sequence, projectId))
+            ?: throw StaleScannerProjectObservationException()
     }
 
-    /** Detaches every retained task synchronously at the authenticated project boundary. */
+    /**
+     * Advances the ordering watermark and invalidates in-flight attachment tokens. A failed accessor establishes no
+     * project identity, but an older read or start must not become authoritative after the newer failure returned.
+     * Existing retained records stay inaccessible to that failed request and can be reconciled by a later safe capture.
+     */
+    private fun supersedeFailedProjectObservation(sequence: Long) {
+        synchronized(projectObservationLock) {
+            if (sequence > latestProjectObservationSequence) {
+                latestProjectObservationSequence = sequence
+                projectBoundaryGeneration++
+            }
+        }
+    }
+
+    private fun observeProject(observation: ScannerProjectObservation): ScannerProjectSnapshot? {
+        var detached = emptyList<Pair<ScannerAuditRecord, Boolean>>()
+        val snapshot = synchronized(projectObservationLock) {
+            if (observation.sequence <= latestProjectObservationSequence) return@synchronized null
+            latestProjectObservationSequence = observation.sequence
+            val previousProjectId = observedProject?.projectId
+            val currentProjectId = requireNotNull(observation.projectId)
+            if (previousProjectId != null && previousProjectId != currentProjectId) {
+                projectBoundaryGeneration++
+                detached = detachRecordsAtBoundary { it.projectId != currentProjectId }
+            }
+            observedProject = observation
+            ScannerProjectSnapshot(currentProjectId, projectBoundaryGeneration)
+        }
+        detached.forEach { (record, provisional) ->
+            enqueueBoundaryCleanup(record, "project transition", provisional)
+        }
+        return snapshot
+    }
+
+    private fun attachRecordAtBoundary(record: ScannerAuditRecord): ScannerRecordBoundaryResult =
+        synchronized(projectObservationLock) {
+            val currentProjectId = observedProject?.projectId
+            val retained = currentProjectId == record.projectId &&
+                projectBoundaryGeneration == record.boundaryGeneration
+            if (retained) {
+                records[record.taskId] = record
+                record.markAttached()
+            }
+            ScannerRecordBoundaryResult(retained, currentProjectId)
+        }
+
+    private fun publishRecordAtBoundary(record: ScannerAuditRecord): ScannerRecordBoundaryResult {
+        val boundary = synchronized(projectObservationLock) {
+            val currentProjectId = observedProject?.projectId
+            ScannerRecordBoundaryResult(
+                retained = currentProjectId == record.projectId &&
+                    projectBoundaryGeneration == record.boundaryGeneration &&
+                    records[record.taskId] === record &&
+                    record.isAttached(),
+                currentProjectId = currentProjectId,
+            )
+        }
+        if (boundary.retained) record.markPublished(ticker())
+        return boundary
+    }
+
+    private fun currentRecordBoundary(record: ScannerAuditRecord): ScannerRecordBoundaryResult =
+        synchronized(projectObservationLock) {
+            val currentProjectId = observedProject?.projectId
+            ScannerRecordBoundaryResult(
+                retained = currentProjectId == record.projectId &&
+                    records[record.taskId] === record &&
+                    record.isAttached(),
+                currentProjectId = currentProjectId,
+            )
+        }
+
+    /**
+     * Publishes only a record snapshot that remained current through the final boundary check.
+     * A bounded retry canonicalizes cancellation or newer telemetry that committed while the
+     * project identity was being checked, without nesting the project and record monitors.
+     */
+    private fun retainedRecordResult(
+        record: ScannerAuditRecord,
+        boundaryFailureSummary: String,
+        result: () -> ScannerAuditResult,
+    ): ScannerAuditResult {
+        repeat(MAX_RETAINED_RESULT_SNAPSHOT_ATTEMPTS) {
+            val snapshot = record.snapshotResult(result)
+            val boundary = currentRecordBoundary(record)
+            if (!boundary.retained) {
+                return retainedRecordBoundaryFailure(record, boundary.currentProjectId, boundaryFailureSummary)
+            }
+            retainedResultPublicationHook?.invoke()
+            if (record.resultVersionMatches(snapshot.version) && record.isAttached()) return snapshot.result
+        }
+
+        val boundary = currentRecordBoundary(record)
+        if (!boundary.retained) {
+            return retainedRecordBoundaryFailure(record, boundary.currentProjectId, boundaryFailureSummary)
+        }
+        val error = uncertainExecutionError(
+            "Scanner audit state changed concurrently before result publication; reconcile task status before retrying",
+        )
+        record.retainActionUncertainty(error)
+        return record.toScrubbedResult(
+            ScannerAuditToolStatus.BURP_ERROR,
+            ScannerAuditActionState.UNCERTAIN,
+            boundary.currentProjectId,
+            error,
+        )
+    }
+
+    /** Detaches every retained task atomically with the authenticated project-boundary tombstone. */
     fun resetForProjectBoundary() {
-        observedProjectId.set(null)
-        detachRecords { true }
-            .forEach { (record, reserved) -> enqueueCleanup(record, "project transition", reserved) }
+        val detached = synchronized(projectObservationLock) {
+            val sequence = projectObservationSequence.incrementAndGet()
+            latestProjectObservationSequence = sequence
+            projectBoundaryGeneration++
+            observedProject = ScannerProjectObservation(sequence, null)
+            detachRecordsAtBoundary { true }
+        }
+        detached.forEach { (record, provisional) ->
+            enqueueBoundaryCleanup(record, "project transition", provisional)
+        }
+    }
+
+    /** Invalidates result publication before removing the record; it never enters the record monitor. */
+    private fun detachRecord(record: ScannerAuditRecord): Boolean {
+        record.markDetached()
+        return records.remove(record.taskId, record)
+    }
+
+    /** Called only while holding projectObservationLock; reserves capacity without entering the record monitor. */
+    private fun detachRecordsAtBoundary(
+        predicate: (ScannerAuditRecord) -> Boolean,
+    ): List<Pair<ScannerAuditRecord, Boolean>> = buildList {
+        records.values.forEach { record ->
+            if (!predicate(record)) return@forEach
+            val provisional = !record.lastState.isTerminal()
+            if (provisional) cleanupReservations.incrementAndGet()
+            if (!detachRecord(record)) {
+                if (provisional) cleanupReservations.decrementAndGet()
+                return@forEach
+            }
+            add(record to provisional)
+        }
+    }
+
+    private fun enqueueBoundaryCleanup(record: ScannerAuditRecord, reason: String, provisional: Boolean) {
+        if (!provisional) {
+            enqueueCleanup(record, reason)
+            return
+        }
+        if (!record.reserveCleanup()) {
+            cleanupReservations.decrementAndGet()
+            return
+        }
+        enqueueCleanup(record, reason, slotReserved = true)
     }
 
     private fun detachRecords(
@@ -1192,7 +1816,7 @@ internal class ScannerAuditService(
         records.values.forEach { record ->
             if (!predicate(record)) return@forEach
             val reserved = reserveCleanupSlot(record)
-            if (records.remove(record.taskId, record) || reserved) add(record to reserved)
+            if (detachRecord(record) || reserved) add(record to reserved)
         }
     }
 
@@ -1203,6 +1827,7 @@ internal class ScannerAuditService(
             val reason = record.expirationReason(now, retention)
             if (reason != null) {
                 expired = Triple(record, reason, reserveCleanupSlot(record))
+                record.markDetached()
                 null
             } else {
                 record.markObserved(now)
@@ -1221,6 +1846,7 @@ internal class ScannerAuditService(
                 val reason = record.expirationReason(now, retention)
                 if (reason != null) {
                     expired += Triple(record, reason, reserveCleanupSlot(record))
+                    record.markDetached()
                     null
                 } else {
                     record
@@ -1235,30 +1861,45 @@ internal class ScannerAuditService(
         cleanupExpired()
         records.values.forEach { record ->
             if (!record.lastState.isTerminal()) {
+                val sequence = record.nextStatusObservationSequence()
+                val stateBeforeProbe = record.lastState
                 val status = runCatchingPreservingCancellation {
                     record.audit.statusMessage().take(MAX_SCANNER_STATUS_MESSAGE_CHARS)
                 }.getOrNull()
                 if (status != null) {
-                    record.lastStatusMessage = status
-                    record.updateState(classifyTaskState(status, record.lastState), ticker())
+                    val reservationReleased = record.updateStatusObservation(
+                        sequence,
+                        classifyTaskState(status, stateBeforeProbe),
+                        ticker(),
+                        status,
+                    )
+                    if (reservationReleased) cleanupReservations.decrementAndGet()
                 }
             }
         }
         if (records.size < MAX_RETAINED_SCANNER_AUDITS) return
         val removable = records.values.filter { it.lastState.isTerminal() }.sortedBy { it.startedAt }
         val removeCount = (records.size - MAX_RETAINED_SCANNER_AUDITS + 1).coerceAtLeast(0)
-        removable.take(removeCount).forEach { records.remove(it.taskId, it) }
+        removable.take(removeCount).forEach(::detachRecord)
     }
 
     private fun reserveCleanupSlot(record: ScannerAuditRecord): Boolean {
-        if (record.lastState.isTerminal() || !record.reserveCleanup()) return false
+        if (!record.reserveCleanup()) return false
         cleanupReservations.incrementAndGet()
         return true
     }
 
+    private fun completeCleanup(record: ScannerAuditRecord) {
+        if (record.completeCleanup()) cleanupReservations.decrementAndGet()
+    }
+
+    private fun releaseCleanupReservation(record: ScannerAuditRecord) {
+        if (record.releaseCleanupReservation()) cleanupReservations.decrementAndGet()
+    }
+
     private fun enqueueCleanup(record: ScannerAuditRecord, reason: String, slotReserved: Boolean = false) {
         if (record.lastState.isTerminal()) {
-            if (slotReserved) cleanupReservations.decrementAndGet()
+            if (slotReserved) releaseCleanupReservation(record)
             return
         }
         if (!slotReserved && !reserveCleanupSlot(record)) return
@@ -1266,7 +1907,7 @@ internal class ScannerAuditService(
         val targetCount = record.targets.size
         val taskId = record.taskId
         if (!record.claimCleanup()) {
-            auditScanner(mode, targetCount, taskId, "$reason cleanup unresolved")
+            auditScanner(mode, targetCount, taskId, "$reason cleanup already claimed")
             return
         }
         val audit = record.audit
@@ -1277,7 +1918,7 @@ internal class ScannerAuditService(
             } catch (_: Exception) {
                 false
             }
-            if (completed) cleanupReservations.decrementAndGet()
+            if (completed) completeCleanup(record)
             val outcome = if (completed) "$reason cleanup completed" else "$reason cleanup unresolved"
             auditScanner(mode, targetCount, taskId, outcome)
         }
@@ -1301,6 +1942,7 @@ internal class ScannerAuditService(
         if (!record.claimCleanup()) return false
         return try {
             record.audit.delete()
+            completeCleanup(record)
             true
         } catch (_: Exception) {
             false
@@ -1423,9 +2065,12 @@ private class ScannerAuditRecord(
     val targets: List<ScannerAuditTargetSummary>,
     val startedAt: Instant,
     private val startedTick: Long,
+    val boundaryGeneration: Long,
 ) {
-    private val cleanupClaimed = AtomicBoolean()
-    private val cleanupReserved = AtomicBoolean()
+    private var cleanupClaimed = false
+    private var cleanupReserved = false
+    private var cleanupCompleted = false
+    private val attached = AtomicBoolean(false)
     @Volatile
     private var published = false
     @Volatile
@@ -1436,34 +2081,167 @@ private class ScannerAuditRecord(
     var lastState: ScannerAuditTaskState = ScannerAuditTaskState.STARTING
     @Volatile
     var lastStatusMessage: String? = null
+        private set
     @Volatile
     var lastAuditedInsertionPointCount: Int? = null
+        private set
     @Volatile
     var lastRequestCount: Int? = null
+        private set
     @Volatile
     var lastErrorCount: Int? = null
+        private set
     @Volatile
     var lastIssueCount: Int? = null
+        private set
     @Volatile
     var cancelledAt: Instant? = null
+        private set
+    @Volatile
+    private var unresolvedActionError: String? = null
+    private val statusObservationSequence = AtomicLong()
+    private var lastAppliedStatusObservationSequence = 0L
+    private var lastAppliedIssueObservationSequence = 0L
+    private var resultVersion = 0L
 
+    fun markAttached() {
+        attached.set(true)
+    }
+
+    fun markDetached() {
+        attached.set(false)
+    }
+
+    fun isAttached(): Boolean = attached.get()
+
+    @Synchronized
     fun markPublished(now: Long) {
-        lastObservedTick = now
+        if (now > lastObservedTick) lastObservedTick = now
         published = true
     }
 
+    @Synchronized
     fun markObserved(now: Long) {
-        lastObservedTick = now
+        if (now > lastObservedTick) lastObservedTick = now
     }
+
+    fun nextStatusObservationSequence(): Long = statusObservationSequence.incrementAndGet()
 
     @Synchronized
     fun updateState(state: ScannerAuditTaskState, now: Long) {
+        if (updateStateLocked(state, now)) {
+            if (lastState == ScannerAuditTaskState.CANCELLED) clearCancelledTelemetryLocked()
+            resultVersion++
+        }
+    }
+
+    @Synchronized
+    fun updateObservation(
+        sequence: Long,
+        state: ScannerAuditTaskState,
+        now: Long,
+        statusMessage: String?,
+        auditedInsertionPointCount: Int?,
+        requestCount: Int?,
+        errorCount: Int?,
+    ): ScannerStatusObservationUpdate {
+        if (sequence <= lastAppliedStatusObservationSequence) {
+            return ScannerStatusObservationUpdate(lastState, cleanupReservationReleased = false)
+        }
+        lastAppliedStatusObservationSequence = sequence
+        if (!updateStateLocked(state, now)) {
+            resultVersion++
+            return ScannerStatusObservationUpdate(lastState, cleanupReservationReleased = false)
+        }
+        if (lastState == ScannerAuditTaskState.CANCELLED) {
+            clearCancelledTelemetryLocked()
+        } else {
+            lastStatusMessage = statusMessage
+            lastAuditedInsertionPointCount = auditedInsertionPointCount
+            lastRequestCount = requestCount
+            lastErrorCount = errorCount
+        }
+        resultVersion++
+        return ScannerStatusObservationUpdate(lastState, releaseReservedTerminalCleanupLocked())
+    }
+
+    @Synchronized
+    fun updateStatusObservation(
+        sequence: Long,
+        state: ScannerAuditTaskState,
+        now: Long,
+        statusMessage: String,
+    ): Boolean {
+        if (sequence <= lastAppliedStatusObservationSequence) return false
+        lastAppliedStatusObservationSequence = sequence
+        if (!updateStateLocked(state, now)) {
+            resultVersion++
+            return false
+        }
+        if (lastState == ScannerAuditTaskState.CANCELLED) {
+            clearCancelledTelemetryLocked()
+        } else {
+            lastStatusMessage = statusMessage
+        }
+        resultVersion++
+        return releaseReservedTerminalCleanupLocked()
+    }
+
+    @Synchronized
+    fun updateIssueCount(sequence: Long, issueCount: Int): ScannerIssueObservationUpdate {
+        if (
+            lastState == ScannerAuditTaskState.CANCELLED ||
+            sequence < lastAppliedStatusObservationSequence ||
+            sequence <= lastAppliedIssueObservationSequence
+        ) {
+            return ScannerIssueObservationUpdate(accepted = false, count = lastIssueCount)
+        }
+        lastAppliedIssueObservationSequence = sequence
+        lastIssueCount = issueCount
+        resultVersion++
+        return ScannerIssueObservationUpdate(accepted = true, count = lastIssueCount)
+    }
+
+    @Synchronized
+    fun markCancelled(now: Long, at: Instant) {
+        markCancelledLocked(now, at)
+    }
+
+    /** Holds the record monitor across Burp delete success and authoritative cancellation publication. */
+    @Synchronized
+    fun deleteAndMarkCancelled(now: Long, at: Instant): Boolean {
+        audit.delete()
+        val reservationReleased = completeCleanupLocked()
+        markCancelledLocked(now, at)
+        return reservationReleased
+    }
+
+    private fun markCancelledLocked(now: Long, at: Instant) {
+        updateStateLocked(ScannerAuditTaskState.CANCELLED, now)
+        cancelledAt = at
+        clearCancelledTelemetryLocked()
+        resultVersion++
+    }
+
+    private fun clearCancelledTelemetryLocked() {
+        lastStatusMessage = null
+        lastAuditedInsertionPointCount = null
+        lastRequestCount = null
+        lastErrorCount = null
+        lastIssueCount = null
+    }
+
+    private fun updateStateLocked(state: ScannerAuditTaskState, now: Long): Boolean {
+        if (lastState == ScannerAuditTaskState.CANCELLED && state != ScannerAuditTaskState.CANCELLED) return false
+        if (lastState.isTerminal() && !state.isTerminal()) return false
         lastState = state
         if (state.isTerminal()) {
             if (terminalTick == null) terminalTick = now
         } else {
             terminalTick = null
         }
+        if (state == ScannerAuditTaskState.CANCELLED) unresolvedActionError = null
+        return true
     }
 
     fun expirationReason(now: Long, policy: ScannerAuditRetentionPolicy): ScannerRecordExpiration? {
@@ -1485,10 +2263,103 @@ private class ScannerAuditRecord(
         return null
     }
 
-    fun claimCleanup(): Boolean = cleanupClaimed.compareAndSet(false, true)
+    @Synchronized
+    fun claimCleanup(): Boolean {
+        if (cleanupClaimed || cleanupCompleted) return false
+        cleanupClaimed = true
+        return true
+    }
 
-    fun reserveCleanup(): Boolean = cleanupReserved.compareAndSet(false, true)
+    @Synchronized
+    fun reserveCleanup(): Boolean {
+        if (lastState.isTerminal() || cleanupCompleted || cleanupReserved) return false
+        cleanupReserved = true
+        return true
+    }
 
+    /** Returns true when the caller must release this record's global capacity reservation. */
+    @Synchronized
+    fun completeCleanup(): Boolean = completeCleanupLocked()
+
+    private fun completeCleanupLocked(): Boolean {
+        cleanupCompleted = true
+        if (!cleanupReserved) return false
+        cleanupReserved = false
+        return true
+    }
+
+    /** A detached task that is now definitively terminal no longer consumes active cleanup capacity. */
+    private fun releaseReservedTerminalCleanupLocked(): Boolean {
+        if (!lastState.isTerminal() || !cleanupReserved) return false
+        cleanupCompleted = true
+        cleanupReserved = false
+        return true
+    }
+
+    @Synchronized
+    fun releaseCleanupReservation(): Boolean {
+        if (!cleanupReserved) return false
+        cleanupReserved = false
+        return true
+    }
+
+    @Synchronized
+    fun retainActionUncertainty(error: String) {
+        if (lastState != ScannerAuditTaskState.CANCELLED) {
+            val bounded = error.take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+            if (unresolvedActionError != bounded) {
+                unresolvedActionError = bounded
+                resultVersion++
+            }
+        }
+    }
+
+    @Synchronized
+    fun snapshotResult(result: () -> ScannerAuditResult): ScannerRecordResultSnapshot =
+        ScannerRecordResultSnapshot(result(), resultVersion)
+
+    @Synchronized
+    fun resultVersionMatches(version: Long): Boolean = resultVersion == version
+
+    @Synchronized
+    fun isCurrentIssueObservation(sequence: Long): Boolean =
+        lastState != ScannerAuditTaskState.CANCELLED &&
+            sequence == lastAppliedStatusObservationSequence &&
+            sequence == lastAppliedIssueObservationSequence
+
+    @Synchronized
+    fun toScrubbedResult(
+        status: ScannerAuditToolStatus,
+        actionState: ScannerAuditActionState,
+        projectId: String?,
+        error: String,
+    ): ScannerAuditResult {
+        val cancellationResolved = lastState == ScannerAuditTaskState.CANCELLED
+        val retainedError = unresolvedActionError.takeUnless { cancellationResolved }
+        val effectiveActionState = when {
+            cancellationResolved -> ScannerAuditActionState.COMPLETED
+            retainedError != null -> ScannerAuditActionState.UNCERTAIN
+            else -> actionState
+        }
+        val effectiveError = when {
+            cancellationResolved && status == ScannerAuditToolStatus.PROJECT_MISMATCH ->
+                "Scanner audit cancellation completed, but the Burp project changed before this request completed"
+            cancellationResolved ->
+                "Scanner audit cancellation completed, but Burp could not safely establish the current project for this request"
+            retainedError == null || retainedError == error -> error
+            else -> "$retainedError; $error"
+        }.take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+        return scannerAuditError(
+            status = status,
+            actionState = effectiveActionState,
+            projectId = projectId,
+            error = effectiveError,
+        ).copy(
+            taskState = lastState.takeIf { cancellationResolved || retainedError != null },
+        )
+    }
+
+    @Synchronized
     fun toResult(
         status: ScannerAuditToolStatus,
         actionState: ScannerAuditActionState,
@@ -1497,38 +2368,74 @@ private class ScannerAuditRecord(
         issuesTruncated: Boolean = false,
         issuesAccessDenied: Boolean = false,
         issuesUnavailable: Boolean = false,
+        issuesRequested: Boolean = false,
+        preserveFailureAfterCancellation: Boolean = false,
         error: String? = null,
-    ) = ScannerAuditResult(
-        status = status,
-        actionState = actionState,
-        projectId = projectId,
-        taskId = taskId,
-        mode = mode,
-        taskState = lastState,
-        statusMessage = lastStatusMessage,
-        startedAt = startedAt.toString(),
-        cancelledAt = cancelledAt?.toString(),
-        targets = targets,
-        targetCount = targets.size,
-        insertionPointCount = targets.sumOf { it.insertionPointCount },
-        auditedInsertionPointCount = lastAuditedInsertionPointCount,
-        requestCount = lastRequestCount,
-        errorCount = lastErrorCount,
-        discoveredIssueCount = discoveredIssueCount,
-        issues = issues,
-        issuesTruncated = issuesTruncated,
-        issuesAccessDenied = issuesAccessDenied,
-        issuesUnavailable = issuesUnavailable,
-        error = error?.take(512),
-    )
+    ): ScannerAuditResult {
+        val cancellationResolved = lastState == ScannerAuditTaskState.CANCELLED
+        if (actionState == ScannerAuditActionState.UNCERTAIN && !cancellationResolved) {
+            val bounded = (error ?: uncertainExecutionError("Scanner audit side-effect state remains uncertain"))
+                .take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+            if (unresolvedActionError != bounded) {
+                unresolvedActionError = bounded
+                resultVersion++
+            }
+        }
+        val retainedError = unresolvedActionError.takeUnless { cancellationResolved }
+        val independentFailure = cancellationResolved && preserveFailureAfterCancellation &&
+            status == ScannerAuditToolStatus.BURP_ERROR
+        val effectiveStatus = when {
+            independentFailure -> ScannerAuditToolStatus.BURP_ERROR
+            cancellationResolved -> ScannerAuditToolStatus.OK
+            retainedError != null -> ScannerAuditToolStatus.EXECUTION_UNCERTAIN
+            else -> status
+        }
+        val effectiveActionState = when {
+            cancellationResolved -> ScannerAuditActionState.COMPLETED
+            retainedError != null -> ScannerAuditActionState.UNCERTAIN
+            else -> actionState
+        }
+        val effectiveError = when {
+            independentFailure -> error
+            cancellationResolved -> null
+            retainedError == null -> error
+            error == null || error == retainedError -> retainedError
+            else -> "$retainedError; $error"
+        }?.take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+        return ScannerAuditResult(
+            status = effectiveStatus,
+            actionState = effectiveActionState,
+            projectId = projectId,
+            taskId = taskId,
+            mode = mode,
+            taskState = lastState,
+            statusMessage = lastStatusMessage,
+            startedAt = startedAt.toString(),
+            cancelledAt = cancelledAt?.toString(),
+            targets = targets,
+            targetCount = targets.size,
+            insertionPointCount = targets.sumOf { it.insertionPointCount },
+            auditedInsertionPointCount = lastAuditedInsertionPointCount,
+            requestCount = lastRequestCount,
+            errorCount = lastErrorCount,
+            discoveredIssueCount = discoveredIssueCount.takeUnless { cancellationResolved },
+            issues = issues.takeUnless { cancellationResolved } ?: emptyList(),
+            issuesTruncated = issuesTruncated && !cancellationResolved,
+            issuesAccessDenied = issuesAccessDenied && !cancellationResolved,
+            issuesUnavailable = if (cancellationResolved) issuesRequested else issuesUnavailable,
+            error = effectiveError,
+        )
+    }
 }
+
+private class ScannerAuditValidationException(message: String) : IllegalArgumentException(message)
 
 private fun scannerRequestBytes(message: ResolvedHttpMessage): Int {
     val header = message.request.bodyOffset()
     val body = message.request.body().length()
-    require(header >= 0 && body >= 0) { "request reported an invalid byte length" }
+    if (header < 0 || body < 0) throw ScannerAuditValidationException("request reported an invalid byte length")
     val total = header.toLong() + body.toLong()
-    require(total <= Int.MAX_VALUE) { "request is too large" }
+    if (total > Int.MAX_VALUE) throw ScannerAuditValidationException("request is too large")
     return total.toInt()
 }
 
@@ -1578,15 +2485,27 @@ private fun scannerAuditError(
 ) = ScannerAuditResult(
     status = status,
     actionState = actionState,
-    projectId = projectId,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     mode = mode,
+    targets = emptyList(),
+    targetCount = 0,
+    insertionPointCount = 0,
+    issues = emptyList(),
+    issuesTruncated = false,
+    issuesAccessDenied = false,
+    issuesUnavailable = false,
     errorTargetIndex = errorTargetIndex,
-    error = error.take(512),
+    error = error.take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
 )
 
 private fun validProjectId(value: String): Boolean =
     value.isNotEmpty() && value.length <= MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && value.none(Char::isISOControl)
 
-private fun safeScannerAuditException(error: Exception): String = safeExceptionSummary(error)
+private fun safeScannerAuditException(error: Exception): String =
+    if (error is StaleScannerProjectObservationException) {
+        "project observation superseded by a newer boundary check"
+    } else {
+        "internal Burp API failure"
+    }
 
 private fun Throwable.asException(): Exception = this as? Exception ?: RuntimeException(message, this)

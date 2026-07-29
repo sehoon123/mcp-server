@@ -30,7 +30,7 @@ data class ScopeTarget(
 
 @Serializable
 data class CheckScope(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "URLs or stable references to check.", minItems = 1, maxItems = 32)
     val targets: List<ScopeTarget>,
@@ -47,7 +47,7 @@ enum class ScopeUpdateOperation {
 
 @Serializable
 data class UpdateScope(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Scope mutation to approve and apply.")
     val operation: ScopeUpdateOperation,
@@ -111,6 +111,7 @@ data class ScopeTargetResult(
 
 @Serializable
 data class CheckScopeResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: ScopeToolStatus,
     val projectId: String?,
     val targets: List<ScopeTargetResult>,
@@ -120,7 +121,9 @@ data class CheckScopeResult(
 
 @Serializable
 data class UpdateScopeResult(
+    @JsonSchemaMetadata(description = "Outcome category; burp_error alone does not determine side-effect completion.")
     val status: ScopeToolStatus,
+    @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: ProjectMutationExecutionState,
     val projectId: String?,
     val operation: ScopeUpdateOperation,
@@ -552,7 +555,7 @@ internal class ScopeToolService(
         ) {
             return PreparedScopeTargets.Failed(
                 ScopeToolStatus.INVALID_ARGUMENT,
-                requestedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                null,
                 null,
                 "projectId is empty, too long, or contains control characters",
             )
@@ -560,7 +563,7 @@ internal class ScopeToolService(
         if (inputs.isEmpty() || inputs.size > maxTargets) {
             return PreparedScopeTargets.Failed(
                 ScopeToolStatus.INVALID_ARGUMENT,
-                requestedProjectId,
+                null,
                 null,
                 "targets must contain between 1 and $maxTargets items",
             )

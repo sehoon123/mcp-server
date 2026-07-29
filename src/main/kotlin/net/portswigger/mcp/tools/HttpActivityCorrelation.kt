@@ -15,7 +15,7 @@ private const val DEFAULT_CORRELATION_PATH_DEPTH = 2
 
 @Serializable
 data class CorrelateHttpActivity(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(
         description = "One to 16 stored HTTP references in the baseline cohort; references must be globally distinct across both cohorts.",
@@ -110,8 +110,10 @@ data class HttpActivitySimilarityGroup(
     val id: String,
     val eventIndices: List<Int>,
     val sources: List<HttpMessageSource>,
-    val basis: String = "same_bounded_http_metadata",
-    val identityEstablished: Boolean = false,
+    @JsonSchemaMetadata(description = "Fixed value describing the bounded metadata similarity basis.")
+    val basis: String,
+    @JsonSchemaMetadata(description = "Always false: similarity groups do not establish record identity.")
+    val identityEstablished: Boolean,
 )
 
 @Serializable
@@ -159,24 +161,31 @@ data class HttpAttackSurfaceDelta(
 
 @Serializable
 data class HttpActivityEvidenceBounds(
-    val ordering: String = "caller_supplied",
-    val chronologyEstablished: Boolean = false,
-    val cohortBoundaryEstablishesTime: Boolean = false,
-    val exactCrossSourceIdentityEstablished: Boolean = false,
-    val probableDuplicatesDeduplicated: Boolean = false,
+    @JsonSchemaMetadata(description = "Always caller_supplied; event order is the input order.")
+    val ordering: String,
+    @JsonSchemaMetadata(description = "Always false: this analysis does not establish chronology.")
+    val chronologyEstablished: Boolean,
+    @JsonSchemaMetadata(description = "Always false: cohort membership does not establish a time boundary.")
+    val cohortBoundaryEstablishesTime: Boolean,
+    @JsonSchemaMetadata(description = "Always false: bounded cross-source similarity is not exact identity.")
+    val exactCrossSourceIdentityEstablished: Boolean,
+    @JsonSchemaMetadata(description = "Always false: probable duplicates are never removed.")
+    val probableDuplicatesDeduplicated: Boolean,
     val selectedReferences: Int,
     val timestampedEvents: Int,
     val similarityGroupCount: Int,
-    val maxReferences: Int = MAX_CORRELATION_REFS,
-    val maxReferencesPerCohort: Int = MAX_CORRELATION_REFS_PER_COHORT,
+    val maxReferences: Int,
+    val maxReferencesPerCohort: Int,
     val pathDepth: Int,
-    val maxPathDepth: Int = MAX_ATTACK_SURFACE_PATH_DEPTH,
-    val maxIndexedPathChars: Int = MAX_INDEXED_HTTP_PATH_CHARS,
-    val limitations: List<String> = CORRELATION_LIMITATIONS,
+    val maxPathDepth: Int,
+    val maxIndexedPathChars: Int,
+    @JsonSchemaMetadata(description = "Authoritative interpretation limits; always present.")
+    val limitations: List<String>,
 )
 
 @Serializable
 data class CorrelateHttpActivityResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpActivityCorrelationStatus,
     val projectId: String?,
     val timeline: List<HttpActivityEvent>,
@@ -345,7 +354,7 @@ internal class HttpActivityCorrelationService(
         ) {
             return errorResult(
                 HttpActivityCorrelationStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 pathDepth.coerceIn(1, MAX_ATTACK_SURFACE_PATH_DEPTH),
                 error = "cohorts or pathDepth are out of range",
             )
@@ -354,7 +363,7 @@ internal class HttpActivityCorrelationService(
         for ((index, ref) in (input.baselineRefs + input.comparisonRefs).withIndex()) {
             val identity = canonicalHttpReferenceIdentity(ref) ?: return errorResult(
                 HttpActivityCorrelationStatus.INVALID_ID,
-                input.projectId,
+                null,
                 pathDepth,
                 errorRefIndex = index,
                 error = "HTTP reference ID is invalid for its source",
@@ -363,7 +372,7 @@ internal class HttpActivityCorrelationService(
             if (duplicateIndex >= 0) {
                 return errorResult(
                     HttpActivityCorrelationStatus.INVALID_ARGUMENT,
-                    input.projectId,
+                    null,
                     pathDepth,
                     errorRefIndex = index,
                     error = "baselineRefs and comparisonRefs must be globally distinct",
@@ -445,6 +454,8 @@ internal class HttpActivityCorrelationService(
                 id = id,
                 eventIndices = eventIndices,
                 sources = indices.map { prepared[it].event.ref.source }.distinct().sortedBy { it.ordinal },
+                basis = "same_bounded_http_metadata",
+                identityEstablished = false,
             )
         }
         return CorrelatedEvents(
@@ -573,10 +584,20 @@ private fun evidence(
     timestampedEvents: Int = 0,
     similarityGroupCount: Int = 0,
 ) = HttpActivityEvidenceBounds(
+    ordering = "caller_supplied",
+    chronologyEstablished = false,
+    cohortBoundaryEstablishesTime = false,
+    exactCrossSourceIdentityEstablished = false,
+    probableDuplicatesDeduplicated = false,
     selectedReferences = selectedReferences,
     timestampedEvents = timestampedEvents,
     similarityGroupCount = similarityGroupCount,
+    maxReferences = MAX_CORRELATION_REFS,
+    maxReferencesPerCohort = MAX_CORRELATION_REFS_PER_COHORT,
     pathDepth = pathDepth,
+    maxPathDepth = MAX_ATTACK_SURFACE_PATH_DEPTH,
+    maxIndexedPathChars = MAX_INDEXED_HTTP_PATH_CHARS,
+    limitations = CORRELATION_LIMITATIONS,
 )
 
 private fun errorResult(

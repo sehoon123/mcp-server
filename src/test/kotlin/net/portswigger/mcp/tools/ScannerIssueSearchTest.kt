@@ -191,7 +191,7 @@ class ScannerIssueSearchTest {
     }
 
     @Test
-    fun `Scanner issue access denial returns no project data`() = runBlocking {
+    fun `Scanner issue access denial returns only the rechecked project binding`() = runBlocking {
         config = config(true)
         service = ScannerIssueSearchService(api, config, ByteArray(32) { 7 })
         DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
@@ -202,9 +202,67 @@ class ScannerIssueSearchTest {
 
         assertEquals(ScannerIssuePageStatus.ACCESS_DENIED, result.status)
         assertTrue(result.items.isEmpty())
-        assertEquals(null, result.projectId)
+        assertEquals("project-123", result.projectId)
         verify(exactly = 0) { siteMap.issues() }
-        verify(exactly = 1) { project.id() }
+        verify(exactly = 2) { project.id() }
+    }
+
+    @Test
+    fun `Scanner approval failure preserves the safely captured project binding`() = runBlocking {
+        config = config(true)
+        service = ScannerIssueSearchService(api, config, ByteArray(32) { 7 })
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                throw IllegalStateException("synthetic approval failure")
+            }
+        }
+
+        val result = service.get(GetScannerIssues()).output
+
+        assertEquals(ScannerIssuePageStatus.BURP_ERROR, result.status)
+        assertEquals("project-123", result.projectId)
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `Scanner approval recheck failure preserves the safely captured project binding`() = runBlocking {
+        var projectReads = 0
+        every { project.id() } answers {
+            projectReads++
+            if (projectReads == 1) "project-123" else throw IllegalStateException("synthetic recheck failure")
+        }
+        config = config(true)
+        service = ScannerIssueSearchService(api, config, ByteArray(32) { 7 })
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean = true
+        }
+
+        val result = service.get(GetScannerIssues()).output
+
+        assertEquals(ScannerIssuePageStatus.BURP_ERROR, result.status)
+        assertEquals("project-123", result.projectId)
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `Scanner denial after a project transition returns mismatch instead of stale binding`() = runBlocking {
+        var observedProjectId = "project-123"
+        every { project.id() } answers { observedProjectId }
+        config = config(true)
+        service = ScannerIssueSearchService(api, config, ByteArray(32) { 7 })
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                observedProjectId = "project-after-denial"
+                return false
+            }
+        }
+
+        val response = service.get(GetScannerIssues())
+
+        assertEquals(ScannerIssuePageStatus.PROJECT_MISMATCH, response.output.status)
+        assertEquals("project-after-denial", response.output.projectId)
+        assertEquals(true, response.isError)
+        verify(exactly = 0) { siteMap.issues() }
     }
 
     @Test
