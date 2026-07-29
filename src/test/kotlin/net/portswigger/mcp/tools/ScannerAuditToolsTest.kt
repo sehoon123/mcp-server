@@ -2333,10 +2333,11 @@ class ScannerAuditToolsTest {
     fun `definitive cancellation remains monotonic when a stale concurrent cancel resumes`() = runBlocking {
         val item = proxyItem(1, response = mockk())
         val audit = mockk<Audit>()
-        val approvalsEntered = CountDownLatch(2)
-        val releaseFirstApproval = CountDownLatch(1)
-        val releaseStaleApproval = CountDownLatch(1)
-        val cancellationCommitted = CountDownLatch(1)
+        val firstApprovalEntered = CompletableDeferred<Unit>()
+        val staleApprovalEntered = CompletableDeferred<Unit>()
+        val releaseFirstApproval = CompletableDeferred<Unit>()
+        val releaseStaleApproval = CompletableDeferred<Unit>()
+        val cancellationCommitted = CompletableDeferred<Unit>()
         val approvalSequence = AtomicInteger()
         every { proxy.history(any()) } returns listOf(item)
         every { scope.isInScope(any()) } returns true
@@ -2350,7 +2351,7 @@ class ScannerAuditToolsTest {
         every {
             logging.logToOutput(match { it.contains("outcome=cancelled") })
         } answers {
-            cancellationCommitted.countDown()
+            cancellationCommitted.complete(Unit)
         }
         val started = service.start(passiveInput(1), config)
         SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
@@ -2362,26 +2363,30 @@ class ScannerAuditToolsTest {
                 api: MontoyaApi,
             ): Boolean {
                 val sequence = approvalSequence.incrementAndGet()
-                approvalsEntered.countDown()
-                val release = if (sequence == 1) releaseFirstApproval else releaseStaleApproval
-                check(release.await(5, TimeUnit.SECONDS))
+                val release = if (sequence == 1) {
+                    firstApprovalEntered.complete(Unit)
+                    releaseFirstApproval
+                } else {
+                    staleApprovalEntered.complete(Unit)
+                    releaseStaleApproval
+                }
+                release.await()
                 return true
             }
         }
 
-        val cancellations = listOf(
-            async(Dispatchers.Default) {
-                service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
-            },
-            async(Dispatchers.Default) {
-                service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
-            },
-        )
-        assertTrue(approvalsEntered.await(5, TimeUnit.SECONDS))
-        releaseFirstApproval.countDown()
-        assertTrue(cancellationCommitted.await(5, TimeUnit.SECONDS))
-        releaseStaleApproval.countDown()
-        val results = cancellations.map { it.await() }
+        val firstCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
+        }
+        withTimeout(10_000) { firstApprovalEntered.await() }
+        val staleCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
+        }
+        withTimeout(10_000) { staleApprovalEntered.await() }
+        releaseFirstApproval.complete(Unit)
+        withTimeout(10_000) { cancellationCommitted.await() }
+        releaseStaleApproval.complete(Unit)
+        val results = listOf(firstCancellation, staleCancellation).map { it.await() }
         val final = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
 
         (results + final).forEach { result ->
@@ -2398,10 +2403,11 @@ class ScannerAuditToolsTest {
     fun `stale concurrent cancellation denial preserves definitive completed action state`() = runBlocking {
         val item = proxyItem(1, response = mockk())
         val audit = mockk<Audit>()
-        val approvalsEntered = CountDownLatch(2)
-        val releaseFirstApproval = CountDownLatch(1)
-        val releaseStaleApproval = CountDownLatch(1)
-        val cancellationCommitted = CountDownLatch(1)
+        val firstApprovalEntered = CompletableDeferred<Unit>()
+        val staleApprovalEntered = CompletableDeferred<Unit>()
+        val releaseFirstApproval = CompletableDeferred<Unit>()
+        val releaseStaleApproval = CompletableDeferred<Unit>()
+        val cancellationCommitted = CompletableDeferred<Unit>()
         val approvalSequence = AtomicInteger()
         every { proxy.history(any()) } returns listOf(item)
         every { scope.isInScope(any()) } returns true
@@ -2411,7 +2417,7 @@ class ScannerAuditToolsTest {
         every {
             logging.logToOutput(match { it.contains("outcome=cancelled") })
         } answers {
-            cancellationCommitted.countDown()
+            cancellationCommitted.complete(Unit)
         }
         val started = service.start(passiveInput(1), config)
         SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
@@ -2423,23 +2429,30 @@ class ScannerAuditToolsTest {
                 api: MontoyaApi,
             ): Boolean {
                 val sequence = approvalSequence.incrementAndGet()
-                approvalsEntered.countDown()
-                val release = if (sequence == 1) releaseFirstApproval else releaseStaleApproval
-                check(release.await(5, TimeUnit.SECONDS))
+                val release = if (sequence == 1) {
+                    firstApprovalEntered.complete(Unit)
+                    releaseFirstApproval
+                } else {
+                    staleApprovalEntered.complete(Unit)
+                    releaseStaleApproval
+                }
+                release.await()
                 return sequence == 1
             }
         }
 
-        val cancellations = List(2) {
-            async(Dispatchers.Default) {
-                service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
-            }
+        val firstCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         }
-        assertTrue(approvalsEntered.await(5, TimeUnit.SECONDS))
-        releaseFirstApproval.countDown()
-        assertTrue(cancellationCommitted.await(5, TimeUnit.SECONDS))
-        releaseStaleApproval.countDown()
-        val results = cancellations.map { it.await() }
+        withTimeout(10_000) { firstApprovalEntered.await() }
+        val staleCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
+        }
+        withTimeout(10_000) { staleApprovalEntered.await() }
+        releaseFirstApproval.complete(Unit)
+        withTimeout(10_000) { cancellationCommitted.await() }
+        releaseStaleApproval.complete(Unit)
+        val results = listOf(firstCancellation, staleCancellation).map { it.await() }
         val final = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
 
         (results + final).forEach { result ->
@@ -2455,10 +2468,11 @@ class ScannerAuditToolsTest {
     fun `stale concurrent cancellation approval failure preserves definitive completed action state`() = runBlocking {
         val item = proxyItem(1, response = mockk())
         val audit = mockk<Audit>()
-        val approvalsEntered = CountDownLatch(2)
-        val releaseFirstApproval = CountDownLatch(1)
-        val releaseStaleApproval = CountDownLatch(1)
-        val cancellationCommitted = CountDownLatch(1)
+        val firstApprovalEntered = CompletableDeferred<Unit>()
+        val staleApprovalEntered = CompletableDeferred<Unit>()
+        val releaseFirstApproval = CompletableDeferred<Unit>()
+        val releaseStaleApproval = CompletableDeferred<Unit>()
+        val cancellationCommitted = CompletableDeferred<Unit>()
         val approvalSequence = AtomicInteger()
         every { proxy.history(any()) } returns listOf(item)
         every { scope.isInScope(any()) } returns true
@@ -2468,7 +2482,7 @@ class ScannerAuditToolsTest {
         every {
             logging.logToOutput(match { it.contains("outcome=cancelled") })
         } answers {
-            cancellationCommitted.countDown()
+            cancellationCommitted.complete(Unit)
         }
         val started = service.start(passiveInput(1), config)
         SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
@@ -2480,24 +2494,31 @@ class ScannerAuditToolsTest {
                 api: MontoyaApi,
             ): Boolean {
                 val sequence = approvalSequence.incrementAndGet()
-                approvalsEntered.countDown()
-                val release = if (sequence == 1) releaseFirstApproval else releaseStaleApproval
-                check(release.await(5, TimeUnit.SECONDS))
+                val release = if (sequence == 1) {
+                    firstApprovalEntered.complete(Unit)
+                    releaseFirstApproval
+                } else {
+                    staleApprovalEntered.complete(Unit)
+                    releaseStaleApproval
+                }
+                release.await()
                 if (sequence != 1) throw IllegalStateException("PRIVATE_SENTINEL")
                 return true
             }
         }
 
-        val cancellations = List(2) {
-            async(Dispatchers.Default) {
-                service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
-            }
+        val firstCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         }
-        assertTrue(approvalsEntered.await(5, TimeUnit.SECONDS))
-        releaseFirstApproval.countDown()
-        assertTrue(cancellationCommitted.await(5, TimeUnit.SECONDS))
-        releaseStaleApproval.countDown()
-        val results = cancellations.map { it.await() }
+        withTimeout(10_000) { firstApprovalEntered.await() }
+        val staleCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
+        }
+        withTimeout(10_000) { staleApprovalEntered.await() }
+        releaseFirstApproval.complete(Unit)
+        withTimeout(10_000) { cancellationCommitted.await() }
+        releaseStaleApproval.complete(Unit)
+        val results = listOf(firstCancellation, staleCancellation).map { it.await() }
         val final = service.get(GetScannerAudit("project-123", started.taskId!!, issueLimit = 0), config)
 
         (results + final).forEach { result ->
