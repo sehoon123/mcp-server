@@ -69,6 +69,10 @@ import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.tools.ToolServices
 import burp.api.montoya.persistence.PersistedObject
+import net.portswigger.mcp.tools.activateToolExecutionSession
+import net.portswigger.mcp.tools.cancelAllToolExecutions
+import net.portswigger.mcp.tools.cancelToolExecutionSession
+import net.portswigger.mcp.tools.enableToolExecutionSessionTracking
 import net.portswigger.mcp.tools.registerTools
 import net.portswigger.mcp.tools.unbindToolRuntimePolicy
 import java.net.BindException
@@ -185,11 +189,14 @@ internal fun Application.configureMcpHttpEndpoint(
         }
     }
 
+    mcpServer.enableToolExecutionSessionTracking()
     val sessions = BoundedMcpSessionRegistry(
         maxSessions,
         MCP_SESSION_IDLE_MILLIS,
         runtimeMetrics,
         sessionApprovals,
+        onSessionActivated = mcpServer::activateToolExecutionSession,
+        onSessionTerminating = mcpServer::cancelToolExecutionSession,
     )
     val projectGuard = projectIdProvider?.let { provider ->
         McpProjectEpochGuard(provider) { projectGeneration ->
@@ -250,6 +257,7 @@ internal fun Application.configureMcpHttpEndpoint(
     }
     monitor.subscribe(ApplicationStopping) {
         runtimeMetrics?.markStopping()
+        mcpServer.cancelAllToolExecutions()
         runBlocking {
             withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { sessions.closeAll() }
         }
@@ -443,8 +451,10 @@ internal fun Application.configureMcpHttpEndpoint(
                 runtimeMetrics?.onSessionDeleteRequest()
                 val lease = sessions.acquireExisting(call) ?: return@delete
                 try {
+                    lease.cancelExecutions()
                     lease.transport.handleRequest(null, call)
                 } finally {
+                    lease.cancelExecutions()
                     lease.close()
                 }
             }
@@ -689,6 +699,8 @@ internal class BoundedMcpSessionRegistry(
     private val idleMillis: Long,
     private val runtimeMetrics: McpRuntimeMetrics? = null,
     private val sessionApprovals: McpSessionApprovalRegistry = McpSessionApprovalRegistry(maxSessions),
+    private val onSessionActivated: (String, String?) -> Boolean = { _, _ -> true },
+    private val onSessionTerminating: (String) -> Unit = {},
 ) {
     private val lock = Any()
     private val slots = Semaphore(maxSessions, true)
@@ -722,7 +734,7 @@ internal class BoundedMcpSessionRegistry(
             check(slots.tryAcquire()) { "displaced MCP session did not release its capacity slot" }
         }
 
-        val pending = ManagedMcpSession(transport, slots, projectGeneration)
+        val pending = ManagedMcpSession(transport, slots, projectGeneration, onSessionTerminating)
         entries += pending
         updateMetricsLocked()
         McpSessionReservation(pending = pending, displaced = displaced)
@@ -739,6 +751,9 @@ internal class BoundedMcpSessionRegistry(
             } else {
                 val serverSession = entry.attachedServerSession()
                 if (serverSession != null && !sessionApprovals.attachServerSession(sessionId, serverSession.sessionId)) {
+                    sessionApprovals.remove(sessionId)
+                    false
+                } else if (!onSessionActivated(sessionId, serverSession?.sessionId)) {
                     sessionApprovals.remove(sessionId)
                     false
                 } else {
@@ -800,6 +815,7 @@ internal class BoundedMcpSessionRegistry(
             entries.remove(entry)
             updateMetricsLocked()
         }
+        entry.cancelExecutions()
         entry.cancelStreams()
         entry.releaseSlot()
     }
@@ -864,6 +880,7 @@ internal class BoundedMcpSessionRegistry(
             snapshot
         }
         stale.forEach { entry ->
+            entry.cancelExecutions()
             entry.cancelStreams()
             entry.releaseSlot()
         }
@@ -915,9 +932,11 @@ internal class ManagedMcpSession(
     val transport: StreamableHttpServerTransport,
     private val slots: Semaphore,
     val projectGeneration: Long = 0L,
+    private val onSessionTerminating: (String) -> Unit = {},
 ) {
     private val slotReleased = AtomicBoolean(false)
     private val transportClosed = AtomicBoolean(false)
+    private val executionCancellationIssued = AtomicBoolean(false)
     private val streamJobs = HashSet<Job>()
     private var streamRegistrationClosed = false
     private var hasRegisteredStream = false
@@ -969,6 +988,11 @@ internal class ManagedMcpSession(
         lastActivityNanos = System.nanoTime()
     }
 
+    fun cancelExecutions() {
+        val sessionId = sessionId() ?: return
+        if (executionCancellationIssued.compareAndSet(false, true)) onSessionTerminating(sessionId)
+    }
+
     fun cancelStreams() {
         val jobs = synchronized(this) {
             streamRegistrationClosed = true
@@ -1015,6 +1039,7 @@ internal class ManagedMcpSession(
     }
 
     suspend fun closeTransport() {
+        cancelExecutions()
         cancelStreams()
         if (transportClosed.compareAndSet(false, true)) transport.close()
     }
@@ -1040,6 +1065,10 @@ internal class ManagedMcpSessionLease(
     }
 
     suspend fun pingClient(timeoutMillis: Long): McpClientLivenessOutcome = entry.pingClient(timeoutMillis)
+
+    fun cancelExecutions() {
+        entry.cancelExecutions()
+    }
 
     fun close() {
         if (closed.compareAndSet(false, true)) entry.release()
@@ -1174,6 +1203,7 @@ class KtorServerManager internal constructor(
         return runtimeMetrics.snapshot().copy(
             sessionsWithApprovals = approvalSummary.sessionsWithApprovals,
             sessionApprovalGrants = approvalSummary.approvalGrants,
+            webSocketSearchActive = webSocketOutcomes.active,
             webSocketSearchCompleted = webSocketOutcomes.completed,
             webSocketSearchCancelled = webSocketOutcomes.cancelled,
             historyPerformance = performance,

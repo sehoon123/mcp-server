@@ -6,6 +6,7 @@ import burp.api.montoya.websocket.Direction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -343,7 +344,10 @@ internal class WebSocketMessageSearchService(
         try {
             for (observed in scanWindow) {
                 if (items.size >= limit) break
-                if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
+                if (scanned and 63 == 0) {
+                    currentCoroutineContext().ensureActive()
+                    yield()
+                }
                 check(observed.sourceIndex == itemIndex) { "WebSocket scan window is inconsistent" }
                 val item = observed.message
                 scanned++
@@ -439,7 +443,10 @@ internal class WebSocketMessageSearchService(
         )
         var sourceIndex = snapshot.itemIndex
         while (window.size < maximumWindowSize && inSnapshot(sourceIndex, snapshot.snapshotSize)) {
-            if (window.size and 63 == 0) currentCoroutineContext().ensureActive()
+            if (window.size and 63 == 0) {
+                currentCoroutineContext().ensureActive()
+                yield()
+            }
             window += ObservedWebSocketRecord(sourceIndex, records[sourceIndex])
             sourceIndex = advance(sourceIndex, query.newestFirst)
         }

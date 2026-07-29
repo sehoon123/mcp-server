@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove caller-disconnect cleanup only after observing a real bounded history read in flight."""
+"""Prove bounded WebSocket cancellation after a processing barrier and caller disconnect."""
 
 from __future__ import annotations
 
@@ -25,14 +25,14 @@ from live_mcp_harness import (  # noqa: E402
     bounded_rss_snapshot,
     bounded_system_failure,
     call_tool,
+    classify_websocket_search_outcome_delta,
     enforce_rss_limit,
     read_bounded_diagnostics,
     read_private_token,
     read_project_id,
     sha256_file,
-    validate_websocket_search_cancellation_delta,
-    wait_for_active_http_call_barrier,
     wait_for_http_call_cleanup,
+    wait_for_websocket_search_processing_barrier,
     websocket_search_count,
     write_private_json,
 )
@@ -63,6 +63,26 @@ def close_client(client: McpClient | None) -> bool:
         return client.close() in {200, 202}
     except (HarnessError, OSError):
         return False
+
+
+def abort_and_delete_active_target(
+    active_call: InterruptibleMcpToolCall,
+    target: McpClient,
+) -> dict[str, Any]:
+    if not active_call.abort():
+        active_call.join(10)
+        raise HarnessError("target read completed before caller socket abort")
+    session_delete_status = target.close()
+    if session_delete_status not in {200, 202}:
+        raise HarnessError("authenticated target session deletion was not accepted")
+    active_call.join(10)
+    target_outcome = active_call.summary()
+    if target_outcome.get("state") != "aborted":
+        raise HarnessError("target read returned a response after caller socket abort")
+    return {
+        "sessionDeleteStatus": session_delete_status,
+        "targetOutcome": target_outcome,
+    }
 
 
 def main() -> int:
@@ -128,8 +148,10 @@ def main() -> int:
         "expectedServerVersion": args.expected_server_version,
         "protocolVersion": "2025-11-25",
         "operation": "bounded WebSocket history search with a private no-match marker",
+        "cancellationMechanism": "caller socket abort followed by authenticated session deletion",
         "requestedAttempts": args.attempts,
         "completedBeforeBarrierAttempts": 0,
+        "completedAfterTerminationAttempts": 0,
         "projectIdentifierRecorded": False,
         "sessionIdentifierRecorded": False,
         "searchMarkerRecorded": False,
@@ -207,10 +229,10 @@ def main() -> int:
             value, _ = read_bounded_diagnostics(observer)
             return value
 
-        barrier: dict[str, Any] | None = None
-        selected_outcomes_before: dict[str, Any] | None = None
+        cancellation_proved = False
         for attempt in range(1, args.attempts + 1):
             outcomes_before = snapshot()
+            request_id = 100_000 + attempt
             active_call = InterruptibleMcpToolCall(
                 target,
                 "search_websocket_messages",
@@ -221,59 +243,72 @@ def main() -> int:
                     "limit": 1,
                     "newestFirst": True,
                 },
-                request_id=100_000 + attempt,
+                request_id=request_id,
                 timeout=180,
             )
             active_call.start()
             try:
-                barrier = wait_for_active_http_call_barrier(
+                barrier = wait_for_websocket_search_processing_barrier(
                     snapshot,
                     active_call.completed,
-                    minimum_active_calls=2,
                     timeout=args.barrier_timeout_seconds,
                     poll_interval=0.001,
                 )
             except HarnessError:
                 if active_call.completed.is_set():
                     active_call.join(2)
+                    early_summary = active_call.summary()
+                    early_outcomes = snapshot()
+                    early_delta = classify_websocket_search_outcome_delta(outcomes_before, early_outcomes)
+                    if (
+                        early_summary.get("state") != "completed"
+                        or early_summary.get("httpStatus") != 200
+                        or early_summary.get("jsonRpcResponse") is not True
+                        or early_delta["outcome"] != "completed"
+                    ):
+                        raise HarnessError("pre-barrier target attempt did not complete cleanly")
                     report["completedBeforeBarrierAttempts"] += 1
                     active_call = None
                     continue
                 active_call.abort()
                 active_call.join(10)
                 raise
-            report["barrierAttempt"] = attempt
-            selected_outcomes_before = outcomes_before
-            break
-        if barrier is None or active_call is None or selected_outcomes_before is None:
-            raise HarnessError("no target read remained active long enough for the diagnostics barrier")
-        report["activeCallBarrier"] = barrier
 
-        socket_abort_issued = active_call.abort()
-        active_call.join(10)
-        target_outcome = active_call.summary()
-        report["targetOutcome"] = target_outcome
-        report["socketAbortIssuedAfterBarrier"] = socket_abort_issued
-        if not socket_abort_issued or target_outcome.get("state") != "aborted":
-            raise HarnessError("target read completed instead of proving caller-disconnect cancellation")
-        report["cleanupBarrier"] = wait_for_http_call_cleanup(
-            snapshot,
-            active_call.completed,
-            timeout=10,
-            poll_interval=0.01,
-        )
-        outcomes_after = snapshot()
-        report["serverCancellationOutcome"] = validate_websocket_search_cancellation_delta(
-            selected_outcomes_before,
-            outcomes_after,
-        )
-        active_call = None
-
-        if close_client(target):
+            termination = abort_and_delete_active_target(active_call, target)
             sessions_deleted += 1
             target = None
-        else:
-            raise HarnessError("target session DELETE failed after cancellation")
+            target_outcome = termination["targetOutcome"]
+            cleanup = wait_for_http_call_cleanup(
+                snapshot,
+                active_call.completed,
+                require_websocket_search_idle=True,
+                timeout=10,
+                poll_interval=0.01,
+            )
+            outcomes_after = snapshot()
+            outcome_delta = classify_websocket_search_outcome_delta(outcomes_before, outcomes_after)
+            active_call = None
+            if outcome_delta["outcome"] == "completed":
+                report["completedAfterTerminationAttempts"] += 1
+                raise HarnessError("target search completed despite the abort-and-delete sequence")
+
+            report["barrierAttempt"] = attempt
+            report["activeCallBarrier"] = barrier
+            report["socketAbortIssuedAfterBarrier"] = True
+            report["targetSessionDeletionAccepted"] = True
+            report["targetOutcome"] = target_outcome
+            report["cleanupBarrier"] = cleanup
+            report["serverCancellationOutcome"] = {
+                "cancelledDelta": outcome_delta["cancelledDelta"],
+                "completedDelta": outcome_delta["completedDelta"],
+            }
+            cancellation_proved = True
+            break
+        if not cancellation_proved:
+            raise HarnessError("no target read proved cancellation before bounded search completion")
+
+        if target is not None:
+            raise HarnessError("target session remained addressable after the cancellation sequence")
         diagnostics, _ = read_bounded_diagnostics(observer)
         if diagnostics.get("activeSessions") != 1 or diagnostics.get("pendingSessions") != 0:
             raise HarnessError("target session did not leave the observer-only session plateau")

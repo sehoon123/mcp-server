@@ -230,10 +230,12 @@ Duplicate `Mcp-Session-Id`, ambiguous framing (`Content-Length` plus `Transfer-E
 `Content-Length`, and oversized chunked bodies fail before dispatch. The optional GET stream sends a core MCP liveness
 ping within 250 ms and every 15 seconds, with a two-second client-response timeout; it also retains the comment-only
 15-second heartbeat. Either failure path idempotently detaches only that stream. POST is deliberately excluded from
-connection-close cancellation because a mutation may already be executing. DELETE, eviction, and server shutdown also
-cancel a GET handler immediately. Disconnect still does not itself delete the stateful session. The session remains
-subject to the separate 32-session and idle-lifetime bounds, but it is a lower-priority capacity candidate after its
-observed stream has disconnected.
+connection-close cancellation because a mutation may already be executing. Authenticated session DELETE, project
+transition, and server shutdown cooperatively cancel registered tool/resource jobs as well as closing session state;
+eviction invokes the same hook, although active calls are ineligible for idle or pressure eviction. Cancellation cannot
+interrupt a synchronous Burp/Montoya call before it returns. Disconnect still does not itself delete the stateful session.
+The session remains subject to the separate 32-session and idle-lifetime bounds, but it is a lower-priority capacity
+candidate after its observed stream has disconnected.
 
 The 180-second CIO value is an idle connection limit, not a total tool-execution deadline. A separate receive-pipeline
 wall-clock timeout was not added because Ktor can pre-buffer the body before that interceptor; the byte cap remains
@@ -307,8 +309,9 @@ The v4.11 development line records fixed-cardinality elapsed-time diagnostics fo
 extension processing. The measurements cover Proxy, Site Map, and Organizer metadata-index refreshes, unified HTTP
 search, and WebSocket search. Full timing/bucket records are visible only in the local Burp diagnostics panel and remain
 serialization-transient; MCP schemas, catalogs, audit records, logs, and persisted settings do not contain them. For the
-future exact-candidate cancellation gate, `burp://diagnostics` projects only saturation-safe WebSocket-search completed
-and cancelled totals. These value-free extension-lifetime counters permit an observed delta without exposing filters,
+exact-candidate cancellation gate, `burp://diagnostics` projects only the current WebSocket-search processing gauge and
+saturation-safe completed/cancelled totals. These value-free extension-lifetime aggregates permit an in-flight barrier and
+observed outcome delta without exposing filters,
 traffic, project/session identity, timing, or other metric records.
 
 An **acquisition** measurement starts immediately before the synchronous Burp/Montoya list call and ends when that call
@@ -324,8 +327,9 @@ and the sequential-list defensive copy where applicable. Unified HTTP search beg
 acquisitions; WebSocket search has one acquisition; and metadata-index processing follows each corresponding source
 acquisition in source order. Metadata-index warm hint validation records paired acquisition and processing attempts. A
 WebSocket processing result other than `ok`
-counts as failed; thrown failures and cancellation retain their corresponding outcome. Existing locks, dispatchers,
-source order, retry behavior, and access bounds are unchanged.
+counts as failed; thrown failures and cancellation retain their corresponding outcome. WebSocket bounded-window capture
+and scanning yield cooperatively at their existing 64-record cancellation checkpoints. Existing locks, dispatchers,
+source order, retry behavior, and access bounds are otherwise unchanged.
 
 Each fixed metric retains only attempts, completed/failed/cancelled outcomes, one maximum monotonic duration, and eleven
 elapsed-time buckets with upper bounds below 1, 5, 10, 25, 50, 100, 250, 500, 1,000, and 5,000 milliseconds plus a final
@@ -423,10 +427,12 @@ scripts/run-live-lifecycle-soak.py \
   --output <new-private-output.json>
 ```
 
-The exact-candidate preflight, dual-edition evidence finalizer, and diagnostics-gated caller-disconnect runner are
-specified in [EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md). The cancellation runner accepts a result only after a separate
-observer sees the target bounded 10,000-record read in `activeHttpCalls`; a timeout, early completion, or `Ctrl-C` is not
-proof. It does not automate mutation cancellation, project replacement, SSE pressure, or unload/reload while work is
+The exact-candidate preflight, dual-edition evidence finalizer, and diagnostics-gated cancellation runner are specified
+in [EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md). The cancellation runner accepts a result only after a separate observer
+sees both the target bounded 10,000-record read in `activeHttpCalls` and `webSocketSearchActive >= 1`, followed by the
+ordered caller-socket-abort plus authenticated-session-delete sequence, an idle processing/HTTP plateau, and the exact
+server cancellation outcome delta. A timeout, HTTP admission alone, disconnect alone, early completion, or `Ctrl-C` is
+not proof. It does not automate mutation cancellation, project replacement, SSE pressure, or unload/reload while work is
 active, which remain separate gates.
 
 The committed contract tests run with `python3 scripts/test-live-mcp-harness.py` and

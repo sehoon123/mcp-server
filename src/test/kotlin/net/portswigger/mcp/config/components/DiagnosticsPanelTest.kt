@@ -52,6 +52,7 @@ class DiagnosticsPanelTest {
                 pressureEvictions = 9,
                 sessionsWithApprovals = 2,
                 sessionApprovalGrants = 5,
+                webSocketSearchActive = 1,
                 webSocketSearchCompleted = 11,
                 webSocketSearchCancelled = 2,
                 projectBoundaryResets = 2,
@@ -64,6 +65,7 @@ class DiagnosticsPanelTest {
                     HistoryPerformanceMetric.entries.mapIndexed { index, metric ->
                         HistoryPerformanceMetricSnapshot(
                             metric = metric,
+                            active = index % 2,
                             attempts = (index + 1).toLong(),
                             completed = index.toLong(),
                             failed = 1,
@@ -99,11 +101,11 @@ class DiagnosticsPanelTest {
 
         assertTrue(text.contains("State: running"))
         assertTrue(text.contains("Loaded artifact SHA-256: ${"a".repeat(64)}"))
-        assertTrue(text.contains("WebSocket search outcomes: completed=11, cancelled=2"))
+        assertTrue(text.contains("WebSocket search outcomes: active=1, completed=11, cancelled=2"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
         assertEquals(12, text.lineSequence().count { it.startsWith("History ") })
-        assertTrue(text.contains("History index Proxy acquisition: attempts=1"))
-        assertTrue(text.contains("History WebSocket search processing: attempts=12"))
+        assertTrue(text.contains("History index Proxy acquisition: active=0, attempts=1"))
+        assertTrue(text.contains("History WebSocket search processing: active=1, attempts=12"))
         assertTrue(text.contains("<1ms=0,<5ms=1"))
         assertTrue(text.contains(">=5000ms=10"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))

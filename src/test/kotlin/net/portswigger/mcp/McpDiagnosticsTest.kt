@@ -119,7 +119,10 @@ class McpDiagnosticsTest {
             },
         )
 
-        assertEquals(WebSocketSearchOutcomeSummary(completed = 7, cancelled = Long.MAX_VALUE), snapshot.webSocketSearchOutcomeSummary())
+        assertEquals(
+            WebSocketSearchOutcomeSummary(active = 0, completed = 7, cancelled = Long.MAX_VALUE),
+            snapshot.webSocketSearchOutcomeSummary(),
+        )
     }
 
     @Test

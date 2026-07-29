@@ -335,6 +335,40 @@ class WebSocketMessageSearchTest {
     }
 
     @Test
+    fun `bounded scan-window capture yields to cancellation every 64 records`() = runBlocking {
+        val fixture = message(1, webSocketId = 1)
+        var remainingAnchorReads = 2
+        var captureReads = 0
+        lateinit var search: kotlinx.coroutines.Deferred<SearchWebsocketMessagesResult>
+        val syntheticHistory = object : AbstractList<ProxyWebSocketMessage>(), RandomAccess {
+            override val size = 100
+
+            override fun get(index: Int): ProxyWebSocketMessage {
+                if (remainingAnchorReads > 0) {
+                    remainingAnchorReads--
+                } else {
+                    captureReads++
+                    if (captureReads == 64) search.cancel(CancellationException("cancel scan-window capture"))
+                }
+                return fixture
+            }
+        }
+        every { proxy.webSocketHistory() } returns syntheticHistory
+        search = async(start = CoroutineStart.LAZY) {
+            service.search(
+                SearchWebsocketMessages(
+                    projectId = currentProjectId,
+                    webSocketId = 2,
+                    newestFirst = false,
+                )
+            )
+        }
+
+        assertFailsWith<CancellationException> { search.await() }
+        assertEquals(64, captureReads)
+    }
+
+    @Test
     fun `bounded scan observes cancellation every 64 inspected records`() = runBlocking {
         val fixture = message(1, webSocketId = 1)
         var remainingAnchorReads = 2

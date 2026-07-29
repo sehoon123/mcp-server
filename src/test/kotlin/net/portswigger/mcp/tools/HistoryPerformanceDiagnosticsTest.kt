@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -89,6 +90,35 @@ class HistoryPerformanceDiagnosticsTest {
         assertEquals(1, metric.failed)
         assertEquals(1, metric.cancelled)
         assertEquals(3, metric.latencyBuckets.sum())
+    }
+
+    @Test
+    fun `active processing gauge is visible only while the measured block is running`() = runBlocking {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val operation = async(Dispatchers.Default) {
+            diagnostics.measure(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+
+        entered.await()
+        val active = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
+        }
+        assertEquals(1, active.active)
+        assertEquals(0, active.attempts)
+
+        release.complete(Unit)
+        operation.await()
+        val completed = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
+        }
+        assertEquals(0, completed.active)
+        assertEquals(1, completed.attempts)
+        assertEquals(1, completed.completed)
     }
 
     @Test

@@ -899,6 +899,10 @@ class McpServerIntegrationTest {
             PRODUCTION_MCP_PROTOCOL_VERSION,
             diagnostics["diagnostics"]?.jsonObject?.get("protocolVersion")?.jsonPrimitive?.content,
         )
+        assertEquals(
+            0,
+            diagnostics["diagnostics"]?.jsonObject?.get("webSocketSearchActive")?.jsonPrimitive?.content?.toInt(),
+        )
         assertFalse(diagnostics.toString().contains(testBearerToken))
 
         val project = client.readResource(PROJECT_SUMMARY_RESOURCE_URI).singleTextResourceJson()

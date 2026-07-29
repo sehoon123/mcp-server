@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import kotlinx.coroutines.CancellationException
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
@@ -27,6 +28,7 @@ enum class HistoryPerformanceOutcome {
 
 data class HistoryPerformanceMetricSnapshot(
     val metric: HistoryPerformanceMetric,
+    val active: Int,
     val attempts: Long,
     val completed: Long,
     val failed: Long,
@@ -43,6 +45,7 @@ data class HistoryPerformanceSnapshot(
             HistoryPerformanceMetric.entries.map { metric ->
                 HistoryPerformanceMetricSnapshot(
                     metric = metric,
+                    active = 0,
                     attempts = 0,
                     completed = 0,
                     failed = 0,
@@ -85,6 +88,8 @@ internal class HistoryPerformanceDiagnostics private constructor(
     ): T {
         if (!enabled) return block()
         val start = safeNanoTime()
+        val metricCounters = counters[metric.ordinal]
+        metricCounters.enter()
         var outcome = HistoryPerformanceOutcome.COMPLETED
         try {
             val result = block()
@@ -100,8 +105,9 @@ internal class HistoryPerformanceDiagnostics private constructor(
         } finally {
             runCatching {
                 val elapsed = elapsedNanos(start, safeNanoTime())
-                counters[metric.ordinal].record(outcome, elapsed)
+                metricCounters.record(outcome, elapsed)
             }
+            metricCounters.leave()
         }
     }
 
@@ -121,12 +127,21 @@ internal class HistoryPerformanceDiagnostics private constructor(
 }
 
 private class MetricCounters {
+    private val active = AtomicInteger()
     private val attempts = AtomicLong()
     private val completed = AtomicLong()
     private val failed = AtomicLong()
     private val cancelled = AtomicLong()
     private val latencyBuckets = AtomicLongArray(HISTORY_PERFORMANCE_BUCKET_COUNT)
     private val maxNanos = AtomicLong()
+
+    fun enter() {
+        active.incrementAndGet()
+    }
+
+    fun leave() {
+        active.decrementAndGet()
+    }
 
     fun record(outcome: HistoryPerformanceOutcome, elapsedNanos: Long) {
         attempts.incrementSaturated()
@@ -141,6 +156,7 @@ private class MetricCounters {
 
     fun snapshot(metric: HistoryPerformanceMetric) = HistoryPerformanceMetricSnapshot(
         metric = metric,
+        active = active.get().coerceAtLeast(0),
         attempts = attempts.get(),
         completed = completed.get(),
         failed = failed.get(),

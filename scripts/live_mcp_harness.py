@@ -469,6 +469,7 @@ def read_bounded_diagnostics(client: McpClient) -> tuple[dict[str, Any], str]:
         "sessionsWithApprovals",
         "sessionApprovalGrants",
         "loadedArtifactSha256",
+        "webSocketSearchActive",
         "webSocketSearchCompleted",
         "webSocketSearchCancelled",
     }
@@ -513,10 +514,57 @@ def wait_for_active_http_call_barrier(
     raise HarnessError("active-call barrier timed out before observing the target operation")
 
 
-def validate_websocket_search_cancellation_delta(
+def wait_for_websocket_search_processing_barrier(
+    read_snapshot: Callable[[], dict[str, Any]],
+    operation_completed: threading.Event,
+    *,
+    timeout: float = 10,
+    poll_interval: float = 0.01,
+) -> dict[str, Any]:
+    """Observe the target inside measured WebSocket processing, not merely admitted at HTTP."""
+    if timeout <= 0 or timeout > 120 or poll_interval < 0.001 or poll_interval > 1:
+        raise HarnessError("WebSocket processing barrier timing is outside its safety bound")
+    started = time.monotonic()
+    polls = 0
+    maximum_http_calls = 0
+    maximum_processing = 0
+    while time.monotonic() - started < timeout:
+        if operation_completed.is_set():
+            raise HarnessError("target operation completed before the WebSocket processing barrier")
+        snapshot = read_snapshot()
+        polls += 1
+        active_http = snapshot.get("activeHttpCalls")
+        active_processing = snapshot.get("webSocketSearchActive")
+        if isinstance(active_http, bool) or not isinstance(active_http, int) or active_http < 1 or active_http > 64:
+            raise HarnessError("diagnostics returned an invalid active HTTP call count")
+        if (
+            isinstance(active_processing, bool)
+            or not isinstance(active_processing, int)
+            or active_processing < 0
+            or active_processing > 64
+        ):
+            raise HarnessError("diagnostics returned an invalid active WebSocket search count")
+        maximum_http_calls = max(maximum_http_calls, active_http)
+        maximum_processing = max(maximum_processing, active_processing)
+        if active_http >= 2 and active_processing >= 1:
+            return {
+                "observed": True,
+                "minimumActiveHttpCalls": 2,
+                "maximumObservedActiveHttpCalls": maximum_http_calls,
+                "minimumActiveWebSocketSearches": 1,
+                "maximumObservedActiveWebSocketSearches": maximum_processing,
+                "polls": polls,
+                "clientWallSeconds": round(time.monotonic() - started, 6),
+                "targetCompletedBeforeBarrier": False,
+            }
+        time.sleep(min(poll_interval, max(0.0, timeout - (time.monotonic() - started))))
+    raise HarnessError("WebSocket processing barrier timed out before observing the target operation")
+
+
+def classify_websocket_search_outcome_delta(
     before: dict[str, Any],
     after: dict[str, Any],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     def counter(snapshot: dict[str, Any], key: str) -> int:
         value = snapshot.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > (1 << 63) - 1:
@@ -529,7 +577,27 @@ def validate_websocket_search_cancellation_delta(
     cancelled_after = counter(after, "webSocketSearchCancelled")
     if completed_before == (1 << 63) - 1 or cancelled_before == (1 << 63) - 1:
         raise HarnessError("WebSocket outcome counter is saturated")
-    if cancelled_after != cancelled_before + 1 or completed_after != completed_before:
+    completed_delta = completed_after - completed_before
+    cancelled_delta = cancelled_after - cancelled_before
+    if (completed_delta, cancelled_delta) == (0, 1):
+        outcome = "cancelled"
+    elif (completed_delta, cancelled_delta) == (1, 0):
+        outcome = "completed"
+    else:
+        raise HarnessError("server outcome counters did not record exactly one bounded WebSocket search")
+    return {
+        "outcome": outcome,
+        "cancelledDelta": cancelled_delta,
+        "completedDelta": completed_delta,
+    }
+
+
+def validate_websocket_search_cancellation_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, int]:
+    delta = classify_websocket_search_outcome_delta(before, after)
+    if delta["outcome"] != "cancelled":
         raise HarnessError("server outcome counters did not prove cancellation before search completion")
     return {"cancelledDelta": 1, "completedDelta": 0}
 
@@ -539,6 +607,7 @@ def wait_for_http_call_cleanup(
     operation_completed: threading.Event,
     *,
     observer_active_calls: int = 1,
+    require_websocket_search_idle: bool = False,
     timeout: float = 10,
     poll_interval: float = 0.02,
 ) -> dict[str, Any]:
@@ -554,14 +623,28 @@ def wait_for_http_call_cleanup(
         polls += 1
         active = snapshot.get("activeHttpCalls")
         pending = snapshot.get("pendingSessions")
+        active_processing = snapshot.get("webSocketSearchActive") if require_websocket_search_idle else 0
         if isinstance(active, bool) or not isinstance(active, int) or active < 1 or active > 64:
             raise HarnessError("diagnostics returned an invalid active HTTP call count")
         if isinstance(pending, bool) or not isinstance(pending, int) or pending < 0:
             raise HarnessError("diagnostics returned an invalid pending session count")
-        if operation_completed.is_set() and active == observer_active_calls and pending == 0:
+        if (
+            isinstance(active_processing, bool)
+            or not isinstance(active_processing, int)
+            or active_processing < 0
+            or active_processing > 64
+        ):
+            raise HarnessError("diagnostics returned an invalid active WebSocket search count")
+        if (
+            operation_completed.is_set()
+            and active == observer_active_calls
+            and pending == 0
+            and active_processing == 0
+        ):
             return {
                 "observed": True,
                 "activeHttpCalls": active,
+                "activeWebSocketSearches": active_processing,
                 "pendingSessions": pending,
                 "polls": polls,
                 "clientWallSeconds": round(time.monotonic() - started, 6),

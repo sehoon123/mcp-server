@@ -126,7 +126,8 @@ The production endpoint is one stateful Streamable HTTP route at `/mcp`.
 5. The SDK creates or resolves a bounded stateful MCP session.
 6. `executeRegisteredTool` or `executeRegisteredResource` installs the audit and session-approval contexts.
 7. Work runs on `Dispatchers.IO.limitedParallelism(16)`, not on the Ktor event loop or Swing EDT.
-8. Explicit DELETE, idle/pressure eviction, project transition, listener stop, or extension unload closes session state.
+8. Explicit DELETE, idle/pressure eviction, project transition, listener stop, or extension unload closes session state
+   and cooperatively cancels registered in-flight tool/resource jobs. Synchronous Burp/Montoya calls remain non-preemptive.
 
 The epoch guard is an admission boundary, not a substitute for operation-local project checks. A project can change
 while an approval dialog, a Montoya call, or result serialization is in progress.

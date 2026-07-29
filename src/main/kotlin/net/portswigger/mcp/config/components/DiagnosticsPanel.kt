@@ -286,14 +286,14 @@ internal fun formatMcpDiagnostics(
     )
     diagnostics.historyPerformance.metrics.forEach { metric ->
         appendLine(
-            "History ${metric.metric.displayLabel()}: attempts=${metric.attempts}, completed=${metric.completed}, " +
-                "failed=${metric.failed}, cancelled=${metric.cancelled}, max=${metric.maxNanos}ns, " +
+            "History ${metric.metric.displayLabel()}: active=${metric.active}, attempts=${metric.attempts}, " +
+                "completed=${metric.completed}, failed=${metric.failed}, cancelled=${metric.cancelled}, max=${metric.maxNanos}ns, " +
                 "buckets=${metric.latencyBuckets.formatHistoryBuckets()}",
         )
     }
     appendLine(
-        "WebSocket search outcomes: completed=${diagnostics.webSocketSearchCompleted}, " +
-            "cancelled=${diagnostics.webSocketSearchCancelled}",
+        "WebSocket search outcomes: active=${diagnostics.webSocketSearchActive}, " +
+            "completed=${diagnostics.webSocketSearchCompleted}, cancelled=${diagnostics.webSocketSearchCancelled}",
     )
     appendLine("HTTP calls: ${diagnostics.activeHttpCalls}/${diagnostics.maxHttpCalls} active, peak ${diagnostics.peakHttpCalls}")
     appendLine(

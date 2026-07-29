@@ -14,6 +14,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
@@ -112,6 +114,94 @@ private data class ToolRuntimePolicy(
 )
 
 private val toolRuntimePolicies = Collections.synchronizedMap(WeakHashMap<Server, ToolRuntimePolicy>())
+private val toolExecutionRegistries = Collections.synchronizedMap(WeakHashMap<Server, McpSessionExecutionRegistry>())
+
+internal class McpSessionExecutionRegistry {
+    private val lock = Any()
+    private val activeSessions = HashSet<String>()
+    private val sessionAliases = HashMap<String, Set<String>>()
+    private val executions = HashMap<String, MutableMap<Job, Int>>()
+    private var lifecycleTrackingEnabled = false
+    private var terminal = false
+
+    fun enableLifecycleTracking() = synchronized(lock) {
+        if (!terminal) lifecycleTrackingEnabled = true
+    }
+
+    fun activateSession(transportSessionId: String, executionSessionId: String?): Boolean = synchronized(lock) {
+        if (terminal) return@synchronized false
+        lifecycleTrackingEnabled = true
+        val aliases = setOfNotNull(transportSessionId, executionSessionId)
+        sessionAliases[transportSessionId] = aliases
+        activeSessions += aliases
+        true
+    }
+
+    fun register(sessionId: String, job: Job): AutoCloseable {
+        val accepted = synchronized(lock) {
+            if (terminal || (lifecycleTrackingEnabled && sessionId !in activeSessions)) {
+                false
+            } else {
+                val jobs = executions.getOrPut(sessionId) { HashMap() }
+                jobs[job] = (jobs[job] ?: 0) + 1
+                true
+            }
+        }
+        if (!accepted) {
+            job.cancel(CancellationException("MCP session is no longer active"))
+            throw CancellationException("MCP session is no longer active")
+        }
+        return AutoCloseable {
+            synchronized(lock) {
+                executions[sessionId]?.let { jobs ->
+                    val remaining = (jobs[job] ?: 1) - 1
+                    if (remaining <= 0) jobs.remove(job) else jobs[job] = remaining
+                    if (jobs.isEmpty()) executions.remove(sessionId)
+                }
+            }
+        }
+    }
+
+    fun cancelSession(transportSessionId: String) {
+        val jobs = synchronized(lock) {
+            val aliases = sessionAliases.remove(transportSessionId) ?: setOf(transportSessionId)
+            activeSessions.removeAll(aliases)
+            aliases.flatMap { sessionId -> executions.remove(sessionId)?.keys.orEmpty() }
+        }
+        jobs.forEach { it.cancel(CancellationException("MCP session closed")) }
+    }
+
+    fun cancelAll() {
+        val jobs = synchronized(lock) {
+            terminal = true
+            activeSessions.clear()
+            sessionAliases.clear()
+            executions.values.flatMap { it.keys }.also { executions.clear() }
+        }
+        jobs.forEach { it.cancel(CancellationException("MCP server stopped")) }
+    }
+}
+
+private fun Server.executionRegistry(): McpSessionExecutionRegistry = synchronized(toolExecutionRegistries) {
+    toolExecutionRegistries.getOrPut(this) { McpSessionExecutionRegistry() }
+}
+
+internal fun Server.enableToolExecutionSessionTracking() {
+    executionRegistry().enableLifecycleTracking()
+}
+
+internal fun Server.activateToolExecutionSession(
+    transportSessionId: String,
+    executionSessionId: String?,
+): Boolean = executionRegistry().activateSession(transportSessionId, executionSessionId)
+
+internal fun Server.cancelToolExecutionSession(sessionId: String) {
+    executionRegistry().cancelSession(sessionId)
+}
+
+internal fun Server.cancelAllToolExecutions() {
+    executionRegistry().cancelAll()
+}
 
 internal fun Server.bindToolRuntimePolicy(
     config: McpConfig,
@@ -123,6 +213,9 @@ internal fun Server.bindToolRuntimePolicy(
 
 internal fun Server.unbindToolRuntimePolicy() {
     toolRuntimePolicies.remove(this)
+    synchronized(toolExecutionRegistries) {
+        toolExecutionRegistries[this]
+    }?.cancelAll()
 }
 
 /** Applies the same bounded execution, audit, and session-approval context to native resource reads as tool calls. */
@@ -143,7 +236,9 @@ internal suspend fun Server.executeRegisteredResource(
         argumentKeys = argumentKeys,
     )
     val sessionApprovalContext = sessionId?.let { policy?.sessionApprovals?.contextFor(it) }
+    var executionLease: AutoCloseable? = null
     return try {
+        executionLease = sessionId?.let { executionRegistry().register(it, currentCoroutineContext()[Job]!!) }
         val executionContext = sessionApprovalContext?.let { invocation + it } ?: invocation
         val result = withContext(executionContext) {
             withContext(toolExecutionDispatcher) { execute() }
@@ -157,6 +252,8 @@ internal suspend fun Server.executeRegisteredResource(
         val summary = safeExceptionSummary(e)
         invocation.complete("error", e)
         onError(summary)
+    } finally {
+        executionLease?.close()
     }
 }
 
@@ -180,7 +277,9 @@ internal suspend fun Server.executeRegisteredTool(
         argumentKeys = request.params.arguments?.keys.orEmpty().filter(declaredArgumentKeys::contains),
     )
     val sessionApprovalContext = sessionId?.let { policy?.sessionApprovals?.contextFor(it) }
+    var executionLease: AutoCloseable? = null
     return try {
+        executionLease = sessionId?.let { executionRegistry().register(it, currentCoroutineContext()[Job]!!) }
         if (policy?.config?.emergencyReadOnlyMode == true && !readOnly) {
             invocation.complete("blocked_read_only")
             CallToolResult(
@@ -203,6 +302,8 @@ internal suspend fun Server.executeRegisteredTool(
             content = listOf(TextContent("Error: $summary")),
             isError = true,
         )
+    } finally {
+        executionLease?.close()
     }
 }
 

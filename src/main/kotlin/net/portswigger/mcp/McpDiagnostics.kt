@@ -15,6 +15,7 @@ private val ARTIFACT_SHA256_REGEX = Regex("[a-f0-9]{64}")
 private fun String?.validArtifactSha256OrNull(): String? = this?.takeIf(ARTIFACT_SHA256_REGEX::matches)
 
 internal data class WebSocketSearchOutcomeSummary(
+    val active: Int,
     val completed: Long,
     val cancelled: Long,
 )
@@ -29,7 +30,11 @@ internal fun HistoryPerformanceSnapshot.webSocketSearchOutcomeSummary(): WebSock
     } else {
         acquisitionCancelled + processingCancelled
     }
-    return WebSocketSearchOutcomeSummary(processing.completed.coerceAtLeast(0), cancelled)
+    return WebSocketSearchOutcomeSummary(
+        active = processing.active.coerceAtLeast(0),
+        completed = processing.completed.coerceAtLeast(0),
+        cancelled = cancelled,
+    )
 }
 
 @Serializable
@@ -69,6 +74,7 @@ data class McpDiagnosticsSnapshot(
     val pressureEvictions: Long = 0,
     val sessionsWithApprovals: Int = 0,
     val sessionApprovalGrants: Int = 0,
+    val webSocketSearchActive: Int = 0,
     val webSocketSearchCompleted: Long = 0,
     val webSocketSearchCancelled: Long = 0,
     @Transient val projectBoundaryResets: Long = 0,

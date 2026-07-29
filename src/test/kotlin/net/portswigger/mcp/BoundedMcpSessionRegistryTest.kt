@@ -13,7 +13,10 @@ import net.portswigger.mcp.security.McpSessionApproval
 import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.McpSessionApprovalSummary
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -337,12 +340,69 @@ class BoundedMcpSessionRegistryTest {
     }
 
     @Test
+    fun `session activation aliases are published before concurrent termination`() {
+        val activationEntered = CountDownLatch(1)
+        val releaseActivation = CountDownLatch(1)
+        val removalFinished = CountDownLatch(1)
+        val terminated = mutableListOf<String>()
+        val registry = BoundedMcpSessionRegistry(
+            maxSessions = 1,
+            idleMillis = 60_000,
+            onSessionActivated = { _, _ ->
+                activationEntered.countDown()
+                assertTrue(releaseActivation.await(5, TimeUnit.SECONDS))
+                true
+            },
+            onSessionTerminating = terminated::add,
+        )
+        val entry = assertNotNull(registry.reserve(transport())).pending
+
+        val activation = thread(name = "test-session-activation") {
+            registry.activate(entry, "activation-race-session")
+        }
+        assertTrue(activationEntered.await(5, TimeUnit.SECONDS))
+        val removal = thread(name = "test-session-removal") {
+            registry.remove(entry)
+            removalFinished.countDown()
+        }
+        assertFalse(removalFinished.await(100, TimeUnit.MILLISECONDS))
+
+        releaseActivation.countDown()
+        activation.join(5_000)
+        removal.join(5_000)
+        assertFalse(activation.isAlive)
+        assertFalse(removal.isAlive)
+        assertEquals(listOf("activation-race-session"), terminated)
+    }
+
+    @Test
+    fun `failed execution-registry activation does not publish a session`() = runBlocking {
+        val rejected = BoundedMcpSessionRegistry(
+            maxSessions = 1,
+            idleMillis = 60_000,
+            onSessionActivated = { _, _ -> false },
+        )
+        val first = assertNotNull(rejected.reserve(transport())).pending
+        rejected.activate(first, "rejected-session")
+
+        assertNotNull(rejected.reserve(transport()))
+        Unit
+    }
+
+    @Test
     fun `session approvals are removed on deletion idle eviction pressure and shutdown`() = runBlocking {
         val approvals = McpSessionApprovalRegistry(maxSessions = 1)
+        val activated = mutableListOf<Pair<String, String?>>()
+        val terminated = mutableListOf<String>()
         val registry = BoundedMcpSessionRegistry(
             maxSessions = 1,
             idleMillis = 0,
             sessionApprovals = approvals,
+            onSessionActivated = { transportId, executionId ->
+                activated += transportId to executionId
+                true
+            },
+            onSessionTerminating = terminated::add,
         )
 
         val removed = assertNotNull(registry.reserve(transport())).pending
@@ -372,6 +432,19 @@ class BoundedMcpSessionRegistryTest {
         assertNotNull(approvals.contextFor("shutdown-session")).grant(McpSessionApproval.SCOPE_CHANGES)
         registry.closeAll()
         assertEquals(McpSessionApprovalSummary(0, 0), approvals.summary())
+        assertEquals(
+            listOf<Pair<String, String?>>(
+                "removed-session" to null,
+                "idle-session" to null,
+                "pressured-session" to null,
+                "shutdown-session" to null,
+            ),
+            activated,
+        )
+        assertEquals(
+            listOf("removed-session", "idle-session", "pressured-session", "shutdown-session"),
+            terminated,
+        )
     }
 
     private fun transport(): StreamableHttpServerTransport =

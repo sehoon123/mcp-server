@@ -3,7 +3,7 @@
 This document defines the repository-supported local evidence helpers for a **future** release candidate. The helpers are
 part of the candidate source identity: run them only from the clean commit named by `--expected-source-commit`. They do
 not retroactively change or validate an immutable earlier tag, draft, asset, or release candidate. In particular, they
-must not be used to rewrite the `v4.11.0-rc.1` record.
+must not be used to rewrite the `v4.11.0-rc.1` or `v4.11.0-rc.2` records.
 
 The current implementation is a fail-closed orchestration slice, not unattended Burp automation. It validates one live
 edition at a time, provides a deterministic diagnostics barrier for caller-disconnect cancellation, and finalizes two
@@ -81,11 +81,13 @@ Community scale report as Professional evidence.
 
 With no other MCP client or event stream connected, `run-live-cancellation-barrier.py` first requires exactly its target
 and observer sessions and completes one exact 10,000-record private no-match read. It then starts bounded search attempts
-and uses the separate observer session to require `activeHttpCalls >= 2`: one observer call plus a real
-target call. Only after this barrier does it close the target POST socket. A pass additionally requires an aborted rather than
-completed response, a one-count increase in the server-side WebSocket-search cancellation outcome with no completed-
-search increase, return to the observer-only call/session plateau, target and observer `DELETE`, no retained approval/
-event-stream state, and a successful fresh verifier session.
+and uses the separate observer session to require both `activeHttpCalls >= 2` and `webSocketSearchActive >= 1`. The latter
+is the target-side processing barrier; HTTP admission alone is not cancellation evidence. Only after both conditions are
+observed does the runner close the target POST socket and send an authenticated `DELETE` for that target session. A pass
+additionally requires an aborted rather than completed response, a one-count increase in the server-side WebSocket-search
+cancellation outcome with no completed-search increase, return to an idle WebSocket-search and observer-only HTTP/session
+plateau, no retained approval/event-stream state, and a successful fresh verifier session. The live artifact proves
+cancellation after the ordered abort-and-delete sequence; it does not attribute that outcome to either action in isolation.
 
 ```bash
 scripts/run-live-cancellation-barrier.py \
@@ -101,9 +103,11 @@ scripts/run-live-cancellation-barrier.py \
   --output <new-private-cancellation-report.json>
 ```
 
-If every bounded attempt completes before the observer sees the target call, the result is a failed precondition, not
-cancellation evidence. This runner proves caller-disconnect cleanup for a read-only history call; it does not prove
-mutation cancellation, extension unload during work, or project-transition handling.
+If every bounded attempt completes before the observer sees target-side WebSocket processing, the result is a failed
+precondition, not cancellation evidence. If work completes after the barrier despite authenticated session deletion, the
+run fails rather than retrying with a consumed session. This runner proves cancellation after caller disconnect plus
+authenticated session termination for a read-only history call; it does not prove mutation cancellation, extension unload
+during work, or project-transition handling.
 
 ## Scenario claims and finalization
 

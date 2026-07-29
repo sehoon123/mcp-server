@@ -37,6 +37,10 @@ def load_lifecycle_module():
     return load_script_module("live_lifecycle", "run-live-lifecycle-soak.py")
 
 
+def load_cancellation_module():
+    return load_script_module("live_cancellation", "run-live-cancellation-barrier.py")
+
+
 class LiveMcpHarnessContractTest(unittest.TestCase):
     def test_loopback_endpoint_validation_rejects_external_and_ambiguous_urls(self):
         self.assertEqual(
@@ -154,17 +158,65 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_abort_and_delete_sequence_accepts_exactly_one_target_deletion(self):
+        runner = load_cancellation_module()
+
+        class FakeCall:
+            def __init__(self):
+                self.abort_count = 0
+                self.join_count = 0
+
+            def abort(self):
+                self.abort_count += 1
+                return True
+
+            def join(self, timeout):
+                self.join_count += 1
+
+            def summary(self):
+                return {"state": "aborted", "httpStatus": None, "jsonRpcResponse": False}
+
+        class FakeTarget:
+            def __init__(self):
+                self.close_count = 0
+
+            def close(self):
+                self.close_count += 1
+                return 202
+
+        call = FakeCall()
+        target = FakeTarget()
+        result = runner.abort_and_delete_active_target(call, target)
+        self.assertEqual(1, call.abort_count)
+        self.assertEqual(1, call.join_count)
+        self.assertEqual(1, target.close_count)
+        self.assertEqual(202, result["sessionDeleteStatus"])
+        self.assertEqual("aborted", result["targetOutcome"]["state"])
+
     def test_completed_server_work_with_lost_response_is_not_cancellation_proof(self):
         before = {"webSocketSearchCompleted": 4, "webSocketSearchCancelled": 2}
         completed_before_response = {"webSocketSearchCompleted": 5, "webSocketSearchCancelled": 2}
+        self.assertEqual(
+            {"outcome": "completed", "cancelledDelta": 0, "completedDelta": 1},
+            harness.classify_websocket_search_outcome_delta(before, completed_before_response),
+        )
         with self.assertRaises(harness.HarnessError):
             harness.validate_websocket_search_cancellation_delta(before, completed_before_response)
 
         cancelled = {"webSocketSearchCompleted": 4, "webSocketSearchCancelled": 3}
         self.assertEqual(
+            {"outcome": "cancelled", "cancelledDelta": 1, "completedDelta": 0},
+            harness.classify_websocket_search_outcome_delta(before, cancelled),
+        )
+        self.assertEqual(
             {"cancelledDelta": 1, "completedDelta": 0},
             harness.validate_websocket_search_cancellation_delta(before, cancelled),
         )
+        with self.assertRaises(harness.HarnessError):
+            harness.classify_websocket_search_outcome_delta(
+                before,
+                {"webSocketSearchCompleted": 5, "webSocketSearchCancelled": 3},
+            )
 
     def test_http_redirect_is_returned_without_forwarding_the_bearer(self):
         forwarded_authorizations = []
@@ -315,6 +367,7 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
                                 "diagnostics": {
                                     "activeHttpCalls": 1,
                                     "activeSessions": 1,
+                                    "webSocketSearchActive": 0,
                                     "unapprovedFutureField": "not-copied",
                                 }
                             })
@@ -328,6 +381,7 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
         self.assertEqual({"uri": "burp://diagnostics"}, client.params)
         self.assertEqual(1, diagnostics["activeHttpCalls"])
         self.assertEqual(1, diagnostics["activeSessions"])
+        self.assertEqual(0, diagnostics["webSocketSearchActive"])
         self.assertNotIn("unapprovedFutureField", diagnostics)
         self.assertIn("unapprovedFutureField", raw)
 
@@ -346,14 +400,33 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
         self.assertTrue(barrier["observed"])
         self.assertEqual(2, barrier["maximumObservedActiveCalls"])
 
-        completed.set()
-        cleanup = harness.wait_for_http_call_cleanup(
-            lambda: {"activeHttpCalls": 1, "pendingSessions": 0},
+        processing_snapshots = iter((
+            {"activeHttpCalls": 2, "webSocketSearchActive": 0},
+            {"activeHttpCalls": 2, "webSocketSearchActive": 1},
+        ))
+        processing = harness.wait_for_websocket_search_processing_barrier(
+            lambda: next(processing_snapshots),
             completed,
             timeout=1,
             poll_interval=0.001,
         )
+        self.assertTrue(processing["observed"])
+        self.assertEqual(1, processing["maximumObservedActiveWebSocketSearches"])
+
+        completed.set()
+        cleanup = harness.wait_for_http_call_cleanup(
+            lambda: {
+                "activeHttpCalls": 1,
+                "pendingSessions": 0,
+                "webSocketSearchActive": 0,
+            },
+            completed,
+            require_websocket_search_idle=True,
+            timeout=1,
+            poll_interval=0.001,
+        )
         self.assertTrue(cleanup["observed"])
+        self.assertEqual(0, cleanup["activeWebSocketSearches"])
 
     def test_active_call_barrier_does_not_treat_early_completion_as_proof(self):
         completed = threading.Event()
