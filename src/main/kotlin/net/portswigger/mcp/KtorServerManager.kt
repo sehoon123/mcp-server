@@ -67,6 +67,7 @@ import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
+import net.portswigger.mcp.security.safeSingleLine
 import net.portswigger.mcp.tools.ToolServices
 import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.tools.activateToolExecutionSession
@@ -1168,7 +1169,11 @@ class KtorServerManager internal constructor(
             } catch (e: Exception) {
                 runCatching { stopCurrentServer() }
                 val failure = normalizeMcpServerStartFailure(e, normalizedRequestedHost, requestedPort)
-                val summary = safeExceptionSummary(failure)
+                val summary = if (failure is McpServerStartupException) {
+                    safeSingleLine(failure.message.orEmpty())
+                } else {
+                    safeExceptionSummary(failure)
+                }
                 metrics.markFailed(summary)
                 api.logging().logToError("MCP server failed: $summary")
                 callback(ServerState.Failed(failure))

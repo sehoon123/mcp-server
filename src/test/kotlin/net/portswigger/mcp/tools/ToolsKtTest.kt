@@ -36,14 +36,20 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.security.DataAccessApprovalHandler
+import net.portswigger.mcp.security.DataAccessSecurity
+import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.RequestActionApprovalHandler
 import net.portswigger.mcp.security.RequestActionSecurity
@@ -83,6 +89,7 @@ class ToolsKtTest {
     private var serverStarted = false
     private val config: McpConfig
     private val mockHeaders = mutableListOf<HttpHeader>()
+    private var requireDataAccessApproval = false
     private lateinit var originalRequestActionHandler: RequestActionApprovalHandler
     private lateinit var originalSensitiveActionHandler: SensitiveActionApprovalHandler
     private val catalogJson = Json { encodeDefaults = true; explicitNulls = true }
@@ -95,7 +102,7 @@ class ToolsKtTest {
             every { getBoolean("filterConfigCredentials") } returns false
             every { getBoolean("requireHttpRequestApproval") } returns false
             every { getBoolean("requireRequestActionApproval") } returns false
-            every { getBoolean("requireDataAccessApproval") } returns false
+            every { getBoolean("requireDataAccessApproval") } answers { requireDataAccessApproval }
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
             every { getBoolean("_alwaysAllowSiteMap") } returns false
             every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
@@ -106,7 +113,11 @@ class ToolsKtTest {
             every { getString("localBearerToken") } returns testBearerToken
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
-            every { setBoolean(any(), any()) } returns Unit
+            every { setBoolean(any(), any()) } answers {
+                if (firstArg<String>() == "requireDataAccessApproval") {
+                    requireDataAccessApproval = secondArg()
+                }
+            }
             every { setString(any(), any()) } returns Unit
             every { setInteger(any(), any()) } returns Unit
         }
@@ -180,6 +191,140 @@ class ToolsKtTest {
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)),
     )
 
+    private fun assertBurpErrorGuidanceIsSelfContained(tool: Tool) {
+        val output = requireNotNull(tool.outputSchema)
+        val statusSchema = output.properties?.get("status")?.jsonObject ?: return
+        if (!statusSchema.toString().contains("\"burp_error\"")) return
+        val descriptions = listOf("status", "retry", "executionState", "actionState").mapNotNull { name ->
+            output.properties?.get(name)?.jsonObject?.get("description")?.jsonPrimitive?.content
+        }
+        assertTrue(
+            descriptions.any { description ->
+                "burp_error" in description || "Authoritative retry" in description ||
+                    "must not be retried automatically" in description
+            },
+            "${tool.name} exposes burp_error without self-contained retry/execution guidance",
+        )
+    }
+
+    private fun assertTruncatedStringsAdvertiseBounds(tool: Tool) {
+        fun containsString(schema: JsonObject): Boolean {
+            val type = schema["type"]
+            if (type is JsonPrimitive && type.content == "string") return true
+            if (type is JsonArray && type.any { it.jsonPrimitive.content == "string" }) return true
+            return listOf("anyOf", "oneOf", "allOf").any { keyword ->
+                (schema[keyword] as? JsonArray)?.any { candidate ->
+                    (candidate as? JsonObject)?.let(::containsString) == true
+                } == true
+            }
+        }
+
+        fun maxLengths(schema: JsonObject): Set<Int> = buildSet {
+            (schema["maxLength"] as? JsonPrimitive)?.content?.toIntOrNull()?.let(::add)
+            listOf("anyOf", "oneOf", "allOf").forEach { keyword ->
+                (schema[keyword] as? JsonArray)?.forEach { candidate ->
+                    (candidate as? JsonObject)?.let { addAll(maxLengths(it)) }
+                }
+            }
+        }
+
+        fun expectedBound(path: String, name: String, siblings: JsonObject): Int = when (name) {
+            "url", "baseUrl" -> 2_048
+            "host" -> 253
+            "name" -> 512
+            "customData" -> 1_024
+            "notes" -> if ("webSocketId" in siblings) 2_000 else 512
+            else -> error("$path.$name has a truncation flag but no explicit expected bound")
+        }
+
+        fun walk(path: String, schema: JsonObject) {
+            val properties = schema["properties"] as? JsonObject
+            properties?.forEach { (name, property) ->
+                val propertySchema = property.jsonObject
+                if (properties.containsKey("${name}Truncated") && containsString(propertySchema)) {
+                    val advertised = maxLengths(propertySchema)
+                    assertEquals(
+                        setOf(expectedBound(path, name, properties)),
+                        advertised,
+                        "$path.$name must advertise its exact runtime truncation bound",
+                    )
+                    val truncationDescription = properties.getValue("${name}Truncated").jsonObject["description"]
+                        ?.jsonPrimitive?.content.orEmpty()
+                    val documented = Regex("([0-9][0-9,]*)-character output bound")
+                        .find(truncationDescription)?.groupValues?.get(1)?.replace(",", "")?.toIntOrNull()
+                    assertEquals(
+                        advertised.single(),
+                        documented,
+                        "$path.${name}Truncated must document the same exact bound",
+                    )
+                }
+                walk("$path.$name", propertySchema)
+            }
+            (schema["items"] as? JsonObject)?.let { walk("$path[]", it) }
+            listOf("anyOf", "oneOf", "allOf").forEach { keyword ->
+                (schema[keyword] as? JsonArray)?.forEachIndexed { index, candidate ->
+                    (candidate as? JsonObject)?.let { walk("$path.$keyword[$index]", it) }
+                }
+            }
+            (schema["additionalProperties"] as? JsonObject)?.let { walk("$path{}", it) }
+        }
+
+        val output = requireNotNull(tool.outputSchema)
+        val root = JsonObject(
+            mapOf(
+                "type" to JsonPrimitive("object"),
+                "properties" to (output.properties ?: JsonObject(emptyMap())),
+                "required" to JsonArray(output.required.orEmpty().map(::JsonPrimitive)),
+            )
+        )
+        walk(tool.name, root)
+    }
+
+    private fun assertNonNullOutputFieldsAreRequired(tool: Tool) {
+        fun acceptsNull(schema: JsonObject): Boolean {
+            val type = schema["type"]
+            if (type is JsonPrimitive && type.content == "null") return true
+            if (type is JsonArray && type.any { it.jsonPrimitive.content == "null" }) return true
+            return (schema["anyOf"] as? JsonArray)?.any { candidate ->
+                (candidate as? JsonObject)?.let(::acceptsNull) == true
+            } == true
+        }
+
+        fun walk(path: String, schema: JsonObject) {
+            val properties = schema["properties"] as? JsonObject
+            if (properties != null) {
+                val required = (schema["required"] as? JsonArray)
+                    ?.mapTo(HashSet()) { it.jsonPrimitive.content }
+                    .orEmpty()
+                properties.forEach { (name, property) ->
+                    val propertySchema = property.jsonObject
+                    assertTrue(
+                        acceptsNull(propertySchema) || name in required,
+                        "$path.$name is non-null but omittable; make stable output fields constructor-required",
+                    )
+                    walk("$path.$name", propertySchema)
+                }
+            }
+            (schema["items"] as? JsonObject)?.let { walk("$path[]", it) }
+            listOf("anyOf", "oneOf", "allOf").forEach { keyword ->
+                (schema[keyword] as? JsonArray)?.forEachIndexed { index, candidate ->
+                    (candidate as? JsonObject)?.let { walk("$path.$keyword[$index]", it) }
+                }
+            }
+            (schema["additionalProperties"] as? JsonObject)?.let { walk("$path{}", it) }
+        }
+
+        val output = requireNotNull(tool.outputSchema)
+        val root = JsonObject(
+            mapOf(
+                "type" to JsonPrimitive("object"),
+                "properties" to (output.properties ?: JsonObject(emptyMap())),
+                "required" to JsonArray(output.required.orEmpty().map(::JsonPrimitive)),
+            )
+        )
+        walk(tool.name, root)
+    }
+
     private fun montoyaBytes(raw: ByteArray): MontoyaByteArray = mockk<MontoyaByteArray>().also { bytes ->
         every { bytes.length() } returns raw.size
         every { bytes.toString() } returns raw.toString(Charsets.ISO_8859_1)
@@ -238,6 +383,7 @@ class ToolsKtTest {
     
     @BeforeEach
     fun setup() {
+        requireDataAccessApproval = false
         originalRequestActionHandler = RequestActionSecurity.approvalHandler
         originalSensitiveActionHandler = SensitiveActionSecurity.approvalHandler
         RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
@@ -296,15 +442,18 @@ class ToolsKtTest {
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(21, tools.size)
-        assertCatalogFingerprint(
-            "Community",
-            tools.values,
-            "91a76077a86f5286edc65caa60c5f26e181675327d418687e8aeb7440f2b06c4",
-        )
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         assertTrue(tools.values.all { !it.description.isNullOrBlank() })
         assertTrue(tools.values.all { it.description.orEmpty().length <= 512 })
+        tools.values.forEach(::assertNonNullOutputFieldsAreRequired)
+        tools.values.forEach(::assertTruncatedStringsAdvertiseBounds)
+        tools.values.forEach(::assertBurpErrorGuidanceIsSelfContained)
+        assertCatalogFingerprint(
+            "Community",
+            tools.values,
+            "15b9b63ea145194e982fdc4f073931cdbf7afdb340e4b7ad5011222b3c04cdbb",
+        )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
                 assertTrue(
@@ -312,13 +461,21 @@ class ToolsKtTest {
                     "$toolName.$propertyName lacks an input schema description",
                 )
             }
+            tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
+                assertEquals(
+                    MCP_PROJECT_ID_INPUT_DESCRIPTION,
+                    projectSchema.getValue("description").jsonPrimitive.content,
+                    "$toolName.projectId must use the common opaque project-binding contract",
+                )
+            }
         }
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
         assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder routing is unsupported"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
-        assertTrue(description("set_burp_options").contains("configuration-editing tools are enabled"))
-        assertTrue(description("search_http_messages").contains("Pass nextCursor as cursor"))
-        assertTrue(description("search_http_messages").contains("Requests sent by MCP are absent"))
+        assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
+        assertTrue(description("search_http_messages").contains("items=[] with hasMore=true"))
+        assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
+        assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("correlate_http_activity").contains("similarity without identity or deduplication"))
         assertTrue(description("correlate_http_activity").contains("Site Map stable-ID validation may privately inspect bounded identity samples"))
         assertTrue(description("update_scope").contains("before any approval prompt or policy bypass and before mutation"))
@@ -327,7 +484,10 @@ class ToolsKtTest {
         assertTrue(description("list_workflow_presets").contains("stored workflow preset definitions"))
         assertTrue(description("execute_workflow_preset").contains("runtime limit overrides the saved defaultLimit"))
         assertTrue(description("route_http_message_from_id").contains("sends no network traffic"))
-        assertTrue(description("set_burp_control_state").contains("unless the local operator enabled YOLO mode"))
+        assertTrue(description("send_raw_http_request").contains("independent outbound-target policy"))
+        assertTrue(description("send_http_request_from_id").contains("independent outbound-target policy"))
+        assertTrue(description("search_websocket_messages").contains("items=[] with hasMore=true"))
+        assertTrue(description("set_burp_control_state").contains("intentionally not project-scoped"))
 
         val catalogText = tools.values.joinToString("\n") { it.description.orEmpty() }
         listOf(
@@ -347,6 +507,146 @@ class ToolsKtTest {
         assertTrue(rawSchema.contains("content after the first blank line is preserved"))
         assertTrue(rawSchema.contains("Protocol to use"))
         assertTrue(rawSchema.contains("Connect to the destination using TLS"))
+    }
+
+    @Test
+    fun `retained HTTP correction failures are MCP errors without unverified project echoes`() = runBlocking {
+        val cases = listOf(
+            "get_http_message" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "ref" to mapOf("source" to "proxy", "id" to "1"),
+                "limit" to 0,
+            ),
+            "send_http_request_from_id" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "ref" to mapOf("source" to "proxy", "id" to "1"),
+                "redirection" to "always",
+            ),
+            "route_http_message_from_id" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "ref" to mapOf("source" to "proxy", "id" to "1"),
+                "destination" to "organizer",
+                "tabName" to "unsupported",
+            ),
+            "check_scope" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "targets" to emptyList<Any>(),
+            ),
+            "compare_http_messages" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "refs" to emptyList<Any>(),
+            ),
+            "summarize_http_attack_surface" to mapOf<String, Any>(
+                "projectId" to "caller-forged",
+                "pathDepth" to 0,
+            ),
+        )
+
+        cases.forEach { (toolName, arguments) ->
+            val result = client.callTool(toolName, arguments)
+            assertEquals(true, result?.isError, "$toolName correction result must be an MCP error")
+            assertEquals(
+                "invalid_argument",
+                result?.structuredContent?.get("status")?.jsonPrimitive?.content,
+                toolName,
+            )
+            assertEquals(
+                JsonNull,
+                result?.structuredContent?.get("projectId"),
+                "$toolName must not echo caller-forged projectId before capture",
+            )
+        }
+    }
+
+    @Test
+    fun `attack surface correction and Burp failures are MCP errors`() = runBlocking {
+        val invalid = client.callTool(
+            "summarize_http_attack_surface",
+            mapOf("projectId" to "caller-forged", "pathDepth" to 0),
+        )
+        assertEquals(true, invalid?.isError)
+        assertEquals("invalid_argument", invalid?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(JsonNull, invalid?.structuredContent?.get("projectId"))
+
+        val failingProject = mockk<burp.api.montoya.project.Project>()
+        every { failingProject.id() } throws IllegalStateException("PRIVATE_SENTINEL")
+        every { api.project() } returns failingProject
+        val failed = client.callTool(
+            "summarize_http_attack_surface",
+            mapOf("projectId" to "project-default"),
+        )
+        assertEquals(true, failed?.isError)
+        assertEquals("burp_error", failed?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(JsonNull, failed?.structuredContent?.get("projectId"))
+        assertFalse(failed?.structuredContent.toString().contains("PRIVATE_SENTINEL"))
+    }
+
+    @Test
+    fun `correlation and session ordinary denial and unavailable outcomes remain non-errors`() = runBlocking {
+        val previousApprovalHandler = DataAccessSecurity.approvalHandler
+        requireDataAccessApproval = true
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig) = false
+        }
+        try {
+            val deniedCorrelation = client.callTool(
+                "correlate_http_activity",
+                mapOf(
+                    "projectId" to "project-default",
+                    "baselineRefs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+                    "comparisonRefs" to listOf(mapOf("source" to "proxy", "id" to "2")),
+                ),
+            )
+            assertEquals("access_denied", deniedCorrelation?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(false, deniedCorrelation?.isError)
+
+            val deniedSession = client.callTool(
+                "analyze_http_session_security",
+                mapOf(
+                    "projectId" to "project-default",
+                    "refs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+                ),
+            )
+            assertEquals("access_denied", deniedSession?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(false, deniedSession?.isError)
+        } finally {
+            requireDataAccessApproval = false
+            DataAccessSecurity.approvalHandler = previousApprovalHandler
+        }
+
+        val proxy = mockk<Proxy>()
+        val unavailable = mockk<ProxyHttpRequestResponse>()
+        every { api.proxy() } returns proxy
+        every { proxy.history(any()) } returns listOf(unavailable)
+        every { unavailable.id() } returns 1
+        every { unavailable.request() } returns null
+
+        val unavailableCorrelation = client.callTool(
+            "correlate_http_activity",
+            mapOf(
+                "projectId" to "project-default",
+                "baselineRefs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+                "comparisonRefs" to listOf(mapOf("source" to "proxy", "id" to "2")),
+            ),
+        )
+        assertEquals(
+            "request_unavailable",
+            unavailableCorrelation?.structuredContent?.get("status")?.jsonPrimitive?.content,
+        )
+        assertEquals(false, unavailableCorrelation?.isError)
+
+        val unavailableSession = client.callTool(
+            "analyze_http_session_security",
+            mapOf(
+                "projectId" to "project-default",
+                "refs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+            ),
+        )
+        assertEquals(
+            "request_unavailable",
+            unavailableSession?.structuredContent?.get("status")?.jsonPrimitive?.content,
+        )
+        assertEquals(false, unavailableSession?.isError)
     }
 
     @Nested
@@ -379,6 +679,7 @@ class ToolsKtTest {
                 ),
             )
 
+            assertEquals(false, result?.isError)
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", content.captured)
@@ -414,10 +715,43 @@ class ToolsKtTest {
                 ),
             )
 
+            assertEquals(false, result?.isError)
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals(listOf(":method", ":path"), headers.captured.take(2).map { it.name() })
             verify(exactly = 1) { repeater.sendToRepeater(request, "v4") }
+        }
+
+        @Test
+        fun `raw HTTP correction failures are MCP errors`() = runBlocking {
+            val send = client.callTool(
+                "send_raw_http_request",
+                mapOf(
+                    "protocol" to "http_1",
+                    "http1" to mapOf("content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"),
+                    "targetHostname" to "example.test",
+                    "targetPort" to 443,
+                    "usesHttps" to true,
+                    "responseTimeoutMs" to 0,
+                ),
+            )
+            val route = client.callTool(
+                "route_raw_http_request",
+                mapOf(
+                    "destination" to "organizer",
+                    "protocol" to "http_1",
+                    "http1" to mapOf("content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"),
+                    "targetHostname" to "example.test",
+                    "targetPort" to 443,
+                    "usesHttps" to true,
+                    "tabName" to "unsupported",
+                ),
+            )
+
+            listOf(send, route).forEach { result ->
+                assertEquals(true, result?.isError)
+                assertEquals("invalid_argument", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            }
         }
     }
 
@@ -715,7 +1049,7 @@ class ToolsKtTest {
                 assertEquals(listOf("level"), readTool.inputSchema.required)
                 assertTrue(readTool.inputSchema.properties?.get("level").toString().contains("project"))
                 val setTool = tools.single { it.name == "set_burp_options" }
-                assertTrue(setTool.description.orEmpty().contains("configuration-editing tools are enabled"))
+                assertTrue(setTool.description.orEmpty().contains("captures and rechecks the project current"))
                 val jsonSchema = setTool.inputSchema.properties?.get("json").toString()
                 assertTrue(jsonSchema.contains("project_options"))
                 assertTrue(jsonSchema.contains("user_options"))
@@ -776,6 +1110,27 @@ class ToolsKtTest {
             )
             assertEquals("ok", pageTwo?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertTrue(pageTwo?.structuredContent?.get("items").toString().contains("\"id\":\"2\""))
+        }
+
+        @Test
+        fun `HTTP search marks correction and Burp failures as MCP errors`() = runBlocking {
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<Proxy>()
+            every { api.project() } returns project
+            every { project.id() } returns "project-http-error"
+            every { api.proxy() } returns proxy
+            every { proxy.history() } throws IllegalStateException("synthetic HTTP source failure")
+
+            val invalid = client.callTool("search_http_messages", mapOf("limit" to 0))
+            assertEquals(true, invalid?.isError)
+            assertEquals("invalid_argument", invalid?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(JsonNull, invalid?.structuredContent?.get("projectId"))
+
+            val failed = client.callTool("search_http_messages", emptyMap())
+            assertEquals(true, failed?.isError)
+            assertEquals("burp_error", failed?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("project-http-error", failed?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+            assertEquals(emptyList<JsonElement>(), failed?.structuredContent?.get("items")?.jsonArray)
         }
 
         @Test
@@ -841,6 +1196,7 @@ class ToolsKtTest {
                     "project_mismatch",
                     wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
                 )
+                assertEquals(true, wrongProject?.isError)
 
                 val searchTool = client.listTools().single { it.name == "search_http_messages" }
                 assertEquals(emptyList<String>(), searchTool.inputSchema.required)
@@ -1001,6 +1357,7 @@ class ToolsKtTest {
                 assertTrue(structured["ref"].toString().contains("\"id\":\"42\""))
                 assertTrue(structured["metadata"].toString().contains("\"time\":\"2026-01-02T03:04:05Z\""))
                 assertTrue(structured["metadata"].toString().contains("\"notes\":\"reviewed\""))
+                assertTrue(structured["metadata"].toString().contains("\"notesTruncated\":false"))
                 val content = structured["content"]
                 assertNotNull(content)
                 assertTrue(content.toString().contains("\"data\":\"cdef\""))
@@ -1111,6 +1468,7 @@ class ToolsKtTest {
                 val structured = result!!.structuredContent!!
                 assertEquals("ok", structured["status"]?.jsonPrimitive?.content)
                 assertEquals("project-default", structured["projectId"]?.jsonPrimitive?.content)
+                assertTrue(structured["metadata"].toString().contains("\"notesTruncated\":false"))
                 assertTrue(structured["content"].toString().contains("\"data\":\"AgME\""))
 
                 val missing = client.callTool(
@@ -1118,6 +1476,7 @@ class ToolsKtTest {
                     mapOf("id" to 999, "projectId" to "project-default"),
                 )
                 assertEquals("not_found", missing?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals(true, missing?.isError)
 
                 val wrongProject = client.callTool(
                     "get_websocket_message_by_id",
@@ -1127,6 +1486,7 @@ class ToolsKtTest {
                     "project_mismatch",
                     wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
                 )
+                assertEquals(true, wrongProject?.isError)
                 val invalidId = client.callTool(
                     "get_websocket_message_by_id",
                     mapOf("id" to -1, "projectId" to "project-default"),
@@ -1163,6 +1523,82 @@ class ToolsKtTest {
         }
     }
     
+    @Test
+    fun `WebSocket search and detail expose bounded MCP error outcomes`() = runBlocking {
+        val project = mockk<burp.api.montoya.project.Project>()
+        val proxy = mockk<Proxy>()
+        every { api.project() } returns project
+        every { project.id() } returns "project-websocket-error"
+        every { api.proxy() } returns proxy
+        every { proxy.webSocketHistory() } throws IllegalStateException("synthetic WebSocket search failure")
+        every { proxy.webSocketHistory(any()) } throws IllegalStateException("synthetic WebSocket read failure")
+
+        val invalidSearch = client.callTool(
+            "search_websocket_messages",
+            mapOf("projectId" to "project-websocket-error", "limit" to 0),
+        )
+        assertEquals(true, invalidSearch?.isError)
+        assertEquals("invalid_argument", invalidSearch?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals(JsonNull, invalidSearch?.structuredContent?.get("projectId"))
+
+        val search = client.callTool(
+            "search_websocket_messages",
+            mapOf("projectId" to "project-websocket-error"),
+        )
+        assertEquals(true, search?.isError)
+        assertEquals("burp_error", search?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals("project-websocket-error", search?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+
+        val detail = client.callTool(
+            "get_websocket_message_by_id",
+            mapOf("id" to 7, "projectId" to "project-websocket-error"),
+        )
+        assertEquals(true, detail?.isError)
+        assertEquals("burp_error", detail?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertEquals("project-websocket-error", detail?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `WebSocket empty success keeps complete page content and required output schema`() = runBlocking {
+        val project = mockk<burp.api.montoya.project.Project>()
+        val proxy = mockk<Proxy>()
+        every { api.project() } returns project
+        every { project.id() } returns "project-websocket-empty"
+        every { api.proxy() } returns proxy
+        every { proxy.webSocketHistory() } returns emptyList()
+
+        val tool = client.listTools().single { it.name == "search_websocket_messages" }
+        val expectedKeys = setOf(
+            "status",
+            "projectId",
+            "items",
+            "returned",
+            "scanned",
+            "scannedContentBytes",
+            "oversizedContentSkipped",
+            "scanLimitReached",
+            "contentLimitReached",
+            "hasMore",
+            "nextCursor",
+            "error",
+        )
+        assertEquals(expectedKeys, tool.outputSchema?.required?.toSet())
+
+        val result = client.callTool(
+            "search_websocket_messages",
+            mapOf("projectId" to "project-websocket-empty"),
+        )
+        assertNotNull(result?.structuredContent)
+        val structured = result!!.structuredContent!!
+        assertEquals(expectedKeys, structured.keys)
+        assertEquals("ok", structured.getValue("status").jsonPrimitive.content)
+        assertEquals(emptyList<JsonElement>(), structured.getValue("items").jsonArray)
+        assertEquals(0, structured.getValue("returned").jsonPrimitive.content.toInt())
+        assertEquals(false, structured.getValue("hasMore").jsonPrimitive.boolean)
+        assertEquals(JsonNull, structured.getValue("nextCursor"))
+        assertEquals(JsonNull, structured.getValue("error"))
+    }
+
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
@@ -1260,7 +1696,21 @@ class ToolsKtTest {
         assertNotNull(correlation.outputSchema?.properties?.get("timeline"))
         assertNotNull(correlation.outputSchema?.properties?.get("similarityGroups"))
         assertNotNull(correlation.outputSchema?.properties?.get("delta"))
-        assertNotNull(correlation.outputSchema?.properties?.get("evidence"))
+        val correlationEvidenceSchema = correlation.outputSchema?.properties?.get("evidence")!!.jsonObject
+        assertTrue(
+            setOf(
+                "ordering",
+                "chronologyEstablished",
+                "cohortBoundaryEstablishesTime",
+                "exactCrossSourceIdentityEstablished",
+                "probableDuplicatesDeduplicated",
+                "maxReferences",
+                "maxReferencesPerCohort",
+                "maxPathDepth",
+                "maxIndexedPathChars",
+                "limitations",
+            ).all { required -> correlationEvidenceSchema.getValue("required").jsonArray.any { it.jsonPrimitive.content == required } }
+        )
         assertEquals(true, correlation.annotations?.readOnlyHint)
         assertEquals(false, correlation.annotations?.destructiveHint)
         val invalidCorrelation = client.callTool(
@@ -1272,6 +1722,11 @@ class ToolsKtTest {
             ),
         )
         assertEquals("invalid_argument", invalidCorrelation?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        val invalidCorrelationEvidence = invalidCorrelation?.structuredContent?.get("evidence")!!.jsonObject
+        assertEquals("caller_supplied", invalidCorrelationEvidence.getValue("ordering").jsonPrimitive.content)
+        assertEquals(false, invalidCorrelationEvidence.getValue("chronologyEstablished").jsonPrimitive.boolean)
+        assertEquals(false, invalidCorrelationEvidence.getValue("exactCrossSourceIdentityEstablished").jsonPrimitive.boolean)
+        assertTrue(invalidCorrelationEvidence.getValue("limitations").jsonArray.isNotEmpty())
         assertEquals(true, invalidCorrelation?.isError)
 
         val checkScope = tools.single { it.name == "check_scope" }
@@ -1382,7 +1837,23 @@ class ToolsKtTest {
         assertNotNull(sessionAnalysis.outputSchema?.properties?.get("cookieSummaries"))
         assertNotNull(sessionAnalysis.outputSchema?.properties?.get("invariants"))
         assertNotNull(sessionAnalysis.outputSchema?.properties?.get("variants"))
-        assertNotNull(sessionAnalysis.outputSchema?.properties?.get("evidence"))
+        val sessionEvidenceSchema = sessionAnalysis.outputSchema?.properties?.get("evidence")!!.jsonObject
+        assertTrue(
+            setOf(
+                "proposedFlowOnly",
+                "chronologyOrCausalityEstablished",
+                "vulnerabilityAssessment",
+                "maxMessages",
+                "maxHeadersPerRequestOrResponse",
+                "maxHeaderLineChars",
+                "maxSelectedHeaderChars",
+                "maxRequestCookieNamesPerMessage",
+                "maxResponseCookiesPerMessage",
+                "maxCookiesPerAnalysis",
+                "maxRedirectHops",
+                "limitations",
+            ).all { required -> sessionEvidenceSchema.getValue("required").jsonArray.any { it.jsonPrimitive.content == required } }
+        )
         val sessionMessagesSchema = sessionAnalysis.outputSchema?.properties?.get("messages").toString()
         assertTrue(sessionMessagesSchema.contains("partitioned"))
         assertTrue(sessionMessagesSchema.contains("domainScope"))
@@ -1403,6 +1874,7 @@ class ToolsKtTest {
 
         val replay = tools.single { it.name == "send_http_request_from_id" }
         assertNotNull(replay.outputSchema?.properties?.get("recordedRef"))
+        assertTrue("patchApplied" in replay.outputSchema?.required.orEmpty())
         val redirectSchema = replay.inputSchema.properties?.get("redirection").toString()
         assertTrue(redirectSchema.contains("\"enum\":[\"never\",null]"))
         assertTrue(redirectSchema.contains("\"default\":\"never\""))
@@ -1432,6 +1904,8 @@ class ToolsKtTest {
 
         val search = tools.single { it.name == "search_http_messages" }
         assertTrue(search.inputSchema.properties?.get("regex").toString().contains("\"maxLength\":512"))
+        assertTrue(search.outputSchema?.properties?.get("status").toString().contains("burp_error"))
+        assertTrue(search.outputSchema?.properties?.get("hasMore").toString().contains("items is empty"))
 
         val websocketSearch = tools.single { it.name == "search_websocket_messages" }
         assertEquals(setOf("projectId"), websocketSearch.inputSchema.required?.toSet())
@@ -1444,6 +1918,8 @@ class ToolsKtTest {
 
         val websocketDetail = tools.single { it.name == "get_websocket_message_by_id" }
         assertEquals(setOf("id", "projectId"), websocketDetail.inputSchema.required?.toSet())
+        assertTrue(websocketDetail.outputSchema?.properties?.get("status").toString().contains("invalid_argument"))
+        assertTrue(websocketDetail.outputSchema?.properties?.get("status").toString().contains("burp_error"))
 
         val project = mockk<burp.api.montoya.project.Project>()
         val scope = mockk<burp.api.montoya.scope.Scope>()
@@ -1496,6 +1972,11 @@ class ToolsKtTest {
         assertEquals("ok", sessionResult?.structuredContent?.get("status")?.jsonPrimitive?.content)
         assertEquals(false, sessionResult?.isError)
         assertTrue(sessionResult?.structuredContent?.get("messages").toString().contains("\"index\":0"))
+        val sessionEvidence = sessionResult?.structuredContent?.get("evidence")!!.jsonObject
+        assertEquals(true, sessionEvidence.getValue("proposedFlowOnly").jsonPrimitive.boolean)
+        assertEquals(false, sessionEvidence.getValue("chronologyOrCausalityEstablished").jsonPrimitive.boolean)
+        assertEquals(false, sessionEvidence.getValue("vulnerabilityAssessment").jsonPrimitive.boolean)
+        assertTrue(sessionEvidence.getValue("limitations").jsonArray.isNotEmpty())
 
         val invalidSessionResult = client.callTool(
             "analyze_http_session_security",
@@ -1593,18 +2074,41 @@ class ToolsKtTest {
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
             assertEquals(28, tools.size)
+            assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
+            tools.forEach(::assertNonNullOutputFieldsAreRequired)
+            tools.forEach(::assertTruncatedStringsAdvertiseBounds)
+            tools.forEach(::assertBurpErrorGuidanceIsSelfContained)
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "fc286e275a407cdb4b6b020ca36834eb322e7e106cedbc91236854ef4dd8664d",
+                "eb0415096841f806d4f93954126dcf46906b42aa75f130bb4075661690d04486",
             )
-            assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
+            tools.forEach { tool ->
+                tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
+                    assertEquals(
+                        MCP_PROJECT_ID_INPUT_DESCRIPTION,
+                        projectSchema.getValue("description").jsonPrimitive.content,
+                        "${tool.name}.projectId must use the common opaque project-binding contract",
+                    )
+                }
+            }
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
             assertTrue(start.inputSchema.properties?.get("mode").toString().contains("active"))
             assertTrue(start.inputSchema.properties?.get("targets").toString().contains("insertionPoints"))
             assertTrue(start.outputSchema?.properties?.get("actionState").toString().contains("uncertain"))
+            assertTrue(
+                setOf(
+                    "targets",
+                    "targetCount",
+                    "insertionPointCount",
+                    "issues",
+                    "issuesTruncated",
+                    "issuesAccessDenied",
+                    "issuesUnavailable",
+                ).all { it in start.outputSchema?.required.orEmpty() }
+            )
             assertEquals(false, start.annotations?.readOnlyHint)
             assertEquals(true, start.annotations?.destructiveHint)
             assertEquals(true, start.annotations?.openWorldHint)
@@ -1613,6 +2117,11 @@ class ToolsKtTest {
             val get = tools.single { it.name == "get_scanner_audit" }
             assertEquals(setOf("projectId", "taskId"), get.inputSchema.required?.toSet())
             assertNotNull(get.outputSchema?.properties?.get("issues"))
+            assertTrue(get.description.orEmpty().contains("issuesAccessDenied identifies an operator denial"))
+            val issuesUnavailableDescription = get.outputSchema?.properties?.get("issuesUnavailable")
+                ?.jsonObject?.get("description")?.jsonPrimitive?.content.orEmpty()
+            assertTrue(issuesUnavailableDescription.contains("access failed technically"))
+            assertTrue(issuesUnavailableDescription.contains("already cancelled"))
             assertEquals(true, get.annotations?.readOnlyHint)
 
             val cancel = tools.single { it.name == "cancel_scanner_audit" }
@@ -1622,21 +2131,60 @@ class ToolsKtTest {
             assertEquals(false, cancel.annotations?.openWorldHint)
 
             val issues = tools.single { it.name == "get_scanner_issues" }
+            assertTrue(issues.description.orEmpty().contains("captured project is rechecked and returned as projectId"))
+            assertTrue(issues.description.orEmpty().contains("Reached end of items"))
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))
             assertNotNull(issues.outputSchema?.properties?.get("nextCursor"))
+            val scannerCursorSchema = issues.outputSchema?.properties?.get("nextCursor")!!.jsonObject
+            val scannerCursorVariant = scannerCursorSchema.takeIf { it["maxLength"] != null }
+                ?: scannerCursorSchema.getValue("anyOf").jsonArray.first {
+                    it.jsonObject["type"]?.jsonPrimitive?.content == "string"
+                }.jsonObject
+            assertEquals(16_384, scannerCursorVariant.getValue("maxLength").jsonPrimitive.int)
+            assertTrue("legacyTextTruncated" in issues.outputSchema?.required.orEmpty())
 
             val issueDetail = tools.single { it.name == "get_scanner_issue_by_id" }
             assertEquals(setOf("id", "projectId"), issueDetail.inputSchema.required?.toSet())
+            assertTrue(issueDetail.outputSchema?.properties?.get("status").toString().contains("invalid_argument"))
+            assertTrue(issueDetail.outputSchema?.properties?.get("status").toString().contains("burp_error"))
+            val issueSummarySchema = issueDetail.outputSchema?.properties?.get("summary")!!.jsonObject
+            val issueSummaryObject = issueSummarySchema.takeIf { it.containsKey("properties") }
+                ?: issueSummarySchema.getValue("anyOf").jsonArray.first { it.jsonObject["type"]?.jsonPrimitive?.content == "object" }.jsonObject
+            assertTrue(
+                setOf("nameTruncated", "baseUrlTruncated", "hostTruncated").all {
+                    it in issueSummaryObject.getValue("required").jsonArray.map { value -> value.jsonPrimitive.content }
+                }
+            )
 
             val generator = tools.single { it.name == "generate_collaborator_payload" }
             assertEquals(false, generator.annotations?.readOnlyHint)
 
             val interactions = tools.single { it.name == "get_collaborator_interactions" }
+            assertTrue(interactions.description.orEmpty().contains("has no continuation cursor"))
             assertNotNull(interactions.inputSchema.properties?.get("waitSeconds"))
             assertTrue(interactions.inputSchema.properties?.get("detailEncoding").toString().contains("base64"))
             assertNotNull(interactions.outputSchema?.properties?.get("detailsTruncated"))
+            assertTrue(interactions.outputSchema?.properties?.get("hasMore").toString().contains("no continuation cursor"))
+            val interactionSchema = interactions.outputSchema?.properties?.get("interactions")!!.jsonObject
+                .getValue("items").jsonObject
+            assertTrue("customDataTruncated" in interactionSchema.getValue("required").jsonArray.map { it.jsonPrimitive.content })
             assertEquals(false, interactions.annotations?.idempotentHint)
+            setOf(
+                "generate_collaborator_payload",
+                "get_collaborator_interactions",
+                "get_scanner_issues",
+                "get_scanner_issue_by_id",
+                "get_websocket_message_by_id",
+            ).forEach { toolName ->
+                val errorSchema = tools.single { it.name == toolName }.outputSchema
+                    ?.properties?.get("error")?.jsonObject
+                assertEquals(
+                    MAX_STRUCTURED_TOOL_ERROR_CHARS,
+                    errorSchema?.get("maxLength")?.jsonPrimitive?.int,
+                    "$toolName.error must advertise its runtime bound",
+                )
+            }
 
             val invalidStart = client.callTool(
                 "start_scanner_audit_from_ids",
@@ -1646,10 +2194,144 @@ class ToolsKtTest {
                 "invalid_argument",
                 invalidStart?.structuredContent?.get("status")?.jsonPrimitive?.content,
             )
+            assertEquals(true, invalidStart?.isError)
+            assertEquals(JsonNull, invalidStart?.structuredContent?.get("projectId"))
             assertEquals(
                 "not_started",
                 invalidStart?.structuredContent?.get("actionState")?.jsonPrimitive?.content,
             )
+            assertEquals(emptyList<JsonElement>(), invalidStart?.structuredContent?.get("targets")?.jsonArray)
+            assertEquals(0, invalidStart?.structuredContent?.get("targetCount")?.jsonPrimitive?.int)
+            assertEquals(emptyList<JsonElement>(), invalidStart?.structuredContent?.get("issues")?.jsonArray)
+            assertEquals(false, invalidStart?.structuredContent?.get("issuesUnavailable")?.jsonPrimitive?.boolean)
+
+            listOf("get_scanner_audit", "cancel_scanner_audit").forEach { toolName ->
+                val invalidTask = client.callTool(
+                    toolName,
+                    mapOf("projectId" to "caller-forged", "taskId" to "not-a-task-id"),
+                )
+                assertEquals(true, invalidTask?.isError, toolName)
+                assertEquals(
+                    "invalid_id",
+                    invalidTask?.structuredContent?.get("status")?.jsonPrimitive?.content,
+                    toolName,
+                )
+                assertEquals(JsonNull, invalidTask?.structuredContent?.get("projectId"), toolName)
+            }
+        }
+
+        @Test
+        fun `Collaborator correction and pre-execution Burp failures set MCP isError`() = runBlocking {
+            val invalidPayload = client.callTool(
+                "generate_collaborator_payload",
+                mapOf("projectId" to collaboratorProjectId, "customData" to "not-valid"),
+            )
+            assertEquals(true, invalidPayload?.isError)
+            assertEquals("invalid_argument", invalidPayload?.structuredContent?.get("status")?.jsonPrimitive?.content)
+
+            val invalidInteractions = client.callTool(
+                "get_collaborator_interactions",
+                mapOf("projectId" to collaboratorProjectId, "waitSeconds" to 121),
+            )
+            assertEquals(true, invalidInteractions?.isError)
+            assertEquals("invalid_argument", invalidInteractions?.structuredContent?.get("status")?.jsonPrimitive?.content)
+
+            val failingProject = mockk<burp.api.montoya.project.Project>()
+            every { failingProject.id() } throws IllegalStateException("PRIVATE_SENTINEL")
+            every { api.project() } returns failingProject
+
+            val payloadFailure = client.callTool(
+                "generate_collaborator_payload",
+                mapOf("projectId" to collaboratorProjectId),
+            )
+            assertEquals(true, payloadFailure?.isError)
+            assertEquals("burp_error", payloadFailure?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(JsonNull, payloadFailure?.structuredContent?.get("projectId"))
+            assertFalse(payloadFailure?.structuredContent.toString().contains("PRIVATE_SENTINEL"))
+
+            val interactionFailure = client.callTool(
+                "get_collaborator_interactions",
+                mapOf("projectId" to collaboratorProjectId),
+            )
+            assertEquals(true, interactionFailure?.isError)
+            assertEquals("burp_error", interactionFailure?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(JsonNull, interactionFailure?.structuredContent?.get("projectId"))
+            assertFalse(interactionFailure?.structuredContent.toString().contains("PRIVATE_SENTINEL"))
+        }
+
+        @Test
+        fun `uncertain Collaborator generation preserves service MCP error classification`() = runBlocking {
+            val transitioningProject = mockk<burp.api.montoya.project.Project>()
+            every { api.project() } returns transitioningProject
+            every { transitioningProject.id() } returnsMany listOf(
+                collaboratorProjectId,
+                "replacement-project",
+            )
+            val payload = mockk<CollaboratorPayload>()
+            val payloadId = mockk<InteractionId>()
+            every { payload.toString() } returns "allocated.burpcollaborator.net"
+            every { payload.id() } returns payloadId
+            every { payloadId.toString() } returns "allocated"
+            every { collaboratorClient.generatePayload() } returns payload
+
+            val result = client.callTool(
+                "generate_collaborator_payload",
+                mapOf("projectId" to collaboratorProjectId),
+            )
+
+            assertEquals(true, result?.isError)
+            assertEquals(
+                "execution_uncertain",
+                result?.structuredContent?.get("status")?.jsonPrimitive?.content,
+            )
+            assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
+            verify(exactly = 1) { collaboratorClient.generatePayload() }
+        }
+
+        @Test
+        fun `Scanner search and detail expose bounded MCP error outcomes`() = runBlocking {
+            val siteMap = mockk<SiteMap>()
+            every { api.siteMap() } returns siteMap
+            every { siteMap.issues() } throws IllegalStateException("synthetic Scanner source failure")
+
+            val invalidSearch = client.callTool("get_scanner_issues", mapOf("count" to 0))
+            assertEquals(true, invalidSearch?.isError)
+            assertEquals("invalid_argument", invalidSearch?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(JsonNull, invalidSearch?.structuredContent?.get("projectId"))
+
+            val search = client.callTool("get_scanner_issues", emptyMap())
+            assertEquals(true, search?.isError)
+            assertEquals("burp_error", search?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(collaboratorProjectId, search?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+
+            val detail = client.callTool(
+                "get_scanner_issue_by_id",
+                mapOf(
+                    "projectId" to collaboratorProjectId,
+                    "id" to "issue_v2_0_${"0".repeat(32)}",
+                ),
+            )
+            assertEquals(true, detail?.isError)
+            assertEquals("burp_error", detail?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(collaboratorProjectId, detail?.structuredContent?.get("projectId")?.jsonPrimitive?.content)
+        }
+
+        @Test
+        fun `legacy Scanner empty page keeps exact sentinel and complete structured flags`() = runBlocking {
+            val siteMap = mockk<SiteMap>()
+            every { api.siteMap() } returns siteMap
+            every { siteMap.issues() } returns emptyList()
+
+            val result = client.callTool("get_scanner_issues", emptyMap())
+
+            result.expectTextContent("Reached end of items")
+            assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals(emptyList<JsonElement>(), result?.structuredContent?.get("items")?.jsonArray)
+            assertEquals(0, result?.structuredContent?.get("returned")?.jsonPrimitive?.int)
+            assertEquals(false, result?.structuredContent?.get("hasMore")?.jsonPrimitive?.boolean)
+            assertEquals(true, result?.structuredContent?.get("legacyMode")?.jsonPrimitive?.boolean)
+            assertEquals(false, result?.structuredContent?.get("legacyTextTruncated")?.jsonPrimitive?.boolean)
         }
 
         @Test
@@ -1685,6 +2367,10 @@ class ToolsKtTest {
                     collaboratorProjectId,
                     result?.structuredContent?.get("projectId")?.jsonPrimitive?.content,
                 )
+                val summary = result?.structuredContent?.get("summary")!!.jsonObject
+                assertEquals(false, summary.getValue("nameTruncated").jsonPrimitive.boolean)
+                assertEquals(false, summary.getValue("baseUrlTruncated").jsonPrimitive.boolean)
+                assertEquals(false, summary.getValue("hostTruncated").jsonPrimitive.boolean)
                 val wrongProject = client.callTool(
                     "get_scanner_issue_by_id",
                     mapOf("id" to id, "projectId" to "different-project"),
@@ -1693,6 +2379,7 @@ class ToolsKtTest {
                     "project_mismatch",
                     wrongProject?.structuredContent?.get("status")?.jsonPrimitive?.content,
                 )
+                assertEquals(true, wrongProject?.isError)
                 val invalidId = client.callTool(
                     "get_scanner_issue_by_id",
                     mapOf("id" to "not-a-stable-id", "projectId" to collaboratorProjectId),
@@ -1816,6 +2503,7 @@ class ToolsKtTest {
                 assertTrue(text.contains("\"type\":\"DNS\""))
                 assertTrue(text.contains("\"queryType\":\"A\""))
                 assertTrue(text.contains("\"clientIp\":\"10.0.0.1\""))
+                assertTrue(text.contains("\"customDataTruncated\":false"))
             }
 
             verify(exactly = 1) { collaboratorClient.getAllInteractions() }

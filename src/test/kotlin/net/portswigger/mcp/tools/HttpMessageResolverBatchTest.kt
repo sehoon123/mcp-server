@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 class HttpMessageResolverBatchTest {
     @Test
@@ -75,6 +76,22 @@ class HttpMessageResolverBatchTest {
         assertEquals(listOf(ref, ref), found.messages.map { it.ref })
         verify(exactly = 1) { fixture.proxy.history(any()) }
         verify(exactly = 2) { item.request() }
+    }
+
+    @Test
+    fun `pre-capture validation does not echo the caller project`() = runBlocking {
+        val fixture = fixture()
+
+        val empty = fixture.resolver.resolveAll("caller-forged", emptyList())
+        val invalidId = fixture.resolver.resolveAll(
+            "caller-forged",
+            listOf(HttpMessageReference(HttpMessageSource.PROXY, "not-numeric")),
+        )
+
+        assertNull(assertIs<HttpMessageBatchResolution.Failed>(empty).projectId)
+        assertNull(assertIs<HttpMessageBatchResolution.Failed>(invalidId).projectId)
+        verify(exactly = 0) { fixture.api.project() }
+        verify(exactly = 0) { fixture.proxy.history(any()) }
     }
 
     @Test
@@ -247,7 +264,7 @@ class HttpMessageResolverBatchTest {
         }
         every { siteMap.requestResponses() } answers { siteMapAnswer?.invoke() ?: emptyList() }
 
-        return Fixture(HttpMessageResolver(api, config), proxy, organizer, siteMap)
+        return Fixture(HttpMessageResolver(api, config), api, proxy, organizer, siteMap)
     }
 
     private fun proxyItem(id: Int): ProxyHttpRequestResponse = mockk<ProxyHttpRequestResponse>().also { item ->
@@ -268,6 +285,7 @@ class HttpMessageResolverBatchTest {
 
     private data class Fixture(
         val resolver: HttpMessageResolver,
+        val api: MontoyaApi,
         val proxy: Proxy,
         val organizer: Organizer,
         val siteMap: SiteMap,

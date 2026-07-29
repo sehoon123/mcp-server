@@ -18,7 +18,6 @@ import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ScannerIssueReadTest {
@@ -62,21 +61,100 @@ class ScannerIssueReadTest {
     }
 
     @Test
-    fun `evidence field without evidenceIndex fails with documented requirement`() = runBlocking {
-        val issue = issue(12, "Evidence", "detail")
+    fun `Scanner metadata name enforces its advertised 512 character bound`() = runBlocking {
+        val issue = issue(7, "N".repeat(600), "detail-7")
         every { siteMap.issues() } returns listOf(issue)
-        val error = assertFailsWith<IllegalArgumentException> {
-            service.read(
-                GetScannerIssueById(
-                    projectId = "project-123",
-                    id = issue.stableHistoryId(0),
-                    field = "evidence_request",
-                ),
-            )
-        }
+        val id = issue.stableHistoryId(0)
 
-        assertTrue(error.message.orEmpty().contains("evidenceIndex is required"))
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "project-123",
+                id = id,
+                field = "metadata",
+            )
+        )
+
+        assertEquals(HistoryReadStatus.OK, result.status)
+        assertEquals(512, result.summary?.name?.length)
+        assertEquals(true, result.summary?.nameTruncated)
+    }
+
+    @Test
+    fun `evidence field without evidenceIndex returns structured invalid_argument`() = runBlocking {
+        val issue = issue(12, "Evidence", "detail")
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "project-123",
+                id = issue.stableHistoryId(0),
+                field = "evidence_request",
+            ),
+        )
+
+        assertEquals(HistoryReadStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(null, result.projectId)
+        assertTrue(result.error.orEmpty().contains("evidenceIndex is required"))
+        verify(exactly = 0) { siteMap.issues() }
         verify(exactly = 0) { issue.requestResponses() }
+    }
+
+    @Test
+    fun `project capture failure does not echo an unverified caller project`() = runBlocking {
+        val issue = issue(13, "Capture", "detail")
+        every { api.project() } throws IllegalStateException("synthetic project failure")
+
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "caller-project",
+                id = issue.stableHistoryId(0),
+                field = "metadata",
+            ),
+        )
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals(null, result.projectId)
+        assertTrue(result.error.orEmpty().contains("capture the current project"))
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `Scanner source failure returns structured burp_error`() = runBlocking {
+        val issue = issue(13, "Failure", "detail")
+        every { siteMap.issues() } throws IllegalStateException("PRIVATE_SENTINEL")
+
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "project-123",
+                id = issue.stableHistoryId(0),
+                field = "metadata",
+            ),
+        )
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals("project-123", result.projectId)
+        assertTrue(result.error.orEmpty().contains("Burp could not read the Scanner issue"))
+        assertTrue(!result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+    }
+
+    @Test
+    fun `Scanner IllegalArgumentException accessor failure is sanitized as burp_error`() = runBlocking {
+        val issue = issue(14, "Accessor", "unused")
+        every { issue.detail() } throws IllegalArgumentException("PRIVATE_SENTINEL token=private-value\naccessor failed")
+        every { siteMap.issues() } returns listOf(issue)
+
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "project-123",
+                id = issue.stableHistoryId(0),
+                field = "detail",
+            ),
+        )
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals("project-123", result.projectId)
+        assertTrue(result.error.orEmpty().contains("Burp could not read the Scanner issue"))
+        assertTrue(!result.error.orEmpty().contains("private-value"))
+        assertTrue(!result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        assertTrue(!result.error.orEmpty().contains('\n'))
     }
 
     @Test

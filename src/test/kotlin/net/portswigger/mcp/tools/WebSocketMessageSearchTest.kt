@@ -16,6 +16,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonObject
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
@@ -63,6 +67,63 @@ class WebSocketMessageSearchTest {
     @AfterEach
     fun tearDown() {
         DataAccessSecurity.approvalHandler = originalApprovalHandler
+    }
+
+    @Test
+    fun `empty history and zero-match success serialize a complete stable page`() = runBlocking {
+        val expectedKeys = setOf(
+            "status",
+            "projectId",
+            "items",
+            "returned",
+            "scanned",
+            "scannedContentBytes",
+            "oversizedContentSkipped",
+            "scanLimitReached",
+            "contentLimitReached",
+            "hasMore",
+            "nextCursor",
+            "error",
+        )
+
+        fun assertCompleteEmptyPage(result: SearchWebsocketMessagesResult, expectedScanned: Int) {
+            assertEquals(WebSocketSearchStatus.OK, result.status)
+            assertTrue(result.items.isEmpty())
+            assertEquals(0, result.returned)
+            assertEquals(expectedScanned, result.scanned)
+            assertEquals(0, result.scannedContentBytes)
+            assertEquals(0, result.oversizedContentSkipped)
+            assertFalse(result.scanLimitReached)
+            assertFalse(result.contentLimitReached)
+            assertFalse(result.hasMore)
+            assertEquals(null, result.nextCursor)
+            assertEquals(null, result.error)
+            val encoded = Json.encodeToString(result)
+            val objectValue = Json.parseToJsonElement(encoded).jsonObject
+            assertEquals(expectedKeys, objectValue.keys)
+            assertEquals(JsonNull, objectValue.getValue("nextCursor"))
+            assertEquals(JsonNull, objectValue.getValue("error"))
+        }
+
+        assertCompleteEmptyPage(
+            service.search(SearchWebsocketMessages(projectId = currentProjectId)),
+            expectedScanned = 0,
+        )
+
+        records += message(1, webSocketId = 7)
+        assertCompleteEmptyPage(
+            service.search(SearchWebsocketMessages(projectId = currentProjectId, webSocketId = 8)),
+            expectedScanned = 1,
+        )
+
+        val invalid = service.search(SearchWebsocketMessages(projectId = ""))
+        assertEquals(WebSocketSearchStatus.INVALID_ARGUMENT, invalid.status)
+        assertEquals(expectedKeys, Json.parseToJsonElement(Json.encodeToString(invalid)).jsonObject.keys)
+        assertTrue(invalid.items.isEmpty())
+        assertEquals(0, invalid.returned)
+        assertFalse(invalid.hasMore)
+        assertEquals(null, invalid.nextCursor)
+        assertTrue(invalid.error.orEmpty().isNotBlank())
     }
 
     @Test
@@ -175,7 +236,7 @@ class WebSocketMessageSearchTest {
             override val size = 1
 
             override fun get(index: Int): ProxyWebSocketMessage {
-                error("synthetic sequential access failure")
+                error("PRIVATE_SENTINEL")
             }
         }
         every { proxy.webSocketHistory() } returns throwingHistory
@@ -192,6 +253,7 @@ class WebSocketMessageSearchTest {
         )
 
         assertEquals(WebSocketSearchStatus.BURP_ERROR, result.status)
+        assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
         val processing = diagnostics.snapshot().metrics.single {
             it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
         }
@@ -403,6 +465,20 @@ class WebSocketMessageSearchTest {
     }
 
     @Test
+    fun `pre-capture failures never echo an unverified caller project`() = runBlocking {
+        val invalid = service.search(SearchWebsocketMessages(projectId = "", limit = 1))
+        assertEquals(WebSocketSearchStatus.INVALID_ARGUMENT, invalid.status)
+        assertEquals(null, invalid.projectId)
+
+        every { api.project() } throws IllegalStateException("synthetic project failure")
+        val failed = service.search(SearchWebsocketMessages(projectId = "caller-project", limit = 1))
+        assertEquals(WebSocketSearchStatus.BURP_ERROR, failed.status)
+        assertEquals(null, failed.projectId)
+        assertTrue(failed.error.orEmpty().contains("Burp could not search WebSocket history"))
+        verify(exactly = 0) { proxy.webSocketHistory() }
+    }
+
+    @Test
     fun `signed cursor excludes appended messages and can continue without repeated filters`() = runBlocking {
         records += message(1, webSocketId = 7, direction = Direction.CLIENT_TO_SERVER)
         records += message(2, webSocketId = 7, direction = Direction.CLIENT_TO_SERVER)
@@ -527,6 +603,7 @@ class WebSocketMessageSearchTest {
         )
         assertTrue(first.scanLimitReached)
         assertEquals(1, first.scanned)
+        assertTrue(first.items.isEmpty())
         assertTrue(first.hasMore)
 
         val second = service.search(

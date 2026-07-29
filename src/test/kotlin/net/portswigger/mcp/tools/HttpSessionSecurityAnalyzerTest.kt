@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HttpSessionSecurityAnalyzerTest {
@@ -292,6 +293,7 @@ class HttpSessionSecurityAnalyzerTest {
         )
 
         assertEquals(HttpSessionAnalysisStatus.INVALID_ARGUMENT, result.status)
+        assertNull(result.projectId)
         assertEquals("refs must not contain duplicates", result.error)
         assertTrue(result.messages.isEmpty())
 
@@ -306,6 +308,7 @@ class HttpSessionSecurityAnalyzerTest {
             config(requireDataApproval = true),
         )
         assertEquals(HttpSessionAnalysisStatus.INVALID_ARGUMENT, aliased.status)
+        assertNull(aliased.projectId)
         assertEquals("refs must not contain duplicates", aliased.error)
         assertTrue(aliased.messages.isEmpty())
         verify(exactly = 0) { api.project() }
@@ -321,6 +324,7 @@ class HttpSessionSecurityAnalyzerTest {
         )
 
         assertEquals(HttpSessionAnalysisStatus.INVALID_ARGUMENT, result.status)
+        assertNull(result.projectId)
         assertTrue(result.messages.isEmpty())
         assertEquals(32, result.refs.size)
         verify(exactly = 0) { api.project() }

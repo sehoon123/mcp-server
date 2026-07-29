@@ -3,7 +3,7 @@
 This document defines the repository-supported local evidence helpers for a **future** release candidate. The helpers are
 part of the candidate source identity: run them only from the clean commit named by `--expected-source-commit`. They do
 not retroactively change or validate an immutable earlier tag, draft, asset, or release candidate. In particular, they
-must not be used to rewrite the `v4.11.0-rc.1` or `v4.11.0-rc.2` records.
+must not be used to rewrite the `v4.11.0-rc.1`, `v4.11.0-rc.2`, or `v4.11.0-rc.3` records.
 
 The current implementation is a fail-closed orchestration slice, not unattended Burp automation. It validates one live
 edition at a time, provides a deterministic diagnostics barrier for caller-disconnect cancellation, and finalizes two

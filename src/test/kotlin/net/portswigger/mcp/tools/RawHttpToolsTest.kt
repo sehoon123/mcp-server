@@ -178,6 +178,24 @@ class RawHttpToolsTest {
     }
 
     @Test
+    fun `raw response preview cancellation propagates after the HTTP send`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        val exchange = mockk<HttpRequestResponse>()
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } returns exchange
+        every { exchange.response() } throws CancellationException("preview cancelled")
+
+        assertFailsWith<CancellationException> { service.send(defaultHttp1Send()) }
+        verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
     fun `post-send automatic Site Map recording stays disabled at project boundary`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()
@@ -197,6 +215,34 @@ class RawHttpToolsTest {
         assertEquals(false, result.recordedInSiteMap)
         assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
         verify(exactly = 0) { api.siteMap() }
+    }
+
+    @Test
+    fun `raw send sanitizes Montoya factory IllegalArgumentException as a Burp failure`() = runBlocking {
+        every { HttpService.httpService("example.test", 443, true) } throws
+            IllegalArgumentException("PRIVATE_SENTINEL factory detail")
+
+        val result = service.send(defaultHttp1Send())
+
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertTrue(result.error.orEmpty().contains("IllegalArgumentException"))
+        assertTrue(!result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        verify(exactly = 0) { api.http() }
+    }
+
+    @Test
+    fun `raw routing sanitizes Montoya accessor IllegalArgumentException as a Burp failure`() = runBlocking {
+        val fixture = http1Fixture()
+        every { fixture.request.bodyOffset() } throws IllegalArgumentException("PRIVATE_SENTINEL accessor detail")
+
+        val result = service.route(defaultHttp1Route())
+
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, result.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        assertTrue(result.error.orEmpty().contains("IllegalArgumentException"))
+        assertTrue(!result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        verify(exactly = 0) { api.repeater() }
     }
 
     @Test

@@ -24,7 +24,7 @@ private const val MAX_ATTACK_SURFACE_SNAPSHOT_ATTEMPTS = 2
 
 @Serializable
 data class SummarizeHttpAttackSurface(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(
         description = "Approved stores to summarize. Defaults to Proxy only.",
@@ -114,7 +114,9 @@ data class AttackSurfacePathSummary(
 
 @Serializable
 data class HttpAttackSurfaceResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpAttackSurfaceStatus,
+    @JsonSchemaMetadata(description = "Safely observed project ID; null when validation or current-project capture did not complete.")
     val projectId: String?,
     val inScopeOnly: Boolean,
     val pathDepth: Int,
@@ -169,7 +171,7 @@ internal class HttpAttackSurfaceService(
         } catch (_: HttpMetadataIndexChangingException) {
             return emptyResult(
                 status = HttpAttackSurfaceStatus.BURP_ERROR,
-                projectId = input.projectId,
+                projectId = null,
                 normalized = normalized,
                 error = "HTTP metadata is changing; retry after the project update completes",
             )
@@ -178,7 +180,7 @@ internal class HttpAttackSurfaceService(
         } catch (e: Exception) {
             return emptyResult(
                 status = HttpAttackSurfaceStatus.BURP_ERROR,
-                projectId = input.projectId,
+                projectId = null,
                 normalized = normalized,
                 error = "Burp could not read the current project: ${safeExceptionSummary(e)}",
             )
@@ -206,6 +208,33 @@ internal class HttpAttackSurfaceService(
                     error = "Burp could not check HTTP metadata access: ${safeExceptionSummary(e)}",
                 )
             }
+            val projectAfterApproval = try {
+                index.observeCurrentProject()
+            } catch (_: HttpMetadataIndexChangingException) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = currentProjectId,
+                    normalized = normalized,
+                    error = "HTTP metadata is changing; retry after the project update completes",
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.BURP_ERROR,
+                    projectId = currentProjectId,
+                    normalized = normalized,
+                    error = "Burp could not recheck the project after HTTP metadata approval: ${safeExceptionSummary(e)}",
+                )
+            }
+            if (projectAfterApproval != currentProjectId) {
+                return emptyResult(
+                    status = HttpAttackSurfaceStatus.PROJECT_MISMATCH,
+                    projectId = projectAfterApproval,
+                    normalized = normalized,
+                    error = "Burp project changed during HTTP metadata approval",
+                )
+            }
             if (!allowed) {
                 try {
                     api.logging().logToOutput("MCP HTTP attack-surface access denied for ${source.name.lowercase()}")
@@ -216,7 +245,7 @@ internal class HttpAttackSurfaceService(
                 }
                 return emptyResult(
                     status = HttpAttackSurfaceStatus.ACCESS_DENIED,
-                    projectId = input.projectId,
+                    projectId = currentProjectId,
                     normalized = normalized,
                     error = "${source.name.lowercase()} access denied by Burp Suite",
                 )
@@ -452,9 +481,7 @@ internal class HttpAttackSurfaceService(
 
     private fun invalidResult(input: SummarizeHttpAttackSurface): HttpAttackSurfaceResult = emptyResult(
         status = HttpAttackSurfaceStatus.INVALID_ARGUMENT,
-        projectId = input.projectId.takeIf {
-            it.isNotBlank() && it.length <= 256 && it.none(Char::isISOControl)
-        },
+        projectId = null,
         normalized = NormalizedAttackSurfaceInput(
             sources = emptyList(),
             inScopeOnly = input.inScopeOnly ?: true,

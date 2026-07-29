@@ -32,7 +32,7 @@ private const val MAX_NATIVE_VARIATION_TOTAL_BYTES = 4 * 1024 * 1024
 
 @Serializable
 data class CompareHttpMessages(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Two to eight stable HTTP message references.", minItems = 2, maxItems = 8)
     val refs: List<HttpMessageReference>,
@@ -163,6 +163,7 @@ data class HttpResponseVariationSummary(
 
 @Serializable
 data class CompareHttpMessagesResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpComparisonStatus,
     val projectId: String?,
     val part: HttpComparisonPart,
@@ -189,7 +190,7 @@ internal class HttpMessageComparisonService(
         if (input.refs.size !in MIN_COMPARE_REFS..MAX_COMPARE_REFS) {
             return comparisonError(
                 HttpComparisonStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 part,
                 input.refs,
                 "refs must contain between $MIN_COMPARE_REFS and $MAX_COMPARE_REFS items",
@@ -198,7 +199,7 @@ internal class HttpMessageComparisonService(
         if (input.refs.distinct().size != input.refs.size) {
             return comparisonError(
                 HttpComparisonStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 part,
                 input.refs,
                 "refs must not contain duplicates",
@@ -207,7 +208,7 @@ internal class HttpMessageComparisonService(
         if (limit !in 1..MAX_COMPARE_BYTES_PER_MESSAGE) {
             return comparisonError(
                 HttpComparisonStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 part,
                 input.refs,
                 "limitBytesPerMessage must be between 1 and $MAX_COMPARE_BYTES_PER_MESSAGE",
@@ -222,7 +223,7 @@ internal class HttpMessageComparisonService(
         } catch (e: IllegalArgumentException) {
             return comparisonError(
                 HttpComparisonStatus.INVALID_ARGUMENT,
-                input.projectId,
+                null,
                 part,
                 input.refs,
                 e.message ?: "invalid ignoreHeaders",

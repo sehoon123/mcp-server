@@ -18,7 +18,7 @@ private val SITE_MAP_ID_PATTERN = Regex("^sitemap_([0-9]+)_([0-9a-f]{32})$")
 
 @Serializable
 data class GetSitemapMessageById(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Stable Site Map ID.", pattern = "^sitemap_[0-9]+_[0-9a-f]{32}$", maxLength = 128)
     val id: String,

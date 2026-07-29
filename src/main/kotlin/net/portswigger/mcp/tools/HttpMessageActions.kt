@@ -48,7 +48,7 @@ private val HTTP_TOKEN_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 @Serializable
 data class SendHttpRequestFromId(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
     val ref: HttpMessageReference,
@@ -80,7 +80,7 @@ enum class HttpMessageRouteDestination {
 
 @Serializable
 data class RouteHttpMessageFromId(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
     val ref: HttpMessageReference,
@@ -96,7 +96,7 @@ data class RouteHttpMessageFromId(
 
 @Serializable
 data class CreateRepeaterTabFromId(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
@@ -106,7 +106,7 @@ data class CreateRepeaterTabFromId(
 
 @Serializable
 data class SendToIntruderFromId(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
@@ -118,7 +118,7 @@ data class SendToIntruderFromId(
 
 @Serializable
 data class SendToOrganizerFromId(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     val ref: HttpMessageReference,
     val patch: HttpRequestPatch? = null,
@@ -311,13 +311,16 @@ data class HttpActionResponseSummary(
 
 @Serializable
 data class HttpMessageActionResult(
+    @JsonSchemaMetadata(description = "Outcome category; execution_uncertain means the side effect may already exist.")
     val status: HttpMessageActionStatus,
+    @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
     val projectId: String?,
     val ref: HttpMessageReference,
     val destination: HttpMessageActionDestination,
     val target: HttpActionTarget? = null,
-    val patchApplied: Boolean = false,
+    @JsonSchemaMetadata(description = "True when bounded structured changes were applied; always present.")
+    val patchApplied: Boolean,
     val changes: String? = null,
     val requestBytes: Int? = null,
     val tabName: String? = null,
@@ -339,7 +342,7 @@ internal class HttpMessageActionService(
     suspend fun send(input: SendHttpRequestFromId): HttpMessageActionResult {
         if (input.redirection != null && input.redirection != HttpRedirectionPolicy.NEVER) {
             return invalidArgument(
-                input.projectId,
+                null,
                 input.ref,
                 HttpMessageActionDestination.HTTP,
                 "automatic redirects are disabled because redirected destinations cannot be reviewed and approved",
@@ -348,7 +351,7 @@ internal class HttpMessageActionService(
         val timeout = input.responseTimeoutMs ?: DEFAULT_ACTION_TIMEOUT_MS
         if (timeout !in MIN_ACTION_TIMEOUT_MS..MAX_ACTION_TIMEOUT_MS) {
             return invalidArgument(
-                input.projectId,
+                null,
                 input.ref,
                 HttpMessageActionDestination.HTTP,
                 "responseTimeoutMs must be between $MIN_ACTION_TIMEOUT_MS and $MAX_ACTION_TIMEOUT_MS",
@@ -357,7 +360,7 @@ internal class HttpMessageActionService(
         val bodyLimit = input.responseBodyLimit ?: DEFAULT_ACTION_RESPONSE_BODY_BYTES
         if (bodyLimit !in 0..MAX_ACTION_RESPONSE_BODY_BYTES) {
             return invalidArgument(
-                input.projectId,
+                null,
                 input.ref,
                 HttpMessageActionDestination.HTTP,
                 "responseBodyLimit must be between 0 and $MAX_ACTION_RESPONSE_BODY_BYTES bytes",
@@ -366,7 +369,7 @@ internal class HttpMessageActionService(
         val bodyEncoding = try {
             normalizeHistoryEncoding(input.responseBodyEncoding)
         } catch (e: IllegalArgumentException) {
-            return invalidArgument(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e.message.orEmpty())
+            return invalidArgument(null, input.ref, HttpMessageActionDestination.HTTP, e.message.orEmpty())
         }
 
         val resolved = when (val outcome = resolveSafely(input.projectId, input.ref)) {
@@ -379,7 +382,7 @@ internal class HttpMessageActionService(
         }
         val patched = try {
             applyPatch(resolved.request, input.patch)
-        } catch (e: IllegalArgumentException) {
+        } catch (e: HttpRequestPatchValidationException) {
             return invalidArgument(input.projectId, input.ref, HttpMessageActionDestination.HTTP, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
@@ -454,6 +457,8 @@ internal class HttpMessageActionService(
         var summaryError: String? = recorded.warning
         val responseSummary = try {
             response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val message = "request completed but its response preview could not be created: ${safeException(e)}"
             summaryError = listOfNotNull(summaryError, message).joinToString("; ")
@@ -487,7 +492,7 @@ internal class HttpMessageActionService(
         HttpMessageRouteDestination.REPEATER -> {
             if (input.insertionPoints != null) {
                 invalidArgument(
-                    input.projectId,
+                    null,
                     input.ref,
                     HttpMessageActionDestination.REPEATER,
                     "insertionPoints are supported only for the Intruder destination",
@@ -512,7 +517,7 @@ internal class HttpMessageActionService(
         HttpMessageRouteDestination.ORGANIZER -> {
             if (input.tabName != null || input.insertionPoints != null) {
                 invalidArgument(
-                    input.projectId,
+                    null,
                     input.ref,
                     HttpMessageActionDestination.ORGANIZER,
                     "tabName and insertionPoints are not supported for the Organizer destination",
@@ -599,7 +604,7 @@ internal class HttpMessageActionService(
         val normalizedTabName = try {
             normalizeTabName(tabName)
         } catch (e: IllegalArgumentException) {
-            return invalidArgument(projectId, ref, destination, e.message.orEmpty())
+            return invalidArgument(null, ref, destination, e.message.orEmpty())
         }
         val resolved = when (val outcome = resolveSafely(projectId, ref)) {
             is HttpMessageBatchResolution.Found -> outcome.messages.single()
@@ -607,7 +612,7 @@ internal class HttpMessageActionService(
         }
         val patched = try {
             applyPatch(resolved.request, patch)
-        } catch (e: IllegalArgumentException) {
+        } catch (e: HttpRequestPatchValidationException) {
             return invalidArgument(projectId, ref, destination, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
@@ -616,7 +621,7 @@ internal class HttpMessageActionService(
         }
         val preparedInsertionPoints = try {
             insertionPointSelectors?.let { prepareInsertionPoints(patched.request, it) }
-        } catch (e: IllegalArgumentException) {
+        } catch (e: HttpInsertionPointValidationException) {
             return invalidArgument(projectId, ref, destination, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
@@ -769,6 +774,7 @@ internal class HttpMessageActionService(
             projectId = currentProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
             ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
             destination = destination,
+            patchApplied = false,
             error = "Burp project changed before the request action executed",
         )
     }
@@ -819,6 +825,12 @@ private class PatchedRequest(
     val requestContent: String by lazy(LazyThreadSafetyMode.NONE) { request.toString() }
 }
 
+private class HttpRequestPatchValidationException(message: String) : IllegalArgumentException(message)
+
+private inline fun requirePatchInput(condition: Boolean, lazyMessage: () -> String) {
+    if (!condition) throw HttpRequestPatchValidationException(lazyMessage())
+}
+
 private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): PatchedRequest {
     val immutableTarget = original.httpService().toActionTarget()
     val originalBytes = requestByteLength(original)
@@ -837,10 +849,12 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
 
     val headerMutationCount = (patch.removeHeaders?.size ?: 0) + (patch.setHeaders?.size ?: 0) +
         (patch.addHeaders?.size ?: 0)
-    require(headerMutationCount <= MAX_ACTION_MUTATIONS) { "at most $MAX_ACTION_MUTATIONS header mutations are allowed" }
+    requirePatchInput(headerMutationCount <= MAX_ACTION_MUTATIONS) {
+        "at most $MAX_ACTION_MUTATIONS header mutations are allowed"
+    }
     val parameterMutationCount = (patch.removeParameters?.size ?: 0) + (patch.setParameters?.size ?: 0) +
         (patch.addParameters?.size ?: 0)
-    require(parameterMutationCount <= MAX_ACTION_MUTATIONS) {
+    requirePatchInput(parameterMutationCount <= MAX_ACTION_MUTATIONS) {
         "at most $MAX_ACTION_MUTATIONS parameter mutations are allowed"
     }
     validateBodyParameterCombination(patch)
@@ -849,16 +863,20 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
     val changes = ArrayList<String>(8)
 
     patch.method?.let { method ->
-        require(method.length in 1..32 && method.matches(HTTP_TOKEN_PATTERN)) { "method must be a valid HTTP token" }
+        requirePatchInput(method.length in 1..32 && method.matches(HTTP_TOKEN_PATTERN)) {
+            "method must be a valid HTTP token"
+        }
         if (method != request.method()) {
             changes += "method ${request.method()} -> $method"
             request = request.withMethod(method)
         }
     }
     patch.path?.let { path ->
-        require(path.length in 1..MAX_ACTION_PATH_CHARS) { "path must contain 1 to $MAX_ACTION_PATH_CHARS characters" }
-        require(path.startsWith('/') || path == "*") { "path must start with '/' or equal '*'" }
-        require(path.none(Char::isISOControl)) { "path contains forbidden control characters" }
+        requirePatchInput(path.length in 1..MAX_ACTION_PATH_CHARS) {
+            "path must contain 1 to $MAX_ACTION_PATH_CHARS characters"
+        }
+        requirePatchInput(path.startsWith('/') || path == "*") { "path must start with '/' or equal '*'" }
+        requirePatchInput(path.none(Char::isISOControl)) { "path contains forbidden control characters" }
         if (path != request.path()) {
             changes += "path ${request.path().boundedDiff()} -> ${path.boundedDiff()}"
             request = request.withPath(path)
@@ -873,7 +891,7 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
     val setHeaders = patch.setHeaders.orEmpty()
     setHeaders.forEach(::validateHeader)
     val setHeaderNames = setHeaders.map { it.name.lowercase() }
-    require(setHeaderNames.distinct().size == setHeaderNames.size) {
+    requirePatchInput(setHeaderNames.distinct().size == setHeaderNames.size) {
         "setHeaders contains duplicate header names"
     }
     setHeaders.forEach { header ->
@@ -893,7 +911,9 @@ private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): Patched
     setParameters.forEach { validateParameter(it.name, it.value) }
     addParameters.forEach { validateParameter(it.name, it.value) }
     val setKeys = setParameters.map { it.type to it.name }
-    require(setKeys.distinct().size == setKeys.size) { "setParameters contains duplicate type/name keys" }
+    requirePatchInput(setKeys.distinct().size == setKeys.size) {
+        "setParameters contains duplicate type/name keys"
+    }
 
     val keysToReplace = (removeParameters.map { it.type to it.name } + setKeys).toSet()
     if (keysToReplace.isNotEmpty()) {
@@ -944,7 +964,7 @@ private fun finalizePatchedRequest(
     knownBytes: Int? = null,
 ): PatchedRequest {
     val bytes = knownBytes ?: requestByteLength(request)
-    require(bytes <= MAX_ACTION_REQUEST_BYTES) {
+    requirePatchInput(bytes <= MAX_ACTION_REQUEST_BYTES) {
         "resulting request exceeds the $MAX_ACTION_REQUEST_BYTES-byte action limit"
     }
     val service = request.httpService()
@@ -971,26 +991,28 @@ internal fun requestByteLength(request: HttpRequest): Int {
 
 private fun validateHeader(header: HttpHeaderMutation) {
     validateHeaderName(header.name)
-    require(header.value.length <= MAX_ACTION_HEADER_VALUE_CHARS) { "header value is too long" }
-    require(header.value.none { it == '\r' || it == '\n' || it == '\u0000' }) {
+    requirePatchInput(header.value.length <= MAX_ACTION_HEADER_VALUE_CHARS) { "header value is too long" }
+    requirePatchInput(header.value.none { it == '\r' || it == '\n' || it == '\u0000' }) {
         "header value contains forbidden control characters"
     }
 }
 
 private fun validateHeaderName(name: String) {
-    require(name.length in 1..MAX_ACTION_HEADER_NAME_CHARS && name.matches(HTTP_TOKEN_PATTERN)) {
+    requirePatchInput(name.length in 1..MAX_ACTION_HEADER_NAME_CHARS && name.matches(HTTP_TOKEN_PATTERN)) {
         "header name must be a valid HTTP token"
     }
 }
 
 private fun validateParameter(name: String, value: String?) {
-    require(name.length in 1..MAX_ACTION_PARAMETER_NAME_CHARS) { "parameter name is empty or too long" }
-    require(name.none { it == '\r' || it == '\n' || it == '\u0000' }) {
+    requirePatchInput(name.length in 1..MAX_ACTION_PARAMETER_NAME_CHARS) {
+        "parameter name is empty or too long"
+    }
+    requirePatchInput(name.none { it == '\r' || it == '\n' || it == '\u0000' }) {
         "parameter name contains forbidden control characters"
     }
     if (value != null) {
-        require(value.length <= MAX_ACTION_PARAMETER_VALUE_CHARS) { "parameter value is too long" }
-        require(value.none { it == '\r' || it == '\n' || it == '\u0000' }) {
+        requirePatchInput(value.length <= MAX_ACTION_PARAMETER_VALUE_CHARS) { "parameter value is too long" }
+        requirePatchInput(value.none { it == '\r' || it == '\n' || it == '\u0000' }) {
             "parameter value contains forbidden control characters"
         }
     }
@@ -1008,25 +1030,35 @@ private fun validateBodyParameterCombination(patch: HttpRequestPatch) {
     val hasBodyParameterMutation = patch.removeParameters.orEmpty().any { it.type in bodyTypes } ||
         patch.setParameters.orEmpty().any { it.type in bodyTypes } ||
         patch.addParameters.orEmpty().any { it.type in bodyTypes }
-    require(!hasBodyParameterMutation) { "body replacement cannot be combined with body-backed parameter mutations" }
+    requirePatchInput(!hasBodyParameterMutation) {
+        "body replacement cannot be combined with body-backed parameter mutations"
+    }
 }
 
 private fun HttpBodyPatch.decode(): ByteArray = when (encoding) {
     HttpBodyPatchEncoding.TEXT -> {
-        require(data.length <= MAX_ACTION_BODY_BYTES) { "text body exceeds the $MAX_ACTION_BODY_BYTES-byte limit" }
+        requirePatchInput(data.length <= MAX_ACTION_BODY_BYTES) {
+            "text body exceeds the $MAX_ACTION_BODY_BYTES-byte limit"
+        }
         data.toByteArray(StandardCharsets.UTF_8).also {
-            require(it.size <= MAX_ACTION_BODY_BYTES) { "UTF-8 body exceeds the $MAX_ACTION_BODY_BYTES-byte limit" }
+            requirePatchInput(it.size <= MAX_ACTION_BODY_BYTES) {
+                "UTF-8 body exceeds the $MAX_ACTION_BODY_BYTES-byte limit"
+            }
         }
     }
 
     HttpBodyPatchEncoding.BASE64 -> {
-        require(data.length <= ((MAX_ACTION_BODY_BYTES + 2) / 3) * 4 + 4) { "base64 body is too large" }
+        requirePatchInput(data.length <= ((MAX_ACTION_BODY_BYTES + 2) / 3) * 4 + 4) {
+            "base64 body is too large"
+        }
         try {
             Base64.getDecoder().decode(data)
         } catch (_: IllegalArgumentException) {
-            throw IllegalArgumentException("body data is not valid base64")
+            throw HttpRequestPatchValidationException("body data is not valid base64")
         }.also {
-            require(it.size <= MAX_ACTION_BODY_BYTES) { "decoded body exceeds the $MAX_ACTION_BODY_BYTES-byte limit" }
+            requirePatchInput(it.size <= MAX_ACTION_BODY_BYTES) {
+                "decoded body exceeds the $MAX_ACTION_BODY_BYTES-byte limit"
+            }
         }
     }
 }
@@ -1102,6 +1134,7 @@ private fun HttpMessageActionService.resolutionFailure(
     projectId = failure.projectId,
     ref = ref,
     destination = destination,
+    patchApplied = false,
     error = failure.error.take(512),
 )
 
@@ -1116,16 +1149,17 @@ private fun HttpMessageResolutionStatus.toActionStatus(): HttpMessageActionStatu
 }
 
 private fun invalidArgument(
-    projectId: String,
+    projectId: String?,
     ref: HttpMessageReference,
     destination: HttpMessageActionDestination,
     error: String,
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.INVALID_ARGUMENT,
     executionState = HttpMessageExecutionState.NOT_STARTED,
-    projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
     destination = destination,
+    patchApplied = false,
     error = error.take(512),
 )
 
@@ -1140,6 +1174,7 @@ private fun burpError(
     projectId = projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
     destination = destination,
+    patchApplied = false,
     error = "Burp could not prepare the request action: ${safeException(error)}",
 )
 

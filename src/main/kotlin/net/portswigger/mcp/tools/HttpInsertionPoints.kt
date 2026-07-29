@@ -42,20 +42,26 @@ internal data class PreparedInsertionPoints(
     val summary: String,
 )
 
+internal class HttpInsertionPointValidationException(message: String) : IllegalArgumentException(message)
+
+private inline fun requireInsertionPointInput(condition: Boolean, lazyMessage: () -> String) {
+    if (!condition) throw HttpInsertionPointValidationException(lazyMessage())
+}
+
 /** Resolves semantic selectors to byte ranges without exposing raw offsets to the MCP client. */
 internal fun prepareInsertionPoints(
     request: HttpRequest,
     selectors: List<HttpInsertionPointSelector>,
 ): PreparedInsertionPoints {
-    require(selectors.isNotEmpty()) { "insertionPoints must not be empty when provided" }
-    require(selectors.size <= MAX_HTTP_INSERTION_POINTS) {
+    requireInsertionPointInput(selectors.isNotEmpty()) { "insertionPoints must not be empty when provided" }
+    requireInsertionPointInput(selectors.size <= MAX_HTTP_INSERTION_POINTS) {
         "insertionPoints can contain at most $MAX_HTTP_INSERTION_POINTS selectors"
     }
     val bodyOffset = request.bodyOffset()
     val bodyLength = request.body().length()
     require(bodyOffset >= 0 && bodyLength >= 0) { "request reported an invalid byte length" }
     val totalLong = bodyOffset.toLong() + bodyLength.toLong()
-    require(totalLong <= MAX_ACTION_REQUEST_BYTES && totalLong <= Int.MAX_VALUE) {
+    requireInsertionPointInput(totalLong <= MAX_ACTION_REQUEST_BYTES && totalLong <= Int.MAX_VALUE) {
         "request exceeds the $MAX_ACTION_REQUEST_BYTES-byte insertion-point limit"
     }
     val totalBytes = totalLong.toInt()
@@ -73,17 +79,17 @@ internal fun prepareInsertionPoints(
     val offsets = ArrayList<ResolvedInsertionOffset>(selectors.size)
     selectors.forEachIndexed { selectorIndex, selector ->
         val occurrence = selector.occurrence ?: 0
-        require(occurrence in 0..MAX_INSERTION_POINT_OCCURRENCE) {
+        requireInsertionPointInput(occurrence in 0..MAX_INSERTION_POINT_OCCURRENCE) {
             "insertionPoints[$selectorIndex].occurrence must be between 0 and $MAX_INSERTION_POINT_OCCURRENCE"
         }
         val resolved = when (selector.kind) {
             HttpInsertionPointKind.PARAMETER -> {
                 val name = requireSelectorName(selector, selectorIndex)
-                val type = requireNotNull(selector.parameterType) {
+                val type = selector.parameterType ?: throw HttpInsertionPointValidationException(
                     "insertionPoints[$selectorIndex].parameterType is required for a parameter selector"
-                }
+                )
                 val matches = request.parameters(type.toMontoyaInsertionType()).filter { it.name() == name }
-                val parameter = matches.getOrNull(occurrence) ?: throw IllegalArgumentException(
+                val parameter = matches.getOrNull(occurrence) ?: throw HttpInsertionPointValidationException(
                     "insertionPoints[$selectorIndex] did not match ${type.name.lowercase()} parameter " +
                         "${name.safeInsertionName()} occurrence $occurrence"
                 )
@@ -96,15 +102,15 @@ internal fun prepareInsertionPoints(
             }
 
             HttpInsertionPointKind.HEADER -> {
-                require(selector.parameterType == null) {
+                requireInsertionPointInput(selector.parameterType == null) {
                     "insertionPoints[$selectorIndex].parameterType is only valid for parameter selectors"
                 }
                 val name = requireSelectorName(selector, selectorIndex)
-                require(name.matches(INSERTION_HEADER_NAME_PATTERN)) {
+                requireInsertionPointInput(name.matches(INSERTION_HEADER_NAME_PATTERN)) {
                     "insertionPoints[$selectorIndex].name must be a valid HTTP header name"
                 }
                 val matches = rawHeaderRanges[name.lowercase()].orEmpty()
-                val range = matches.getOrNull(occurrence) ?: throw IllegalArgumentException(
+                val range = matches.getOrNull(occurrence) ?: throw HttpInsertionPointValidationException(
                     "insertionPoints[$selectorIndex] did not match header ${name.safeInsertionName()} occurrence $occurrence"
                 )
                 ResolvedInsertionOffset(
@@ -115,10 +121,10 @@ internal fun prepareInsertionPoints(
             }
 
             HttpInsertionPointKind.BODY -> {
-                require(selector.name == null && selector.parameterType == null && occurrence == 0) {
+                requireInsertionPointInput(selector.name == null && selector.parameterType == null && occurrence == 0) {
                     "body insertion-point selectors cannot specify name, parameterType, or a non-zero occurrence"
                 }
-                require(bodyLength > 0) { "request body is empty" }
+                requireInsertionPointInput(bodyLength > 0) { "request body is empty" }
                 ResolvedInsertionOffset(bodyOffset, totalBytes, "entire request body")
             }
         }
@@ -130,7 +136,7 @@ internal fun prepareInsertionPoints(
 
     val sorted = offsets.sortedWith(compareBy<ResolvedInsertionOffset> { it.start }.thenBy { it.end })
     sorted.zipWithNext().forEach { (left, right) ->
-        require(left.end <= right.start) { "insertionPoints must not duplicate or overlap" }
+        requireInsertionPointInput(left.end <= right.start) { "insertionPoints must not duplicate or overlap" }
     }
     return PreparedInsertionPoints(
         ranges = sorted.map { Range.range(it.start, it.end) },
@@ -145,8 +151,8 @@ private data class ResolvedInsertionOffset(
 )
 
 private fun requireSelectorName(selector: HttpInsertionPointSelector, index: Int): String {
-    val name = selector.name ?: throw IllegalArgumentException("insertionPoints[$index].name is required")
-    require(name.length in 1..MAX_INSERTION_POINT_NAME_CHARS && name.none(Char::isISOControl)) {
+    val name = selector.name ?: throw HttpInsertionPointValidationException("insertionPoints[$index].name is required")
+    requireInsertionPointInput(name.length in 1..MAX_INSERTION_POINT_NAME_CHARS && name.none(Char::isISOControl)) {
         "insertionPoints[$index].name is empty, too long, or contains control characters"
     }
     return name

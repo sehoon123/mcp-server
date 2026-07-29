@@ -382,7 +382,9 @@ class ScopeToolsTest {
         )
 
         assertEquals(ScopeToolStatus.INVALID_ARGUMENT, result.status)
+        assertEquals("project-123", result.projectId)
         assertFalse(result.error.isNullOrBlank())
+        verify(exactly = 1) { api.project() }
         coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { scope.excludeFromScope(any()) }
     }

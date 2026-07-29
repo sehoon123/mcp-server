@@ -118,6 +118,9 @@ enum class HttpMessageSearchStatus {
 
     @SerialName("project_mismatch")
     PROJECT_MISMATCH,
+
+    @SerialName("burp_error")
+    BURP_ERROR,
 }
 
 @Serializable
@@ -132,8 +135,11 @@ data class HttpMessageReference(
 data class HttpMessageSearchItem(
     val ref: HttpMessageReference,
     val method: String,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_URL_CHARS)
     val url: String,
+    @JsonSchemaMetadata(description = "True when url was truncated to its 2,048-character output bound.")
     val urlTruncated: Boolean,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_HOST_CHARS)
     val host: String,
     val port: Int,
     val secure: Boolean,
@@ -147,22 +153,31 @@ data class HttpMessageSearchItem(
     val listenerPort: Int?,
     val edited: Boolean?,
     val organizerStatus: String?,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_NOTES_CHARS)
     val notes: String?,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 512-character output bound.")
     val notesTruncated: Boolean,
 )
 
 @Serializable
 data class SearchHttpMessagesResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpMessageSearchStatus,
+    @JsonSchemaMetadata(description = "Captured current project ID; null only when capture did not complete safely.")
     val projectId: String?,
+    @JsonSchemaMetadata(description = "Compact summaries returned by this page; always present and possibly empty.")
     val items: List<HttpMessageSearchItem>,
     val returned: Int,
     val scanned: Int,
     val scannedContentBytes: Long,
     val oversizedContentSkipped: Int,
+    @JsonSchemaMetadata(description = "True when a 10,000-record or 32 MiB inspection budget stopped this page.")
     val scanLimitReached: Boolean,
+    @JsonSchemaMetadata(description = "True when this signed snapshot has more records, even if items is empty.")
     val hasMore: Boolean,
+    @JsonSchemaMetadata(description = "Opaque continuation cursor when hasMore is true; null otherwise.", maxLength = 32768)
     val nextCursor: String?,
+    @JsonSchemaMetadata(description = "Bounded explanation for a non-ok outcome; null on success.", maxLength = 512)
     val error: String?,
 )
 
@@ -247,8 +262,12 @@ internal class HttpMessageSearchService(
         progress.report(HttpSearchProgressStage.VALIDATING.ordinal)
         val cursor = try {
             input.cursor?.let(::decodeCursor)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: ExpectedSearchError) {
             return searchError(e.status, e.message)
+        } catch (e: Exception) {
+            return searchBurpError(null, "decode the HTTP search cursor", e)
         }
 
         val query = try {
@@ -280,17 +299,51 @@ internal class HttpMessageSearchService(
             )
         }
 
-        val projectId = currentProjectId()
+        val projectId = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return searchBurpError(null, "capture the current project", e)
+        }
         progress.report(HttpSearchProgressStage.AUTHORIZING.ordinal)
         for (source in query.sources) {
-            if (!checkAccess(source)) {
+            val allowed = try {
+                checkAccess(source)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return searchBurpError(projectId, "check ${source.displayName()} access", e)
+            }
+            if (!allowed) {
+                val projectAfterDenial = try {
+                    currentProjectId()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return searchBurpError(projectId, "recheck the project after HTTP history denial", e)
+                }
+                if (projectAfterDenial != projectId) {
+                    return searchError(
+                        HttpMessageSearchStatus.PROJECT_MISMATCH,
+                        "Burp project changed during HTTP history approval",
+                        projectAfterDenial,
+                    )
+                }
                 return searchError(
                     HttpMessageSearchStatus.ACCESS_DENIED,
                     "${source.displayName()} access denied by Burp Suite",
+                    projectId,
                 )
             }
         }
-        val projectAfterApproval = currentProjectId()
+        val projectAfterApproval = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return searchBurpError(projectId, "recheck the project after HTTP history approval", e)
+        }
         if (projectAfterApproval != projectId) {
             return searchError(
                 HttpMessageSearchStatus.PROJECT_MISMATCH,
@@ -309,13 +362,27 @@ internal class HttpMessageSearchService(
         }
 
         progress.report(HttpSearchProgressStage.SCANNING.ordinal)
-        val initialRecords = loadRecords(query.sources)
-        val initialViews = initialRecords.map(HttpSourceRecords::toSearchView)
+        val initialRecords = try {
+            loadRecords(query.sources)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return searchBurpError(projectId, "read HTTP history", e)
+        }
+        val initialViews = try {
+            initialRecords.map(HttpSourceRecords::toSearchView)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return searchBurpError(projectId, "prepare HTTP history", e)
+        }
         val indexSources = query.metadataIndexSources()
         val indexSnapshot = if (metadataIndex != null && indexSources.isNotEmpty()) {
             val recordsBySource = initialRecords.associateBy(HttpSourceRecords::source)
             try {
                 metadataIndex.searchHintsSnapshot(projectId, indexSources, recordsBySource)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: HttpMetadataProjectMismatchException) {
                 return searchError(
                     HttpMessageSearchStatus.PROJECT_MISMATCH,
@@ -324,6 +391,8 @@ internal class HttpMessageSearchService(
                 )
             } catch (_: HttpMetadataIndexChangingException) {
                 null
+            } catch (e: Exception) {
+                return searchBurpError(projectId, "prepare HTTP search hints", e)
             }
         } else {
             null
@@ -331,13 +400,19 @@ internal class HttpMessageSearchService(
 
         var result = try {
             executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints), initialViews)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: ExpectedSearchError) {
             return searchError(e.status, e.message, projectId)
+        } catch (e: Exception) {
+            return searchBurpError(projectId, "search HTTP history", e)
         }
 
         if (indexSnapshot != null) {
             val indexStillCurrent = try {
                 requireNotNull(metadataIndex).areSearchHintsCurrent(indexSnapshot)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: HttpMetadataProjectMismatchException) {
                 return searchError(
                     HttpMessageSearchStatus.PROJECT_MISMATCH,
@@ -346,19 +421,37 @@ internal class HttpMessageSearchService(
                 )
             } catch (_: HttpMetadataIndexChangingException) {
                 false
+            } catch (e: Exception) {
+                return searchBurpError(projectId, "revalidate HTTP search hints", e)
             }
             if (!indexStillCurrent) {
-                val retryViews = loadRecords(query.sources).map(HttpSourceRecords::toSearchView)
+                val retryViews = try {
+                    loadRecords(query.sources).map(HttpSourceRecords::toSearchView)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return searchBurpError(projectId, "refresh HTTP history", e)
+                }
                 result = try {
                     executeSearch(query, cursor, limit, projectId, hints = null, views = retryViews)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: ExpectedSearchError) {
                     return searchError(e.status, e.message, projectId)
+                } catch (e: Exception) {
+                    return searchBurpError(projectId, "search refreshed HTTP history", e)
                 }
             }
         }
 
         progress.report(HttpSearchProgressStage.FINALIZING.ordinal)
-        val finalProjectId = currentProjectId()
+        val finalProjectId = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return searchBurpError(projectId, "recheck the project after HTTP search", e)
+        }
         if (finalProjectId != projectId) {
             return searchError(
                 HttpMessageSearchStatus.PROJECT_MISMATCH,
@@ -1129,13 +1222,23 @@ private fun advancePosition(
     normalizePosition(position, snapshots, newestFirst)
 }
 
+private fun HttpMessageSearchService.searchBurpError(
+    projectId: String?,
+    operation: String,
+    @Suppress("UNUSED_PARAMETER") error: Exception,
+) = searchError(
+    status = HttpMessageSearchStatus.BURP_ERROR,
+    message = "Burp could not $operation",
+    projectId = projectId,
+)
+
 private fun HttpMessageSearchService.searchError(
     status: HttpMessageSearchStatus,
     message: String,
     projectId: String? = null,
 ) = SearchHttpMessagesResult(
     status = status,
-    projectId = projectId,
+    projectId = projectId?.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
     items = emptyList(),
     returned = 0,
     scanned = 0,
@@ -1144,7 +1247,7 @@ private fun HttpMessageSearchService.searchError(
     scanLimitReached = false,
     hasMore = false,
     nextCursor = null,
-    error = message,
+    error = message.take(512),
 )
 
 private fun siteMapReadError(

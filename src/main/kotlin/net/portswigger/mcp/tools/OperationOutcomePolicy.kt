@@ -36,13 +36,8 @@ internal fun uncertainExecutionError(
     val required = "$normalizedSummary; $UNCERTAIN_RETRY_GUIDANCE"
         .replace(OUTCOME_ERROR_WHITESPACE, " ")
         .trim()
-    val remaining = maxChars - required.length
-    val cause = if (error == null || remaining <= 2) {
-        ""
-    } else {
-        ": ${safeExceptionSummary(error)}".take(remaining)
-    }
-    return required + cause
+    if (error == null) return required
+    return (required + ": ${safeExceptionSummary(error)}").take(maxChars)
 }
 
 /** Kotlin's standard runCatching catches cancellation; result probing in suspend operations must not. */

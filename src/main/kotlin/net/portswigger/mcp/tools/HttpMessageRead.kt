@@ -13,7 +13,7 @@ import net.portswigger.mcp.security.safeExceptionSummary
 
 @Serializable
 data class GetHttpMessage(
-    @JsonSchemaMetadata(description = "Current Burp project ID.", minLength = 1, maxLength = 256)
+    @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
     @JsonSchemaMetadata(description = "Proxy, Site Map, or Organizer reference returned by search_http_messages.")
     val ref: HttpMessageReference,
@@ -66,8 +66,11 @@ data class UnifiedHttpMessageMetadata(
     val projectId: String,
     val ref: HttpMessageReference,
     val method: String,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_URL_CHARS)
     val url: String,
+    @JsonSchemaMetadata(description = "True when url was truncated to its 2,048-character output bound.")
     val urlTruncated: Boolean,
+    @JsonSchemaMetadata(maxLength = MAX_HTTP_SEARCH_HOST_CHARS)
     val host: String,
     val port: Int,
     val secure: Boolean,
@@ -80,12 +83,15 @@ data class UnifiedHttpMessageMetadata(
     val listenerPort: Int? = null,
     val edited: Boolean? = null,
     val inScope: Boolean? = null,
+    @JsonSchemaMetadata(maxLength = 512)
     val notes: String? = null,
-    val notesTruncated: Boolean = false,
+    @JsonSchemaMetadata(description = "True when notes was truncated to its 512-character output bound.")
+    val notesTruncated: Boolean,
 )
 
 @Serializable
 data class GetHttpMessageResult(
+    @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpMessageReadStatus,
     val projectId: String?,
     val ref: HttpMessageReference,
@@ -114,7 +120,7 @@ internal class HttpMessageReadService(
         } catch (e: IllegalArgumentException) {
             return readError(
                 status = HttpMessageReadStatus.INVALID_ARGUMENT,
-                projectId = input.projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                projectId = null,
                 ref = input.ref,
                 part = input.part?.take(64) ?: "metadata",
                 message = e.message.orEmpty(),
@@ -150,14 +156,6 @@ internal class HttpMessageReadService(
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: IllegalArgumentException) {
-            return readError(
-                status = HttpMessageReadStatus.INVALID_ARGUMENT,
-                projectId = found.projectId,
-                ref = input.ref,
-                part = normalizedPart,
-                message = e.message.orEmpty(),
-            )
         } catch (e: Exception) {
             return readError(
                 status = HttpMessageReadStatus.BURP_ERROR,

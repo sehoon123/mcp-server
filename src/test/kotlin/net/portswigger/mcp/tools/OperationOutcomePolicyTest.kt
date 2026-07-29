@@ -21,6 +21,13 @@ class OperationOutcomePolicyTest {
         assertFalse(result.any(Char::isISOControl))
         assertFalse(result.contains(token))
         assertFalse(result.contains("/home/user/private.json"))
+        assertFalse(result.contains("Authorization"))
+
+        val arbitrary = uncertainExecutionError(
+            "Operation may have completed",
+            IllegalStateException("PRIVATE_SENTINEL"),
+        )
+        assertFalse(arbitrary.contains("PRIVATE_SENTINEL"))
 
         val sensitiveSummary = uncertainExecutionError("token=$token at /home/user/private.json may have changed")
         assertFalse(sensitiveSummary.contains(token))

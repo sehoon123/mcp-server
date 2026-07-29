@@ -6,7 +6,7 @@ import kotlin.test.assertTrue
 
 class SafeLoggingTest {
     @Test
-    fun `exception summaries are bounded single-line and redact credentials and paths`() {
+    fun `exception summaries are bounded type-only and never expose arbitrary messages`() {
         val secret = "abcdefghijklmnopqrstuvwxyz0123456789"
         val result = safeExceptionSummary(
             IllegalStateException(
@@ -15,9 +15,7 @@ class SafeLoggingTest {
             )
         )
 
-        assertTrue(result.startsWith("IllegalStateException:"))
-        assertTrue(result.contains("<redacted>"))
-        assertTrue(result.contains("<path>"))
+        assertTrue(result == "IllegalStateException")
         assertFalse(result.contains(secret))
         assertFalse(result.contains('\n'))
         assertFalse(result.contains('\r'))
@@ -25,7 +23,7 @@ class SafeLoggingTest {
     }
 
     @Test
-    fun `sanitizers redact complete authorization cookie and query credentials`() {
+    fun `single-line sanitizer redacts credentials while exception summaries remain type-only`() {
         val secret = "unique-credential-sentinel-0123456789"
         val values = listOf(
             "Authorization: Basic $secret",
@@ -46,7 +44,7 @@ class SafeLoggingTest {
             val singleLine = safeSingleLine(value)
             val exception = safeExceptionSummary(IllegalStateException(value))
             assertTrue(singleLine.contains("<redacted>"), value)
-            assertTrue(exception.contains("<redacted>"), value)
+            assertTrue(exception == "IllegalStateException", value)
             assertFalse(singleLine.contains(secret), value)
             assertFalse(exception.contains(secret), value)
         }

@@ -72,7 +72,7 @@ For `X.Y.Z`, update and reconcile:
 
 - `gradle.properties`: `version=X.Y.Z`
 - `BappManifest.bmf`: `ScreenVersion: X.Y.Z`
-- `BappManifest.bmf`: monotonically increasing `SerialVersion`
+- `BappManifest.bmf`: `SerialVersion` strictly greater than every SemVer-tagged ancestor using the same BApp UUID (the immutable draft identity job enforces this)
 - release title/tag: `vX.Y.Z`
 - release notes and compatibility statements
 - `docs/VULNERABILITY_REPORT.md`: version, date, reviewed source-commit marker, dependencies, and results; the immutable
@@ -95,7 +95,8 @@ Before tagging:
 - the exact JDK/container image and build tools are pinned;
 - the SBOM license map has no “unknown means Apache-2.0” fallback;
 - the third-party license/NOTICE bundle is regenerated and reviewed;
-- the point-in-time vulnerability query is rerun for runtime and build-plugin graphs.
+- `security/release-maven-coordinates.txt` still exactly matches the reviewed canonical 204-coordinate set;
+- the point-in-time OSV, npm audit, and authenticated open-Dependabot queries are rerun for the immutable candidate and pass the checked-in fail-closed policy.
 
 ### 3. Create an immutable tag
 
@@ -140,6 +141,19 @@ checkout; matrix and package jobs must not independently resolve a movable ref.
 - run stable conformance and the checked-in modern expected-failure baseline;
 - upload reports under a retention policy;
 - execute with no OIDC, attestation, or release-write permission.
+
+### Job C — exact vulnerability evidence (`contents: read`, `security-events: read`)
+
+- checkout the emitted server SHA and the proxy SHA named by its embedded provenance;
+- resolve both exact Gradle project-plugin graphs and add the reviewed settings-plugin implementations to both locked dependency graphs;
+- require exact equality with canonical `security/release-maven-coordinates.txt` (204 coordinates, SHA-256 `2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51`);
+- submit that exact set to OSV and fail on a missing response, count mismatch, malformed response, or any vulnerability;
+- run dev-inclusive lock-only npm audit without lifecycle scripts and reject high, critical, or unreviewed package nodes;
+- retrieve open Dependabot alerts with the job-scoped authenticated GitHub token, require the single documented development-scope exception, and fail on missing, extra, or changed alerts;
+- remove the GitHub token from the OSV/policy step, then archive normalized, source-bound evidence for checksum and attestation.
+
+A local point-in-time query is review input only. Publication evidence comes from this immutable workflow job and is
+bound to the server SHA, proxy SHA, exact coordinate-set identity, workflow run, release checksums, and provenance.
 
 ### Jobs C1/C2 — isolated builds (`contents: read`)
 
@@ -233,8 +247,11 @@ identified detached verification metadata whose format cannot be self-referentia
 | `CORRESPONDING_SOURCE.md` | Durable exact source instructions for server and embedded proxy |
 | `independent-mcp-bridge-X.Y.Z-source.tar.gz` | Exact tagged extension source archive |
 | `MIGRATION_V4_8.md` | New UUID/name/client-key migration and side-by-side warning |
-| `VULNERABILITY_REPORT.md` | Release-specific point-in-time review naming version and commit |
-| `SOURCE_IDENTITY.json`, `RELEASE_NOTES.md` | Tag, full SHA, artifact digests, migration, and reviewed change range |
+| `VULNERABILITY_REPORT.md` | Release-specific reviewed policy, scope, accepted exception, version, and commit |
+| `OSV-COORDINATES.txt`, `OSV-RESPONSE.json` | Canonical exact Maven query set and fresh zero-finding OSV response |
+| `NPM-AUDIT.json`, `DEPENDABOT-ALERTS.json` | Normalized npm result and authenticated open-alert evidence under the reviewed exception policy |
+| `VULNERABILITY_EVIDENCE.json` | Source/proxy binding, query identities, result counts, and authoritative vulnerability-gate outcome |
+| `SOURCE_IDENTITY.json`, `RELEASE_NOTES.md` | Tag, full SHA, artifact and vulnerability-evidence digests, migration, and reviewed change range |
 | `provenance.intoto.jsonl` | Verifiable binding between staged artifacts, workflow, repository, and source SHA |
 
 GitHub's automatically generated server source archive does not by itself contain the companion proxy's corresponding
@@ -307,7 +324,7 @@ Release notes must include:
 - security-relevant behavior and approval changes;
 - migrations or wire-compatibility changes;
 - verification summary and successful workflow URL;
-- JAR and SBOM SHA-256;
+- JAR, SBOM, and vulnerability-evidence SHA-256;
 - instructions for checksum and attestation verification;
 - known limitations that remain acceptable for this release.
 

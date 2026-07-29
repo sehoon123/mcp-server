@@ -28,6 +28,7 @@ import java.util.Base64
 import java.util.Optional
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CollaboratorToolsTest {
@@ -61,7 +62,26 @@ class CollaboratorToolsTest {
         val result = service.generate(GenerateCollaboratorPayload(projectId = projectId, customData = "not-valid-data"))
 
         assertEquals(CollaboratorToolStatus.INVALID_ARGUMENT, result.output.status)
+        assertEquals(null, result.output.projectId)
         assertTrue(result.output.error.orEmpty().contains("16 ASCII alphanumeric"))
+        verify(exactly = 0) { collaborator.createClient() }
+    }
+
+    @Test
+    fun `project capture failure does not echo caller ID for Collaborator operations`() = runBlocking {
+        every { project.id() } throws IllegalStateException("synthetic project failure")
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val generation = service.generate(GenerateCollaboratorPayload(projectId = projectId))
+        val interactions = service.interactions(
+            GetCollaboratorInteractions(projectId = projectId),
+            config(false),
+        ) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.BURP_ERROR, generation.output.status)
+        assertEquals(null, generation.output.projectId)
+        assertEquals(CollaboratorToolStatus.BURP_ERROR, interactions.output.status)
+        assertEquals(null, interactions.output.projectId)
         verify(exactly = 0) { collaborator.createClient() }
     }
 
@@ -274,6 +294,66 @@ class CollaboratorToolsTest {
         ) { _, _, _ -> }
 
         assertEquals(CollaboratorToolStatus.INVALID_ARGUMENT, result.output.status)
+        verify(exactly = 0) { collaborator.createClient() }
+    }
+
+    @Test
+    fun `scan-window omission does not claim unknown records are matching`() = runBlocking {
+        val old = interaction("old", ZonedDateTime.parse("2025-01-01T00:00:00Z"))
+        every { client.getAllInteractions() } returns List(10_001) { old }
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.interactions(
+            GetCollaboratorInteractions(
+                projectId = projectId,
+                since = "2026-01-01T00:00:00Z",
+            ),
+            config(false),
+        ) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.OK, result.output.status)
+        assertTrue(result.output.scanLimitReached)
+        assertEquals(0, result.output.matched)
+        assertFalse(result.output.hasMore)
+    }
+
+    @Test
+    fun `final project accessor failure returns bounded burp error without interactions`() = runBlocking {
+        var projectReads = 0
+        every { project.id() } answers {
+            projectReads++
+            if (projectReads == 4) throw IllegalStateException("PRIVATE_SENTINEL")
+            projectId
+        }
+        every { client.getAllInteractions() } returns emptyList()
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.interactions(GetCollaboratorInteractions(projectId), config(false)) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.BURP_ERROR, result.output.status)
+        assertEquals(projectId, result.output.projectId)
+        assertTrue(result.output.interactions.isEmpty())
+        assertFalse(result.output.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        verify(exactly = 1) { client.getAllInteractions() }
+    }
+
+    @Test
+    fun `interaction denial after project transition returns mismatch without client access`() = runBlocking {
+        var currentProjectId = projectId
+        every { project.id() } answers { currentProjectId }
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentProjectId = "project-after-denial"
+                return false
+            }
+        }
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+
+        val result = service.interactions(GetCollaboratorInteractions(projectId), config(true)) { _, _, _ -> }
+
+        assertEquals(CollaboratorToolStatus.PROJECT_MISMATCH, result.output.status)
+        assertEquals("project-after-denial", result.output.projectId)
+        assertTrue(result.output.interactions.isEmpty())
         verify(exactly = 0) { collaborator.createClient() }
     }
 

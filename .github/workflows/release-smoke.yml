@@ -83,6 +83,14 @@ jobs:
           actual_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
           [[ "$actual_jar_sha" == "$TESTED_JAR_SHA256" ]]
           [[ $(jq -r '.artifacts.jarSha256' "$stage/SOURCE_IDENTITY.json") == "$actual_jar_sha" ]]
+          [[ $(jq -r '.artifacts.vulnerabilityEvidenceSha256' "$stage/SOURCE_IDENTITY.json") == \
+            "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" ]]
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$SOURCE_COMMIT" '
+            .repository == $repository and .sourceCommit == $sourceCommit and .result == "pass" and
+            .coordinateSet.count == 204 and .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .osv.findings == 0 and .npmAudit.high == 0 and .npmAudit.critical == 0 and
+            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31
+          ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           expected_version=$(jq -r '.version' "$stage/SOURCE_IDENTITY.json")
           jq -e --arg version "$expected_version" '
             (keys | sort) == ["editions", "observedExtensionVersion", "scenarios"] and

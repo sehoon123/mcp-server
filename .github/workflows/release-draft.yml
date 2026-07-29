@@ -28,6 +28,7 @@ jobs:
       commit: ${{ steps.identity.outputs.commit }}
       version: ${{ steps.identity.outputs.version }}
       previous_tag: ${{ steps.identity.outputs.previous_tag }}
+      proxy_commit: ${{ steps.identity.outputs.proxy_commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -57,12 +58,33 @@ jobs:
 
           version=$(grep -E '^version=' gradle.properties | cut -d= -f2-)
           screen_version=$(grep -E '^ScreenVersion:' BappManifest.bmf | cut -d: -f2- | xargs)
+          serial_version=$(grep -E '^SerialVersion:' BappManifest.bmf | cut -d: -f2- | xargs)
           uuid=$(grep -E '^Uuid:' BappManifest.bmf | cut -d: -f2- | xargs)
           entry_point=$(grep -E '^EntryPoint:' BappManifest.bmf | cut -d: -f2- | xargs)
           [[ "$RELEASE_TAG" == "v$version" ]]
           [[ "$screen_version" == "$version" ]]
+          [[ "$serial_version" =~ ^[1-9][0-9]*$ ]]
           [[ "$uuid" == "c0a454c4079c4cecb627d928a92f9555" ]]
           [[ "$entry_point" == "independent-mcp-bridge-all.jar" ]]
+
+          max_prior_serial=-1
+          max_prior_serial_tag=
+          while IFS= read -r candidate; do
+            [[ "$candidate" != "$RELEASE_TAG" && "$candidate" =~ $semver ]] || continue
+            candidate_manifest=$(git show "$candidate^{commit}:BappManifest.bmf" 2>/dev/null || true)
+            [[ -n "$candidate_manifest" ]] || continue
+            candidate_uuid=$(awk -F': ' '$1 == "Uuid" { print $2 }' <<< "$candidate_manifest")
+            [[ "$candidate_uuid" == "$uuid" ]] || continue
+            candidate_serial=$(awk -F': ' '$1 == "SerialVersion" { print $2 }' <<< "$candidate_manifest")
+            [[ "$candidate_serial" =~ ^[1-9][0-9]*$ ]]
+            if (( candidate_serial > max_prior_serial )); then
+              max_prior_serial=$candidate_serial
+              max_prior_serial_tag=$candidate
+            fi
+          done < <(git tag --merged "$commit" | LC_ALL=C sort -V)
+          [[ "$max_prior_serial" -ge 0 ]]
+          (( serial_version > max_prior_serial ))
+          echo "SerialVersion $serial_version is greater than $max_prior_serial from $max_prior_serial_tag"
 
           proxy_source=$(awk -F': ' '$1 == "Source" { print $2 }' libs/mcp-proxy-source.txt)
           proxy_commit=$(awk -F': ' '$1 == "Commit" { print $2 }' libs/mcp-proxy-source.txt)
@@ -104,6 +126,7 @@ jobs:
             echo "commit=$commit"
             echo "version=$version"
             echo "previous_tag=$previous_tag"
+            echo "proxy_commit=$proxy_commit"
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate proxy update source guards
@@ -111,10 +134,11 @@ jobs:
           bash -n scripts/update-proxy.sh scripts/test-update-proxy-guards.sh
           scripts/test-update-proxy-guards.sh
 
-      - name: Validate exact-smoke harness contracts
+      - name: Validate exact-smoke and release-gate contracts
         run: |
           python3 scripts/test-live-mcp-harness.py
           python3 scripts/test-exact-smoke-contract.py
+          python3 scripts/test-release-vulnerability-gate.py
 
   client-matrix:
     name: Client matrix (${{ matrix.client }})
@@ -225,6 +249,118 @@ jobs:
           if [[ "$status" -ne 0 ]]; then cat "$server_log"; fi
           exit "$status"
 
+  vulnerability:
+    name: Exact dependency vulnerability evidence
+    needs: identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
+
+      - name: Resolve pinned proxy source identity
+        id: proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          proxy_commit=$(awk -F': ' '$1 == "Commit" { print $2 }' libs/mcp-proxy-source.txt)
+          [[ "$proxy_commit" =~ ^[a-f0-9]{40}$ ]]
+          echo "commit=$proxy_commit" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: sehoon123/mcp-proxy
+          ref: ${{ steps.proxy.outputs.commit }}
+          path: _release-proxy
+          persist-credentials: false
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          validate-wrappers: true
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: .github/conformance/package-lock.json
+
+      - name: Resolve exact project-plugin dependency graphs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ $(git -C _release-proxy rev-parse HEAD) == "${{ steps.proxy.outputs.commit }}" ]]
+          ./gradlew buildEnvironment --no-daemon > "$RUNNER_TEMP/server-build-environment.txt"
+          (
+            cd _release-proxy
+            ./gradlew buildEnvironment --no-daemon > "$RUNNER_TEMP/proxy-build-environment.txt"
+          )
+
+      - name: Query current npm advisory feed without lifecycle scripts
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          env -u NODE_ENV npm audit --include=dev --package-lock-only --ignore-scripts \
+            --prefix .github/conformance --json > "$RUNNER_TEMP/npm-audit.json"
+          audit_status=$?
+          set -e
+          [[ "$audit_status" -eq 0 || "$audit_status" -eq 1 ]]
+          jq -e '.auditReportVersion == 2' "$RUNNER_TEMP/npm-audit.json" >/dev/null
+
+      - name: Fetch authenticated open Dependabot alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/dependabot/alerts?state=open&per_page=100" \
+            > "$RUNNER_TEMP/dependabot-alerts.json"
+          jq -e 'type == "array"' "$RUNNER_TEMP/dependabot-alerts.json" >/dev/null
+
+      - name: Query OSV and enforce the reviewed fail-closed policy
+        env:
+          SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
+          PROXY_COMMIT: ${{ steps.proxy.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/vulnerability-evidence"
+          python3 scripts/release_vulnerability_gate.py \
+            --server-lock gradle.lockfile \
+            --proxy-lock _release-proxy/gradle.lockfile \
+            --server-build-environment "$RUNNER_TEMP/server-build-environment.txt" \
+            --proxy-build-environment "$RUNNER_TEMP/proxy-build-environment.txt" \
+            --server-settings settings.gradle.kts \
+            --proxy-settings _release-proxy/settings.gradle.kts \
+            --expected-coordinates security/release-maven-coordinates.txt \
+            --npm-audit "$RUNNER_TEMP/npm-audit.json" \
+            --dependabot-alerts "$RUNNER_TEMP/dependabot-alerts.json" \
+            --output-dir "$output" \
+            --source-commit "$SOURCE_COMMIT" \
+            --proxy-commit "$PROXY_COMMIT" \
+            --repository "$GITHUB_REPOSITORY" \
+            --expected-count 204 \
+            --expected-sha256 2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51
+
+      - name: Upload exact vulnerability evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-vulnerability-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
+          path: ${{ runner.temp }}/vulnerability-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
   isolated-build:
     name: Isolated builder ${{ matrix.builder }}
     needs: identity
@@ -268,7 +404,7 @@ jobs:
 
   stage:
     name: Compare builders and stage immutable assets
-    needs: [identity, client-matrix, conformance, isolated-build]
+    needs: [identity, client-matrix, conformance, vulnerability, isolated-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -290,6 +426,11 @@ jobs:
         with:
           pattern: candidate-build-*
           path: ${{ runner.temp }}/isolated-builds
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-vulnerability-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
+          path: ${{ runner.temp }}/vulnerability-evidence
 
       - name: Compare isolated bytes and create release asset set
         env:
@@ -332,6 +473,53 @@ jobs:
           cp legal/licenses/Apache-2.0.txt legal/licenses/MIT-SLF4J.txt legal/runtime-licenses.properties "$stage/"
           cp docs/VULNERABILITY_REPORT.md "$stage/VULNERABILITY_REPORT.md"
           cp docs/MIGRATION_V4_8.md "$stage/MIGRATION_V4_8.md"
+
+          vulnerability="$RUNNER_TEMP/vulnerability-evidence"
+          expected_vulnerability=$(cat <<'EOF'
+          DEPENDABOT-ALERTS.json
+          NPM-AUDIT.json
+          OSV-COORDINATES.txt
+          OSV-RESPONSE.json
+          VULNERABILITY_EVIDENCE.json
+          EOF
+          )
+          actual_vulnerability=$(list_flat_files "$vulnerability" | LC_ALL=C sort)
+          diff -u \
+            <(printf '%s\n' "$expected_vulnerability" | sed 's/^          //' | LC_ALL=C sort) \
+            <(printf '%s\n' "$actual_vulnerability")
+          cmp security/release-maven-coordinates.txt "$vulnerability/OSV-COORDINATES.txt"
+          [[ $(sha256sum "$vulnerability/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
+            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg proxyCommit "$proxy_commit" '
+            .schemaVersion == 1 and
+            .repository == $repository and
+            .sourceCommit == $sourceCommit and
+            .proxyCommit == $proxyCommit and
+            .coordinateSet.count == 204 and
+            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .osv.queried == 204 and .osv.findings == 0 and
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and
+            .dependabot.openAlerts == 1 and
+            .dependabot.acceptedAlert.number == 31 and
+            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and
+            .result == "pass"
+          ' "$vulnerability/VULNERABILITY_EVIDENCE.json" >/dev/null
+          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+            "$vulnerability/OSV-RESPONSE.json" >/dev/null
+          jq -e '
+            .counts.high == 0 and .counts.critical == 0 and
+            all(.accepted[]; (.package == "@hono/node-server" or .package == "@modelcontextprotocol/sdk") and .severity == "moderate")
+          ' "$vulnerability/NPM-AUDIT.json" >/dev/null
+          jq -e '
+            length == 1 and .[0].number == 31 and .[0].state == "open" and
+            .[0].package == "@hono/node-server" and .[0].scope == "development" and
+            .[0].severity == "medium" and .[0].ghsaId == "GHSA-frvp-7c67-39w9"
+          ' "$vulnerability/DEPENDABOT-ALERTS.json" >/dev/null
+          cp "$vulnerability"/* "$stage/"
+
           VULNERABILITY_REPORT="$stage/VULNERABILITY_REPORT.md" python3 - <<'PY'
           import os
           from pathlib import Path
@@ -373,6 +561,7 @@ jobs:
 
           jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
           bom_sha=$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)
+          vulnerability_evidence_sha=$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)
           # shellcheck disable=SC2016
           {
             printf '# Independent MCP Bridge %s\n\n' "$VERSION"
@@ -390,8 +579,10 @@ jobs:
             printf -- '- Immutable draft run: %s\n' "$RUN_URL"
             printf -- '- JDK: Temurin 21\n'
             printf -- '- Two isolated no-build-cache JAR/SBOM builds compared byte-for-byte\n'
+            printf -- '- Exact 204-coordinate OSV query and authenticated open Dependabot evidence passed the reviewed fail-closed policy\n'
             printf -- '- JAR SHA-256: `%s`\n' "$jar_sha"
-            printf -- '- SBOM SHA-256: `%s`\n\n' "$bom_sha"
+            printf -- '- SBOM SHA-256: `%s`\n' "$bom_sha"
+            printf -- '- Vulnerability evidence SHA-256: `%s`\n\n' "$vulnerability_evidence_sha"
             printf 'Verify the downloaded bundle with `sha256sum -c SHA256SUMS` and verify GitHub artifact attestations against repository `sehoon123/mcp-server`.\n\n'
             printf '## Candidate status\n\n'
             printf 'This is a draft only. Publication still requires protected exact-byte Community and Professional smoke evidence, the seven-day RC window, and every gate in `docs/RELEASING.md`.\n'
@@ -407,7 +598,8 @@ jobs:
             --arg buildContainer "eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a" \
             --arg jarSha256 "$jar_sha" \
             --arg sbomSha256 "$bom_sha" \
-            '{repository:$repository,tag:$tag,version:$version,sourceCommit:$sourceCommit,previousTag:$previousTag,workflowRun:$workflowRun,build:{container:$buildContainer},artifacts:{jarSha256:$jarSha256,sbomSha256:$sbomSha256}}' \
+            --arg vulnerabilityEvidenceSha256 "$vulnerability_evidence_sha" \
+            '{repository:$repository,tag:$tag,version:$version,sourceCommit:$sourceCommit,previousTag:$previousTag,workflowRun:$workflowRun,build:{container:$buildContainer},artifacts:{jarSha256:$jarSha256,sbomSha256:$sbomSha256,vulnerabilityEvidenceSha256:$vulnerabilityEvidenceSha256}}' \
             > "$stage/SOURCE_IDENTITY.json"
 
           JAR_PATH="$stage/independent-mcp-bridge-all.jar" python3 - <<'PY'
@@ -542,16 +734,21 @@ jobs:
           expected=$(cat <<EOF
           Apache-2.0.txt
           CORRESPONDING_SOURCE.md
+          DEPENDABOT-ALERTS.json
           FORK_NOTICE.md
           LICENSE
           MIGRATION_V4_8.md
           MIT-SLF4J.txt
           NOTICE.md
+          NPM-AUDIT.json
+          OSV-COORDINATES.txt
+          OSV-RESPONSE.json
           RELEASE_NOTES.md
           SHA256SUMS
           SOURCE_IDENTITY.json
           runtime-licenses.properties
           THIRD_PARTY_NOTICES.md
+          VULNERABILITY_EVIDENCE.json
           VULNERABILITY_REPORT.md
           bom.cdx.json
           independent-mcp-bridge-$VERSION-source.tar.gz
@@ -594,6 +791,7 @@ jobs:
           EXPECTED_REPOSITORY: https://github.com/${{ github.repository }}
           EXPECTED_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EXPECTED_BUILD_CONTAINER: eclipse-temurin@sha256:da9d3a4f7650db39b918fc5a2c3da76556fb8cc8e5f3767cdea0bb409286951a
+          EXPECTED_PROXY_COMMIT: ${{ needs.identity.outputs.proxy_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -619,6 +817,25 @@ jobs:
             "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" ]]
           [[ $(jq -r '.artifacts.sbomSha256' "$stage/SOURCE_IDENTITY.json") == \
             "$(sha256sum "$stage/bom.cdx.json" | cut -d' ' -f1)" ]]
+          [[ $(jq -r '.artifacts.vulnerabilityEvidenceSha256' "$stage/SOURCE_IDENTITY.json") == \
+            "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" ]]
+          [[ $(sha256sum "$stage/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
+            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg proxyCommit "$EXPECTED_PROXY_COMMIT" '
+            .schemaVersion == 1 and .repository == $repository and .sourceCommit == $sourceCommit and
+            .proxyCommit == $proxyCommit and
+            .coordinateSet.count == 204 and
+            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .osv.queried == 204 and .osv.findings == 0 and
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and
+            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31 and
+            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and .result == "pass"
+          ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
+          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+            "$stage/OSV-RESPONSE.json" >/dev/null
           expected=$(awk '{print $2}' "$stage/SHA256SUMS"; printf '%s\n' SHA256SUMS)
           actual=$(list_flat_files "$stage")
           diff -u <(printf '%s\n' "$expected" | LC_ALL=C sort) <(printf '%s\n' "$actual" | LC_ALL=C sort)

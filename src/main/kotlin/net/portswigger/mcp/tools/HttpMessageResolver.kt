@@ -93,7 +93,7 @@ internal class HttpMessageResolver(
         if (!isValidProjectId(projectId)) {
             return failure(
                 HttpMessageResolutionStatus.INVALID_ARGUMENT,
-                projectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+                null,
                 refs.firstOrNull(),
                 refs.indices.firstOrNull(),
                 "projectId is empty, too long, or contains control characters",
@@ -102,7 +102,7 @@ internal class HttpMessageResolver(
         if (refs.isEmpty() || refs.size > maxRefs.coerceAtMost(MAX_HTTP_REFERENCES_PER_BATCH)) {
             return failure(
                 HttpMessageResolutionStatus.INVALID_ARGUMENT,
-                projectId,
+                null,
                 refs.firstOrNull(),
                 refs.indices.firstOrNull(),
                 "refs must contain between 1 and ${maxRefs.coerceAtMost(MAX_HTTP_REFERENCES_PER_BATCH)} items",
@@ -115,7 +115,7 @@ internal class HttpMessageResolver(
             if (result == null) {
                 return failure(
                     HttpMessageResolutionStatus.INVALID_ID,
-                    projectId,
+                    null,
                     ref,
                     index,
                     invalidIdMessage(ref.source),

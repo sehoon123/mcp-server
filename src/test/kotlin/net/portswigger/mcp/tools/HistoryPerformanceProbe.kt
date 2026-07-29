@@ -149,6 +149,13 @@ fun main(args: Array<String>) {
                 },
                 returned = PROBE_PAGE_SIZE,
                 scanned = PROBE_PAGE_SIZE,
+                scannedContentBytes = 0,
+                oversizedContentSkipped = 0,
+                scanLimitReached = false,
+                contentLimitReached = false,
+                hasMore = false,
+                nextCursor = null,
+                error = null,
             )
             add(measurePhase(source, "serialize_bounded_page_50", metadata, allocationBean) {
                 val encoded = json.encodeToString(serializedResult)

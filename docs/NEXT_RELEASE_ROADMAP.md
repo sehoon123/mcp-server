@@ -175,16 +175,20 @@ Implementation status (development branch):
   signed annotated tag, checks authorized tagger/main ancestry, uses credential-free source jobs, runs pinned-lockfile
   conformance clients, compares two isolated builders, stages an exact allowlist, and gives write/OIDC permissions only
   to a no-checkout job that revalidates downloaded bytes and creates a one-shot non-clobbering draft;
-- previous-tag selection walks exact SemVer tags on first-parent history, release-note fragments are source-reviewed, the
-  change range cannot be empty, and every staged asset is bound to source/JAR/SBOM identity;
+- previous-tag selection walks exact SemVer tags on first-parent history, release-note fragments are source-reviewed,
+  the change range cannot be empty, same-UUID BApp serials must increase, and every staged asset is bound to
+  source/JAR/SBOM/vulnerability-evidence identity;
 - pinned CycloneDX 1.6 schemas plus a locked Ajv validator check the SBOM before the exact hash/dependency/license policy;
 - `build.yml` uses the same npm lockfile and uploads a staged, exact identity/legal asset set;
 - the Gradle wrapper distribution checksum, dependency locks, and artifact/plugin verification metadata are checked in
-  and must be reviewed with any dependency update.
+  and must be reviewed with any dependency update;
+- the immutable draft resolves both project-plugin graphs, requires exact equality with the reviewed 204-coordinate
+  Maven set, reruns OSV and npm checks, retrieves authenticated open Dependabot alerts, and stages normalized evidence
+  under checksums and attestation.
 
-Remaining gate: protected tag/environment configuration, authenticated Dependabot evidence for the signed candidate,
-attested exact-byte Burp smoke evidence, the minimal protected publication workflow, and clean post-publication
-verification.
+Remaining gate: protected tag/environment configuration, a successful immutable candidate run producing that fresh
+vulnerability evidence, attested exact-byte Burp smoke evidence, the minimal protected publication workflow, and clean
+post-publication verification.
 
 Required work:
 
@@ -236,7 +240,7 @@ A stable candidate may be published only after all of the following are true:
 - [ ] Project-switch, approval-category, large-Scanner, cancellation, EDT, and unload regressions pass.
 - [ ] Two isolated builds produce byte-identical JAR and SBOM files.
 - [ ] SBOM schema, hashes, dependency relationships, and explicit licenses validate.
-- [ ] Required legal, fork, source, checksum, vulnerability-report, and attestation assets validate.
+- [ ] Required legal, fork, source, checksum, vulnerability report/evidence, and attestation assets validate.
 - [ ] The exact draft JAR digest equals the protected smoke-test digest.
 - [ ] `v4.8.0-rc.1` or later completes at least seven days without an unresolved release-blocking P0/P1 defect.
 - [ ] The protected publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
@@ -354,10 +358,11 @@ Candidate work:
 ## v4.11.0 — Measured History Freshness and HTTP Activity Correlation
 
 Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
-The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` tags, drafts, notes, and assets remain unchanged. Follow-up exact-smoke
-orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; the surface-reduction follow-up used
-`4.11.0-dev.3`. The bounded performance follow-up uses `4.11.0-dev.4` and targets a new candidate only. Work remains
-ordered so measurement precedes scheduling changes and catalog changes.
+The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.3` tags, drafts, notes, and assets remain unchanged.
+Follow-up exact-smoke orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; surface reduction
+used `4.11.0-dev.3`; and bounded performance work used `4.11.0-dev.4`. RC2 froze the reduced surface and performance
+contracts, RC3 froze deterministic session-cancellation evidence, and RC4 is the next schema/result consistency
+candidate. Work remains ordered so measurement precedes scheduling and catalog changes.
 
 Milestones:
 
@@ -408,6 +413,12 @@ WebSocket-search completed/cancelled totals. The digest is computed off the UI t
 the two value-free outcome counters prove cancellation deltas without exposing full timing metrics. Candidate-bound
 scenario records and both edition preflights are required before an all-pass protected-workflow input can exist.
 
+RC3 added bounded session-lifecycle cancellation, a value-free `webSocketSearchActive` processing barrier, and exact
+cancellation evidence. RC4 retains the exact 21-tool Community and 28-tool Professional names while making stable
+non-null structured members explicitly serialized and required by output schemas, making project binding and retry
+semantics self-contained, and classifying correction-required and Burp accessor failures consistently. Its reviewed
+catalog fingerprints intentionally change because descriptions and output schemas change; names and counts do not.
+
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
 aliases or families.
@@ -423,7 +434,8 @@ aliases or families.
   chronology, causality, identity, or vulnerability-evidence claim; exact live validation remains part of the RC gate.
 - [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
 - [ ] Exact Community/Professional, native HTTP, embedded stdio, project-transition, cancellation, scale, unload, SBOM,
-  conformance, and reproducibility gates pass for a new immutable v4.11 candidate.
+  conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project-transition and
+  safe Scanner uncertain-outcome evidence remain open and must keep RC4 publication at `WITHHOLD` until objectively proven.
 
 ## v5.0.0 — Modern MCP gate
 
