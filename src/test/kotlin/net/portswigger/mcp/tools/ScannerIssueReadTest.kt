@@ -1,7 +1,10 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.HttpService
+import burp.api.montoya.http.message.HttpRequestResponse
+import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
@@ -18,6 +21,7 @@ import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ScannerIssueReadTest {
@@ -180,6 +184,68 @@ class ScannerIssueReadTest {
         assertEquals(MAX_HISTORY_SLICE_BYTES, result.content?.data?.length)
         assertTrue(result.error == null)
         verify(exactly = 1) { issue.detail() }
+    }
+
+    @Test
+    fun `Scanner detail offset uses UTF-8 byte boundaries`() = runBlocking {
+        val issue = issue(9, "Offset", "é")
+        every { siteMap.issues() } returns listOf(issue)
+        val id = issue.stableHistoryId(0)
+        val input = GetScannerIssueById(
+            projectId = "project-123",
+            id = id,
+            field = "detail",
+            offset = 2,
+        )
+
+        val terminal = service.read(input)
+        val beyond = service.read(input.copy(offset = 3))
+
+        assertEquals(HistoryReadStatus.OK, terminal.status)
+        assertEquals("", terminal.content?.data)
+        assertEquals(0, terminal.content?.returnedBytes)
+        assertEquals(2, terminal.content?.totalBytes)
+        assertEquals(false, terminal.content?.hasMore)
+        assertNull(terminal.content?.nextOffsetBytes)
+        assertEquals(HistoryReadStatus.INVALID_ARGUMENT, beyond.status)
+        assertEquals("project-123", beyond.projectId)
+        assertTrue(beyond.error.orEmpty().contains("totalBytes (2)"))
+        assertNull(beyond.content)
+    }
+
+    @Test
+    fun `Scanner evidence offsets preserve exact and beyond byte boundaries`() = runBlocking {
+        val issue = issue(10, "Evidence offset", "unused")
+        val evidence = mockk<HttpRequestResponse>()
+        val request = mockk<HttpRequest>()
+        val bytes = mockk<MontoyaByteArray>()
+        every { issue.requestResponses() } returns listOf(evidence)
+        every { evidence.request() } returns request
+        every { request.toByteArray() } returns bytes
+        every { bytes.length() } returns 2
+        every { siteMap.issues() } returns listOf(issue)
+        val id = issue.stableHistoryId(0)
+        val input = GetScannerIssueById(
+            projectId = "project-123",
+            id = id,
+            field = "evidence_request",
+            evidenceIndex = 0,
+            offset = 2,
+        )
+
+        val terminal = service.read(input)
+        val beyond = service.read(input.copy(offset = 3))
+
+        assertEquals(HistoryReadStatus.OK, terminal.status)
+        assertEquals("", terminal.content?.data)
+        assertEquals(0, terminal.content?.returnedBytes)
+        assertEquals(2, terminal.content?.totalBytes)
+        assertEquals(false, terminal.content?.hasMore)
+        assertNull(terminal.content?.nextOffsetBytes)
+        assertEquals(HistoryReadStatus.INVALID_ARGUMENT, beyond.status)
+        assertEquals("project-123", beyond.projectId)
+        assertTrue(beyond.error.orEmpty().contains("totalBytes (2)"))
+        assertNull(beyond.content)
     }
 
     @Test

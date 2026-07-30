@@ -1,10 +1,14 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.Annotations
+import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
 import burp.api.montoya.proxy.Proxy
+import burp.api.montoya.proxy.ProxyWebSocketMessage
+import burp.api.montoya.websocket.Direction
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -16,6 +20,7 @@ import net.portswigger.mcp.security.DataAccessType
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.ZonedDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -85,6 +90,42 @@ class WebSocketMessageReadTest {
         assertEquals("project-ws", result.projectId)
         assertTrue(result.error.orEmpty().contains("Burp could not read the WebSocket message"))
         assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+    }
+
+    @Test
+    fun `offset at and beyond selected WebSocket payload preserves page boundary semantics`() = runBlocking {
+        config.requireDataAccessApproval = false
+        val item = mockk<ProxyWebSocketMessage>()
+        val payload = mockk<MontoyaByteArray>()
+        val annotations = mockk<Annotations>()
+        every { proxy.webSocketHistory(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyWebSocketHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 7
+        every { item.webSocketId() } returns 3
+        every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+        every { item.direction() } returns Direction.SERVER_TO_CLIENT
+        every { item.listenerPort() } returns 8080
+        every { item.payload() } returns payload
+        every { item.annotations() } returns annotations
+        every { annotations.notes() } returns null
+        every { payload.length() } returns 2
+
+        val input = GetWebsocketMessageById(id = 7, projectId = "project-ws", offset = 2)
+        val terminal = service.read(input)
+        val beyond = service.read(input.copy(offset = 3))
+
+        assertEquals(HistoryReadStatus.OK, terminal.status)
+        assertEquals("", terminal.content?.data)
+        assertEquals(0, terminal.content?.returnedBytes)
+        assertEquals(2, terminal.content?.totalBytes)
+        assertEquals(false, terminal.content?.hasMore)
+        assertEquals(null, terminal.content?.nextOffsetBytes)
+        assertEquals(HistoryReadStatus.INVALID_ARGUMENT, beyond.status)
+        assertEquals("project-ws", beyond.projectId)
+        assertTrue(beyond.error.orEmpty().contains("totalBytes (2)"))
+        assertEquals(null, beyond.content)
     }
 
     @Test

@@ -172,14 +172,26 @@ internal class ScannerIssueReadService(
                 )
             }
 
-            val result = issue.readField(
-                normalizedField,
-                input.evidenceIndex,
-                normalizedOffset,
-                normalizedLimit,
-                normalizedEncoding,
-                resolvedId = input.id,
-            )
+            val result = try {
+                issue.readField(
+                    normalizedField,
+                    input.evidenceIndex,
+                    normalizedOffset,
+                    normalizedLimit,
+                    normalizedEncoding,
+                    resolvedId = input.id,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HistoryOffsetOutOfRangeException) {
+                scannerIssueReadError(
+                    input,
+                    HistoryReadStatus.INVALID_ARGUMENT,
+                    normalizedField,
+                    expectedProjectId,
+                    e.message.orEmpty(),
+                )
+            }
             val finalProjectId = api.project().id()
             if (finalProjectId != expectedProjectId) {
                 return mismatch(

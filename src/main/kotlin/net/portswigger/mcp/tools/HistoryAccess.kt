@@ -624,9 +624,16 @@ internal fun normalizeHistoryLimit(limit: Int?): Int {
     return normalized
 }
 
+internal class HistoryOffsetOutOfRangeException(offset: Int, totalBytes: Long) :
+    IllegalArgumentException("offset must not exceed totalBytes ($totalBytes); received $offset")
+
+private fun requireHistoryOffsetInRange(offset: Int, totalBytes: Long) {
+    if (offset.toLong() > totalBytes) throw HistoryOffsetOutOfRangeException(offset, totalBytes)
+}
+
 internal fun MontoyaByteArray.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
     val totalBytes = length()
-    require(offset <= totalBytes) { "offset must not exceed totalBytes ($totalBytes)" }
+    requireHistoryOffsetInRange(offset, totalBytes.toLong())
     val end = min(totalBytes.toLong(), offset.toLong() + limit).toInt()
     val returnedBytes = end - offset
     val data = if (returnedBytes == 0) {
@@ -693,7 +700,7 @@ private fun String.toHistorySlice(offset: Int, limit: Int, encoding: String): Hi
     }
 
     require(totalBytes <= Int.MAX_VALUE) { "Scanner text field exceeds the supported byte length" }
-    require(offset.toLong() <= totalBytes) { "offset must not exceed totalBytes ($totalBytes)" }
+    requireHistoryOffsetInRange(offset, totalBytes)
     val total = totalBytes.toInt()
     val end = min(total.toLong(), requestedEnd).toInt()
     val data = when (encoding) {
@@ -715,7 +722,7 @@ private fun String.toHistorySlice(offset: Int, limit: Int, encoding: String): Hi
 
 private fun kotlin.ByteArray.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
     val totalBytes = size
-    require(offset <= totalBytes) { "offset must not exceed totalBytes ($totalBytes)" }
+    requireHistoryOffsetInRange(offset, totalBytes.toLong())
     val end = min(totalBytes.toLong(), offset.toLong() + limit).toInt()
     val selected = copyOfRange(offset, end)
     val data = when (encoding) {

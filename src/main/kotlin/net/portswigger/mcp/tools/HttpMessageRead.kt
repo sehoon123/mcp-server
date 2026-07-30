@@ -156,6 +156,14 @@ internal class HttpMessageReadService(
             )
         } catch (e: CancellationException) {
             throw e
+        } catch (e: HistoryOffsetOutOfRangeException) {
+            readError(
+                status = HttpMessageReadStatus.INVALID_ARGUMENT,
+                projectId = found.projectId,
+                ref = input.ref,
+                part = normalizedPart,
+                message = e.message.orEmpty(),
+            )
         } catch (e: Exception) {
             return readError(
                 status = HttpMessageReadStatus.BURP_ERROR,
