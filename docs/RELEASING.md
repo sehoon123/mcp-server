@@ -52,7 +52,13 @@ Configure these controls in GitHub before enabling publication:
 - CODEOWNERS/review requirements for workflows, Gradle files, proxy provenance, manifests, and legal files;
 - protected `v*` tags restricted to authorized maintainers;
 - Actions restricted to approved, full-SHA-pinned actions;
-- protected `release-draft`, `release-smoke`, and `release-publication` environments requiring independent human approval;
+- protected `release-dependabot-read`, `release-draft`, `release-smoke`, and `release-publication` environments requiring independent human approval;
+- a dedicated `DEPENDABOT_ALERTS_READ_TOKEN` secret in `release-dependabot-read`, backed by a repository-restricted
+  fine-grained token with only Dependabot-alert read access or a GitHub App with only `vulnerability_alerts: read`;
+- protected-main and protected-`v*` deployment rules for `release-dependabot-read`, with prevention of self-review and
+  no fallback to the built-in Actions token or an operator's general-purpose OAuth token;
+- a named release-security owner who records the dedicated credential type, repository scope, expiry, rotation date, and
+  exact successful preflight run without recording the credential value;
 - minimal default `GITHUB_TOKEN` permissions;
 - immutable releases enabled for the repository;
 - a fine-grained `IMMUTABLE_RELEASES_READ_TOKEN` environment secret scoped to Administration (read-only) in
@@ -96,6 +102,8 @@ Before tagging:
 - the SBOM license map has no “unknown means Apache-2.0” fallback;
 - the third-party license/NOTICE bundle is regenerated and reviewed;
 - `security/release-maven-coordinates.txt` still exactly matches the reviewed canonical 204-coordinate set;
+- the main-only `release-dependabot-preflight.yml` run succeeds for the exact protected-main candidate SHA using the
+  dedicated environment credential; missing/expired credentials and HTTP 403/429/malformed responses fail closed;
 - the point-in-time OSV, npm audit, and authenticated open-Dependabot queries are rerun for the immutable candidate and pass the checked-in fail-closed policy.
 
 ### 3. Create an immutable tag
@@ -142,18 +150,32 @@ checkout; matrix and package jobs must not independently resolve a movable ref.
 - upload reports under a retention policy;
 - execute with no OIDC, attestation, or release-write permission.
 
-### Job C — exact vulnerability evidence (`contents: read`, `security-events: read`)
+### Job C0 — isolated Dependabot credential broker (`permissions: {}`)
 
+- run on a fresh no-checkout runner protected by `release-dependabot-read`;
+- require the exact repository, tag ref, and identity-job SHA before accessing the environment secret;
+- fail explicitly when `DEPENDABOT_ALERTS_READ_TOKEN` is absent and never fall back to `${{ github.token }}` or local
+  GitHub CLI credentials;
+- query only the hard-coded repository Dependabot endpoint with a clean `GH_CONFIG_DIR`, no inherited `GITHUB_TOKEN`,
+  and the dedicated least-privilege credential;
+- execute no checkout, Gradle, npm, Python, or candidate/project code while the secret is available;
+- minimize the response to the reviewed policy fields and upload it as a tag/SHA-bound one-day intermediate artifact.
+
+### Job C — exact vulnerability evidence (`contents: read`, no secret access)
+
+- download the exact tag/SHA-bound minimized alert artifact from Job C0;
 - checkout the emitted server SHA and the proxy SHA named by its embedded provenance;
 - resolve both exact Gradle project-plugin graphs and add the reviewed settings-plugin implementations to both locked dependency graphs;
 - require exact equality with canonical `security/release-maven-coordinates.txt` (204 coordinates, SHA-256 `2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51`);
 - submit that exact set to OSV and fail on a missing response, count mismatch, malformed response, or any vulnerability;
 - run dev-inclusive lock-only npm audit without lifecycle scripts and reject high, critical, or unreviewed package nodes;
-- retrieve open Dependabot alerts with the job-scoped authenticated GitHub token, require the single documented development-scope exception, and fail on missing, extra, or changed alerts;
-- remove the GitHub token from the OSV/policy step, then archive normalized, source-bound evidence for checksum and attestation.
+- require the single documented Dependabot development-scope exception and fail on missing, extra, or changed alerts;
+- archive normalized evidence bound directly to the release tag, server SHA, proxy SHA, and coordinate identity for
+  checksum and attestation.
 
-A local point-in-time query is review input only. Publication evidence comes from this immutable workflow job and is
-bound to the server SHA, proxy SHA, exact coordinate-set identity, workflow run, release checksums, and provenance.
+A local query or pre-tag credential preflight is review input only. Publication evidence comes from the authoritative
+immutable tagged workflow and is bound to the release tag, server SHA, proxy SHA, exact coordinate-set identity, workflow
+run, release checksums, and provenance.
 
 ### Jobs C1/C2 — isolated builds (`contents: read`)
 
@@ -250,7 +272,7 @@ identified detached verification metadata whose format cannot be self-referentia
 | `VULNERABILITY_REPORT.md` | Release-specific reviewed policy, scope, accepted exception, version, and commit |
 | `OSV-COORDINATES.txt`, `OSV-RESPONSE.json` | Canonical exact Maven query set and fresh zero-finding OSV response |
 | `NPM-AUDIT.json`, `DEPENDABOT-ALERTS.json` | Normalized npm result and authenticated open-alert evidence under the reviewed exception policy |
-| `VULNERABILITY_EVIDENCE.json` | Source/proxy binding, query identities, result counts, and authoritative vulnerability-gate outcome |
+| `VULNERABILITY_EVIDENCE.json` | Release-tag/source/proxy binding, query identities, result counts, and authoritative vulnerability-gate outcome |
 | `SOURCE_IDENTITY.json`, `RELEASE_NOTES.md` | Tag, full SHA, artifact and vulnerability-evidence digests, migration, and reviewed change range |
 | `provenance.intoto.jsonl` | Verifiable binding between staged artifacts, workflow, repository, and source SHA |
 
@@ -262,7 +284,18 @@ collision-safe bundle. CI should fail on unknown components or missing legal ent
 
 ## Release build commands
 
-The canonical local preflight is:
+After the reviewed candidate commit is on protected `main`, validate the dedicated credential before creating a tag:
+
+```bash
+source_sha=$(git rev-parse HEAD)
+gh workflow run release-dependabot-preflight.yml \
+  --repo sehoon123/mcp-server --ref main -f source_sha="$source_sha"
+```
+
+The successful run must report the same `source_sha`. It is readiness evidence only; the tagged draft queries the alert
+state again. Never pass a token as workflow input or copy the operator's `gh` OAuth token into repository secrets.
+
+The canonical local build preflight is:
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
@@ -368,9 +401,12 @@ Also document how to verify the protected tag signature and compare the attested
 
 ## Current workflow status
 
-`release-draft.yml` now requires one full 40-character source SHA, checks out that SHA without persisted credentials in
-every source job, runs the client/conformance matrices, compares JAR and SBOM bytes from two isolated builders, stages
-an exact legal/source asset allowlist, and passes only downloaded bytes to the OIDC/repository-write draft job. The draft
+`release-dependabot-preflight.yml` validates the dedicated environment credential only at an exact protected-main SHA
+and executes no repository code. `release-draft.yml` requires one full 40-character source SHA, obtains the minimized
+Dependabot snapshot in an isolated no-checkout broker, checks out that SHA without persisted credentials in every source
+job, binds vulnerability evidence directly to the release tag, runs the client/conformance matrices, compares JAR and
+SBOM bytes from two isolated builders, stages an exact legal/source asset allowlist, and passes only downloaded bytes to
+the OIDC/repository-write draft job. The draft
 job runs no project code, revalidates checksums and source identity, creates an attestation bundle, fails if the release
 already exists, and never uses `--clobber`.
 
@@ -390,8 +426,9 @@ and unresolved-P1 gate is implemented.
 
 Any publication remains blocked until:
 
-- the repository's `release-draft`, `release-smoke`, and `release-publication` environments are externally configured
-  with required reviewers, prevention of self-review/admin bypass, and least-privilege branch/tag rules;
+- the repository's `release-dependabot-read`, `release-draft`, `release-smoke`, and `release-publication` environments are
+  externally configured with required reviewers, prevention of self-review/admin bypass, and least-privilege branch/tag
+  rules, and the exact-main Dependabot credential preflight succeeds;
 - GitHub immutable releases are enabled and write access to drafts/tags is restricted;
 - the checked-in Gradle/npm locks and verification metadata are independently reviewed for the candidate;
 - the exact-byte Community and Professional matrix is actually performed and its protected smoke workflow succeeds;
@@ -404,6 +441,7 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 
 - [ ] Fork name, UUID, vendor, maintainer, links, and disclaimer are consistent.
 - [ ] Protected main/tag/environment controls are recorded.
+- [ ] Dedicated Dependabot-alert credential scope/expiry and exact-main preflight run are recorded.
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.

@@ -358,11 +358,12 @@ Candidate work:
 ## v4.11.0 — Measured History Freshness and HTTP Activity Correlation
 
 Development began under the non-release identity `4.11.0-dev.1`; the first frozen candidate uses `4.11.0-rc.1`.
-The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.3` tags, drafts, notes, and assets remain unchanged.
+The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.4` tags, drafts, notes, and assets remain unchanged.
 Follow-up exact-smoke orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; surface reduction
 used `4.11.0-dev.3`; and bounded performance work used `4.11.0-dev.4`. RC2 froze the reduced surface and performance
-contracts, RC3 froze deterministic session-cancellation evidence, and RC4 is the next schema/result consistency
-candidate. Work remains ordered so measurement precedes scheduling and catalog changes.
+contracts, RC3 froze deterministic session-cancellation evidence, RC4 froze schema/result consistency, and RC5 is the
+current isolated release-credential and evidence-binding candidate. Work remains ordered so measurement precedes
+scheduling and catalog changes.
 
 Milestones:
 
@@ -417,7 +418,9 @@ RC3 added bounded session-lifecycle cancellation, a value-free `webSocketSearchA
 cancellation evidence. RC4 retains the exact 21-tool Community and 28-tool Professional names while making stable
 non-null structured members explicitly serialized and required by output schemas, making project binding and retry
 semantics self-contained, and classifying correction-required and Burp accessor failures consistently. Its reviewed
-catalog fingerprints intentionally change because descriptions and output schemas change; names and counts do not.
+catalog fingerprints intentionally change because descriptions and output schemas change; names and counts do not. RC5
+keeps those runtime contracts and dependency inputs unchanged while isolating the Dependabot credential, adding an
+exact-main pre-tag readiness check, and binding normalized vulnerability evidence directly to the candidate tag.
 
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
@@ -435,7 +438,8 @@ aliases or families.
 - [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
 - [ ] Exact Community/Professional, native HTTP, embedded stdio, project-transition, cancellation, scale, unload, SBOM,
   conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project-transition and
-  safe Scanner uncertain-outcome evidence remain open and must keep RC4 publication at `WITHHOLD` until objectively proven.
+  safe Scanner uncertain-outcome evidence remain open and must keep current candidate publication at `WITHHOLD` until
+  objectively proven.
 
 ## v5.0.0 — Modern MCP gate
 

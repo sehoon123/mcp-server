@@ -85,8 +85,10 @@ jobs:
           [[ $(jq -r '.artifacts.jarSha256' "$stage/SOURCE_IDENTITY.json") == "$actual_jar_sha" ]]
           [[ $(jq -r '.artifacts.vulnerabilityEvidenceSha256' "$stage/SOURCE_IDENTITY.json") == \
             "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" ]]
-          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$SOURCE_COMMIT" '
-            .repository == $repository and .sourceCommit == $sourceCommit and .result == "pass" and
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg releaseTag "$RELEASE_TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" '
+            .repository == $repository and .releaseTag == $releaseTag and
+            .sourceCommit == $sourceCommit and .result == "pass" and
             .coordinateSet.count == 204 and .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
             .osv.findings == 0 and .npmAudit.high == 0 and .npmAudit.critical == 0 and
             .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31

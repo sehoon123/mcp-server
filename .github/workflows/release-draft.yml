@@ -249,14 +249,81 @@ jobs:
           if [[ "$status" -ne 0 ]]; then cat "$server_log"; fi
           exit "$status"
 
+  dependabot-alerts:
+    name: Fetch reviewed Dependabot alert snapshot
+    needs: identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-dependabot-read
+    permissions: {}
+    steps:
+      - name: Fetch and minimize authenticated open alerts
+        env:
+          DEPENDABOT_ALERTS_READ_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_READ_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "sehoon123/mcp-server" ]]
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
+          [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
+          if [[ -z "${DEPENDABOT_ALERTS_READ_TOKEN:-}" ]]; then
+            echo 'DEPENDABOT_ALERTS_READ_TOKEN is not provisioned' >&2
+            exit 1
+          fi
+          gh_config="$RUNNER_TEMP/empty-gh-config"
+          install -d -m 700 "$gh_config"
+          env -u GITHUB_TOKEN \
+            GH_CONFIG_DIR="$gh_config" GH_TOKEN="$DEPENDABOT_ALERTS_READ_TOKEN" \
+            gh api -H 'X-GitHub-Api-Version: 2022-11-28' --paginate --slurp \
+              'repos/sehoon123/mcp-server/dependabot/alerts?state=open&per_page=100' \
+              > "$RUNNER_TEMP/dependabot-pages.json"
+          jq -e '
+            if type == "array" and all(.[]; type == "array") then add
+            else error("Dependabot pagination response is not an array of pages") end |
+            map({
+              number,
+              state,
+              dependency: {
+                package: {ecosystem: .dependency.package.ecosystem, name: .dependency.package.name},
+                manifest_path: .dependency.manifest_path,
+                scope: .dependency.scope,
+                relationship: .dependency.relationship
+              },
+              security_advisory: {
+                severity: .security_advisory.severity,
+                ghsa_id: .security_advisory.ghsa_id
+              },
+              security_vulnerability: {
+                package: {
+                  ecosystem: .security_vulnerability.package.ecosystem,
+                  name: .security_vulnerability.package.name
+                },
+                vulnerable_version_range: .security_vulnerability.vulnerable_version_range,
+                first_patched_version: {
+                  identifier: .security_vulnerability.first_patched_version.identifier
+                }
+              }
+            })
+          ' "$RUNNER_TEMP/dependabot-pages.json" > "$RUNNER_TEMP/dependabot-alerts.json"
+          jq -e 'type == "array"' "$RUNNER_TEMP/dependabot-alerts.json" >/dev/null
+
+      - name: Upload minimized alert snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-dependabot-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
+          path: ${{ runner.temp }}/dependabot-alerts.json
+          if-no-files-found: error
+          retention-days: 1
+
   vulnerability:
     name: Exact dependency vulnerability evidence
-    needs: identity
+    needs: [identity, dependabot-alerts]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-      security-events: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -317,19 +384,15 @@ jobs:
           [[ "$audit_status" -eq 0 || "$audit_status" -eq 1 ]]
           jq -e '.auditReportVersion == 2' "$RUNNER_TEMP/npm-audit.json" >/dev/null
 
-      - name: Fetch authenticated open Dependabot alerts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/dependabot/alerts?state=open&per_page=100" \
-            > "$RUNNER_TEMP/dependabot-alerts.json"
-          jq -e 'type == "array"' "$RUNNER_TEMP/dependabot-alerts.json" >/dev/null
+      - name: Download minimized Dependabot alert snapshot
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-dependabot-${{ inputs.tag }}-${{ needs.identity.outputs.commit }}
+          path: ${{ runner.temp }}/dependabot-input
 
       - name: Query OSV and enforce the reviewed fail-closed policy
         env:
+          RELEASE_TAG: ${{ inputs.tag }}
           SOURCE_COMMIT: ${{ needs.identity.outputs.commit }}
           PROXY_COMMIT: ${{ steps.proxy.outputs.commit }}
         shell: bash
@@ -345,8 +408,10 @@ jobs:
             --proxy-settings _release-proxy/settings.gradle.kts \
             --expected-coordinates security/release-maven-coordinates.txt \
             --npm-audit "$RUNNER_TEMP/npm-audit.json" \
-            --dependabot-alerts "$RUNNER_TEMP/dependabot-alerts.json" \
+            --dependabot-alerts "$RUNNER_TEMP/dependabot-input/dependabot-alerts.json" \
             --output-dir "$output" \
+            --release-tag "$RELEASE_TAG" \
+            --dependabot-retrieval isolated-release-workflow-broker \
             --source-commit "$SOURCE_COMMIT" \
             --proxy-commit "$PROXY_COMMIT" \
             --repository "$GITHUB_REPOSITORY" \
@@ -492,10 +557,12 @@ jobs:
             2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
+            --arg releaseTag "$RELEASE_TAG" \
             --arg sourceCommit "$SOURCE_COMMIT" \
             --arg proxyCommit "$proxy_commit" '
             .schemaVersion == 1 and
             .repository == $repository and
+            .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and
             .proxyCommit == $proxyCommit and
             .coordinateSet.count == 204 and
@@ -823,10 +890,11 @@ jobs:
             2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
+            --arg releaseTag "$RELEASE_TAG" \
             --arg sourceCommit "$SOURCE_COMMIT" \
             --arg proxyCommit "$EXPECTED_PROXY_COMMIT" '
-            .schemaVersion == 1 and .repository == $repository and .sourceCommit == $sourceCommit and
-            .proxyCommit == $proxyCommit and
+            .schemaVersion == 1 and .repository == $repository and .releaseTag == $releaseTag and
+            .sourceCommit == $sourceCommit and .proxyCommit == $proxyCommit and
             .coordinateSet.count == 204 and
             .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
             .osv.queried == 204 and .osv.findings == 0 and
