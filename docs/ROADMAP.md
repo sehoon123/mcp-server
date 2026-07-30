@@ -167,13 +167,12 @@ Implemented draft-building controls:
 - Deterministic CycloneDX 1.6 SBOM generation covers the extension runtime and the pinned proxy runtime metadata.
 - The SBOM task is configuration-cache compatible and verifies the proxy artifact against its recorded SHA-256.
 - The target draft workflow stages the SBOM, dependency vulnerability review, third-party notices, project license, and
-  `SHA256SUMS`; public-release completeness still requires an independently enforced publication gate.
+  `SHA256SUMS`; public-release completeness still requires the checked-in no-rebuild publication gate.
 - A matching protected annotated source tag is a target publication requirement and must resolve to the built commit.
 - A manual-only `workflow_dispatch` verifies native HTTP and embedded-stdio clients, runs two clean no-build-cache
   packages, compares JAR/SBOM bytes, generates checksums and provenance attestations, and creates a draft only when no
   release exists for the tag. It never updates or publishes a release; exact-byte Burp validation, complete legal/source
-  assets, and protected publication remain
-  explicit release gates.
+  assets, and no-rebuild publication remain explicit release gates.
 
 Remaining work:
 
@@ -373,8 +372,8 @@ Remaining work:
 
 The near-term order is gate-driven:
 
-1. Complete the protected exact-byte Community/Professional smoke, independent review, token, and observation gates for
-   stable v4.8 without moving or replacing an existing RC tag or draft asset.
+1. Complete exact-byte Community/Professional smoke and the retained immutable identity, OSV/npm, reproducibility,
+   SBOM, checksum, provenance, and observation gates without moving or replacing an existing RC tag or draft asset.
 2. Develop the approved analyzer, project-scoped workflow presets, and planning-only Repeater prompt on the isolated v4.9
    feature branch; do not add client setup UI or multi-instance UX to this milestone.
 3. Release v4.9 only after stable v4.8 plus exact 24/31 tool, 4/5 prompt, project save/reopen, no-mutation client, full

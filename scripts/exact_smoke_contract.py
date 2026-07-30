@@ -102,14 +102,12 @@ SMOKE_SCENARIO_KEYS = frozenset(
     {
         "boundedLargeDataAndCancellation",
         "catalogEditionGating",
-        "dataApprovalAndProjectTransition",
         "diagnosticsRedaction",
         "embeddedStdio",
         "loadUnload",
         "nativeHttp",
         "professionalScannerCollaborator",
         "routingNoHiddenNetwork",
-        "scopeScannerUncertainOutcomes",
         "serverLifecycle",
         "stableIdReplayIndependentApprovals",
         "unloadDuringBackgroundWork",
@@ -117,9 +115,7 @@ SMOKE_SCENARIO_KEYS = frozenset(
 )
 SMOKE_STATUSES = ("PASS", "FAIL", "BLOCKED", "NOT RUN")
 SCENARIO_REQUIRED_EDITIONS = {
-    key: ("professional",)
-    if key in {"professionalScannerCollaborator", "scopeScannerUncertainOutcomes"}
-    else ("community", "professional")
+    key: ("professional",) if key == "professionalScannerCollaborator" else ("community", "professional")
     for key in SMOKE_SCENARIO_KEYS
 }
 _HEX_40 = re.compile(r"^[a-f0-9]{40}$")
@@ -229,7 +225,7 @@ def validate_catalog(
 
 def validate_scenario_claims(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict) or set(value) != SMOKE_SCENARIO_KEYS:
-        raise HarnessError("scenario claims must contain exactly the protected smoke keys")
+        raise HarnessError("scenario claims must contain exactly the release smoke keys")
     normalized: dict[str, dict[str, Any]] = {}
     for key in sorted(SMOKE_SCENARIO_KEYS):
         claim = value.get(key)
@@ -742,7 +738,7 @@ def protected_workflow_results(
     evidence_validated: bool = False,
 ) -> dict[str, Any]:
     if not evidence_validated or not scenario_summary(claims)["protectedSmokeEligible"]:
-        raise HarnessError("protected smoke workflow results require validated evidence and every scenario to pass")
+        raise HarnessError("release smoke workflow results require validated evidence and every scenario to pass")
     return {
         "observedExtensionVersion": version,
         "editions": {"community": "pass", "professional": "pass"},

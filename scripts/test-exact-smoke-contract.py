@@ -154,24 +154,38 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
 
 
 class ExactSmokeContractTest(unittest.TestCase):
-    def test_protected_workflow_scenario_identifiers_match_the_local_contract(self):
+    def test_release_workflow_scenario_identifiers_match_the_local_contract(self):
         workflow = (SCRIPTS.parent / ".github/workflows/release-smoke.yml").read_text(encoding="utf-8")
         step_marker = "      - name: Download and verify the immutable draft bytes\n"
         self.assertEqual(1, workflow.count(step_marker))
-        protected_step = workflow.split(step_marker, maxsplit=1)[1].split("\n      - name: ", maxsplit=1)[0]
-        self.assertIn("jq -e --arg version", protected_step)
-        self.assertIn("' <<<\"$RESULTS_JSON\" > \"$RUNNER_TEMP/smoke-claims.json\"", protected_step)
+        release_step = workflow.split(step_marker, maxsplit=1)[1].split("\n      - name: ", maxsplit=1)[0]
+        self.assertIn("jq -e --arg version", release_step)
+        self.assertIn("' <<<\"$RESULTS_JSON\" > \"$RUNNER_TEMP/smoke-claims.json\"", release_step)
         match = re.search(
             r"\(\.scenarios \| keys \| sort\) == \[(.*?)\]\s+and\s+\(\[\.scenarios\[\]\]",
-            protected_step,
+            release_step,
             flags=re.DOTALL,
         )
-        self.assertIsNotNone(match, "protected workflow scenario assertion was not found")
+        self.assertIsNotNone(match, "release workflow scenario assertion was not found")
         scenario_array = match.group(1)
         workflow_scenarios = re.findall(r'^\s+"([A-Za-z][A-Za-z0-9]+)",?\s*$', scenario_array, flags=re.MULTILINE)
         self.assertEqual(len(contract.SMOKE_SCENARIO_KEYS), len(workflow_scenarios))
         self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), workflow_scenarios)
         self.assertEqual(",".join(f'\n              \"{key}\"' for key in workflow_scenarios), scenario_array.rstrip())
+
+        publish = (SCRIPTS.parent / ".github/workflows/release-publish.yml").read_text(encoding="utf-8")
+        publish_matches = list(
+            re.finditer(
+                r"\(\.scenarios \| keys \| sort\) == \[(.*?)\]\s+and\s+\(\[\.scenarios\[\]\]",
+                publish,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertEqual(2, len(publish_matches), "publication scenario assertions are missing or duplicated")
+        for match in publish_matches:
+            publish_scenarios = re.findall(r'"([A-Za-z][A-Za-z0-9]+)"', match.group(1))
+            self.assertEqual(len(contract.SMOKE_SCENARIO_KEYS), len(publish_scenarios))
+            self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), publish_scenarios)
 
     def test_release_identity_is_exact_and_bounded(self):
         contract.validate_release_identity("a" * 40, "b" * 64, "4.11.0-rc.2")
@@ -325,7 +339,7 @@ class ExactSmokeContractTest(unittest.TestCase):
     def test_scenario_contract_is_exact_and_never_infers_not_run_as_pass(self):
         not_run = contract.validate_scenario_claims(claims())
         summary = contract.scenario_summary(not_run)
-        self.assertEqual(13, summary["NOT RUN"])
+        self.assertEqual(11, summary["NOT RUN"])
         self.assertFalse(summary["protectedSmokeEligible"])
 
         passed = contract.validate_scenario_claims(claims("PASS"))
@@ -338,7 +352,7 @@ class ExactSmokeContractTest(unittest.TestCase):
             evidence_validated=True,
         )
         self.assertEqual({"community": "pass", "professional": "pass"}, workflow["editions"])
-        self.assertEqual(13, len(workflow["scenarios"]))
+        self.assertEqual(11, len(workflow["scenarios"]))
         with self.assertRaises(HarnessError):
             contract.protected_workflow_results(not_run, "4.11.0-rc.2", evidence_validated=True)
 
@@ -350,6 +364,17 @@ class ExactSmokeContractTest(unittest.TestCase):
         empty_pass[next(iter(empty_pass))]["evidence"] = []
         with self.assertRaises(HarnessError):
             contract.validate_scenario_claims(empty_pass)
+
+        for retired in ("dataApprovalAndProjectTransition", "scopeScannerUncertainOutcomes"):
+            self.assertNotIn(retired, contract.SMOKE_SCENARIO_KEYS)
+            extra = claims()
+            extra[retired] = {
+                "status": "NOT RUN",
+                "evidence": [],
+                "notes": "Retired from the release smoke contract.",
+            }
+            with self.assertRaises(HarnessError):
+                contract.validate_scenario_claims(extra)
 
     def test_scenario_record_binds_candidate_editions_and_objective_evidence_digest(self):
         source = "a" * 40
@@ -531,16 +556,16 @@ class ExactSmokeContractTest(unittest.TestCase):
             matrix = json.loads((root / "MATRIX.json").read_text(encoding="utf-8"))
             workflow = json.loads((root / "WORKFLOW.json").read_text(encoding="utf-8"))
             self.assertTrue(matrix["summary"]["protectedSmokeEligible"])
-            self.assertEqual(13, len(workflow["scenarios"]))
+            self.assertEqual(11, len(workflow["scenarios"]))
             self.assertEqual(0o600, stat.S_IMODE((root / "MATRIX.json").stat().st_mode))
             self.assertEqual(0o600, stat.S_IMODE((root / "WORKFLOW.json").stat().st_mode))
 
             withheld = json.loads((root / "SCENARIO_CLAIMS.json").read_text(encoding="utf-8"))
-            blocked_key = "dataApprovalAndProjectTransition"
+            blocked_key = "boundedLargeDataAndCancellation"
             withheld["scenarios"][blocked_key] = {
                 "status": "BLOCKED",
                 "evidence": [],
-                "notes": "No safe live transition trigger.",
+                "notes": "Required evidence is unavailable.",
             }
             (root / "WITHHELD_CLAIMS.json").write_text(json.dumps(withheld), encoding="utf-8")
             self.assertEqual(1, invoke("WITHHELD_CLAIMS.json", "WITHHELD_MATRIX.json", "ABSENT_WORKFLOW.json"))

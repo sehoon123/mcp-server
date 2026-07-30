@@ -183,18 +183,17 @@ Implementation status (development branch):
 - the Gradle wrapper distribution checksum, dependency locks, and artifact/plugin verification metadata are checked in
   and must be reviewed with any dependency update;
 - the immutable draft resolves both project-plugin graphs, requires exact equality with the reviewed 204-coordinate
-  Maven set, reruns OSV and npm checks, retrieves authenticated open Dependabot alerts, and stages normalized evidence
-  under checksums and attestation.
+  Maven set, reruns OSV and npm checks, and stages normalized evidence under checksums and attestation.
 
-Remaining gate: protected tag/environment configuration, a successful immutable candidate run producing that fresh
-vulnerability evidence, attested exact-byte Burp smoke evidence, the minimal protected publication workflow, and clean
+Remaining gate: protected tag configuration, a successful immutable candidate run producing fresh vulnerability
+evidence, attested exact-byte Burp smoke evidence, the minimal no-rebuild publication workflow, and clean
 post-publication verification.
 
 Required work:
 
 - resolve one immutable full source SHA and use it in every job;
 - run all source builds/tests with read-only permissions and `persist-credentials: false`;
-- split build, validation, attestation/draft, protected smoke evidence, and publication;
+- split build, validation, attestation/draft, attested smoke evidence, and publication;
 - compare JAR and SBOM bytes from two isolated builders;
 - bind every attestation and smoke record to the source/tag/artifact digest;
 - make the publish job download and revalidate an exact asset allowlist without running project code;
@@ -208,9 +207,9 @@ Acceptance criteria:
 - no Gradle/npm/project script executes with release-write or OIDC permission;
 - client matrix, builds, SBOM, notes, attestations, and release all identify one full SHA;
 - two isolated builds produce byte-identical JAR and SBOM outputs;
-- the protected smoke record includes tag, source SHA, JAR digest, tester identity, environment, and all scenario results;
+- the attested smoke record includes tag, source SHA, JAR digest, tester identity, environment, and all scenario results;
 - the publish job verifies the tag, checksums, attestations, smoke record, and exact files immediately before publication;
-- protected branch/tag/environment settings are captured in the release audit record;
+- protected branch/tag and immutable-release settings are captured in the release audit record;
 - public artifacts are reverified from a clean unauthenticated environment after publication.
 
 See [RELEASING.md](RELEASING.md) for the target job design and asset list.
@@ -241,15 +240,15 @@ A stable candidate may be published only after all of the following are true:
 - [ ] Two isolated builds produce byte-identical JAR and SBOM files.
 - [ ] SBOM schema, hashes, dependency relationships, and explicit licenses validate.
 - [ ] Required legal, fork, source, checksum, vulnerability report/evidence, and attestation assets validate.
-- [ ] The exact draft JAR digest equals the protected smoke-test digest.
+- [ ] The exact draft JAR digest equals the attested smoke-test digest.
 - [ ] `v4.8.0-rc.1` or later completes at least seven days without an unresolved release-blocking P0/P1 defect.
-- [ ] The protected publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
+- [ ] The no-rebuild publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
 
 ### v4.8.0 mandatory publication completion
 
 The release is complete only after:
 
-- [ ] the protected publish job succeeds without rebuilding or replacing an asset;
+- [ ] the no-rebuild publish job succeeds without rebuilding or replacing an asset;
 - [ ] latest links, checksums, attestations, source identity, and downloads verify from a clean unauthenticated environment;
 - [ ] v4.7.0 is marked superseded without moving its tag or replacing an asset;
 - [ ] release/run URLs, full SHA, artifact digests, and smoke-record identity are archived.
@@ -362,7 +361,7 @@ The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.4` tags, dra
 Follow-up exact-smoke orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; surface reduction
 used `4.11.0-dev.3`; and bounded performance work used `4.11.0-dev.4`. RC2 froze the reduced surface and performance
 contracts, RC3 froze deterministic session-cancellation evidence, RC4 froze schema/result consistency, and RC5 is the
-current isolated release-credential and evidence-binding candidate. Work remains ordered so measurement precedes
+current simplified release-policy and evidence-binding candidate. Work remains ordered so measurement precedes
 scheduling and catalog changes.
 
 Milestones:
@@ -412,15 +411,15 @@ The initial post-RC1 exact-smoke slice kept every tool, prompt, resource URI, te
 three fixed fields to the existing diagnostics resource: a path-free loaded code-source JAR SHA-256 and saturation-safe
 WebSocket-search completed/cancelled totals. The digest is computed off the UI thread and omission fails the harness;
 the two value-free outcome counters prove cancellation deltas without exposing full timing metrics. Candidate-bound
-scenario records and both edition preflights are required before an all-pass protected-workflow input can exist.
+scenario records and both edition preflights are required before an all-pass smoke-workflow input can exist.
 
 RC3 added bounded session-lifecycle cancellation, a value-free `webSocketSearchActive` processing barrier, and exact
 cancellation evidence. RC4 retains the exact 21-tool Community and 28-tool Professional names while making stable
 non-null structured members explicitly serialized and required by output schemas, making project binding and retry
 semantics self-contained, and classifying correction-required and Burp accessor failures consistently. Its reviewed
 catalog fingerprints intentionally change because descriptions and output schemas change; names and counts do not. RC5
-keeps those runtime contracts and dependency inputs unchanged while isolating the Dependabot credential, adding an
-exact-main pre-tag readiness check, and binding normalized vulnerability evidence directly to the candidate tag.
+keeps those runtime contracts and dependency inputs unchanged while removing external alert/reviewer dependencies,
+using OSV/npm-only vulnerability evidence, and binding that normalized evidence directly to the candidate tag.
 
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
@@ -436,10 +435,10 @@ aliases or families.
 - [x] Correlation unit/schema validation is bounded, project-bound, read-only, value-limited, and makes no unsupported
   chronology, causality, identity, or vulnerability-evidence claim; exact live validation remains part of the RC gate.
 - [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
-- [ ] Exact Community/Professional, native HTTP, embedded stdio, project-transition, cancellation, scale, unload, SBOM,
-  conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project-transition and
-  safe Scanner uncertain-outcome evidence remain open and must keep current candidate publication at `WITHHOLD` until
-  objectively proven.
+- [ ] The exact 11-scenario Community/Professional smoke contract, native HTTP, embedded stdio, cancellation, scale,
+  unload, SBOM, conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project
+  replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather than
+  being represented as passing evidence.
 
 ## v5.0.0 — Modern MCP gate
 
@@ -514,7 +513,7 @@ Suggested labels:
 | `REL-001` | P0 | Independent name, UUID, vendor, links, and migration notice |
 | `REL-002` | P0 | Complete legal/corresponding-source bundle and SBOM license policy |
 | `REL-003` | P0 | Immutable-SHA, read-only, independently reproducible build jobs |
-| `REL-004` | P0 | Protected smoke evidence, attestation, and publish workflow |
+| `REL-004` | P0 | Exact-byte smoke evidence, attestation, and no-rebuild publish workflow |
 | `REL-005` | P1 | Dirty-proxy rejection and hermetic dependency inputs |
 | `TEST-001` | P1 | Community/Professional exact-byte RC and soak evidence |
 | `DOC-001` | P1 | Reconcile active roadmap, release claims, and current-version documentation |
@@ -559,7 +558,7 @@ Create implementation issues only after the external gates are released:
 2. Authorization separation blocks policy profiles and every later active workflow.
 3. Scanner ID/output design blocks schema migration notes and stable-ID compatibility decisions.
 4. Legal/source asset specification blocks final packaging and release-workflow implementation.
-5. Immutable identity blocks reproducible, attested, smoke-tested, protected publication.
+5. Immutable identity blocks reproducible, attested, smoke-tested, no-rebuild publication.
 6. Owned installer lifecycle blocks additional automatic client providers.
 7. A repeatable Professional test environment blocks every stable release that claims Professional support.
 8. Stable protocol/SDK/conformance/client releases block v5 implementation.

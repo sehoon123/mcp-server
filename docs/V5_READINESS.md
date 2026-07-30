@@ -194,8 +194,8 @@ A stable `v5.0.0` release may be published only when all of the following are tr
 - any Montoya/minimum-Burp change has independent Community and Professional compatibility evidence;
 - 10k/50k/100k measurements have no unreviewed EDT or memory regression;
 - two clean exact-commit JAR/SBOM builds are byte-identical;
-- OSV, Dependabot, archive inspection, checksums, and provenance pass;
-- a protected annotated tag resolves to the exact candidate source, and the draft is independently verified before
+- OSV, npm audit, archive inspection, checksums, and provenance pass;
+- a protected annotated tag resolves to the exact candidate source, and the draft is byte-for-byte verified before
   publication.
 
 Until those gates close, v5 work is a readiness branch or prerelease candidate, not a production compatibility claim.

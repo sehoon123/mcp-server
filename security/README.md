@@ -10,7 +10,6 @@ equality before querying OSV. The current contract is 204 unique coordinates wit
 `2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51`. Do not edit the file or its expected identity
 without reviewing the dependency, integrity, license, vulnerability, and release-policy changes together.
 
-Dependabot release evidence must come from the isolated no-checkout `release-dependabot-read` credential broker. The
-credential is a dedicated repository-restricted token or GitHub App with Dependabot-alert read access only; missing or
-unauthorized credentials fail closed, and neither `${{ github.token }}` nor an operator's general-purpose OAuth token is
-a permitted fallback.
+Release vulnerability evidence consists of the exact-coordinate OSV response and the normalized dev-inclusive npm audit
+result. The gate rejects malformed or incomplete OSV responses, every OSV finding, npm high/critical findings, and npm
+nodes outside the checked-in moderate conformance-development exception.

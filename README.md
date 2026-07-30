@@ -245,8 +245,8 @@ Starting with v4.8, download `independent-mcp-bridge-all.jar` and `SHA256SUMS` f
 candidate. Releases also include a CycloneDX SBOM, source archive, [`FORK_NOTICE.md`](FORK_NOTICE.md),
 [`NOTICE.md`](NOTICE.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md),
 [`CORRESPONDING_SOURCE.md`](CORRESPONDING_SOURCE.md), [`LICENSE`](LICENSE), the point-in-time
-[`vulnerability report`](docs/VULNERABILITY_REPORT.md), and checksummed OSV/npm/authenticated-Dependabot evidence from
-the immutable candidate workflow. Install the JAR
+[`vulnerability report`](docs/VULNERABILITY_REPORT.md), and checksummed OSV/npm evidence from the immutable candidate
+workflow. Install the JAR
 through **Extensions → Installed → Add → Java**. Do not install a separate proxy JAR. Existing MCP Server users must
 follow the [v4.8 identity and side-by-side migration guide](docs/MIGRATION_V4_8.md); the new UUID does not overwrite the
 old extension.

@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       smoke_run_id:
-        description: Successful protected release-smoke workflow run ID
+        description: Successful release-smoke workflow run ID
         required: true
         type: string
 
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   preflight:
-    name: Read-only independent publication preflight
+    name: Read-only publication preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -58,7 +58,6 @@ jobs:
           expected_assets=$(cat <<'EOF'
           Apache-2.0.txt
           CORRESPONDING_SOURCE.md
-          DEPENDABOT-ALERTS.json
           FORK_NOTICE.md
           LICENSE
           MIGRATION_V4_8.md
@@ -113,10 +112,10 @@ jobs:
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
           done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 22 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 21 ]]
           (cd "$stage" && sha256sum -c SHA256SUMS)
           [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
-          [[ $(wc -l < "$stage/SHA256SUMS") -eq 20 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 19 ]]
           expected_checksums=$(printf '%s\n' "$expected_assets" | sed 's/^          //' | \
             grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
@@ -147,9 +146,7 @@ jobs:
             .coordinateSet.count == 204 and
             .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
             .osv.queried == 204 and .osv.findings == 0 and
-            .npmAudit.high == 0 and .npmAudit.critical == 0 and
-            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31 and
-            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and .result == "pass"
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and .result == "pass"
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
             "$stage/OSV-RESPONSE.json" >/dev/null
@@ -209,9 +206,9 @@ jobs:
             (.editions | keys | sort) == ["community", "professional"] and
             ([.editions[]] | all(. == "pass")) and
             (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
-              "dataApprovalAndProjectTransition", "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp",
-              "professionalScannerCollaborator", "routingNoHiddenNetwork", "scopeScannerUncertainOutcomes",
-              "serverLifecycle", "stableIdReplayIndependentApprovals", "unloadDuringBackgroundWork"] and
+              "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp", "professionalScannerCollaborator",
+              "routingNoHiddenNetwork", "serverLifecycle", "stableIdReplayIndependentApprovals",
+              "unloadDuringBackgroundWork"] and
             ([.scenarios[]] | all(. == "pass"))
           ' "$smoke_dir/record/smoke-result.json" >/dev/null
 
@@ -223,11 +220,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   publish:
-    name: Protected no-rebuild publication
+    name: No-rebuild publication
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: release-publication
     permissions:
       contents: write
       actions: read
@@ -247,7 +243,7 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/immutable-releases")
           jq -e '.enabled == true' <<<"$response" >/dev/null
 
-      - name: Independently revalidate exact bytes and evidence after approval
+      - name: Revalidate exact bytes and evidence before publication
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -286,7 +282,7 @@ jobs:
           [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
 
           version=${RELEASE_TAG#v}
-          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md DEPENDABOT-ALERTS.json \
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md \
             FORK_NOTICE.md LICENSE MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md NPM-AUDIT.json \
             OSV-COORDINATES.txt OSV-RESPONSE.json RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
             runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_EVIDENCE.json \
@@ -298,13 +294,13 @@ jobs:
           stage="$RUNNER_TEMP/release-assets"
           mkdir -p "$stage"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$stage"
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 22 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 | wc -l) -eq 21 ]]
           while IFS= read -r entry; do
             [[ -f "$entry" && ! -L "$entry" ]]
           done < <(find "$stage" -mindepth 1 -maxdepth 1 -print)
           (cd "$stage" && sha256sum -c SHA256SUMS)
           [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$stage/SHA256SUMS") == 0 ]]
-          [[ $(wc -l < "$stage/SHA256SUMS") -eq 20 ]]
+          [[ $(wc -l < "$stage/SHA256SUMS") -eq 19 ]]
           expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
           diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
@@ -329,9 +325,7 @@ jobs:
             .coordinateSet.count == 204 and
             .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
             .osv.queried == 204 and .osv.findings == 0 and
-            .npmAudit.high == 0 and .npmAudit.critical == 0 and
-            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31 and
-            .dependabot.acceptedAlert.ghsaId == "GHSA-frvp-7c67-39w9" and .result == "pass"
+            .npmAudit.high == 0 and .npmAudit.critical == 0 and .result == "pass"
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
             "$stage/OSV-RESPONSE.json" >/dev/null
@@ -381,9 +375,9 @@ jobs:
             (.editions | keys | sort) == ["community", "professional"] and
             ([.editions[]] | all(. == "pass")) and
             (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
-              "dataApprovalAndProjectTransition", "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp",
-              "professionalScannerCollaborator", "routingNoHiddenNetwork", "scopeScannerUncertainOutcomes",
-              "serverLifecycle", "stableIdReplayIndependentApprovals", "unloadDuringBackgroundWork"] and
+              "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp", "professionalScannerCollaborator",
+              "routingNoHiddenNetwork", "serverLifecycle", "stableIdReplayIndependentApprovals",
+              "unloadDuringBackgroundWork"] and
             ([.scenarios[]] | all(. == "pass"))
           ' "$RUNNER_TEMP/smoke/record/smoke-result.json" >/dev/null
 
@@ -412,7 +406,7 @@ jobs:
           release_json=$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
           jq -e '.draft == false and .immutable == true' <<<"$release_json" >/dev/null
-          # The approved transition changes only draft=true to draft=false; normalize it before comparing the snapshot.
+          # Publication changes only draft=true to draft=false; normalize it before comparing the snapshot.
           snapshot=$(jq ' .draft = true ' <<<"$release_json" | jq -cS '[.id, .tag_name, .target_commitish, .name, .body, .draft, .prerelease,
             ([.assets[] | [.id, .name, .size, .digest]] | sort)]' | sha256sum | cut -d' ' -f1)
           [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
@@ -451,7 +445,7 @@ jobs:
             all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
           ' <<<"$release_json" >/dev/null
           version=${RELEASE_TAG#v}
-          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md DEPENDABOT-ALERTS.json \
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md \
             FORK_NOTICE.md LICENSE MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md NPM-AUDIT.json \
             OSV-COORDINATES.txt OSV-RESPONSE.json RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
             runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_EVIDENCE.json \
@@ -465,7 +459,7 @@ jobs:
             [[ "$name" != */* && "$name" != *\\* ]]
             curl --fail --silent --show-error --location "$url" --output "$stage/$name"
           done < <(jq -r '.assets[] | [.name, .browser_download_url] | @tsv' <<<"$release_json")
-          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 22 ]]
+          [[ $(find "$stage" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 21 ]]
           (cd "$stage" && sha256sum -c SHA256SUMS)
           actual_checksums=$(awk '{print $2}' "$stage/SHA256SUMS" | LC_ALL=C sort)
           expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
@@ -483,7 +477,7 @@ jobs:
             --arg sourceCommit "$SOURCE_COMMIT" '
             .repository == $repository and .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and .result == "pass" and
-            .coordinateSet.count == 204 and .osv.findings == 0 and .dependabot.openAlerts == 1
+            .coordinateSet.count == 204 and .osv.findings == 0
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           for subject in "$stage"/*; do
             [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue

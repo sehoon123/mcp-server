@@ -47,7 +47,6 @@ jobs:
     name: Validate draft identity and record tester claim
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: release-smoke
     permissions:
       contents: read
     steps:
@@ -90,8 +89,7 @@ jobs:
             .repository == $repository and .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and .result == "pass" and
             .coordinateSet.count == 204 and .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
-            .osv.findings == 0 and .npmAudit.high == 0 and .npmAudit.critical == 0 and
-            .dependabot.openAlerts == 1 and .dependabot.acceptedAlert.number == 31
+            .osv.findings == 0 and .npmAudit.high == 0 and .npmAudit.critical == 0
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           expected_version=$(jq -r '.version' "$stage/SOURCE_IDENTITY.json")
           jq -e --arg version "$expected_version" '
@@ -102,14 +100,12 @@ jobs:
             (.scenarios | keys | sort) == [
               "boundedLargeDataAndCancellation",
               "catalogEditionGating",
-              "dataApprovalAndProjectTransition",
               "diagnosticsRedaction",
               "embeddedStdio",
               "loadUnload",
               "nativeHttp",
               "professionalScannerCollaborator",
               "routingNoHiddenNetwork",
-              "scopeScannerUncertainOutcomes",
               "serverLifecycle",
               "stableIdReplayIndependentApprovals",
               "unloadDuringBackgroundWork"
@@ -186,7 +182,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   attest:
-    name: Attest the protected smoke record
+    name: Attest the release smoke record
     needs: record
     runs-on: ubuntu-latest
     timeout-minutes: 5

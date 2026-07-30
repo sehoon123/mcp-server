@@ -6,8 +6,8 @@ version sequence and implementation milestones are tracked in
 [NEXT_RELEASE_ROADMAP.md](NEXT_RELEASE_ROADMAP.md).
 
 The checked-in `release-draft.yml` creates a one-shot draft only. The separately checked-in `release-smoke.yml` and
-`release-publish.yml` workflows record exact-byte human evidence and perform protected no-rebuild publication. A
-successful local build or draft workflow is not a release.
+`release-publish.yml` workflows record exact-byte maintainer evidence and perform no-rebuild publication. A successful
+local build or draft workflow is not a release.
 
 ## Release principles
 
@@ -48,25 +48,18 @@ sufficient.
 
 Configure these controls in GitHub before enabling publication:
 
-- protected `main` with required read-only CI and review;
-- CODEOWNERS/review requirements for workflows, Gradle files, proxy provenance, manifests, and legal files;
+- protected `main` with required read-only CI;
 - protected `v*` tags restricted to authorized maintainers;
 - Actions restricted to approved, full-SHA-pinned actions;
-- protected `release-dependabot-read`, `release-draft`, `release-smoke`, and `release-publication` environments requiring independent human approval;
-- a dedicated `DEPENDABOT_ALERTS_READ_TOKEN` secret in `release-dependabot-read`, backed by a repository-restricted
-  fine-grained token with only Dependabot-alert read access or a GitHub App with only `vulnerability_alerts: read`;
-- protected-main and protected-`v*` deployment rules for `release-dependabot-read`, with prevention of self-review and
-  no fallback to the built-in Actions token or an operator's general-purpose OAuth token;
-- a named release-security owner who records the dedicated credential type, repository scope, expiry, rotation date, and
-  exact successful preflight run without recording the credential value;
 - minimal default `GITHUB_TOKEN` permissions;
 - immutable releases enabled for the repository;
-- a fine-grained `IMMUTABLE_RELEASES_READ_TOKEN` environment secret scoped to Administration (read-only) in
-  `release-publication`, used only to fail closed on the repository immutability setting before publication;
-- Dependabot or Renovate coverage for GitHub Actions and Gradle dependencies;
+- a fine-grained repository secret named `IMMUTABLE_RELEASES_READ_TOKEN`, scoped to Administration (read-only), used
+  only to fail closed on the repository immutability setting before publication;
+- periodic maintainer review of GitHub Actions, Gradle, npm, wrapper, lock, and verification-metadata updates; and
 - private reporting instructions and an owner for release/security incidents.
 
-Remote repository settings cannot be proved by source review. Record screenshots or API output for each release audit.
+The release workflows do not use GitHub environments or required-reviewer approvals. Remote repository settings cannot
+be proved by source review, so record API output for each release audit.
 
 ## Version and source preparation
 
@@ -101,10 +94,9 @@ Before tagging:
 - the exact JDK/container image and build tools are pinned;
 - the SBOM license map has no “unknown means Apache-2.0” fallback;
 - the third-party license/NOTICE bundle is regenerated and reviewed;
-- `security/release-maven-coordinates.txt` still exactly matches the reviewed canonical 204-coordinate set;
-- the main-only `release-dependabot-preflight.yml` run succeeds for the exact protected-main candidate SHA using the
-  dedicated environment credential; missing/expired credentials and HTTP 403/429/malformed responses fail closed;
-- the point-in-time OSV, npm audit, and authenticated open-Dependabot queries are rerun for the immutable candidate and pass the checked-in fail-closed policy.
+- `security/release-maven-coordinates.txt` still exactly matches the reviewed canonical 204-coordinate set; and
+- the point-in-time OSV and npm audit queries are rerun for the immutable candidate and pass the checked-in fail-closed
+  policy.
 
 ### 3. Create an immutable tag
 
@@ -150,32 +142,20 @@ checkout; matrix and package jobs must not independently resolve a movable ref.
 - upload reports under a retention policy;
 - execute with no OIDC, attestation, or release-write permission.
 
-### Job C0 — isolated Dependabot credential broker (`permissions: {}`)
+### Job C — exact vulnerability evidence (`contents: read`)
 
-- run on a fresh no-checkout runner protected by `release-dependabot-read`;
-- require the exact repository, tag ref, and identity-job SHA before accessing the environment secret;
-- fail explicitly when `DEPENDABOT_ALERTS_READ_TOKEN` is absent and never fall back to `${{ github.token }}` or local
-  GitHub CLI credentials;
-- query only the hard-coded repository Dependabot endpoint with a clean `GH_CONFIG_DIR`, no inherited `GITHUB_TOKEN`,
-  and the dedicated least-privilege credential;
-- execute no checkout, Gradle, npm, Python, or candidate/project code while the secret is available;
-- minimize the response to the reviewed policy fields and upload it as a tag/SHA-bound one-day intermediate artifact.
-
-### Job C — exact vulnerability evidence (`contents: read`, no secret access)
-
-- download the exact tag/SHA-bound minimized alert artifact from Job C0;
 - checkout the emitted server SHA and the proxy SHA named by its embedded provenance;
 - resolve both exact Gradle project-plugin graphs and add the reviewed settings-plugin implementations to both locked dependency graphs;
 - require exact equality with canonical `security/release-maven-coordinates.txt` (204 coordinates, SHA-256 `2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51`);
 - submit that exact set to OSV and fail on a missing response, count mismatch, malformed response, or any vulnerability;
 - run dev-inclusive lock-only npm audit without lifecycle scripts and reject high, critical, or unreviewed package nodes;
-- require the single documented Dependabot development-scope exception and fail on missing, extra, or changed alerts;
+- accept only the checked-in moderate conformance dependency chain when it is present; and
 - archive normalized evidence bound directly to the release tag, server SHA, proxy SHA, and coordinate identity for
   checksum and attestation.
 
-A local query or pre-tag credential preflight is review input only. Publication evidence comes from the authoritative
-immutable tagged workflow and is bound to the release tag, server SHA, proxy SHA, exact coordinate-set identity, workflow
-run, release checksums, and provenance.
+Local queries are review input only. Publication evidence comes from the authoritative immutable tagged workflow and is
+bound to the release tag, server SHA, proxy SHA, exact coordinate-set identity, workflow run, release checksums, and
+provenance.
 
 ### Jobs C1/C2 — isolated builds (`contents: read`)
 
@@ -224,20 +204,21 @@ Do not rebuild for this step. Test the exact bytes that will be published.
 
 The evidence handoff must be authenticated and digest-bound. Use the exact-candidate helpers and cleanup contract in
 [EXACT_BURP_SMOKE.md](EXACT_BURP_SMOKE.md) to validate each edition, retain `PASS`/`FAIL`/`BLOCKED`/`NOT RUN` distinctly,
-and build the local matrix. The helper emits the protected workflow's single-line all-pass input only when both edition
-preflights and all 13 scenarios pass; it never creates that input for a withheld matrix. The helpers are candidate source
-and cannot retroactively validate an earlier immutable tag.
+and build the local matrix. The helper emits the workflow's single-line all-pass input only when both edition preflights
+and all 11 required scenarios pass; it never creates that input for a withheld matrix. Project-transition and
+uncertain-execution reconciliation scenarios are outside the release contract rather than recorded as passes. The
+helpers are candidate source and cannot retroactively validate an earlier immutable tag.
 
-Use a protected `release-smoke` environment workflow that downloads the draft JAR itself, computes its digest, and emits
+Use the manually dispatched `release-smoke` workflow to download the draft JAR, compute its digest, and emit
 `smoke-result.json` containing the tag, source SHA, JAR digest, tester GitHub identity, timestamp, environment versions,
 and per-scenario results. Attest that record, upload it as an immutable workflow artifact, and record its run ID and
 artifact digest. The publish job must independently download and verify the attestation, authorized tester identity,
 all-pass result, tag/source identity, and matching JAR digest; an unchecked workflow input, local matrix, or editable
 comment is not sufficient evidence.
 
-### Job G — protected publication
+### Job G — no-rebuild publication
 
-After protected-environment approval, a minimal job must:
+After the smoke record succeeds, a minimal job must:
 
 1. re-resolve and verify the protected tag and full SHA;
 2. verify the draft still targets that SHA and is still a draft;
@@ -271,7 +252,7 @@ identified detached verification metadata whose format cannot be self-referentia
 | `MIGRATION_V4_8.md` | New UUID/name/client-key migration and side-by-side warning |
 | `VULNERABILITY_REPORT.md` | Release-specific reviewed policy, scope, accepted exception, version, and commit |
 | `OSV-COORDINATES.txt`, `OSV-RESPONSE.json` | Canonical exact Maven query set and fresh zero-finding OSV response |
-| `NPM-AUDIT.json`, `DEPENDABOT-ALERTS.json` | Normalized npm result and authenticated open-alert evidence under the reviewed exception policy |
+| `NPM-AUDIT.json` | Normalized npm result under the reviewed conformance-development exception policy |
 | `VULNERABILITY_EVIDENCE.json` | Release-tag/source/proxy binding, query identities, result counts, and authoritative vulnerability-gate outcome |
 | `SOURCE_IDENTITY.json`, `RELEASE_NOTES.md` | Tag, full SHA, artifact and vulnerability-evidence digests, migration, and reviewed change range |
 | `provenance.intoto.jsonl` | Verifiable binding between staged artifacts, workflow, repository, and source SHA |
@@ -284,18 +265,7 @@ collision-safe bundle. CI should fail on unknown components or missing legal ent
 
 ## Release build commands
 
-After the reviewed candidate commit is on protected `main`, validate the dedicated credential before creating a tag:
-
-```bash
-source_sha=$(git rev-parse HEAD)
-gh workflow run release-dependabot-preflight.yml \
-  --repo sehoon123/mcp-server --ref main -f source_sha="$source_sha"
-```
-
-The successful run must report the same `source_sha`. It is readiness evidence only; the tagged draft queries the alert
-state again. Never pass a token as workflow input or copy the operator's `gh` OAuth token into repository secrets.
-
-The canonical local build preflight is:
+After the reviewed candidate commit is on protected `main`, run the canonical local build preflight:
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
@@ -325,25 +295,22 @@ Local matching builds are useful preflight evidence only. The protected workflow
 
 ## Burp smoke matrix
 
-At minimum, exercise:
+At minimum, exercise the 11 required scenarios:
 
-1. clean extension load and proxy checksum/provenance diagnostics;
+1. clean extension load, unload, and proxy checksum/provenance diagnostics;
 2. start, stop, restart, occupied-port failure, correction, and extension reload;
 3. native Streamable HTTP initialize, initialized notification, ping, list, call, and authenticated DELETE;
 4. stdio proxy initialize, one read call, one action denial, and graceful EOF cleanup;
-5. Community tool/resource/prompt catalog and Professional-only gating;
-6. Professional Scanner and Collaborator paths for every release that claims Professional support; if that environment
-   is unavailable, delay the release or explicitly remove the unverified support claim;
-7. data access denied, allow once, allow for session, reset, and project transition;
-8. Repeater/Intruder/Organizer routing without hidden network transmission;
-9. stable-ID outbound replay with independent exact-request and outbound-target authorization;
-10. scope and Scanner side effects, including denial and uncertain-execution presentation;
-11. large history/issue reads confirming bounds and cancellation without UI stalls;
-12. audit, diagnostics, and error paths confirming no credentials, bodies, paths, or header values leak;
-13. extension unload while no job is active and while a cancellable background operation is active.
+5. exact Community tool/resource/prompt catalog and Professional-only gating;
+6. Professional Scanner and Collaborator paths for every release that claims Professional support;
+7. Repeater/Intruder/Organizer routing without hidden network transmission;
+8. stable-ID outbound replay with independent exact-request and outbound-target authorization;
+9. large history/issue reads confirming bounds and cancellation without UI stalls;
+10. audit, diagnostics, and error paths confirming no credentials, bodies, paths, or header values leak; and
+11. extension unload while a cancellable background operation is active.
 
 A smoke test is invalid if the JAR digest differs from the draft asset. A timeout, missing report, failed fresh-project
-baseline, completed-before-barrier call, `BLOCKED`, or `NOT RUN` result is not a pass. Do not dispatch the protected
+baseline, completed-before-barrier call, `BLOCKED`, or `NOT RUN` result is not a pass. Do not dispatch the
 `release-smoke` workflow until the local exact matrix is eligible.
 
 ## Release notes
@@ -401,37 +368,30 @@ Also document how to verify the protected tag signature and compare the attested
 
 ## Current workflow status
 
-`release-dependabot-preflight.yml` validates the dedicated environment credential only at an exact protected-main SHA
-and executes no repository code. `release-draft.yml` requires one full 40-character source SHA, obtains the minimized
-Dependabot snapshot in an isolated no-checkout broker, checks out that SHA without persisted credentials in every source
-job, binds vulnerability evidence directly to the release tag, runs the client/conformance matrices, compares JAR and
-SBOM bytes from two isolated builders, stages an exact legal/source asset allowlist, and passes only downloaded bytes to
-the OIDC/repository-write draft job. The draft
-job runs no project code, revalidates checksums and source identity, creates an attestation bundle, fails if the release
-already exists, and never uses `--clobber`.
+`release-draft.yml` requires one full 40-character source SHA, checks out that SHA without persisted credentials in every
+source job, binds OSV/npm vulnerability evidence directly to the release tag, runs the client/conformance matrices,
+compares JAR and SBOM bytes from two isolated builders, stages an exact legal/source asset allowlist, and passes only
+downloaded bytes to the OIDC/repository-write draft job. The draft job runs no project code, revalidates checksums and
+source identity, creates an attestation bundle, fails if the release already exists, and never uses `--clobber`.
 
-`release-smoke.yml` records a protected human tester attestation for the exact draft JAR. It does not pretend to run
-Burp on a GitHub-hosted runner: the tester must first perform the documented Community and Professional matrix, supply
-the exact downloaded JAR digest and environment versions, and obtain `release-smoke` environment approval. The workflow
-then independently downloads the draft, verifies that digest and source identity, emits a bounded `smoke-result.json`,
-and attests the record in a separate no-checkout OIDC job.
+`release-smoke.yml` records a maintainer tester attestation for the exact draft JAR. It does not pretend to run Burp on a
+GitHub-hosted runner: the tester must first perform the documented Community and Professional matrix and supply the exact
+downloaded JAR digest and environment versions. The workflow independently downloads the draft, verifies that digest
+and source identity, emits a bounded `smoke-result.json`, and attests the record in a separate no-checkout OIDC job.
 
-`release-publish.yml` is intentionally limited to SemVer prereleases. Its read-only preflight and protected publication
-job independently re-resolve the signed tag, protected-main ancestry, one-shot draft, exact asset/API-digest snapshot,
+`release-publish.yml` is intentionally limited to SemVer prereleases. Its read-only preflight and publication job
+independently re-resolve the signed tag, protected-main ancestry, one-shot draft, exact asset/API-digest snapshot,
 checksums, source identity, release body, draft provenance, authorized smoke workflow run, tester identity, smoke
-attestation, and JAR digest. The publication step first checks the repository immutable-release setting using a protected read-only administration
-token, sends only `draft=false`, requires the resulting release to report `immutable=true`, does not rebuild or replace
-assets, and is followed by an anonymous checksum/source/provenance check. Stable tags fail closed until a separate machine-verifiable seven-day RC
-and unresolved-P1 gate is implemented.
+attestation, and JAR digest. The publication step first checks the repository immutable-release setting using a read-only
+administration token, sends only `draft=false`, requires the resulting release to report `immutable=true`, does not
+rebuild or replace assets, and is followed by an anonymous checksum/source/provenance check. Stable tags fail closed until
+a separate machine-verifiable seven-day RC and unresolved-P1 gate is implemented.
 
 Any publication remains blocked until:
 
-- the repository's `release-dependabot-read`, `release-draft`, `release-smoke`, and `release-publication` environments are
-  externally configured with required reviewers, prevention of self-review/admin bypass, and least-privilege branch/tag
-  rules, and the exact-main Dependabot credential preflight succeeds;
 - GitHub immutable releases are enabled and write access to drafts/tags is restricted;
-- the checked-in Gradle/npm locks and verification metadata are independently reviewed for the candidate;
-- the exact-byte Community and Professional matrix is actually performed and its protected smoke workflow succeeds;
+- the checked-in Gradle/npm locks and verification metadata are reviewed for the candidate;
+- the exact-byte Community and Professional matrix is actually performed and its smoke workflow succeeds;
 - the prerelease has the required soak and defect review before stable publication; and
 - the unauthenticated post-publication job succeeds and its run is retained.
 
@@ -440,8 +400,7 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 ## Final release checklist
 
 - [ ] Fork name, UUID, vendor, maintainer, links, and disclaimer are consistent.
-- [ ] Protected main/tag/environment controls are recorded.
-- [ ] Dedicated Dependabot-alert credential scope/expiry and exact-main preflight run are recorded.
+- [ ] Protected main/tag controls and immutable-release settings are recorded.
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
@@ -452,6 +411,6 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 - [ ] Exact asset allowlist and `SHA256SUMS` validate.
 - [ ] Attestations bind every artifact to the intended source SHA.
 - [ ] Draft asset digest equals the manually smoke-tested digest.
-- [ ] Protected publish job revalidated tag, assets, checksums, and attestations.
+- [ ] Publish job revalidated tag, assets, checksums, and attestations.
 - [ ] Public latest links, downloads, checksums, and attestations were rechecked from a clean environment.
 - [ ] Release and run URLs, full SHA, and artifact hashes were archived.

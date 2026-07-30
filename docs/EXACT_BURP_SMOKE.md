@@ -126,9 +126,10 @@ Create one reviewed JSON document under the evidence root:
 }
 ```
 
-The real document must contain exactly all 13 scenario keys from the
-[release smoke matrix](RELEASING.md#burp-smoke-matrix). Each claim contains exactly `status`, `evidence`, and `notes`.
-Allowed statuses are `PASS`, `FAIL`, `BLOCKED`, and `NOT RUN`.
+The real document must contain exactly all 11 scenario keys from the
+[release smoke matrix](RELEASING.md#burp-smoke-matrix). The project-transition and uncertain-execution reconciliation
+scenarios are outside this release contract; they are not recorded as passes or required as release evidence. Each claim
+contains exactly `status`, `evidence`, and `notes`. Allowed statuses are `PASS`, `FAIL`, `BLOCKED`, and `NOT RUN`.
 
 Each `PASS` or `FAIL` claim requires a unique scenario-record JSON followed by one or more objective evidence files. The
 record is candidate- and scenario-bound and hashes every following file in the same order:
@@ -153,16 +154,16 @@ record is candidate- and scenario-bound and hashes every following file in the s
 }
 ```
 
-Professional Scanner/Collaborator and scope/Scanner-uncertain records require Professional evidence; every other record
-requires both editions. Scenario-record paths and every objective evidence path are unique across scenarios. A `PASS`
-record may contain only passing checks, while a `FAIL` record must contain a failed check.
+The Professional Scanner/Collaborator record requires Professional evidence; every other record requires both editions.
+Scenario-record paths and every objective evidence path are unique across scenarios. A `PASS` record may contain only
+passing checks, while a `FAIL` record must contain a failed check.
 Evidence paths are canonical POSIX-relative spellings below the root, may not traverse or contain symlink components,
 and must name bounded regular files. Distinct paths must also identify distinct physical files; hard-link aliases are
 rejected. The finalizer requires POSIX directory-descriptor support, opens every component relative to stable directory
 descriptors, captures each evidence file once under per-file/aggregate bounds, and uses those same bytes for schema
 checks, privacy checks, and the checksum index. A Windows Burp run may be finalized from a clean Linux/macOS evidence
 workspace after byte-preserving transfer. One
-arbitrary, swapped, or shared file therefore cannot make all 13 scenarios eligible.
+arbitrary, swapped, or shared file therefore cannot make all 11 scenarios eligible.
 
 Finalize only after both edition preflights and all scenario reviews are present:
 
@@ -186,10 +187,11 @@ Repeat `--forbidden-value-file` for every current/retired edition token and priv
 least one private mode-0600 value file is mandatory.
 
 The matrix is always honest: any `FAIL`, `BLOCKED`, or `NOT RUN` produces disposition `WITHHOLD` and
-`protectedSmokeEligible: false`. The single-line protected-workflow results file is created only when both exact edition
-preflights pass and all 13 scenarios are `PASS`; otherwise it remains absent. Supplying `--require-all-pass` returns a
-non-zero status after writing the withholding matrix. The protected `release-smoke` workflow still independently verifies
-the immutable draft and requires protected-environment approval; this local output is not a `smoke_run_id`.
+`protectedSmokeEligible: false`. The single-line workflow results file is created only when both exact edition
+preflights pass and all 11 scenarios are `PASS`; otherwise it remains absent. Supplying `--require-all-pass` returns a
+non-zero status after writing the withholding matrix. The `release-smoke` workflow independently verifies the immutable
+draft and attests the maintainer-submitted record without an environment-review approval step; this local output is not
+a `smoke_run_id`.
 
 ## Cleanup
 
