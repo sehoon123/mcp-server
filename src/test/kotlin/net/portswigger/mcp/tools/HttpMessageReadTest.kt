@@ -20,6 +20,7 @@ import java.time.ZonedDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class HttpMessageReadTest {
     @Test
@@ -92,6 +93,32 @@ class HttpMessageReadTest {
         assertNull(result.projectId)
         verify(exactly = 0) { fixture.api.project() }
         verify(exactly = 0) { fixture.proxy.history(any()) }
+    }
+
+    @Test
+    fun `offset at and beyond selected HTTP content preserves page boundary semantics`() = runBlocking {
+        val fixture = fixture(projectIds = List(6) { "project-a" })
+        val input = GetHttpMessage(
+            projectId = "project-a",
+            ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+            part = "request_body",
+            offset = 0,
+        )
+
+        val terminal = fixture.service.read(input)
+        val beyond = fixture.service.read(input.copy(offset = 1))
+
+        assertEquals(HttpMessageReadStatus.OK, terminal.status)
+        assertEquals("", terminal.content?.data)
+        assertEquals(0, terminal.content?.returnedBytes)
+        assertEquals(0, terminal.content?.totalBytes)
+        assertEquals(false, terminal.content?.hasMore)
+        assertNull(terminal.content?.nextOffsetBytes)
+        assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, beyond.status)
+        assertEquals("project-a", beyond.projectId)
+        assertTrue(beyond.error.orEmpty().contains("totalBytes (0)"))
+        assertNull(beyond.metadata)
+        assertNull(beyond.content)
     }
 
     @Test

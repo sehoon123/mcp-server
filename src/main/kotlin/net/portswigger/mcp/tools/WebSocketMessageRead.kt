@@ -112,7 +112,18 @@ internal class WebSocketMessageReadService(
                 "Proxy WebSocket history item ${input.id} was not found",
             )
         }
-        val result = item.readPayload(input.edited == true, offset, limit, encoding)
+        val result = try {
+            item.readPayload(input.edited == true, offset, limit, encoding)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HistoryOffsetOutOfRangeException) {
+            webSocketReadError(
+                input,
+                HistoryReadStatus.INVALID_ARGUMENT,
+                expectedProjectId,
+                e.message.orEmpty(),
+            )
+        }
         val finalProjectId = api.project().id()
         if (finalProjectId != expectedProjectId) {
             return webSocketReadError(

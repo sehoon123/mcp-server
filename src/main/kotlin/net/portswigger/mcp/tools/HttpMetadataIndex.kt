@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit
 internal const val MAX_METADATA_INDEX_RECORDS_PER_SOURCE = 5_000
 internal const val MAX_METADATA_INDEX_PATH_CHARS = MAX_INDEXED_HTTP_PATH_CHARS
 private const val MAX_METADATA_INDEX_ANCHORS = 16
+private const val MAX_METADATA_INDEX_REFRESH_ATTEMPTS = 2
 private const val DEFAULT_METADATA_INDEX_REUSE_MILLIS = 30_000L
 private const val METADATA_FINGERPRINT_HEX_CHARS = 32
 private val METADATA_HEX_FORMAT = HexFormat.of()
@@ -91,9 +92,10 @@ internal class HttpMetadataIndexChangingException : Exception()
 /**
  * Lazily caches bounded metadata for the current project only.
  *
- * Source lists are local to a refresh and are never retained. Cache reuse validates bounded metadata anchors and is
- * time-limited so same-size edits outside sampled anchors cannot remain indefinitely stale. Project changes discard all
- * records before another result can be returned.
+ * Source lists are local to a refresh and are never retained. Refresh builders serialize separately, acquire and process
+ * sources outside the state mutex, and publish all candidates only after a project/generation check. Cache reuse validates
+ * bounded metadata anchors and is time-limited so same-size edits outside sampled anchors cannot remain indefinitely
+ * stale. Project changes discard all records before another result can be returned.
  */
 internal class HttpMetadataIndex(
     private val api: MontoyaApi,
@@ -103,10 +105,14 @@ internal class HttpMetadataIndex(
     private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
     private val changeSignals: MetadataChangeSignals = MetadataChangeSignals.NO_OP,
 ) : AutoCloseable {
-    private val lock = Mutex()
-    // snapshot() serializes all source reads, so one digest can be safely reused without a ThreadLocal or per-record
-    // provider lookup. Keeping it on this closeable index also avoids retaining the extension class loader in workers.
-    private val fingerprinter = MetadataFingerprinter()
+    private val stateLock = Mutex()
+    // Builders and hint validators take their coordination lock before brief stateLock sections. State-only paths never
+    // acquire either coordination lock, and close drains them only after releasing stateLock.
+    private val refreshLock = Mutex()
+    private val searchHintLock = Mutex()
+    // Refreshes and search hints may read metadata concurrently. Each serialized path owns its own mutable digest.
+    private val refreshFingerprinter = MetadataFingerprinter()
+    private val searchHintFingerprinter = MetadataFingerprinter()
     private val entries = mutableMapOf<HttpMessageSource, CachedMetadataSource>()
     private val maxReuseNanos = TimeUnit.MILLISECONDS.toNanos(reuseMillis)
     private var observedProjectId: String? = null
@@ -119,7 +125,7 @@ internal class HttpMetadataIndex(
         require(reuseMillis >= 0) { "reuseMillis must not be negative" }
     }
 
-    suspend fun observeCurrentProject(): String = lock.withLock {
+    suspend fun observeCurrentProject(): String = stateLock.withLock {
         check(!closed) { "HTTP metadata index is closed" }
         ensureNoMutationLocked()
         api.project().id().also(::observeProjectLocked)
@@ -129,31 +135,103 @@ internal class HttpMetadataIndex(
         expectedProjectId: String,
         sources: List<HttpMessageSource>,
     ): HttpMetadataIndexSnapshot {
+        require(sources.distinct().size == sources.size) { "sources must not contain duplicates" }
         val coroutineContext = currentCoroutineContext()
-        return lock.withLock {
+        return refreshLock.withLock {
+            repeat(MAX_METADATA_INDEX_REFRESH_ATTEMPTS) { attempt ->
+                try {
+                    return@withLock buildSnapshotAttempt(expectedProjectId, sources, coroutineContext)
+                } catch (_: MetadataRefreshEpochChangedException) {
+                    coroutineContext.ensureActive()
+                    if (attempt == MAX_METADATA_INDEX_REFRESH_ATTEMPTS - 1) {
+                        throw HttpMetadataIndexChangingException()
+                    }
+                }
+            }
+            throw HttpMetadataIndexChangingException()
+        }
+    }
+
+    private suspend fun buildSnapshotAttempt(
+        expectedProjectId: String,
+        sources: List<HttpMessageSource>,
+        coroutineContext: kotlin.coroutines.CoroutineContext,
+    ): HttpMetadataIndexSnapshot {
+        val captured = captureRefreshState(expectedProjectId)
+        val refreshed = ArrayList<RefreshedMetadataSource>(sources.size)
+        for (sourceIndex in sources.indices) {
+            val source = sources[sourceIndex]
+            coroutineContext.ensureActive()
+            val sourceRevision = changeSignals.revision(source.metadataChangeSource())
+            val view = loadView(source, refreshFingerprinter)
+            refreshed += performanceDiagnostics.measure(source.indexProcessingMetric()) {
+                refreshSource(
+                    existing = captured.entries[source],
+                    sourceRevision = sourceRevision,
+                    view = view,
+                    coroutineContext = coroutineContext,
+                )
+            }
+            if (sourceIndex < sources.lastIndex) {
+                verifyRefreshEpoch(expectedProjectId, captured.generation)
+            }
+        }
+        return publishRefresh(expectedProjectId, captured.generation, refreshed, coroutineContext)
+    }
+
+    private suspend fun captureRefreshState(expectedProjectId: String): CapturedMetadataState {
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        return stateLock.withLock {
             check(!closed) { "HTTP metadata index is closed" }
             ensureNoMutationLocked()
-            val currentProjectId = api.project().id()
             observeProjectLocked(currentProjectId)
             if (currentProjectId != expectedProjectId) {
                 throw HttpMetadataProjectMismatchException(currentProjectId)
             }
+            CapturedMetadataState(generation, entries.toMap())
+        }
+    }
 
-            val snapshots = ArrayList<HttpMetadataSourceSnapshot>(sources.size)
-            for (source in sources) {
-                coroutineContext.ensureActive()
-                val sourceRevision = changeSignals.revision(source.metadataChangeSource())
-                val view = loadView(source)
-                snapshots += performanceDiagnostics.measure(source.indexProcessingMetric()) {
-                    refreshSourceLocked(source, sourceRevision, view, coroutineContext)
-                }
-                val projectAfterSource = api.project().id()
-                if (projectAfterSource != expectedProjectId) {
-                    observeProjectLocked(projectAfterSource)
-                    throw HttpMetadataProjectMismatchException(projectAfterSource)
-                }
+    private suspend fun verifyRefreshEpoch(expectedProjectId: String, capturedGeneration: Long) {
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        stateLock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != expectedProjectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
             }
-            HttpMetadataIndexSnapshot(expectedProjectId, generation, snapshots)
+            if (generation != capturedGeneration) throw MetadataRefreshEpochChangedException()
+        }
+    }
+
+    private suspend fun publishRefresh(
+        expectedProjectId: String,
+        capturedGeneration: Long,
+        refreshed: List<RefreshedMetadataSource>,
+        coroutineContext: kotlin.coroutines.CoroutineContext,
+    ): HttpMetadataIndexSnapshot {
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        return stateLock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != expectedProjectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
+            }
+            if (generation != capturedGeneration) throw MetadataRefreshEpochChangedException()
+            val cacheChanged = refreshed.any { result -> entries[result.cached.source] !== result.cached }
+            refreshed.forEach { result -> entries[result.cached.source] = result.cached }
+            if (cacheChanged) generation++
+            HttpMetadataIndexSnapshot(expectedProjectId, generation, refreshed.map(RefreshedMetadataSource::snapshot))
         }
     }
 
@@ -162,8 +240,8 @@ internal class HttpMetadataIndex(
      *
      * This path returns only same-size sources that pass the normal bounded anchor and age checks. Every predicted
      * rejection must still be checked against the corresponding field and numeric ID on the current Proxy or Organizer
-     * record before it can be skipped; hints must never authorize aggregation, details, or actions. A contended index
-     * returns no hints immediately, so a selective query never waits for or performs a cold 5,000-record build.
+     * record before it can be skipped; hints must never authorize aggregation, details, or actions. Contention returns no
+     * hints immediately, so a selective query never waits for or performs a cold 5,000-record build.
      */
     suspend fun searchHintsSnapshot(
         expectedProjectId: String,
@@ -173,63 +251,139 @@ internal class HttpMetadataIndex(
         require(sources.all { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }) {
             "Search hints support only Proxy and Organizer records"
         }
+        require(sources.distinct().size == sources.size) { "Search hint sources must not contain duplicates" }
         require(
             requestScopedRecords == null || sources.all { source -> requestScopedRecords[source]?.source == source }
         ) {
             "Request-scoped search records must contain every requested source"
         }
-        if (!lock.tryLock()) return null
+        if (!searchHintLock.tryLock()) return null
+        return try {
+            val coroutineContext = currentCoroutineContext()
+            val captured = captureSearchHintState(expectedProjectId) ?: return null
+            val now = nanoTime()
+            val validations = ArrayList<MetadataHintValidation>(sources.size)
+            for (sourceIndex in sources.indices) {
+                val source = sources[sourceIndex]
+                coroutineContext.ensureActive()
+                val existing = captured.entries[source] ?: continue
+                val sourceRevision = changeSignals.revision(source.metadataChangeSource())
+                val reusableAge = maxReuseNanos > 0 &&
+                    elapsedNanos(existing.rebuiltAtNanos, now) < maxReuseNanos
+                if (!reusableAge || existing.sourceRevision != sourceRevision) continue
+
+                val view = requestScopedRecords?.getValue(source)?.toMetadataSourceView(searchHintFingerprinter)
+                    ?: loadView(source, searchHintFingerprinter)
+                validations += performanceDiagnostics.measure(source.indexProcessingMetric()) {
+                    val sameSize = view.size == existing.totalRecords
+                    val reusable = sameSize && validateAnchors(view, existing.anchors)
+                    MetadataHintValidation(
+                        cached = existing,
+                        snapshot = if (reusable) existing.toSnapshot(MetadataIndexRefresh.REUSED) else null,
+                        invalidatesCachedEntry = sameSize && !reusable,
+                    )
+                }
+                if (
+                    sourceIndex < sources.lastIndex &&
+                    !isSearchHintEpochCurrent(expectedProjectId, captured.generation, coroutineContext)
+                ) {
+                    return null
+                }
+            }
+            if (validations.isEmpty()) return null
+            publishSearchHints(expectedProjectId, captured.generation, validations, coroutineContext)
+        } finally {
+            searchHintLock.unlock()
+        }
+    }
+
+    private suspend fun captureSearchHintState(expectedProjectId: String): CapturedMetadataState? {
+        if (!stateLock.tryLock()) return null
+        try {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+        } finally {
+            stateLock.unlock()
+        }
+
+        val coroutineContext = currentCoroutineContext()
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        if (!stateLock.tryLock()) return null
         return try {
             check(!closed) { "HTTP metadata index is closed" }
             ensureNoMutationLocked()
-            val currentProjectId = api.project().id()
             observeProjectLocked(currentProjectId)
             if (currentProjectId != expectedProjectId) {
                 throw HttpMetadataProjectMismatchException(currentProjectId)
             }
+            CapturedMetadataState(generation, entries.toMap())
+        } finally {
+            stateLock.unlock()
+        }
+    }
 
-            val coroutineContext = currentCoroutineContext()
-            val now = nanoTime()
-            val snapshots = ArrayList<HttpMetadataSourceSnapshot>(sources.size)
-            for (source in sources) {
-                coroutineContext.ensureActive()
-                val existing = entries[source] ?: continue
-                val sourceRevision = changeSignals.revision(source.metadataChangeSource())
-                val reusableAge = maxReuseNanos > 0 &&
-                    elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
-                if (!reusableAge || existing.sourceRevision != sourceRevision) continue
+    private suspend fun isSearchHintEpochCurrent(
+        expectedProjectId: String,
+        capturedGeneration: Long,
+        coroutineContext: kotlin.coroutines.CoroutineContext,
+    ): Boolean {
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        return stateLock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != expectedProjectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
+            }
+            generation == capturedGeneration
+        }
+    }
 
-                val view = requestScopedRecords?.getValue(source)?.toMetadataSourceView(fingerprinter)
-                    ?: loadView(source)
-                val reusable = performanceDiagnostics.measure(source.indexProcessingMetric()) {
-                    if (view.size == existing.totalRecords && validateAnchors(view, existing.anchors)) {
-                        existing.toSnapshot(MetadataIndexRefresh.REUSED)
-                    } else {
-                        if (view.size == existing.totalRecords) {
-                            entries.remove(source)
-                            generation++
-                        }
-                        null
-                    }
+    private suspend fun publishSearchHints(
+        expectedProjectId: String,
+        capturedGeneration: Long,
+        validations: List<MetadataHintValidation>,
+        coroutineContext: kotlin.coroutines.CoroutineContext,
+    ): HttpMetadataIndexSnapshot? {
+        coroutineContext.ensureActive()
+        val currentProjectId = api.project().id()
+        coroutineContext.ensureActive()
+        return stateLock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+            observeProjectLocked(currentProjectId)
+            if (currentProjectId != expectedProjectId) {
+                throw HttpMetadataProjectMismatchException(currentProjectId)
+            }
+            if (generation != capturedGeneration) return@withLock null
+
+            validations.asSequence()
+                .filter(MetadataHintValidation::invalidatesCachedEntry)
+                .map(MetadataHintValidation::cached)
+                .filter { cached -> entries[cached.source] === cached }
+                .forEach { cached ->
+                    entries.remove(cached.source)
+                    generation++
                 }
-                if (reusable != null) snapshots += reusable
-                val projectAfterSource = api.project().id()
-                if (projectAfterSource != expectedProjectId) {
-                    observeProjectLocked(projectAfterSource)
-                    throw HttpMetadataProjectMismatchException(projectAfterSource)
+            val snapshots = validations.mapNotNull { validation ->
+                validation.snapshot?.takeIf { snapshot ->
+                    entries[validation.cached.source] === validation.cached &&
+                        changeSignals.revision(snapshot.source.metadataChangeSource()) == snapshot.sourceRevision
                 }
             }
             snapshots.takeIf { it.isNotEmpty() }?.let {
                 HttpMetadataIndexSnapshot(expectedProjectId, generation, it)
             }
-        } finally {
-            lock.unlock()
         }
     }
 
     /** Non-blocking response-point check for advisory search hints; contention forces the existing raw retry. */
     suspend fun areSearchHintsCurrent(snapshot: HttpMetadataIndexSnapshot): Boolean {
-        if (!lock.tryLock()) return false
+        if (!stateLock.tryLock()) return false
         return try {
             check(!closed) { "HTTP metadata index is closed" }
             ensureNoMutationLocked()
@@ -240,7 +394,7 @@ internal class HttpMetadataIndex(
             }
             snapshot.generation == generation && snapshot.hasCurrentSourceRevisions()
         } finally {
-            lock.unlock()
+            stateLock.unlock()
         }
     }
 
@@ -250,7 +404,7 @@ internal class HttpMetadataIndex(
      * A false result means the caller may rebuild once. Project changes and an active project/Scope mutation fail
      * closed with their dedicated exceptions instead of allowing an old snapshot to be returned.
      */
-    suspend fun isSnapshotCurrent(snapshot: HttpMetadataIndexSnapshot): Boolean = lock.withLock {
+    suspend fun isSnapshotCurrent(snapshot: HttpMetadataIndexSnapshot): Boolean = stateLock.withLock {
         check(!closed) { "HTTP metadata index is closed" }
         ensureNoMutationLocked()
         val currentProjectId = api.project().id()
@@ -278,13 +432,13 @@ internal class HttpMetadataIndex(
     }
 
     suspend fun invalidate() {
-        lock.withLock {
+        stateLock.withLock {
             if (!closed) invalidateLocked()
         }
     }
 
     suspend fun resetForProjectBoundary() {
-        lock.withLock {
+        stateLock.withLock {
             if (!closed) {
                 observedProjectId = null
                 invalidateLocked()
@@ -293,17 +447,20 @@ internal class HttpMetadataIndex(
     }
 
     override fun close() = runBlocking {
-        lock.withLock {
+        stateLock.withLock {
             if (!closed) {
                 closed = true
                 observedProjectId = null
                 invalidateLocked()
             }
         }
+        // Preserve unload quiescence: no refresh or hint validation may retain Montoya objects after close returns.
+        refreshLock.withLock { }
+        searchHintLock.withLock { }
     }
 
     private suspend fun beginMutation() {
-        lock.withLock {
+        stateLock.withLock {
             check(!closed) { "HTTP metadata index is closed" }
             activeMutations++
             invalidateLocked()
@@ -311,7 +468,7 @@ internal class HttpMetadataIndex(
     }
 
     private suspend fun endMutation() {
-        lock.withLock {
+        stateLock.withLock {
             check(activeMutations > 0) { "HTTP metadata mutation tracking is unbalanced" }
             activeMutations--
             invalidateLocked()
@@ -334,40 +491,32 @@ internal class HttpMetadataIndex(
         generation++
     }
 
-    private fun refreshSourceLocked(
-        source: HttpMessageSource,
+    private fun refreshSource(
+        existing: CachedMetadataSource?,
         sourceRevision: Long,
         view: MetadataSourceView,
         coroutineContext: kotlin.coroutines.CoroutineContext,
-    ): HttpMetadataSourceSnapshot {
+    ): RefreshedMetadataSource {
         val now = nanoTime()
-        val existing = entries[source]
         val reusableAge = existing != null && maxReuseNanos > 0 &&
-            elapsedNanos(existing.refreshedAtNanos, now) < maxReuseNanos
+            elapsedNanos(existing.rebuiltAtNanos, now) < maxReuseNanos
         val anchorsValid = reusableAge && validateAnchors(view, existing.anchors)
 
         if (
             existing != null && existing.sourceRevision == sourceRevision && reusableAge && anchorsValid &&
             view.size == existing.totalRecords
         ) {
-            return existing.toSnapshot(MetadataIndexRefresh.REUSED)
+            return RefreshedMetadataSource(existing, existing.toSnapshot(MetadataIndexRefresh.REUSED))
         }
 
-        val refreshed = if (
-            existing != null && reusableAge && anchorsValid && view.size > existing.totalRecords
-        ) {
-            appendToExisting(view, existing, sourceRevision, coroutineContext, now)
+        val append = existing != null && reusableAge && anchorsValid && view.size > existing.totalRecords
+        val refreshed = if (append) {
+            appendToExisting(view, requireNotNull(existing), sourceRevision, coroutineContext)
         } else {
             rebuild(view, sourceRevision, coroutineContext, now)
         }
-        entries[source] = refreshed
-        return refreshed.toSnapshot(
-            if (existing != null && reusableAge && anchorsValid && view.size > existing.totalRecords) {
-                MetadataIndexRefresh.UPDATED
-            } else {
-                MetadataIndexRefresh.REBUILT
-            }
-        )
+        val refresh = if (append) MetadataIndexRefresh.UPDATED else MetadataIndexRefresh.REBUILT
+        return RefreshedMetadataSource(refreshed, refreshed.toSnapshot(refresh))
     }
 
     private fun appendToExisting(
@@ -375,7 +524,6 @@ internal class HttpMetadataIndex(
         existing: CachedMetadataSource,
         sourceRevision: Long,
         coroutineContext: kotlin.coroutines.CoroutineContext,
-        refreshedAtNanos: Long,
     ): CachedMetadataSource {
         val indexedFrom = (view.size - maxRecordsPerSource).coerceAtLeast(0)
         val slots = ArrayList<HttpMetadataRecord?>(view.size - indexedFrom)
@@ -400,7 +548,7 @@ internal class HttpMetadataIndex(
             indexedFrom = indexedFrom,
             slots = slots,
             anchors = createAnchors(view),
-            refreshedAtNanos = refreshedAtNanos,
+            rebuiltAtNanos = existing.rebuiltAtNanos,
         )
     }
 
@@ -408,7 +556,7 @@ internal class HttpMetadataIndex(
         view: MetadataSourceView,
         sourceRevision: Long,
         coroutineContext: kotlin.coroutines.CoroutineContext,
-        refreshedAtNanos: Long,
+        rebuiltAtNanos: Long,
     ): CachedMetadataSource {
         val indexedFrom = (view.size - maxRecordsPerSource).coerceAtLeast(0)
         val slots = ArrayList<HttpMetadataRecord?>(view.size - indexedFrom)
@@ -423,7 +571,7 @@ internal class HttpMetadataIndex(
             indexedFrom = indexedFrom,
             slots = slots,
             anchors = createAnchors(view),
-            refreshedAtNanos = refreshedAtNanos,
+            rebuiltAtNanos = rebuiltAtNanos,
         )
     }
 
@@ -436,7 +584,10 @@ internal class HttpMetadataIndex(
         return anchors.all { anchor -> view.anchor(anchor.index) == anchor.fingerprint }
     }
 
-    private suspend fun loadView(source: HttpMessageSource): MetadataSourceView {
+    private suspend fun loadView(
+        source: HttpMessageSource,
+        fingerprinter: MetadataFingerprinter,
+    ): MetadataSourceView {
         val coroutineContext = currentCoroutineContext()
         coroutineContext.ensureActive()
         val view = when (source) {
@@ -479,6 +630,24 @@ private fun HttpMessageSource.indexProcessingMetric(): HistoryPerformanceMetric 
     HttpMessageSource.ORGANIZER -> HistoryPerformanceMetric.INDEX_ORGANIZER_PROCESSING
 }
 
+private data class CapturedMetadataState(
+    val generation: Long,
+    val entries: Map<HttpMessageSource, CachedMetadataSource>,
+)
+
+private data class RefreshedMetadataSource(
+    val cached: CachedMetadataSource,
+    val snapshot: HttpMetadataSourceSnapshot,
+)
+
+private data class MetadataHintValidation(
+    val cached: CachedMetadataSource,
+    val snapshot: HttpMetadataSourceSnapshot?,
+    val invalidatesCachedEntry: Boolean,
+)
+
+private class MetadataRefreshEpochChangedException : Exception()
+
 private data class CachedMetadataSource(
     val source: HttpMessageSource,
     val sourceRevision: Long,
@@ -486,7 +655,7 @@ private data class CachedMetadataSource(
     val indexedFrom: Int,
     val slots: List<HttpMetadataRecord?>,
     val anchors: List<MetadataAnchor>,
-    val refreshedAtNanos: Long,
+    val rebuiltAtNanos: Long,
 ) {
     fun toSnapshot(refresh: MetadataIndexRefresh) = HttpMetadataSourceSnapshot(
         source = source,

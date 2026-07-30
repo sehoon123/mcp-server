@@ -16,15 +16,19 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -221,8 +225,11 @@ class HttpMetadataIndexTest {
     fun `signal racing acquisition prevents publication from becoming current`() = runBlocking {
         history += proxyItem(1, "/raced").item
         val signals = MetadataChangeSignals()
+        val acquisitions = AtomicInteger()
         every { proxy.history() } answers {
-            signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+            if (acquisitions.incrementAndGet() == 1) {
+                signals.markChanged(MetadataChangeSource.PROXY_HTTP)
+            }
             history.toList()
         }
         val index = HttpMetadataIndex(
@@ -232,10 +239,17 @@ class HttpMetadataIndexTest {
             changeSignals = signals,
         )
 
-        val snapshot = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val raced = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val hints = index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
 
-        assertEquals(0L, snapshot.sources.single().sourceRevision)
-        assertFalse(index.isSnapshotCurrent(snapshot))
+        assertEquals(0L, raced.sources.single().sourceRevision)
+        assertFalse(index.isSnapshotCurrent(raced))
+        assertEquals(null, hints)
+        assertEquals(MetadataIndexRefresh.REBUILT, refreshed.sources.single().refresh)
+        assertEquals(1L, refreshed.sources.single().sourceRevision)
+        assertTrue(index.isSnapshotCurrent(refreshed))
+        assertEquals(2, acquisitions.get())
     }
 
     @Test
@@ -363,6 +377,396 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `blocked acquisition releases invalidation reset and completed mutation operations`() = runBlocking {
+        val before = proxyItem(1, "/before")
+        val after = proxyItem(2, "/after")
+        history += before.item
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val acquisitions = AtomicInteger()
+        every { proxy.history() } answers {
+            val captured = history.toList()
+            if (acquisitions.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "timed out waiting to release acquisition" }
+            }
+            captured
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+
+        try {
+            assertEquals("project-one", withTimeout(1_000) { index.observeCurrentProject() })
+            withTimeout(1_000) { index.invalidate() }
+            withTimeout(1_000) { index.resetForProjectBoundary() }
+            withTimeout(1_000) {
+                index.withMutation { history[0] = after.item }
+            }
+        } finally {
+            release.countDown()
+        }
+
+        val snapshot = build.await().sources.single()
+        assertEquals(2, acquisitions.get())
+        assertEquals(listOf("2"), snapshot.availableRecords.map { it.sourceId })
+        assertEquals(listOf("/after"), snapshot.availableRecords.map { it.path })
+    }
+
+    @Test
+    fun `refresh lock serializes builders and a cancelled waiter never acquires a source`() = runBlocking {
+        history += proxyItem(1, "/serialized").item
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val acquisitions = AtomicInteger()
+        every { proxy.history() } answers {
+            val attempt = acquisitions.incrementAndGet()
+            val captured = history.toList()
+            if (attempt == 1) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "timed out waiting to release first builder" }
+            }
+            captured
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val first = async(Dispatchers.Default) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val cancelled = async(start = CoroutineStart.UNDISPATCHED) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertEquals(1, acquisitions.get())
+        cancelled.cancel(CancellationException("cancelled refresh waiter"))
+        assertFailsWith<CancellationException> { cancelled.await() }
+        val queued = async(start = CoroutineStart.UNDISPATCHED) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertEquals(1, acquisitions.get())
+
+        try {
+            release.countDown()
+            first.await()
+            queued.await()
+        } finally {
+            release.countDown()
+        }
+
+        assertEquals(2, acquisitions.get())
+    }
+
+    @Test
+    fun `active mutation rejects a candidate built outside the state lock`() = runBlocking {
+        history += proxyItem(1, "/mutation-race").item
+        val acquisitionEntered = CountDownLatch(1)
+        val acquisitionRelease = CountDownLatch(1)
+        every { proxy.history() } answers {
+            val captured = history.toList()
+            acquisitionEntered.countDown()
+            check(acquisitionRelease.await(5, TimeUnit.SECONDS)) { "timed out waiting to release acquisition" }
+            captured
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            runCatching { index.snapshot("project-one", listOf(HttpMessageSource.PROXY)) }
+        }
+        assertTrue(acquisitionEntered.await(5, TimeUnit.SECONDS))
+        val mutationEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val mutationRelease = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val mutation = async {
+            index.withMutation {
+                mutationEntered.complete(Unit)
+                mutationRelease.await()
+            }
+        }
+        withTimeout(1_000) { mutationEntered.await() }
+
+        try {
+            acquisitionRelease.countDown()
+            val result = withTimeout(5_000) { build.await() }
+            assertTrue(result.exceptionOrNull() is HttpMetadataIndexChangingException)
+        } finally {
+            acquisitionRelease.countDown()
+            mutationRelease.complete(Unit)
+        }
+        mutation.await()
+
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
+    fun `cancellation in a later source publishes no earlier source candidate`() = runBlocking {
+        history += proxyItem(1, "/proxy-candidate").item
+        val siteMap = mockk<SiteMap>()
+        val siteMapEntered = CountDownLatch(1)
+        val siteMapRelease = CountDownLatch(1)
+        every { api.siteMap() } returns siteMap
+        every { siteMap.requestResponses() } answers {
+            siteMapEntered.countDown()
+            check(siteMapRelease.await(5, TimeUnit.SECONDS)) { "timed out waiting to release Site Map acquisition" }
+            emptyList()
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            index.snapshot(
+                "project-one",
+                listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP),
+            )
+        }
+        assertTrue(siteMapEntered.await(5, TimeUnit.SECONDS))
+
+        try {
+            build.cancel(CancellationException("cancelled second source"))
+            siteMapRelease.countDown()
+            assertFailsWith<CancellationException> { build.await() }
+        } finally {
+            siteMapRelease.countDown()
+        }
+
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        verify(exactly = 1) { proxy.history() }
+        verify(exactly = 1) { siteMap.requestResponses() }
+    }
+
+    @Test
+    fun `warm hint invalidation during refresh discards the candidate and retries with current metadata`() = runBlocking {
+        history += proxyItem(1, "/old").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val replacement = proxyItem(2, "/replacement")
+        val requestCalls = AtomicInteger()
+        val refreshEntered = CountDownLatch(1)
+        val refreshRelease = CountDownLatch(1)
+        every { replacement.item.request() } answers {
+            if (requestCalls.incrementAndGet() == 1) {
+                refreshEntered.countDown()
+                check(refreshRelease.await(5, TimeUnit.SECONDS)) { "timed out waiting to release refresh validation" }
+            }
+            replacement.request
+        }
+        history[0] = replacement.item
+        val build = async(Dispatchers.Default) {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+        assertTrue(refreshEntered.await(5, TimeUnit.SECONDS))
+
+        try {
+            val hints = withTimeout(1_000) {
+                index.searchHintsSnapshot(
+                    "project-one",
+                    listOf(HttpMessageSource.PROXY),
+                    mapOf(HttpMessageSource.PROXY to HttpSourceRecords.Proxy(history.toList())),
+                )
+            }
+            assertEquals(null, hints)
+        } finally {
+            refreshRelease.countDown()
+        }
+
+        val refreshed = build.await().sources.single()
+        assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)
+        assertEquals(listOf("2"), refreshed.availableRecords.map { it.sourceId })
+        assertEquals(listOf("/replacement"), refreshed.availableRecords.map { it.path })
+        verify(exactly = 3) { proxy.history() }
+    }
+
+    @Test
+    fun `blocked hint validation releases state operations and close drains it`() = runBlocking {
+        val fixture = proxyItem(1, "/hint-close")
+        history += fixture.item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val hintEntered = CountDownLatch(1)
+        val hintRelease = CountDownLatch(1)
+        every { fixture.item.request() } answers {
+            hintEntered.countDown()
+            check(hintRelease.await(5, TimeUnit.SECONDS)) { "timed out waiting to release hint validation" }
+            fixture.request
+        }
+        val hint = async(Dispatchers.Default) {
+            runCatching {
+                index.searchHintsSnapshot(
+                    "project-one",
+                    listOf(HttpMessageSource.PROXY),
+                    mapOf(HttpMessageSource.PROXY to HttpSourceRecords.Proxy(history.toList())),
+                )
+            }
+        }
+        assertTrue(hintEntered.await(5, TimeUnit.SECONDS))
+        withTimeout(1_000) { index.invalidate() }
+        withTimeout(1_000) { index.resetForProjectBoundary() }
+        withTimeout(1_000) { index.withMutation { } }
+        val closeReturned = CountDownLatch(1)
+        val closeError = AtomicReference<Throwable?>()
+        val closer = Thread({
+            try {
+                index.close()
+            } catch (error: Throwable) {
+                closeError.set(error)
+            } finally {
+                closeReturned.countDown()
+            }
+        }, "metadata-hint-close-test").also {
+            it.isDaemon = true
+            it.start()
+        }
+
+        try {
+            withTimeout(5_000) {
+                while (true) {
+                    try {
+                        index.observeCurrentProject()
+                        yield()
+                    } catch (_: IllegalStateException) {
+                        break
+                    }
+                }
+            }
+            assertFalse(closeReturned.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            hintRelease.countDown()
+        }
+
+        assertTrue(closeReturned.await(5, TimeUnit.SECONDS))
+        closer.join(5_000)
+        closeError.get()?.let { throw AssertionError("index close failed", it) }
+        assertTrue(hint.await().exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun `two invalidated build attempts fail without a third acquisition or cache publication`() = runBlocking {
+        history += proxyItem(1, "/changing").item
+        val entered = List(2) { CountDownLatch(1) }
+        val release = List(2) { CountDownLatch(1) }
+        val acquisitions = AtomicInteger()
+        every { proxy.history() } answers {
+            val attempt = acquisitions.getAndIncrement()
+            check(attempt in entered.indices) { "unexpected third metadata acquisition" }
+            val captured = history.toList()
+            entered[attempt].countDown()
+            check(release[attempt].await(5, TimeUnit.SECONDS)) { "timed out waiting to release attempt $attempt" }
+            captured
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            runCatching { index.snapshot("project-one", listOf(HttpMessageSource.PROXY)) }
+        }
+
+        try {
+            for (attempt in entered.indices) {
+                assertTrue(entered[attempt].await(5, TimeUnit.SECONDS))
+                withTimeout(1_000) { index.invalidate() }
+                release[attempt].countDown()
+            }
+            assertTrue(build.await().exceptionOrNull() is HttpMetadataIndexChangingException)
+        } finally {
+            release.forEach(CountDownLatch::countDown)
+        }
+
+        assertEquals(2, acquisitions.get())
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        assertEquals(2, acquisitions.get())
+    }
+
+    @Test
+    fun `multi-source refresh publishes nothing when a later source fails`() = runBlocking {
+        history += proxyItem(1, "/proxy-only").item
+        val siteMap = mockk<SiteMap>()
+        every { api.siteMap() } returns siteMap
+        every { siteMap.requestResponses() } throws IllegalStateException("synthetic Site Map failure")
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+
+        assertFailsWith<IllegalStateException> {
+            index.snapshot(
+                "project-one",
+                listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP),
+            )
+        }
+
+        assertEquals(null, index.searchHintsSnapshot("project-one", listOf(HttpMessageSource.PROXY)))
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
+    fun `close tombstones state and waits for an active refresh to discard its candidate`() = runBlocking {
+        history += proxyItem(1, "/closing").item
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        every { proxy.history() } answers {
+            val captured = history.toList()
+            entered.countDown()
+            check(release.await(5, TimeUnit.SECONDS)) { "timed out waiting to release close fixture" }
+            captured
+        }
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val build = async(Dispatchers.Default) {
+            runCatching { index.snapshot("project-one", listOf(HttpMessageSource.PROXY)) }
+        }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val closeReturned = CountDownLatch(1)
+        val closeError = AtomicReference<Throwable?>()
+        val closer = Thread({
+            try {
+                index.close()
+            } catch (error: Throwable) {
+                closeError.set(error)
+            } finally {
+                closeReturned.countDown()
+            }
+        }, "metadata-index-close-test").also {
+            it.isDaemon = true
+            it.start()
+        }
+
+        try {
+            withTimeout(5_000) {
+                while (true) {
+                    try {
+                        index.observeCurrentProject()
+                        yield()
+                    } catch (_: IllegalStateException) {
+                        break
+                    }
+                }
+            }
+            assertFalse(closeReturned.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            release.countDown()
+        }
+
+        assertTrue(closeReturned.await(5, TimeUnit.SECONDS))
+        closer.join(5_000)
+        closeError.get()?.let { throw AssertionError("index close failed", it) }
+        assertTrue(build.await().exceptionOrNull() is IllegalStateException)
+        assertFailsWith<IllegalStateException> { index.observeCurrentProject() }
+        Unit
+    }
+
+    @Test
+    fun `duplicate snapshot sources fail before project or source access`() = runBlocking {
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+
+        assertFailsWith<IllegalArgumentException> {
+            index.snapshot(
+                "project-one",
+                listOf(HttpMessageSource.PROXY, HttpMessageSource.PROXY),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            index.searchHintsSnapshot(
+                "project-one",
+                listOf(HttpMessageSource.PROXY, HttpMessageSource.PROXY),
+            )
+        }
+
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
     fun `resized warm cache falls back and preserves append state`() = runBlocking {
         history += proxyItem(1, "/first").item
         val index = HttpMetadataIndex(
@@ -433,17 +837,45 @@ class HttpMetadataIndexTest {
     }
 
     @Test
-    fun `same-size replacement at a sampled anchor rebuilds the cache`() = runBlocking {
+    fun `same-size replacement rebuild invalidates the earlier snapshot`() = runBlocking {
         history += proxyItem(1, "/before").item
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
-        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val before = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
         history[0] = proxyItem(2, "/after").item
         nowNanos++
 
-        val refreshed = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+        val after = index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        val refreshed = after.sources.single()
 
         assertEquals(MetadataIndexRefresh.REBUILT, refreshed.refresh)
         assertEquals("/after", refreshed.availableRecords.single().path)
+        assertFalse(index.isSnapshotCurrent(before))
+        assertTrue(index.isSnapshotCurrent(after))
+    }
+
+    @Test
+    fun `append does not extend the maximum age since the last rebuild`() = runBlocking {
+        history += (1..20).map { id -> proxyItem(id, "/item-$id").item }
+        val index = HttpMetadataIndex(
+            api,
+            maxRecordsPerSource = 21,
+            reuseMillis = 30_000,
+            nanoTime = { nowNanos },
+        )
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        history[4] = proxyItem(104, "/mutated-unsampled-slot").item
+        nowNanos += TimeUnit.SECONDS.toNanos(29)
+        history += proxyItem(21, "/appended").item
+
+        val appended = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+        assertEquals(MetadataIndexRefresh.UPDATED, appended.refresh)
+        assertEquals("/item-5", appended.availableRecords[4].path)
+
+        nowNanos += TimeUnit.SECONDS.toNanos(2)
+        val rebuilt = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+
+        assertEquals(MetadataIndexRefresh.REBUILT, rebuilt.refresh)
+        assertEquals("/mutated-unsampled-slot", rebuilt.availableRecords[4].path)
     }
 
     @Test
@@ -615,8 +1047,11 @@ class HttpMetadataIndexTest {
     }
 
     @Test
-    fun `project change during a source refresh discards the just-built entries`() = runBlocking {
+    fun `project change after one source discards every multi-source candidate`() = runBlocking {
         history += proxyItem(1, "/old-project").item
+        val siteMap = mockk<SiteMap>()
+        every { api.siteMap() } returns siteMap
+        every { siteMap.requestResponses() } returns emptyList()
         var projectReads = 0
         every { project.id() } answers {
             projectReads++
@@ -625,11 +1060,16 @@ class HttpMetadataIndexTest {
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
 
         val mismatch = assertFailsWith<HttpMetadataProjectMismatchException> {
-            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+            index.snapshot(
+                "project-one",
+                listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP),
+            )
         }
         assertEquals("project-two", mismatch.currentProjectId)
-
         every { project.id() } returns "project-two"
+        assertEquals(null, index.searchHintsSnapshot("project-two", listOf(HttpMessageSource.PROXY)))
+        verify(exactly = 0) { siteMap.requestResponses() }
+
         history.clear()
         history += proxyItem(2, "/new-project").item
         val current = index.snapshot("project-two", listOf(HttpMessageSource.PROXY)).sources.single()

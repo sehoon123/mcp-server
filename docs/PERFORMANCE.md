@@ -328,8 +328,11 @@ acquisitions; WebSocket search has one acquisition; and metadata-index processin
 acquisition in source order. Metadata-index warm hint validation records paired acquisition and processing attempts. A
 WebSocket processing result other than `ok`
 counts as failed; thrown failures and cancellation retain their corresponding outcome. WebSocket bounded-window capture
-and scanning yield cooperatively at their existing 64-record cancellation checkpoints. Existing locks, dispatchers,
-source order, retry behavior, and access bounds are otherwise unchanged.
+and scanning yield cooperatively at their existing 64-record cancellation checkpoints. Metadata-index builders and warm
+hint validators remain independently serialized, but their synchronous source acquisition and bounded processing execute
+outside the short state mutex. Candidate sources publish together only after current-project and generation verification;
+one builder-generation race retries once and a second fails closed, while a raced hint falls back to raw search.
+Dispatchers, source order, diagnostic attribution, and access bounds are unchanged.
 
 Each fixed metric retains only attempts, completed/failed/cancelled outcomes, one maximum monotonic duration, and eleven
 elapsed-time buckets with upper bounds below 1, 5, 10, 25, 50, 100, 250, 500, 1,000, and 5,000 milliseconds plus a final
@@ -474,10 +477,22 @@ no message body, header or note values, complete URL, or Montoya object. The thr
 
 A refresh still requests the selected Montoya source list, because the current API has no native metadata cursor. For a
 warm same-size source, up to 16 evenly distributed metadata-only anchors are re-read. Valid append-only growth reuses
-retained slots and extracts only new entries while dropping old slots above the cap. A size decrease, sampled-anchor
-change, project change, explicit Scope/project-option mutation, or 30-second maximum reuse age forces a rebuild. A
-project transition clears all source entries before mismatch or current-project output is returned. This is conservative
+retained slots and extracts only new entries while dropping old slots above the cap, but it does not reset the last
+bounded-rebuild time. A size decrease, sampled-anchor change, project change, explicit Scope/project-option mutation, or
+30 seconds since the last rebuild forces another rebuild even under continuous append traffic. A project transition
+clears all source entries before mismatch or current-project output is returned. This is conservative
 cache freshness, not a claim that Montoya provides a complete same-size mutation event stream.
+
+Snapshot builders serialize on a dedicated refresh mutex, while warm hint validators use a separate hint mutex. Both
+capture immutable cache entries and the invalidation generation in brief state-mutex sections, then perform Montoya
+acquisition and metadata processing without that state mutex. Builders publish all requested source candidates in one
+checked state transition and advance the generation whenever a cache identity changes, so an earlier snapshot cannot
+remain current after a detected rebuild or append. Hints recheck generation, source revision, and captured cache identity
+before reuse or invalidation. Invalidation, project-boundary reset, mutation entry, and currentness checks do not queue behind
+slow source or hint validation. A builder generation race discards every candidate and retries once; a second race fails
+closed, while a raced hint uses the existing raw-search fallback. Extension shutdown first tombstones the state and then
+drains both coordination mutexes, so a synchronous Montoya call may delay shutdown but cannot publish, return, or retain
+a candidate after close returns.
 
 A synthetic 100,000-record list regression verifies that a cold source build dereferences no more than the 5,000
 retained records plus 16 anchors; it does not treat that synthetic test as a Burp latency or allocation benchmark.
@@ -497,8 +512,9 @@ Both comparison runs used the same JFR allocation-profiling configuration:
 
 Weighted JFR samples are estimates, not exact retained-heap measurements, and include allocation noise from the dynamic
 interface fixture. Across the complete probe, allocation-sample events fell from 1,389 to 668 and young collections
-from four to two. The index reuses one closeable SHA-256 instance,
-uses typed fingerprint framing and shared normalized MIME names, and avoids copying already-safe query-free paths. The
+from four to two. The index reuses one extension-lifetime SHA-256 instance for serialized refreshes and a separate
+instance for serialized hint validation, uses typed fingerprint framing and shared normalized MIME names, and avoids
+copying already-safe query-free paths. The
 aggregate first computes exact key counts and then allocates detailed counters only for the at most 100 returned
 services and 200 returned paths. Allocation-free ASCII classifiers replace per-segment regex matchers, and path-prefix
 construction scans only the requested one to four segments. These figures are local regression evidence, not Burp
@@ -710,12 +726,13 @@ minimal complete-record retention, and audit flush races. These are extension-si
 not Burp latency claims. A fresh dual-edition live run remains required before attributing wall-clock or allocation
 improvements to Montoya itself.
 
-Two higher-risk candidates were reviewed and intentionally not changed in this slice. Montoya's pinned Site Map API
-exposes no paginated or direct positional lookup, so replacing `requestResponses()` would either lose the list index
-embedded in existing stable IDs or weaken reorder/removal detection. The metadata index still serializes refresh under
-its mutex: moving acquisition outside that mutex requires generation-checked publication, unload/project-transition
-coordination, and live evidence that repeated same-generation acquisition is material. Neither change is suitable for an
-RC without its measurement and identity-preservation gate.
+Montoya's pinned Site Map API still exposes no paginated or direct positional lookup, so replacing
+`requestResponses()` would either lose the list index embedded in existing stable IDs or weaken reorder/removal
+detection. The separately scoped metadata-index coordination change keeps refresh builders and hint validators
+independently serialized while moving source acquisition and processing outside the state mutex, with generation-checked
+atomic publication and shutdown quiescence. Deterministic concurrency tests establish extension-side lock responsiveness
+and stale-candidate rejection;
+a fresh dual-edition live run remains required before attributing wall-clock or UI improvements to Burp or Montoya.
 
 ## Swing EDT queue-delay watchdog
 
