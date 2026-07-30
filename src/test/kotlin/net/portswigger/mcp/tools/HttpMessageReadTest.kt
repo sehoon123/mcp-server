@@ -122,6 +122,25 @@ class HttpMessageReadTest {
     }
 
     @Test
+    fun `final project check supersedes an out-of-range HTTP correction`() = runBlocking {
+        val fixture = fixture(projectIds = listOf("project-a", "project-a", "project-a", "project-b"))
+
+        val result = fixture.service.read(
+            GetHttpMessage(
+                projectId = "project-a",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                offset = 1,
+            )
+        )
+
+        assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("project-b", result.projectId)
+        assertNull(result.metadata)
+        assertNull(result.content)
+    }
+
+    @Test
     fun `request accessor IllegalArgumentException is a sanitized Burp error`() = runBlocking {
         val fixture = fixture(projectIds = listOf("project-a", "project-a", "project-a"))
         every { fixture.request.url() } throws IllegalArgumentException("PRIVATE_SENTINEL")

@@ -93,6 +93,28 @@ class WebSocketMessageReadTest {
     }
 
     @Test
+    fun `WebSocket IllegalArgumentException accessor failure is a sanitized Burp error`() = runBlocking {
+        config.requireDataAccessApproval = false
+        val item = mockk<ProxyWebSocketMessage>()
+        every { proxy.webSocketHistory(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyWebSocketHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 7
+        every { item.annotations() } throws IllegalArgumentException("PRIVATE_SENTINEL token=private-value")
+
+        val result = service.read(GetWebsocketMessageById(id = 7, projectId = "project-ws"))
+
+        assertEquals(HistoryReadStatus.BURP_ERROR, result.status)
+        assertEquals("project-ws", result.projectId)
+        assertTrue(result.error.orEmpty().contains("Burp could not read the WebSocket message"))
+        assertFalse(result.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        assertFalse(result.error.orEmpty().contains("private-value"))
+        assertEquals(null, result.metadata)
+        assertEquals(null, result.content)
+    }
+
+    @Test
     fun `offset at and beyond selected WebSocket payload preserves page boundary semantics`() = runBlocking {
         config.requireDataAccessApproval = false
         val item = mockk<ProxyWebSocketMessage>()
@@ -126,6 +148,42 @@ class WebSocketMessageReadTest {
         assertEquals("project-ws", beyond.projectId)
         assertTrue(beyond.error.orEmpty().contains("totalBytes (2)"))
         assertEquals(null, beyond.content)
+    }
+
+    @Test
+    fun `final project check supersedes an out-of-range WebSocket correction`() = runBlocking {
+        config.requireDataAccessApproval = false
+        every { project.id() } returnsMany listOf(
+            "project-ws",
+            "project-ws",
+            "project-ws",
+            "replacement-project",
+        )
+        val item = mockk<ProxyWebSocketMessage>()
+        val payload = mockk<MontoyaByteArray>()
+        val annotations = mockk<Annotations>()
+        every { proxy.webSocketHistory(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyWebSocketHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 7
+        every { item.webSocketId() } returns 3
+        every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+        every { item.direction() } returns Direction.SERVER_TO_CLIENT
+        every { item.listenerPort() } returns 8080
+        every { item.payload() } returns payload
+        every { item.annotations() } returns annotations
+        every { annotations.notes() } returns null
+        every { payload.length() } returns 2
+
+        val result = service.read(
+            GetWebsocketMessageById(id = 7, projectId = "project-ws", offset = 3)
+        )
+
+        assertEquals(HistoryReadStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("replacement-project", result.projectId)
+        assertEquals(null, result.metadata)
+        assertEquals(null, result.content)
     }
 
     @Test

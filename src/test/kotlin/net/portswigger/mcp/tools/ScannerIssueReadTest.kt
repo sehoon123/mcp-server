@@ -249,6 +249,33 @@ class ScannerIssueReadTest {
     }
 
     @Test
+    fun `final project check supersedes an out-of-range Scanner correction`() = runBlocking {
+        every { project.id() } returnsMany listOf(
+            "project-123",
+            "project-123",
+            "project-123",
+            "project-123",
+            "project-after",
+        )
+        val issue = issue(15, "Final transition", "x")
+        every { siteMap.issues() } returns listOf(issue)
+
+        val result = service.read(
+            GetScannerIssueById(
+                projectId = "project-123",
+                id = issue.stableHistoryId(0),
+                field = "detail",
+                offset = 2,
+            )
+        )
+
+        assertEquals(HistoryReadStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("project-after", result.projectId)
+        assertNull(result.summary)
+        assertNull(result.content)
+    }
+
+    @Test
     fun `project transition after approval prevents Scanner source access`() = runBlocking {
         every { project.id() } returnsMany listOf("project-123", "project-after")
         val issue = issue(9, "Transition", "secret detail")
