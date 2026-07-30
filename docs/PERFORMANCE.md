@@ -793,8 +793,9 @@ Scanner compatibility pagination, and a constrained regex policy. Remaining perf
 
 1. Measure API-only Site Map acquisition in both editions before considering any identity-preserving alternative;
    the pinned API has no bounded positional lookup.
-2. Add generation-checked metadata refresh publication or single-flight admission only after live contention evidence;
-   project replacement, mutation barriers, close, caller order, and first-failure behavior must remain fail-closed.
+2. Live-measure the generation-checked metadata refresh and hint coordination before claiming Burp latency gains or
+   considering further admission changes; project replacement, mutation barriers, close, caller order, and first-failure
+   behavior must remain fail-closed.
 3. Add hard timeouts to remaining long-running read/config tools only where they can work with Ktor receive behavior and
    without treating an ambiguous mutation as retryable.
 4. Add lifecycle event hooks only where Montoya freshness is provable; selected detail/action records must still be

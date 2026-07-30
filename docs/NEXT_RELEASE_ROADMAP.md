@@ -361,8 +361,8 @@ The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.4` tags, dra
 Follow-up exact-smoke orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; surface reduction
 used `4.11.0-dev.3`; and bounded performance work used `4.11.0-dev.4`. RC2 froze the reduced surface and performance
 contracts, RC3 froze deterministic session-cancellation evidence, RC4 froze schema/result consistency, and RC5 is the
-current simplified release-policy and evidence-binding candidate. Work remains ordered so measurement precedes
-scheduling and catalog changes.
+current reader-correctness, metadata-index coordination, simplified release-policy, and evidence-binding candidate. Work
+remains ordered so measurement precedes scheduling and catalog changes.
 
 Milestones:
 
@@ -372,8 +372,9 @@ Milestones:
    retaining bounded anchors and expiry as the freshness authority.
 3. Add at most one distinct common read-only `correlate_http_activity` operation after shared metadata and least-data
    resolver seams are proven. Mixed-source similarity must not be presented as identity or chronology.
-4. Consider bounded single-flight refresh admission only after disposable 10k/50k/100k evidence shows repeated
-   same-generation acquisition and proves the required Montoya calls safe on one extension-owned worker.
+4. Coordinate bounded metadata refresh and hint validation without holding the state mutex across Montoya acquisition,
+   while preserving generation-checked atomic publication, bounded retry, project/mutation barriers, and close
+   quiescence. Treat deterministic concurrency tests as extension-side evidence, not Burp latency proof.
 
 The first deliverable changes no MCP tool, prompt, resource, template, cursor, stable-ID, approval, or result schema.
 Metrics survive listener restart for the extension lifetime, retain no project/client/filter/reference/traffic value, and
@@ -403,9 +404,10 @@ The `4.11.0-dev.4` performance slice reuses invocation-local Proxy/Organizer sou
 source once for ordered batches of at most 32 stable references, keeps all structured-result materialization on the
 bounded serialization dispatcher, and moves linear bounded audit JSON encoding outside the audit lock. It changes no
 public catalog, stable-ID, approval, project, cancellation, or uncertain-execution contract. Complete per-edition tool
-fingerprints and a local/protected-workflow scenario-identity regression now fail closed on contract drift. Pinned
-Montoya Site Map acquisition and metadata-index refresh locking remain unchanged pending API-only and live contention
-measurements; neither has a safe RC optimization that preserves positional identity and project-transition semantics.
+fingerprints and a local/smoke-workflow scenario-identity regression now fail closed on contract drift. Pinned Montoya
+Site Map acquisition remains unchanged because the API has no bounded positional lookup. The separately validated
+metadata-index coordination change moves acquisition and processing outside the state mutex while preserving
+single-builder admission, generation-checked publication, bounded retry, project/mutation barriers, and close drainage.
 
 The initial post-RC1 exact-smoke slice kept every tool, prompt, resource URI, template, and operation schema unchanged. It added
 three fixed fields to the existing diagnostics resource: a path-free loaded code-source JAR SHA-256 and saturation-safe
@@ -418,8 +420,9 @@ cancellation evidence. RC4 retains the exact 21-tool Community and 28-tool Profe
 non-null structured members explicitly serialized and required by output schemas, making project binding and retry
 semantics self-contained, and classifying correction-required and Burp accessor failures consistently. Its reviewed
 catalog fingerprints intentionally change because descriptions and output schemas change; names and counts do not. RC5
-keeps those runtime contracts and dependency inputs unchanged while removing external alert/reviewer dependencies,
-using OSV/npm-only vulnerability evidence, and binding that normalized evidence directly to the candidate tag.
+keeps the public surface and dependency inputs unchanged while adding explicit reader-offset correction and
+metadata-index coordination, removing external alert/reviewer dependencies, using OSV/npm-only vulnerability evidence,
+and binding that normalized evidence directly to the candidate tag.
 
 Explicitly deferred until their entry gates pass: background indexing, parallel Montoya acquisition, resource
 subscriptions, per-session scheduling policy, task-per-event reconciliation, WebSocket send support, and additional tool
@@ -434,7 +437,9 @@ aliases or families.
   Organizer listener gaps remain documented.
 - [x] Correlation unit/schema validation is bounded, project-bound, read-only, value-limited, and makes no unsupported
   chronology, causality, identity, or vulnerability-evidence claim; exact live validation remains part of the RC gate.
-- [ ] Single-flight scheduling remains absent unless its live entry gate and project-cleanup bound pass.
+- [x] Metadata refresh and hint builders are independently serialized, slow acquisition/processing runs outside the
+  state mutex, publication is generation/project/mutation checked, retry is bounded, and close drains active builders;
+  no Burp wall-clock improvement is claimed without a fresh dual-edition run.
 - [ ] The exact 11-scenario Community/Professional smoke contract, native HTTP, embedded stdio, cancellation, scale,
   unload, SBOM, conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project
   replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather than
