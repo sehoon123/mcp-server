@@ -106,10 +106,11 @@ internal class HttpMetadataIndex(
     private val changeSignals: MetadataChangeSignals = MetadataChangeSignals.NO_OP,
 ) : AutoCloseable {
     private val stateLock = Mutex()
-    // Builders and hint validators take their coordination lock before brief stateLock sections. State-only paths never
-    // acquire either coordination lock, and close drains them only after releasing stateLock.
+    // Builders, hint validators, and mutation blocks take their coordination lock before brief stateLock sections.
+    // State-only paths never acquire a coordination lock, and close drains them only after releasing stateLock.
     private val refreshLock = Mutex()
     private val searchHintLock = Mutex()
+    private val mutationLock = Mutex()
     // Refreshes and search hints may read metadata concurrently. Each serialized path owns its own mutable digest.
     private val refreshFingerprinter = MetadataFingerprinter()
     private val searchHintFingerprinter = MetadataFingerprinter()
@@ -180,6 +181,11 @@ internal class HttpMetadataIndex(
     }
 
     private suspend fun captureRefreshState(expectedProjectId: String): CapturedMetadataState {
+        stateLock.withLock {
+            check(!closed) { "HTTP metadata index is closed" }
+            ensureNoMutationLocked()
+        }
+
         val coroutineContext = currentCoroutineContext()
         coroutineContext.ensureActive()
         val currentProjectId = api.project().id()
@@ -420,9 +426,9 @@ internal class HttpMetadataIndex(
     }
 
     /** Prevents snapshots from being built or returned while an MCP project/Scope mutation is executing. */
-    suspend fun <T> withMutation(block: suspend () -> T): T {
+    suspend fun <T> withMutation(block: suspend () -> T): T = mutationLock.withLock {
         beginMutation()
-        return try {
+        try {
             block()
         } finally {
             withContext(NonCancellable) {
@@ -454,9 +460,10 @@ internal class HttpMetadataIndex(
                 invalidateLocked()
             }
         }
-        // Preserve unload quiescence: no refresh or hint validation may retain Montoya objects after close returns.
+        // Preserve unload quiescence: no refresh, hint validation, or mutation may use Montoya after close returns.
         refreshLock.withLock { }
         searchHintLock.withLock { }
+        mutationLock.withLock { }
     }
 
     private suspend fun beginMutation() {

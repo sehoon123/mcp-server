@@ -746,6 +746,74 @@ class HttpMetadataIndexTest {
     }
 
     @Test
+    fun `snapshot admitted after close performs no Montoya access`() = runBlocking {
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.close()
+
+        assertFailsWith<IllegalStateException> {
+            index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+        }
+
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
+    fun `close waits for an active mutation block`() = runBlocking {
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        val mutationEntered = CountDownLatch(1)
+        val mutationRelease = CountDownLatch(1)
+        val mutation = async(Dispatchers.Default) {
+            index.withMutation {
+                mutationEntered.countDown()
+                check(mutationRelease.await(5, TimeUnit.SECONDS)) { "timed out waiting to release mutation" }
+            }
+        }
+        assertTrue(mutationEntered.await(5, TimeUnit.SECONDS))
+        val closeReturned = CountDownLatch(1)
+        val closeError = AtomicReference<Throwable?>()
+        val closer = Thread({
+            try {
+                index.close()
+            } catch (error: Throwable) {
+                closeError.set(error)
+            } finally {
+                closeReturned.countDown()
+            }
+        }, "metadata-mutation-close-test").also {
+            it.isDaemon = true
+            it.start()
+        }
+
+        try {
+            withTimeout(5_000) {
+                while (true) {
+                    try {
+                        index.observeCurrentProject()
+                        yield()
+                    } catch (_: HttpMetadataIndexChangingException) {
+                        yield()
+                    } catch (_: IllegalStateException) {
+                        break
+                    }
+                }
+            }
+            assertFalse(closeReturned.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            mutationRelease.countDown()
+        }
+
+        mutation.await()
+        assertTrue(closeReturned.await(5, TimeUnit.SECONDS))
+        closer.join(5_000)
+        closeError.get()?.let { throw AssertionError("index close failed", it) }
+        assertFailsWith<IllegalStateException> {
+            index.withMutation { error("closed mutation block must not run") }
+        }
+        Unit
+    }
+
+    @Test
     fun `duplicate snapshot sources fail before project or source access`() = runBlocking {
         val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
 

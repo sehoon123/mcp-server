@@ -438,8 +438,8 @@ aliases or families.
 - [x] Correlation unit/schema validation is bounded, project-bound, read-only, value-limited, and makes no unsupported
   chronology, causality, identity, or vulnerability-evidence claim; exact live validation remains part of the RC gate.
 - [x] Metadata refresh and hint builders are independently serialized, slow acquisition/processing runs outside the
-  state mutex, publication is generation/project/mutation checked, retry is bounded, and close drains active builders;
-  no Burp wall-clock improvement is claimed without a fresh dual-edition run.
+  state mutex, publication is generation/project/mutation checked, retry is bounded, and close drains active builders
+  plus project/Scope mutation blocks; no Burp wall-clock improvement is claimed without a fresh dual-edition run.
 - [ ] The exact 11-scenario Community/Professional smoke contract, native HTTP, embedded stdio, cancellation, scale,
   unload, SBOM, conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project
   replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather than

@@ -491,8 +491,8 @@ remain current after a detected rebuild or append. Hints recheck generation, sou
 before reuse or invalidation. Invalidation, project-boundary reset, mutation entry, and currentness checks do not queue behind
 slow source or hint validation. A builder generation race discards every candidate and retries once; a second race fails
 closed, while a raced hint uses the existing raw-search fallback. Extension shutdown first tombstones the state and then
-drains both coordination mutexes, so a synchronous Montoya call may delay shutdown but cannot publish, return, or retain
-a candidate after close returns.
+drains the refresh, hint-validation, and project/Scope-mutation coordinators, so a synchronous Montoya call may delay
+shutdown but no candidate or coordinated mutation remains active after close returns.
 
 A synthetic 100,000-record list regression verifies that a cold source build dereferences no more than the 5,000
 retained records plus 16 anchors; it does not treat that synthetic test as a Burp latency or allocation benchmark.
