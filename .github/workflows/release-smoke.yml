@@ -43,12 +43,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  record:
-    name: Validate draft identity and record tester claim
+  validate_draft:
+    name: Validate the immutable draft bytes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      # GitHub hides draft releases from the read-only Actions integration token.
+      # This job performs only read operations and executes no release asset.
+      contents: write
     steps:
       - name: Download and verify the immutable draft bytes
         env:
@@ -111,10 +113,18 @@ jobs:
               "unloadDuringBackgroundWork"
             ] and
             ([.scenarios[]] | all(. == "pass"))
-          ' <<<"$RESULTS_JSON" > "$RUNNER_TEMP/smoke-claims.json"
+          ' <<<"$RESULTS_JSON" >/dev/null
 
+  record:
+    name: Create and upload the bounded smoke record
+    needs: validate_draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
       - name: Create bounded machine-readable smoke record
         env:
+          RESULTS_JSON: ${{ inputs.results_json }}
           RELEASE_TAG: ${{ inputs.tag }}
           SOURCE_COMMIT: ${{ inputs.source_sha }}
           TESTED_JAR_SHA256: ${{ inputs.tested_jar_sha256 }}
@@ -125,6 +135,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          jq -ce '.' <<<"$RESULTS_JSON" > "$RUNNER_TEMP/smoke-claims.json"
           for value in "$OPERATING_SYSTEMS" "$BURP_COMMUNITY_VERSION" \
             "$BURP_PROFESSIONAL_VERSION" "$MCP_CLIENTS"; do
             [[ ${#value} -ge 1 && ${#value} -le 512 ]]

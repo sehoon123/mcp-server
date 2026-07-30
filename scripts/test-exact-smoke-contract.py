@@ -158,9 +158,13 @@ class ExactSmokeContractTest(unittest.TestCase):
         workflow = (SCRIPTS.parent / ".github/workflows/release-smoke.yml").read_text(encoding="utf-8")
         step_marker = "      - name: Download and verify the immutable draft bytes\n"
         self.assertEqual(1, workflow.count(step_marker))
-        release_step = workflow.split(step_marker, maxsplit=1)[1].split("\n      - name: ", maxsplit=1)[0]
+        release_step = workflow.split(step_marker, maxsplit=1)[1].split("\n  record:\n", maxsplit=1)[0]
         self.assertIn("jq -e --arg version", release_step)
-        self.assertIn("' <<<\"$RESULTS_JSON\" > \"$RUNNER_TEMP/smoke-claims.json\"", release_step)
+        self.assertIn("' <<<\"$RESULTS_JSON\" >/dev/null", release_step)
+        record_marker = "      - name: Create bounded machine-readable smoke record\n"
+        self.assertEqual(1, workflow.count(record_marker))
+        record_step = workflow.split(record_marker, maxsplit=1)[1].split("\n      - name: ", maxsplit=1)[0]
+        self.assertIn("jq -ce '.' <<<\"$RESULTS_JSON\" > \"$RUNNER_TEMP/smoke-claims.json\"", record_step)
         match = re.search(
             r"\(\.scenarios \| keys \| sort\) == \[(.*?)\]\s+and\s+\(\[\.scenarios\[\]\]",
             release_step,
@@ -186,6 +190,67 @@ class ExactSmokeContractTest(unittest.TestCase):
             publish_scenarios = re.findall(r'"([A-Za-z][A-Za-z0-9]+)"', match.group(1))
             self.assertEqual(len(contract.SMOKE_SCENARIO_KEYS), len(publish_scenarios))
             self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), publish_scenarios)
+
+    def test_draft_release_readers_isolate_exact_ephemeral_permissions(self):
+        def job_block(workflow: str, job_id: str) -> str:
+            match = re.search(
+                rf"^  {re.escape(job_id)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                workflow,
+                flags=re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match, f"missing workflow job: {job_id}")
+            return match.group("body")
+
+        def permission_map(job: str) -> dict[str, str]:
+            match = re.search(r"^    permissions:(?P<inline> \{\})?\n", job, flags=re.MULTILINE)
+            self.assertIsNotNone(match, "job must declare an explicit permission map")
+            if match.group("inline"):
+                return {}
+            permissions = {}
+            for line in job[match.end() :].splitlines():
+                if not line.strip() or line.startswith("      #"):
+                    continue
+                item = re.fullmatch(r"      ([a-z-]+): (read|write|none)", line)
+                if item is None:
+                    break
+                permissions[item.group(1)] = item.group(2)
+            return permissions
+
+        def assert_read_only_shell_boundary(job: str) -> None:
+            self.assertEqual(1, len(re.findall(r"^      - name:", job, flags=re.MULTILINE)))
+            self.assertNotRegex(job, r"(?m)^      - uses:")
+            self.assertNotRegex(
+                job,
+                r"(?mi)\bgh\s+api\b[^\n]*(?:--method|-X)\s*(?:POST|PUT|PATCH|DELETE)\b",
+            )
+            self.assertNotRegex(job, r"(?mi)\bgh\s+release\s+(?:create|delete|edit|upload)\b")
+            self.assertNotRegex(job, r"(?mi)\b(?:git\s+push|curl|wget)\b")
+
+        smoke = (SCRIPTS.parent / ".github/workflows/release-smoke.yml").read_text(encoding="utf-8")
+        validate_draft_job = job_block(smoke, "validate_draft")
+        self.assertEqual({"contents": "write"}, permission_map(validate_draft_job))
+        self.assertIn("GH_TOKEN: ${{ github.token }}", validate_draft_job)
+        self.assertNotIn("secrets.", validate_draft_job)
+        assert_read_only_shell_boundary(validate_draft_job)
+
+        record_job = job_block(smoke, "record")
+        self.assertEqual({}, permission_map(record_job))
+        self.assertIn("    needs: validate_draft\n", record_job)
+        self.assertNotIn("GH_TOKEN:", record_job)
+        self.assertNotIn("secrets.", record_job)
+
+        publish = (SCRIPTS.parent / ".github/workflows/release-publish.yml").read_text(encoding="utf-8")
+        preflight_job = job_block(publish, "preflight")
+        self.assertEqual(
+            {"contents": "write", "actions": "read", "attestations": "read"},
+            permission_map(preflight_job),
+        )
+        self.assertIn("GH_TOKEN: ${{ github.token }}", preflight_job)
+        self.assertNotIn("secrets.", preflight_job)
+        assert_read_only_shell_boundary(preflight_job)
+        self.assertEqual(2, publish.count("compare/$SOURCE_COMMIT...$GITHUB_SHA"))
+        self.assertNotIn("compare/$SOURCE_COMMIT...main", publish)
+        self.assertEqual(1, publish.count("secrets.IMMUTABLE_RELEASES_READ_TOKEN"))
 
     def test_release_identity_is_exact_and_bounded(self):
         contract.validate_release_identity("a" * 40, "b" * 64, "4.11.0-rc.2")

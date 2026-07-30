@@ -28,7 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      # GitHub hides draft releases from the read-only Actions integration token.
+      # This preflight performs only read operations and executes no release asset.
+      contents: write
       actions: read
       attestations: read
     outputs:
@@ -90,7 +92,7 @@ jobs:
             .object.type == "commit" and .object.sha == $sha and .tag == $tag and
             .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
           ' <<<"$tag_json" >/dev/null
-          compare_json=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...main")
+          compare_json=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...$GITHUB_SHA")
           [[ $(jq -r '.merge_base_commit.sha' <<<"$compare_json") == "$SOURCE_COMMIT" ]]
 
           release_id=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')
@@ -268,7 +270,7 @@ jobs:
             .object.type == "commit" and .object.sha == $sha and .tag == $tag and
             .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
           ' <<<"$tag_json" >/dev/null
-          [[ $(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...main" --jq '.merge_base_commit.sha') == "$SOURCE_COMMIT" ]]
+          [[ $(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...$GITHUB_SHA" --jq '.merge_base_commit.sha') == "$SOURCE_COMMIT" ]]
 
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID")
           jq -e --argjson id "$EXPECTED_RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '

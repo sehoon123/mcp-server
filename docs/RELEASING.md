@@ -58,6 +58,12 @@ Configure these controls in GitHub before enabling publication:
 - periodic maintainer review of GitHub Actions, Gradle, npm, wrapper, lock, and verification-metadata updates; and
 - private reporting instructions and an owner for release/security incidents.
 
+GitHub does not expose draft releases to an Actions integration token limited to `contents: read`. The exact-byte smoke
+draft-validation job and the read-only publication preflight therefore request an ephemeral `contents: write` token solely
+to read the draft metadata and assets. Those jobs do not check out or execute repository or release-asset code and issue
+no release mutation. Record upload and attestation run in separate jobs without `contents: write`. The separate
+`IMMUTABLE_RELEASES_READ_TOKEN` remains limited to the repository-immutability check.
+
 The release workflows do not use GitHub environments or required-reviewer approvals. Remote repository settings cannot
 be proved by source review, so record API output for each release audit.
 
@@ -215,6 +221,12 @@ and per-scenario results. Attest that record, upload it as an immutable workflow
 artifact digest. The publish job must independently download and verify the attestation, authorized tester identity,
 all-pass result, tag/source identity, and matching JAR digest; an unchecked workflow input, local matrix, or editable
 comment is not sufficient evidence.
+
+The immutable candidate source and the release-control workflow revision are separate identities. If a workflow-only
+defect is discovered after the candidate is tagged, a reviewed signed descendant on protected `main` may repair only
+the orchestration without moving the tag, rebuilding, changing the draft, or replacing assets. The smoke attestation is
+then bound to that workflow revision while its record remains bound to the tagged candidate source and exact JAR. Run
+publication from the same `main` revision as the successful smoke run; any later `main` change requires a new smoke run.
 
 ### Job G — no-rebuild publication
 
