@@ -51,7 +51,7 @@ class ScopeToolsTest {
         every { api.proxy() } returns proxy
         every { proxy.history() } returns emptyList()
         every { api.logging() } returns logging
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
         metadataIndex = HttpMetadataIndex(api)
         service = ScopeToolService(api, config, metadataIndex)
     }

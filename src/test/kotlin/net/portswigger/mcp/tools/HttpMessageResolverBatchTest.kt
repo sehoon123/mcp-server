@@ -242,7 +242,7 @@ class HttpMessageResolverBatchTest {
         val siteMap = mockk<SiteMap>()
         val logging = mockk<Logging>(relaxed = true)
         val storage = mockk<PersistedObject>(relaxed = true)
-        val config = McpConfig(storage, logging)
+        val config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
 
         every { api.project() } returns project
         every { project.id() } returnsMany projectIds

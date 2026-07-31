@@ -3,6 +3,7 @@ package net.portswigger.mcp
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -114,6 +115,27 @@ class KtorServerManagerLifecycleTest {
         }
     }
 
+    @Test
+    fun `unreadable installation token preferences fail startup without opening a listener`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val logging = mockk<Logging>(relaxed = true)
+        val manager = KtorServerManager(mockApi(logging))
+        val states = LinkedBlockingQueue<ServerState>()
+        try {
+            manager.start(config(port, logging, failTokenRead = true), states::add)
+
+            assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
+            assertInstanceOf(ServerState.Failed::class.java, states.poll(10, TimeUnit.SECONDS))
+            assertEquals("failed", manager.diagnostics().state)
+            ServerSocket().use { replacement ->
+                replacement.reuseAddress = false
+                replacement.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+            }
+        } finally {
+            manager.shutdown()
+        }
+    }
+
     private fun startAndAwaitRunning(
         manager: KtorServerManager,
         config: McpConfig,
@@ -136,14 +158,20 @@ class KtorServerManagerLifecycleTest {
         every { this@mockk.logging() } returns logging
     }
 
-    private fun config(port: Int, logging: Logging): McpConfig {
+    private fun config(port: Int, logging: Logging, failTokenRead: Boolean = false): McpConfig {
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } returns true
         every { storage.getBoolean("approvalYoloMode") } returns false
         every { storage.getBoolean("emergencyReadOnlyMode") } returns false
         every { storage.getString(any()) } returns "127.0.0.1"
-        every { storage.getString("localBearerToken") } returns bearerToken
         every { storage.getInteger("port") } returns port
-        return McpConfig(storage, logging)
+        val preferences = mockk<Preferences>(relaxed = true)
+        if (failTokenRead) {
+            every { preferences.getString("independentMcpBridge.localBearerToken.v1") } throws
+                IllegalStateException("preferences unavailable")
+        } else {
+            every { preferences.getString("independentMcpBridge.localBearerToken.v1") } returns bearerToken
+        }
+        return McpConfig(storage, logging, preferences)
     }
 }

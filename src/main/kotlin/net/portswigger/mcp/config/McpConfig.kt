@@ -2,6 +2,8 @@ package net.portswigger.mcp.config
 
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
+import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.lang.ref.WeakReference
 import java.security.SecureRandom
@@ -15,12 +17,19 @@ internal const val MAX_AUDIT_RETENTION_ENTRIES = 1000
 internal const val DEFAULT_AUDIT_RETENTION_ENTRIES = 250
 
 private const val TARGET_SEPARATOR = "\n"
-private const val LOCAL_BEARER_TOKEN_KEY = "localBearerToken"
+private const val LEGACY_PROJECT_BEARER_TOKEN_KEY = "localBearerToken"
+private const val INSTALLATION_BEARER_TOKEN_KEY = "independentMcpBridge.localBearerToken.v1"
 private const val AUDIT_RETENTION_ENTRIES_KEY = "auditRetentionEntries"
 private const val APPROVAL_YOLO_MODE_KEY = "approvalYoloMode"
 private val LOCAL_BEARER_TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43,128}")
+private val INSTALLATION_BEARER_TOKEN_LOCK = Any()
 
-class McpConfig(private val storage: PersistedObject, private val logging: Logging) {
+class McpConfig(
+    private val storage: PersistedObject,
+    private val logging: Logging,
+    installationPreferences: Preferences,
+) {
+    private val localBearerTokens = InstallationBearerTokenStore(installationPreferences, storage, logging)
 
     var enabled by storage.boolean(true)
     var configEditingTooling by storage.boolean(false)
@@ -132,31 +141,11 @@ class McpConfig(private val storage: PersistedObject, private val logging: Loggi
 
     var filterConfigCredentials by storage.boolean(true)
 
-    @Volatile
-    private var cachedLocalBearerToken: String? = null
-
     /** Per-installation credential used only by the loopback MCP HTTP endpoint. */
     val localBearerToken: String
-        get() = cachedLocalBearerToken ?: loadOrCreateLocalBearerToken()
+        get() = localBearerTokens.current()
 
-    @Synchronized
-    private fun loadOrCreateLocalBearerToken(): String {
-        cachedLocalBearerToken?.let { return it }
-        val persisted = storage.getString(LOCAL_BEARER_TOKEN_KEY)
-        val token = persisted?.takeIf(LOCAL_BEARER_TOKEN_PATTERN::matches) ?: generateLocalBearerToken().also {
-            storage.setString(LOCAL_BEARER_TOKEN_KEY, it)
-        }
-        cachedLocalBearerToken = token
-        return token
-    }
-
-    @Synchronized
-    fun rotateLocalBearerToken(): String {
-        val token = generateLocalBearerToken()
-        storage.setString(LOCAL_BEARER_TOKEN_KEY, token)
-        cachedLocalBearerToken = token
-        return token
-    }
+    fun rotateLocalBearerToken(): String = localBearerTokens.rotate()
 
     private var _autoApproveTargets by storage.stringList("")
     @Volatile
@@ -359,6 +348,130 @@ class ListenerRegistration(listener: () -> Unit) {
 
 fun interface ListenerHandle {
     fun remove()
+}
+
+internal class LocalBearerTokenPersistenceException(message: String, cause: Throwable? = null) :
+    IllegalStateException(message, cause)
+
+/**
+ * Owns the installation-scoped loopback credential.
+ *
+ * Burp's extension data belongs to the current project and is memory-only when no project file is open. It is used
+ * here only as a one-time migration source. Preferences are authoritative because the Montoya contract guarantees that
+ * they survive extension and Burp reloads.
+ */
+private class InstallationBearerTokenStore(
+    private val preferences: Preferences,
+    private val legacyProjectStorage: PersistedObject,
+    private val logging: Logging,
+) {
+    fun current(): String = synchronized(INSTALLATION_BEARER_TOKEN_LOCK) {
+        loadOrCreateLocked()
+    }
+
+    private fun loadOrCreateLocked(): String {
+        val preferred = readPreference()
+        val selected = when {
+            preferred == null -> {
+                val legacy = readLegacyProjectToken()
+                val candidate = when {
+                    legacy == null -> generateLocalBearerToken()
+                    LOCAL_BEARER_TOKEN_PATTERN.matches(legacy) -> legacy
+                    else -> throw LocalBearerTokenPersistenceException(
+                        "The legacy local MCP bearer token is invalid; rotate it explicitly"
+                    )
+                }
+                persistPreference(candidate)
+            }
+            LOCAL_BEARER_TOKEN_PATTERN.matches(preferred) -> preferred
+            else -> throw LocalBearerTokenPersistenceException(
+                "The installation-scoped local MCP bearer token is invalid; rotate it explicitly"
+            )
+        }
+
+        removeLegacyProjectToken()
+        return selected
+    }
+
+    fun rotate(): String = synchronized(INSTALLATION_BEARER_TOKEN_LOCK) {
+        val replacement = persistPreference(generateLocalBearerToken())
+        removeLegacyProjectToken()
+        replacement
+    }
+
+    private fun readPreference(): String? = try {
+        preferences.getString(INSTALLATION_BEARER_TOKEN_KEY)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw LocalBearerTokenPersistenceException(
+            "Unable to read the installation-scoped local MCP bearer token",
+            e,
+        )
+    }
+
+    private fun readLegacyProjectToken(): String? = try {
+        legacyProjectStorage.getString(LEGACY_PROJECT_BEARER_TOKEN_KEY)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw LocalBearerTokenPersistenceException(
+            "Unable to inspect the legacy project-scoped local MCP bearer token",
+            e,
+        )
+    }
+
+    private fun persistPreference(token: String): String {
+        try {
+            preferences.setString(INSTALLATION_BEARER_TOKEN_KEY, token)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (writeFailure: Exception) {
+            val committed = readPreferenceAfterWrite()
+            if (committed != token) {
+                throw LocalBearerTokenPersistenceException(
+                    "Unable to persist the installation-scoped local MCP bearer token",
+                    writeFailure,
+                )
+            }
+            return committed
+        }
+
+        val observed = readPreferenceAfterWrite()
+            ?: return token // A successful Montoya setter is authoritative if a defensive reread is unavailable.
+        if (observed != token) {
+            throw LocalBearerTokenPersistenceException(
+                "Unable to confirm the installation-scoped local MCP bearer token update"
+            )
+        }
+        return token
+    }
+
+    private fun readPreferenceAfterWrite(): String? = try {
+        preferences.getString(INSTALLATION_BEARER_TOKEN_KEY)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun removeLegacyProjectToken() {
+        try {
+            legacyProjectStorage.deleteString(LEGACY_PROJECT_BEARER_TOKEN_KEY)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (failure: Exception) {
+            try {
+                logging.logToError(
+                    "Failed to remove the obsolete project-scoped MCP credential: ${safeExceptionSummary(failure)}"
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A logging failure must not invalidate an already committed installation credential.
+            }
+        }
+    }
 }
 
 private fun generateLocalBearerToken(): String {

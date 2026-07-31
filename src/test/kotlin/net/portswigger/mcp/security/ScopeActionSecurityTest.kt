@@ -32,7 +32,7 @@ class ScopeActionSecurityTest {
         every { storage.getBoolean(any()) } answers { values[firstArg()] ?: false }
         every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns ""
-        config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
     }
 
     @AfterEach

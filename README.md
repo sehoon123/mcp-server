@@ -826,8 +826,15 @@ Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Codex
    secret input, or header value shown above.
 4. Restart or reconnect every client. Delete obsolete installer backups after confirming the new configuration works.
 
-Rotation immediately invalidates the persisted credential, but an already-running listener retains its startup token
-until restarted. A `401 Unauthorized` after rotation almost always means one side still has the old value.
+The credential is installation-scoped: it survives extension reloads, full Burp restarts, and project changes. Only the
+explicit **Rotate local bearer token...** control attempts to replace it. RC6 migrates a valid credential from the
+currently loaded legacy project into Burp's persistent preference store before deleting that current-project copy. Older
+unopened project files can still contain the obsolete RC5-era value; it is no longer authoritative on an upgraded
+installation.
+
+A confirmed rotation immediately replaces the persisted credential, but an already-running listener retains its startup
+token until restarted. If the UI cannot confirm a rotation, re-copy or rotate the token before restarting Burp or the
+listener. A `401 Unauthorized` after rotation almost always means one side still has the old value.
 
 ### Connection troubleshooting
 

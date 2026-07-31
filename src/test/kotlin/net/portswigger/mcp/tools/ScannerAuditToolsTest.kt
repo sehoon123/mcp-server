@@ -2866,7 +2866,7 @@ class ScannerAuditToolsTest {
             firstArg<String>() == "requireDataAccessApproval" && requireDataApproval
         }
         every { storage.getString(any()) } returns ""
-        return McpConfig(storage, logging)
+        return McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
     }
 
     private fun approvalHandler(approved: Boolean) = object : SensitiveActionApprovalHandler {

@@ -303,7 +303,7 @@ class McpToolPolicyTest {
                 storage[firstArg<String>()] = secondArg<Int>()
             }
         }
-        return McpConfig(persistedObject, mockk<Logging>(relaxed = true))
+        return McpConfig(persistedObject, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
     }
 
     @Serializable

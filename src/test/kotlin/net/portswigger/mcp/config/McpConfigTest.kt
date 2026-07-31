@@ -2,50 +2,40 @@ package net.portswigger.mcp.config
 
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class McpConfigTest {
 
+    private val installationTokenKey = "independentMcpBridge.localBearerToken.v1"
     private lateinit var persistedObject: PersistedObject
+    private lateinit var preferences: Preferences
     private lateinit var config: McpConfig
     private lateinit var mockLogging: Logging
+    private lateinit var projectValues: MutableMap<String, Any>
+    private lateinit var preferenceValues: MutableMap<String, String>
 
     @BeforeEach
     fun setup() {
-        val storage = mutableMapOf<String, Any>()
-
-        persistedObject = mockk<PersistedObject>().apply {
-            every { getBoolean(any()) } answers {
-                val key = firstArg<String>()
-                storage[key] as? Boolean ?: when (key) {
-                    "enabled" -> true
-                    "requireHttpRequestApproval", "requireRequestActionApproval", "requireScopeChangeApproval" -> true
-                    else -> false
-                }
-            }
-            every { getString(any()) } answers { storage[firstArg()] as? String ?: "" }
-            every { getInteger(any()) } answers { storage[firstArg()] as? Int ?: 0 }
-            every { setBoolean(any(), any()) } answers {
-                storage[firstArg()] = secondArg<Boolean>()
-            }
-            every { setString(any(), any()) } answers {
-                storage[firstArg()] = secondArg<String>()
-            }
-            every { setInteger(any(), any()) } answers {
-                storage[firstArg()] = secondArg<Int>()
-            }
-        }
+        projectValues = mutableMapOf()
+        preferenceValues = mutableMapOf()
+        persistedObject = projectStorage(projectValues)
+        preferences = preferenceStorage(preferenceValues)
 
         mockLogging = mockk<Logging>().apply {
             every { logToError(any<String>()) } returns Unit
         }
 
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, preferences)
     }
 
     @Test
@@ -180,7 +170,7 @@ class McpConfigTest {
         every { persisted.getBoolean("approvalYoloMode") } returns true
         every { persisted.getString(any()) } returns ""
 
-        val reloaded = McpConfig(persisted, mockLogging)
+        val reloaded = McpConfig(persisted, mockLogging, preferences)
 
         assertTrue(reloaded.approvalYoloMode)
     }
@@ -191,7 +181,7 @@ class McpConfigTest {
         every { persisted.getBoolean("approvalYoloMode") } throws IllegalStateException("storage unavailable")
         every { persisted.getString(any()) } returns ""
 
-        val reloaded = McpConfig(persisted, mockLogging)
+        val reloaded = McpConfig(persisted, mockLogging, preferences)
 
         assertFalse(reloaded.approvalYoloMode)
     }
@@ -202,7 +192,7 @@ class McpConfigTest {
         every { persisted.getBoolean("approvalYoloMode") } returns false
         every { persisted.getString(any()) } returns ""
         every { persisted.setBoolean("approvalYoloMode", true) } throws IllegalStateException("storage unavailable")
-        val failClosed = McpConfig(persisted, mockLogging)
+        val failClosed = McpConfig(persisted, mockLogging, preferences)
 
         assertThrows(IllegalStateException::class.java) {
             failClosed.approvalYoloMode = true
@@ -246,7 +236,7 @@ class McpConfigTest {
                 storage[firstArg()] = secondArg<Int>()
             }
         }
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, preferences)
 
         assertEquals(
             listOf("example.com", "test.org", "*.api.com"), config.getAutoApproveTargetsList()
@@ -270,7 +260,7 @@ class McpConfigTest {
                 storage[firstArg()] = secondArg<Int>()
             }
         }
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, preferences)
 
         assertEquals(
             listOf("example.com", "test.org"), config.getAutoApproveTargetsList()
@@ -288,7 +278,7 @@ class McpConfigTest {
             every { setString(any(), any()) } answers { storage[firstArg()] = secondArg<String>() }
             every { setInteger(any(), any()) } answers { storage[firstArg()] = secondArg<Int>() }
         }
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, preferences)
 
         assertEquals(listOf("example.com", "test.org"), config.getAutoApproveTargetsList())
     }
@@ -349,18 +339,205 @@ class McpConfigTest {
     }
 
     @Test
-    fun `local bearer token is generated once persisted and redaction-safe`() {
+    fun `local bearer token is generated once in installation preferences and survives project replacement`() {
         val first = config.localBearerToken
         val second = config.localBearerToken
 
         assertEquals(first, second)
         assertTrue(first.matches(Regex("[A-Za-z0-9_-]{43}")))
-        verify(exactly = 1) { persistedObject.setString("localBearerToken", first) }
+        assertEquals(first, preferenceValues[installationTokenKey])
+        assertFalse(projectValues.containsKey("localBearerToken"))
+        verify(exactly = 1) { preferences.setString(installationTokenKey, first) }
+
+        val replacementProject = projectStorage(mutableMapOf())
+        val reloaded = McpConfig(replacementProject, mockLogging, preferences)
+        assertEquals(first, reloaded.localBearerToken)
+        verify(exactly = 1) { preferences.setString(installationTokenKey, first) }
+    }
+
+    @Test
+    fun `valid legacy project token is migrated once and removed from the current project`() {
+        val legacy = "a".repeat(43)
+        projectValues["localBearerToken"] = legacy
+
+        assertEquals(legacy, config.localBearerToken)
+        assertEquals(legacy, preferenceValues[installationTokenKey])
+        assertFalse(projectValues.containsKey("localBearerToken"))
+        verify(exactly = 1) { preferences.setString(installationTokenKey, legacy) }
+        verify(exactly = 1) { persistedObject.deleteString("localBearerToken") }
+    }
+
+    @Test
+    fun `installation preference is authoritative over a different project token`() {
+        val preferred = "p".repeat(43)
+        preferenceValues[installationTokenKey] = preferred
+        projectValues["localBearerToken"] = "l".repeat(43)
+
+        assertEquals(preferred, config.localBearerToken)
+        assertFalse(projectValues.containsKey("localBearerToken"))
+        verify(exactly = 0) { preferences.setString(any(), any()) }
+    }
+
+    @Test
+    fun `corrupt installation preference fails closed instead of silently rotating`() {
+        preferenceValues[installationTokenKey] = "corrupt"
+
+        assertThrows(LocalBearerTokenPersistenceException::class.java) { config.localBearerToken }
+        verify(exactly = 0) { preferences.setString(any(), any()) }
+        assertEquals("corrupt", preferenceValues[installationTokenKey])
+    }
+
+    @Test
+    fun `corrupt legacy project token fails closed instead of silently rotating`() {
+        projectValues["localBearerToken"] = "corrupt"
+
+        assertThrows(LocalBearerTokenPersistenceException::class.java) { config.localBearerToken }
+        verify(exactly = 0) { preferences.setString(any(), any()) }
+        assertFalse(preferenceValues.containsKey(installationTokenKey))
+    }
+
+    @Test
+    fun `preference read failure cannot create an ephemeral runtime token`() {
+        every { preferences.getString(installationTokenKey) } throws IllegalStateException("unavailable")
+
+        assertThrows(LocalBearerTokenPersistenceException::class.java) { config.localBearerToken }
+        verify(exactly = 0) { preferences.setString(any(), any()) }
+    }
+
+    @Test
+    fun `definitely failed explicit rotation retains the persisted token`() {
+        val original = "o".repeat(43)
+        preferenceValues[installationTokenKey] = original
+        assertEquals(original, config.localBearerToken)
+        every { preferences.setString(installationTokenKey, any()) } throws IllegalStateException("unavailable")
+
+        assertThrows(LocalBearerTokenPersistenceException::class.java) { config.rotateLocalBearerToken() }
+        assertEquals(original, config.localBearerToken)
+        assertEquals(original, preferenceValues[installationTokenKey])
+    }
+
+    @Test
+    fun `write exception is reconciled when preferences committed the replacement`() {
+        val values = mutableMapOf<String, String>()
+        val uncertainPreferences = preferenceStorage(values)
+        every { uncertainPreferences.setString(installationTokenKey, any()) } answers {
+            values[installationTokenKey] = secondArg()
+            throw IllegalStateException("late failure")
+        }
+        val uncertain = McpConfig(projectStorage(mutableMapOf()), mockLogging, uncertainPreferences)
+
+        val selected = assertDoesNotThrow<String> { uncertain.localBearerToken }
+        assertEquals(selected, values[installationTokenKey])
+        assertEquals(selected, uncertain.localBearerToken)
+    }
+
+    @Test
+    fun `unconfirmed committed rotation is recovered from preferences without a stale cached token`() {
+        val original = "o".repeat(43)
+        val values = mutableMapOf(installationTokenKey to original)
+        val readsAvailable = AtomicBoolean(true)
+        val uncertainPreferences = preferenceStorage(values)
+        every { uncertainPreferences.getString(installationTokenKey) } answers {
+            if (!readsAvailable.get()) throw IllegalStateException("reconciliation unavailable")
+            values[installationTokenKey]
+        }
+        every { uncertainPreferences.setString(installationTokenKey, any()) } answers {
+            values[installationTokenKey] = secondArg()
+            readsAvailable.set(false)
+            throw IllegalStateException("late failure")
+        }
+        val uncertain = McpConfig(projectStorage(mutableMapOf()), mockLogging, uncertainPreferences)
+
+        assertEquals(original, uncertain.localBearerToken)
+        assertThrows(LocalBearerTokenPersistenceException::class.java) {
+            uncertain.rotateLocalBearerToken()
+        }
+        val committed = values.getValue(installationTokenKey)
+        assertNotEquals(original, committed)
+
+        readsAvailable.set(true)
+        assertEquals(committed, uncertain.localBearerToken)
+    }
+
+    @Test
+    fun `successful preference write followed by a different valid value fails as uncertain`() {
+        val original = "o".repeat(43)
+        val conflicting = "x".repeat(43)
+        val values = mutableMapOf(installationTokenKey to original)
+        var returnConflict = false
+        val conflictingPreferences = preferenceStorage(values)
+        every { conflictingPreferences.getString(installationTokenKey) } answers {
+            if (returnConflict) conflicting else values[installationTokenKey]
+        }
+        every { conflictingPreferences.setString(installationTokenKey, any()) } answers {
+            values[installationTokenKey] = secondArg()
+            returnConflict = true
+        }
+        val uncertain = McpConfig(projectStorage(mutableMapOf()), mockLogging, conflictingPreferences)
+
+        assertEquals(original, uncertain.localBearerToken)
+        assertThrows(LocalBearerTokenPersistenceException::class.java) {
+            uncertain.rotateLocalBearerToken()
+        }
+        assertNotEquals(conflicting, values[installationTokenKey])
+
+        returnConflict = false
+        assertEquals(values[installationTokenKey], uncertain.localBearerToken)
+    }
+
+    @Test
+    fun `explicit rotation persists across a replacement project and Burp lifetime`() {
+        val original = config.localBearerToken
+        val rotated = config.rotateLocalBearerToken()
+
+        assertNotEquals(original, rotated)
+        assertEquals(rotated, preferenceValues[installationTokenKey])
+        assertEquals(rotated, config.localBearerToken)
+        val reloaded = McpConfig(projectStorage(mutableMapOf()), mockLogging, preferences)
+        assertEquals(rotated, reloaded.localBearerToken)
+    }
+
+    @Test
+    fun `explicit rotation repairs a corrupt installation preference`() {
+        preferenceValues[installationTokenKey] = "corrupt"
 
         val rotated = config.rotateLocalBearerToken()
-        assertNotEquals(first, rotated)
+
+        assertTrue(rotated.matches(Regex("[A-Za-z0-9_-]{43}")))
+        assertEquals(rotated, preferenceValues[installationTokenKey])
         assertEquals(rotated, config.localBearerToken)
-        verify { persistedObject.setString("localBearerToken", rotated) }
+    }
+
+    @Test
+    fun `concurrent first access across config objects persists one installation token`() {
+        val configs = List(16) {
+            McpConfig(projectStorage(mutableMapOf()), mockLogging, preferences)
+        }
+        val executor = Executors.newFixedThreadPool(8)
+        try {
+            val results = executor.invokeAll(configs.map { candidate -> Callable { candidate.localBearerToken } })
+                .map { future -> future.get(10, TimeUnit.SECONDS) }
+
+            assertEquals(1, results.toSet().size)
+            assertEquals(results.singleOrNull() ?: results.first(), preferenceValues[installationTokenKey])
+            verify(exactly = 1) { preferences.setString(installationTokenKey, any()) }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `legacy cleanup failure does not replace or disclose the committed preference`() {
+        val preferred = "q".repeat(43)
+        preferenceValues[installationTokenKey] = preferred
+        every { persistedObject.deleteString("localBearerToken") } throws IllegalStateException("cleanup failed")
+
+        assertEquals(preferred, config.localBearerToken)
+        verify {
+            mockLogging.logToError(match<String> {
+                it.contains("obsolete project-scoped MCP credential") && !it.contains(preferred)
+            })
+        }
     }
 
     @Test
@@ -493,4 +670,29 @@ class McpConfigTest {
         assertTrue(config.requireHttpRequestApproval)
         verify { persistedObject.setBoolean("requireHttpRequestApproval", true) }
     }
+
+    private fun projectStorage(values: MutableMap<String, Any>): PersistedObject =
+        mockk<PersistedObject>().apply {
+            every { getBoolean(any()) } answers {
+                val key = firstArg<String>()
+                values[key] as? Boolean ?: when (key) {
+                    "enabled" -> true
+                    "requireHttpRequestApproval", "requireRequestActionApproval", "requireScopeChangeApproval" -> true
+                    else -> false
+                }
+            }
+            every { getString(any()) } answers { values[firstArg()] as? String }
+            every { getInteger(any()) } answers { values[firstArg()] as? Int ?: 0 }
+            every { setBoolean(any(), any()) } answers { values[firstArg<String>()] = secondArg<Boolean>() }
+            every { setString(any(), any()) } answers { values[firstArg<String>()] = secondArg<String>() }
+            every { setInteger(any(), any()) } answers { values[firstArg<String>()] = secondArg<Int>() }
+            every { deleteString(any()) } answers { values.remove(firstArg<String>()); Unit }
+        }
+
+    private fun preferenceStorage(values: MutableMap<String, String>): Preferences =
+        mockk<Preferences>().apply {
+            every { getString(any()) } answers { values[firstArg()] }
+            every { setString(any(), any()) } answers { values[firstArg<String>()] = secondArg<String>() }
+            every { deleteString(any()) } answers { values.remove(firstArg<String>()); Unit }
+        }
 }

@@ -6,6 +6,7 @@ import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.*
@@ -58,6 +59,7 @@ class ProxyEndToEndTest {
     )
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
+    private val preferences = mockk<Preferences>(relaxed = true)
 
     @Volatile
     private var serverStarted = false
@@ -68,8 +70,8 @@ class ProxyEndToEndTest {
         every { persistedObject.getBoolean("emergencyReadOnlyMode") } returns false
         every { persistedObject.getBoolean("requireRequestActionApproval") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
-        every { persistedObject.getString("localBearerToken") } returns testBearerToken
         every { persistedObject.getInteger("port") } returns testPort
+        every { preferences.getString("independentMcpBridge.localBearerToken.v1") } returns testBearerToken
         every { persistedObject.setBoolean(any(), any()) } returns Unit
         every { persistedObject.setString(any(), any()) } returns Unit
         every { persistedObject.setInteger(any(), any()) } returns Unit
@@ -81,7 +83,7 @@ class ProxyEndToEndTest {
         every { logToOutput(any<String>()) } returns Unit
     }
 
-    private val config = McpConfig(persistedObject, mockLogging)
+    private val config = McpConfig(persistedObject, mockLogging, preferences)
 
     private lateinit var proxyProcess: Process
     private lateinit var client: TestStdioMcpClient

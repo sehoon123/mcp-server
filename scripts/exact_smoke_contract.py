@@ -122,13 +122,52 @@ _HEX_40 = re.compile(r"^[a-f0-9]{40}$")
 _HEX_64 = re.compile(r"^[a-f0-9]{64}$")
 _UUID_VALUE = re.compile(rb"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
 _PRIVATE_JSON_FIELD = re.compile(
-    rb'(?i)"(?:projectId|sessionId|stableId|scannerTaskId|collaboratorPayload)"\s*:'
+    rb'(?i)"?(?:project|session|stable|scanner[-_. ]*task)[-_. ]*id"?\s*:|'
+    rb'"?collaborator[-_. ]*payload"?\s*:'
 )
 _CREDENTIAL_FIELD = re.compile(
-    rb'(?im)(?:^|[\r\n{,])\s*"?(?:authorization|proxy-authorization|cookie|set-cookie)"?\s*:'
+    rb'(?im)(?:^|[\r\n{,])\s*"?(?:authorization|proxy[-_. ]*authorization|cookie|set[-_. ]*cookie|'
+    rb'token|bearer[-_. ]*token|auth(?:entication)?[-_. ]*token|access[-_. ]*token|'
+    rb'personal[-_. ]*access[-_. ]*token|refresh[-_. ]*token|id[-_. ]*token|session[-_. ]*token|security[-_. ]*token|'
+    rb'api[-_. ]*token|oauth[-_. ]*token|client[-_. ]*token|csrf[-_. ]*token|api[-_. ]*key|'
+    rb'x[-_. ]*api[-_. ]*key|secret|secret[-_. ]*key|client[-_. ]*secret|password|passwd|passphrase|'
+    rb'credentials?|private[-_. ]*key|signing[-_. ]*key|jwt)"?\s*:'
 )
+_JSON_KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _PRIVATE_JSON_KEYS = frozenset({"projectid", "sessionid", "stableid", "scannertaskid", "collaboratorpayload"})
-_CREDENTIAL_JSON_KEYS = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie"})
+_CREDENTIAL_JSON_KEYS = frozenset({
+    "authorization",
+    "proxyauthorization",
+    "cookie",
+    "setcookie",
+    "token",
+    "bearertoken",
+    "authtoken",
+    "authenticationtoken",
+    "accesstoken",
+    "personalaccesstoken",
+    "refreshtoken",
+    "idtoken",
+    "sessiontoken",
+    "securitytoken",
+    "apitoken",
+    "oauthtoken",
+    "clienttoken",
+    "csrftoken",
+    "apikey",
+    "xapikey",
+    "secret",
+    "secretkey",
+    "clientsecret",
+    "password",
+    "passwd",
+    "passphrase",
+    "credential",
+    "credentials",
+    "privatekey",
+    "signingkey",
+    "jwt",
+})
 _JSON_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _MAX_JSON_PARSE_BYTES = 8 * 1024 * 1024
 _MAX_JSON_STRUCTURAL_TOKENS = 100_000
@@ -482,7 +521,7 @@ def _validate_json_privacy(value: Any, forbidden_text: tuple[str, ...]) -> None:
             for key, nested in current.items():
                 if isinstance(key, str):
                     _scan_decoded_text_privacy(key, forbidden_text)
-                    normalized = key.casefold()
+                    normalized = _JSON_KEY_SEPARATOR.sub("", key.casefold())
                     if normalized in _CREDENTIAL_JSON_KEYS:
                         raise HarnessError("credential-bearing field reached permanent smoke evidence")
                     if normalized in _PRIVATE_JSON_KEYS:

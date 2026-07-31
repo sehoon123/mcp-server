@@ -78,7 +78,7 @@ class HttpMessageActionsTest {
         every { project.id() } returns "project-123"
         every { api.proxy() } returns proxy
         every { api.logging() } returns logging
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
         service = HttpMessageActionService(api, config)
     }
 

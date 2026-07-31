@@ -69,7 +69,7 @@ class HttpRequestSecurityTest {
             every { logToError(any<String>()) } returns Unit
         }
 
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, net.portswigger.mcp.testPreferences())
     }
 
     @AfterEach
@@ -398,7 +398,7 @@ class HttpRequestSecurityTest {
                 storage[firstArg()] = secondArg<Int>()
             }
         }
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, net.portswigger.mcp.testPreferences())
 
         coEvery { mockApprovalHandler.requestApproval("empty.com", 80, config, any()) } returns false
 

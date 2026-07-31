@@ -30,7 +30,7 @@ class DataAccessSecurityTest {
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } returns false
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         val queuedAction = slot<Runnable>()
         mockkStatic(SwingUtilities::class)
         mockkObject(Dialogs)
@@ -59,7 +59,7 @@ class DataAccessSecurityTest {
         every { storage.getBoolean(any()) } answers { values[firstArg()] ?: false }
         every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         val queuedAction = slot<Runnable>()
         lateinit var approval: Deferred<Boolean>
         mockkStatic(SwingUtilities::class)
@@ -93,7 +93,7 @@ class DataAccessSecurityTest {
         every { storage.getBoolean(any()) } answers { values[firstArg()] ?: false }
         every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         val queuedAction = slot<Runnable>()
         val message = slot<String>()
         val options = slot<Array<String>>()
@@ -124,7 +124,7 @@ class DataAccessSecurityTest {
         every { storage.getBoolean(any()) } answers { values[firstArg()] as? Boolean ?: false }
         every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg<Boolean>() }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         val approvals = McpSessionApprovalRegistry(2)
         assertTrue(approvals.activate("data-session"))
         assertTrue(approvals.activate("other-session"))
@@ -156,7 +156,7 @@ class DataAccessSecurityTest {
             values[firstArg()] = secondArg<Boolean>()
         }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         var approvalRequests = 0
         DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
             override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
@@ -181,7 +181,7 @@ class DataAccessSecurityTest {
         every { storage.getBoolean(any()) } answers { values[firstArg()] as? Boolean ?: false }
         every { storage.setBoolean(any(), any()) } answers { values[firstArg()] = secondArg<Boolean>() }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         var approvals = 0
         DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
             override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
@@ -206,7 +206,7 @@ class DataAccessSecurityTest {
             values[firstArg()] = secondArg<Boolean>()
         }
         every { storage.getString(any()) } returns ""
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         var approvalRequests = 0
         DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
             override suspend fun requestDataAccess(

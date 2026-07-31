@@ -14,6 +14,7 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.websocket.Direction
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -74,6 +75,7 @@ class McpServerIntegrationTest {
     private val serverManager = KtorServerManager(api, auditSink)
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
+    private val preferences = mockk<Preferences>(relaxed = true)
     private var serverStarted = false
 
     init {
@@ -87,8 +89,8 @@ class McpServerIntegrationTest {
         every { persistedObject.getBoolean("_alwaysAllowScannerIssues") } returns false
         every { persistedObject.getBoolean("_alwaysAllowCollaboratorInteractions") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
-        every { persistedObject.getString("localBearerToken") } returns testBearerToken
         every { persistedObject.getInteger("port") } returns testPort
+        every { preferences.getString("independentMcpBridge.localBearerToken.v1") } returns testBearerToken
         every { persistedObject.setBoolean(any(), any()) } returns Unit
         every { persistedObject.setString(any(), any()) } returns Unit
         every { persistedObject.setInteger(any(), any()) } returns Unit
@@ -101,7 +103,7 @@ class McpServerIntegrationTest {
         every { logToOutput(any<String>()) } returns Unit
     }
 
-    private val config = McpConfig(persistedObject, mockLogging)
+    private val config = McpConfig(persistedObject, mockLogging, preferences)
 
     @BeforeEach
     fun setup() {

@@ -60,7 +60,7 @@ class WebSocketMessageSearchTest {
         every { project.id() } answers { currentProjectId }
         every { api.proxy() } returns proxy
         every { proxy.webSocketHistory() } answers { records.toList() }
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
         service = WebSocketMessageSearchService(api, config, cursorSecret = ByteArray(32) { 5 })
     }
 

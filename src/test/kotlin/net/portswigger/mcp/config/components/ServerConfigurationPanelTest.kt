@@ -138,7 +138,7 @@ class ServerConfigurationPanelTest {
         }
         every { storage.getString(any()) } answers { values[firstArg()] as? String ?: "" }
         every { storage.setString(any(), any()) } answers { values[firstArg()] = secondArg<String>() }
-        return McpConfig(storage, mockk<Logging>(relaxed = true))
+        return McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
     }
 
     private fun descendants(root: Container): Sequence<Component> = sequence {

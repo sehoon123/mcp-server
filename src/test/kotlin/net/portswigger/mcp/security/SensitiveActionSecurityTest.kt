@@ -51,7 +51,7 @@ class SensitiveActionSecurityTest {
         val handler = mockk<SensitiveActionApprovalHandler>()
         SensitiveActionSecurity.approvalHandler = handler
         val api = mockk<MontoyaApi>()
-        val config = McpConfig(mockk(relaxed = true), mockk(relaxed = true))
+        val config = McpConfig(mockk(relaxed = true), mockk(relaxed = true), net.portswigger.mcp.testPreferences())
 
         assertFailsWith<IllegalArgumentException> {
             SensitiveActionSecurity.checkPermission(

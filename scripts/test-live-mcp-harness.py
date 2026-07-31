@@ -96,6 +96,11 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             with self.assertRaises(harness.HarnessError):
                 harness.read_private_token(link)
 
+            for invalid in ("a" * 42, "!" * 43, "é" * 43, "a" * 129):
+                token_file.write_text(invalid, encoding="utf-8")
+                with self.assertRaises(harness.HarnessError):
+                    harness.read_private_token(token_file)
+
     def test_private_report_is_exclusive_redacted_and_mode_600(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "evidence" / "result.json"
