@@ -94,7 +94,11 @@ before listener restart, old-token `401` plus C acceptance after listener restar
 after the second full Burp restart. Each report must also attest separate Community/Professional installation profiles,
 data directories, and projects. The report schema requires every private-data-recorded flag to be `false`; arbitrary fields are
 rejected. Credential-named fields are forbidden in all permanent evidence even when their value is `false` or `null`;
-use aggregate booleans such as `tokenRecorded` only where an existing exact schema explicitly permits them.
+use aggregate booleans such as `tokenRecorded` only where an existing exact schema explicitly permits them. Private
+identifier keys are rejected by exact normalized key semantics, including nested JSON text; a longer categorical key is
+not a private identifier merely because it contains the same words. Malformed or raw text remains fail-closed for exact
+private/credential fields and bounded JSON-escaped private values. Canonical runner output must pass directly—renaming
+or otherwise normalizing fields after a run is not release evidence.
 
 ## Diagnostics-gated cancellation
 

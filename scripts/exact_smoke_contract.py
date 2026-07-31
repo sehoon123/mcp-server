@@ -121,18 +121,6 @@ SCENARIO_REQUIRED_EDITIONS = {
 _HEX_40 = re.compile(r"^[a-f0-9]{40}$")
 _HEX_64 = re.compile(r"^[a-f0-9]{64}$")
 _UUID_VALUE = re.compile(rb"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
-_PRIVATE_JSON_FIELD = re.compile(
-    rb'(?i)"?(?:project|session|stable|scanner[-_. ]*task)[-_. ]*id"?\s*:|'
-    rb'"?collaborator[-_. ]*payload"?\s*:'
-)
-_CREDENTIAL_FIELD = re.compile(
-    rb'(?im)(?:^|[\r\n{,])\s*"?(?:authorization|proxy[-_. ]*authorization|cookie|set[-_. ]*cookie|'
-    rb'token|bearer[-_. ]*token|auth(?:entication)?[-_. ]*token|access[-_. ]*token|'
-    rb'personal[-_. ]*access[-_. ]*token|refresh[-_. ]*token|id[-_. ]*token|session[-_. ]*token|security[-_. ]*token|'
-    rb'api[-_. ]*token|oauth[-_. ]*token|client[-_. ]*token|csrf[-_. ]*token|api[-_. ]*key|'
-    rb'x[-_. ]*api[-_. ]*key|secret|secret[-_. ]*key|client[-_. ]*secret|password|passwd|passphrase|'
-    rb'credentials?|private[-_. ]*key|signing[-_. ]*key|jwt)"?\s*:'
-)
 _JSON_KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _PRIVATE_JSON_KEYS = frozenset({"projectid", "sessionid", "stableid", "scannertaskid", "collaboratorpayload"})
 _CREDENTIAL_JSON_KEYS = frozenset({
@@ -168,12 +156,89 @@ _CREDENTIAL_JSON_KEYS = frozenset({
     "signingkey",
     "jwt",
 })
-_JSON_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_FIELD_KEY_SEPARATOR = rb'''[^A-Za-z0-9"'\r\n,:{}\[\]]*'''
+_RAW_FIELD_PREFIX = rb'(?<![A-Za-z0-9_./-])'
+
+
+def _normalized_field_name_pattern(names: frozenset[str]) -> bytes:
+    patterns = (
+        _FIELD_KEY_SEPARATOR.join(character.encode("ascii") for character in name)
+        for name in sorted(names, key=lambda candidate: (-len(candidate), candidate))
+    )
+    return rb'(?:' + rb'|'.join(patterns) + rb')'
+
+
+_PRIVATE_FIELD_NAME = _normalized_field_name_pattern(_PRIVATE_JSON_KEYS)
+_CREDENTIAL_FIELD_NAME = _normalized_field_name_pattern(_CREDENTIAL_JSON_KEYS)
+_PRIVATE_QUOTED_FIELD = re.compile(rb'["\']' + _PRIVATE_FIELD_NAME + rb'["\']\s*:', re.IGNORECASE)
+_CREDENTIAL_QUOTED_FIELD = re.compile(rb'["\']' + _CREDENTIAL_FIELD_NAME + rb'["\']\s*:', re.IGNORECASE)
+_PRIVATE_UNQUOTED_FIELD = re.compile(_RAW_FIELD_PREFIX + _PRIVATE_FIELD_NAME + rb'\s*:', re.IGNORECASE)
+_CREDENTIAL_UNQUOTED_FIELD = re.compile(_RAW_FIELD_PREFIX + _CREDENTIAL_FIELD_NAME + rb'\s*:', re.IGNORECASE)
 _MAX_JSON_PARSE_BYTES = 8 * 1024 * 1024
 _MAX_JSON_STRUCTURAL_TOKENS = 100_000
 _MAX_JSON_DEPTH = 128
 _MAX_NESTED_JSON_DEPTH = 8
 _MAX_NESTED_JSON_TEXT_BYTES = 8 * 1024 * 1024
+
+
+def _quoted_field_name_spans(content: bytes) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while cursor < len(content):
+        quote = content[cursor]
+        if quote not in (ord('"'), ord("'")):
+            cursor += 1
+            continue
+        start = cursor + 1
+        cursor = start
+        while cursor < len(content):
+            if content[cursor] == ord("\\"):
+                cursor += 2
+                continue
+            if content[cursor] != quote:
+                cursor += 1
+                continue
+            end = cursor
+            after = end + 1
+            while after < len(content) and content[after] in b" \t\r\n":
+                after += 1
+            if after < len(content) and content[after] == ord(":"):
+                spans.append((start, end))
+            cursor = end + 1
+            break
+        else:
+            break
+    return spans
+
+
+def _matches_outside_quoted_field_name(
+    pattern: re.Pattern[bytes],
+    content: bytes,
+    quoted_spans: list[tuple[int, int]],
+) -> bool:
+    span_index = 0
+    for match in pattern.finditer(content):
+        while span_index < len(quoted_spans) and quoted_spans[span_index][1] <= match.start():
+            span_index += 1
+        if span_index < len(quoted_spans):
+            start, end = quoted_spans[span_index]
+            if start <= match.start() < end:
+                continue
+        return True
+    return False
+
+
+def _sensitive_field_kind(content: bytes) -> str | None:
+    if _CREDENTIAL_QUOTED_FIELD.search(content):
+        return "credential"
+    if _PRIVATE_QUOTED_FIELD.search(content):
+        return "private"
+    quoted_spans = _quoted_field_name_spans(content)
+    if _matches_outside_quoted_field_name(_CREDENTIAL_UNQUOTED_FIELD, content, quoted_spans):
+        return "credential"
+    if _matches_outside_quoted_field_name(_PRIVATE_UNQUOTED_FIELD, content, quoted_spans):
+        return "private"
+    return None
 
 
 def validate_release_identity(source_commit: str, jar_sha256: str, version: str) -> None:
@@ -448,27 +513,75 @@ def _decode_evidence_text(content: bytes) -> str | None:
 
 
 def _normalized_json_escape_text(value: str) -> str:
-    return _JSON_UNICODE_ESCAPE.sub(
-        lambda match: "\ufffd"
-        if 0xD800 <= int(match.group(1), 16) <= 0xDFFF
-        else chr(int(match.group(1), 16)),
-        value,
-    )
+    if "\\" not in value:
+        return value
+    simple_escapes = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] != "\\" or cursor + 1 >= len(value):
+            output.append(value[cursor])
+            cursor += 1
+            continue
+        escape = value[cursor + 1]
+        if escape in simple_escapes:
+            output.append(simple_escapes[escape])
+            cursor += 2
+            continue
+        if escape != "u" or cursor + 6 > len(value):
+            output.append("\\")
+            cursor += 1
+            continue
+        try:
+            codepoint = int(value[cursor + 2:cursor + 6], 16)
+        except ValueError:
+            output.append("\\")
+            cursor += 1
+            continue
+        cursor += 6
+        if 0xD800 <= codepoint <= 0xDBFF and value[cursor:cursor + 2] == "\\u" and cursor + 6 <= len(value):
+            try:
+                low_surrogate = int(value[cursor + 2:cursor + 6], 16)
+            except ValueError:
+                low_surrogate = -1
+            if 0xDC00 <= low_surrogate <= 0xDFFF:
+                output.append(chr(0x10000 + ((codepoint - 0xD800) << 10) + low_surrogate - 0xDC00))
+                cursor += 6
+                continue
+        output.append("\ufffd" if 0xD800 <= codepoint <= 0xDFFF else chr(codepoint))
+    return "".join(output)
 
 
 def _scan_decoded_text_privacy(value: str, forbidden_text: tuple[str, ...]) -> None:
     if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
         raise HarnessError("JSON evidence contained an unsupported surrogate value")
-    normalized = _normalized_json_escape_text(value)
-    if any(forbidden and (forbidden in value or forbidden in normalized) for forbidden in forbidden_text):
-        raise HarnessError("private runtime value reached permanent smoke evidence")
-    encoded = normalized.encode("utf-8")
-    if _UUID_VALUE.search(encoded):
-        raise HarnessError("UUID-shaped private identifier reached permanent smoke evidence")
-    if _CREDENTIAL_FIELD.search(encoded):
-        raise HarnessError("credential-bearing field reached permanent smoke evidence")
-    if _PRIVATE_JSON_FIELD.search(encoded):
-        raise HarnessError("private identifier field reached permanent smoke evidence")
+    normalized = value
+    for escape_depth in range(_MAX_NESTED_JSON_DEPTH + 1):
+        if any(forbidden and forbidden in normalized for forbidden in forbidden_text):
+            raise HarnessError("private runtime value reached permanent smoke evidence")
+        encoded = normalized.encode("utf-8")
+        if _UUID_VALUE.search(encoded):
+            raise HarnessError("UUID-shaped private identifier reached permanent smoke evidence")
+        sensitive_field = _sensitive_field_kind(normalized.casefold().encode("utf-8"))
+        if sensitive_field == "credential":
+            raise HarnessError("credential-bearing field reached permanent smoke evidence")
+        if sensitive_field == "private":
+            raise HarnessError("private identifier field reached permanent smoke evidence")
+        decoded = _normalized_json_escape_text(normalized)
+        if decoded == normalized:
+            return
+        if escape_depth == _MAX_NESTED_JSON_DEPTH:
+            raise HarnessError("JSON escape nesting exceeded its bounded depth")
+        normalized = decoded
 
 
 def _json_text_candidate(value: str) -> str | None:
@@ -697,11 +810,12 @@ def validate_permanent_text(content: bytes, forbidden_values: Iterable[bytes]) -
     forbidden = tuple(value for value in forbidden_values if value)
     if any(value in content for value in forbidden):
         raise HarnessError("private runtime value reached permanent smoke evidence")
-    if _CREDENTIAL_FIELD.search(content):
+    sensitive_field = _sensitive_field_kind(content)
+    if sensitive_field == "credential":
         raise HarnessError("credential-bearing field reached permanent smoke evidence")
     if _UUID_VALUE.search(content):
         raise HarnessError("UUID-shaped private identifier reached permanent smoke evidence")
-    if _PRIVATE_JSON_FIELD.search(content):
+    if sensitive_field == "private":
         raise HarnessError("private identifier field reached permanent smoke evidence")
     try:
         forbidden_text = tuple(value.decode("utf-8") for value in forbidden)
