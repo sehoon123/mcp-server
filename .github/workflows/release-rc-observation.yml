@@ -1,0 +1,298 @@
+name: Attest seven-day RC observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: Published immutable RC tag (for example v4.11.0-rc.7)
+        required: true
+        type: string
+      rc_source_sha:
+        description: Exact 40-character source commit targeted by the RC tag
+        required: true
+        type: string
+      protected_smoke_run_id:
+        description: Successful exact-byte release-smoke workflow run ID for the RC
+        required: true
+        type: string
+      publication_run_id:
+        description: Successful no-rebuild release-publish workflow run ID that published the RC
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-rc-observation-${{ inputs.rc_tag }}-${{ inputs.rc_source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Verify immutable RC observation and defect triage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      issues: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Create bounded machine-verifiable observation record
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ inputs.rc_tag }}
+          RC_SOURCE_COMMIT: ${{ inputs.rc_source_sha }}
+          PROTECTED_SMOKE_RUN_ID: ${{ inputs.protected_smoke_run_id }}
+          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+          AUTHORIZED_ACTOR: sehoon123
+          AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_ACTOR" == "$AUTHORIZED_ACTOR" ]]
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PROTECTED_SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ && "$PUBLICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$RC_TAG" =~ $rc_semver ]]
+
+          stage="$RUNNER_TEMP/rc-observation"
+          assets="$stage/assets"
+          smoke="$stage/smoke"
+          mkdir -p "$assets" "$smoke/record" "$smoke/attestation"
+
+          repository_json="$stage/repository.json"
+          compare_json="$stage/compare.json"
+          labels_json="$stage/labels.json"
+          issues_json="$stage/issues.json"
+          open_blockers_json="$stage/open-blockers.json"
+          release_json_file="$stage/release.json"
+          gh api "repos/$GITHUB_REPOSITORY" > "$repository_json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .full_name == $repo and .has_issues == true and .archived == false and .disabled == false
+          ' "$repository_json" >/dev/null
+
+          gh api "repos/$GITHUB_REPOSITORY/compare/$RC_SOURCE_COMMIT...$GITHUB_SHA" > "$compare_json"
+          jq -e --arg sha "$RC_SOURCE_COMMIT" '
+            .merge_base_commit.sha == $sha and .status == "ahead" and .behind_by == 0 and
+            (.ahead_by | type) == "number" and .ahead_by > 0 and
+            (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300
+          ' "$compare_json" >/dev/null
+
+          ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RC_TAG")
+          [[ $(jq -r '.object.type' <<<"$ref_json") == tag ]]
+          tag_object=$(jq -r '.object.sha' <<<"$ref_json")
+          [[ "$tag_object" =~ ^[a-f0-9]{40}$ ]]
+          tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")
+          jq -e --arg sha "$RC_SOURCE_COMMIT" --arg email "$AUTHORIZED_TAGGER_EMAIL" --arg tag "$RC_TAG" '
+            .object.type == "commit" and .object.sha == $sha and .tag == $tag and
+            .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
+          ' <<<"$tag_json" >/dev/null
+
+          release_id=$(gh release view "$RC_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$release_json_file"
+          jq -e --argjson id "$release_id" --arg tag "$RC_TAG" --arg sha "$RC_SOURCE_COMMIT" '
+            .id == $id and .draft == false and .prerelease == true and .immutable == true and
+            .tag_name == $tag and .target_commitish == $sha and .name == ("Independent MCP Bridge " + $tag) and
+            (.published_at | type) == "string" and
+            ([.assets[].name] | length == (unique | length)) and
+            all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
+          ' "$release_json_file" >/dev/null
+          rc_published_at=$(jq -r '.published_at' "$release_json_file")
+          published_epoch=$(date -u -d "$rc_published_at" +%s)
+          now_epoch=$(date -u +%s)
+          [[ $((now_epoch - published_epoch)) -ge 604800 ]]
+
+          rc_version=${RC_TAG#v}
+          expected_assets=$(printf '%s\n' Apache-2.0.txt CORRESPONDING_SOURCE.md \
+            FORK_NOTICE.md LICENSE MIGRATION_V4_8.md MIT-SLF4J.txt NOTICE.md NPM-AUDIT.json \
+            OSV-COORDINATES.txt OSV-RESPONSE.json RELEASE_NOTES.md SHA256SUMS SOURCE_IDENTITY.json \
+            runtime-licenses.properties THIRD_PARTY_NOTICES.md VULNERABILITY_EVIDENCE.json \
+            VULNERABILITY_REPORT.md bom.cdx.json "independent-mcp-bridge-$rc_version-source.tar.gz" \
+            independent-mcp-bridge-all.jar provenance.intoto.jsonl | LC_ALL=C sort)
+          actual_assets=$(jq -r '.assets[].name' "$release_json_file" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets")
+
+          gh release download "$RC_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets"
+          [[ $(find "$assets" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 21 ]]
+          while IFS= read -r entry; do
+            [[ -f "$entry" && ! -L "$entry" ]]
+          done < <(find "$assets" -mindepth 1 -maxdepth 1 -print)
+          (cd "$assets" && sha256sum -c SHA256SUMS)
+          [[ $(awk 'NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 ~ /[\\/]/ {bad=1} END {print bad+0}' "$assets/SHA256SUMS") == 0 ]]
+          [[ $(wc -l < "$assets/SHA256SUMS") -eq 19 ]]
+          expected_checksums=$(printf '%s\n' "$expected_assets" | grep -v -E '^(SHA256SUMS|provenance\.intoto\.jsonl)$' | LC_ALL=C sort)
+          actual_checksums=$(awk '{print $2}' "$assets/SHA256SUMS" | LC_ALL=C sort)
+          diff -u <(printf '%s\n' "$expected_checksums") <(printf '%s\n' "$actual_checksums")
+          while IFS=$'\t' read -r name size digest; do
+            [[ -f "$assets/$name" && ! -L "$assets/$name" && $(stat -c '%s' "$assets/$name") == "$size" ]]
+            [[ "sha256:$(sha256sum "$assets/$name" | cut -d' ' -f1)" == "$digest" ]]
+          done < <(jq -r '.assets[] | [.name, (.size|tostring), .digest] | @tsv' "$release_json_file")
+
+          rc_jar_sha=$(sha256sum "$assets/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
+          [[ "$rc_jar_sha" =~ ^[a-f0-9]{64}$ ]]
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RC_TAG" --arg version "$rc_version" \
+            --arg sha "$RC_SOURCE_COMMIT" --arg jar "$rc_jar_sha" '
+            .repository == ("https://github.com/" + $repo) and .tag == $tag and .version == $version and
+            .sourceCommit == $sha and .artifacts.jarSha256 == $jar
+          ' "$assets/SOURCE_IDENTITY.json" >/dev/null
+          for subject in "$assets"/*; do
+            [[ $(basename "$subject") == provenance.intoto.jsonl ]] && continue
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$assets/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$RC_SOURCE_COMMIT" --source-digest "$RC_SOURCE_COMMIT" \
+              --source-ref "refs/tags/$RC_TAG" >/dev/null
+          done
+          rc_asset_snapshot=$(jq -cS '[.assets[] | [.id, .name, .size, .digest]] | sort' \
+            "$release_json_file" | sha256sum | cut -d' ' -f1)
+
+          smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_SMOKE_RUN_ID")
+          jq -e --arg actor "$AUTHORIZED_ACTOR" '
+            .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+            .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+          ' <<<"$smoke_json" >/dev/null
+          smoke_head=$(jq -r '.head_sha' <<<"$smoke_json")
+          [[ "$smoke_head" =~ ^[a-f0-9]{40}$ ]]
+          smoke_compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RC_SOURCE_COMMIT...$smoke_head")
+          jq -e --arg sha "$RC_SOURCE_COMMIT" '
+            .merge_base_commit.sha == $sha and .behind_by == 0 and (.status == "ahead" or .status == "identical")
+          ' <<<"$smoke_compare" >/dev/null
+          smoke_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_SMOKE_RUN_ID/artifacts?per_page=100")
+          jq -e --arg record "release-smoke-record-$RC_TAG-$RC_SOURCE_COMMIT" \
+            --arg attestation "release-smoke-attestation-$RC_TAG-$RC_SOURCE_COMMIT" '
+            .total_count == 2 and
+            ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+            ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+          ' <<<"$smoke_artifacts" >/dev/null
+          gh run download "$PROTECTED_SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-record-$RC_TAG-$RC_SOURCE_COMMIT" --dir "$smoke/record"
+          gh run download "$PROTECTED_SMOKE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "release-smoke-attestation-$RC_TAG-$RC_SOURCE_COMMIT" --dir "$smoke/attestation"
+          smoke_bundle=$(find "$smoke/attestation" -maxdepth 1 -type f)
+          [[ -f "$smoke/record/smoke-result.json" && ! -L "$smoke/record/smoke-result.json" ]]
+          [[ -n "$smoke_bundle" && $(printf '%s\n' "$smoke_bundle" | wc -l) -eq 1 ]]
+          gh attestation verify "$smoke/record/smoke-result.json" --repo "$GITHUB_REPOSITORY" \
+            --bundle "$smoke_bundle" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
+            --signer-digest "$smoke_head" --source-digest "$smoke_head" --source-ref refs/heads/main >/dev/null
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RC_TAG" --arg sha "$RC_SOURCE_COMMIT" \
+            --arg jar "$rc_jar_sha" --arg actor "$AUTHORIZED_ACTOR" --arg run "$PROTECTED_SMOKE_RUN_ID" '
+            (keys | sort) == ["burp", "editions", "jarSha256", "mcpClients", "observedExtensionVersion",
+              "operatingSystems", "recordedAt", "repository", "scenarios", "schemaVersion", "sourceCommit",
+              "tag", "testerActor", "workflowRun"] and
+            .schemaVersion == "1" and .repository == $repo and .tag == $tag and .sourceCommit == $sha and
+            .jarSha256 == $jar and .testerActor == $actor and .observedExtensionVersion == ($tag | ltrimstr("v")) and
+            .workflowRun == ("https://github.com/" + $repo + "/actions/runs/" + $run) and
+            (.editions | keys | sort) == ["community", "professional"] and ([.editions[]] | all(. == "pass")) and
+            (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
+              "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp", "professionalScannerCollaborator",
+              "routingNoHiddenNetwork", "serverLifecycle", "stableIdReplayIndependentApprovals",
+              "unloadDuringBackgroundWork"] and
+            ([.scenarios[]] | all(. == "pass"))
+          ' "$smoke/record/smoke-result.json" >/dev/null
+
+          publication_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLICATION_RUN_ID")
+          jq -e --arg actor "$AUTHORIZED_ACTOR" --arg head "$smoke_head" --arg published "$rc_published_at" '
+            .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+            .head_branch == "main" and .path == ".github/workflows/release-publish.yml" and .actor.login == $actor and
+            .head_sha == $head and .run_started_at <= $published and .updated_at >= $published
+          ' <<<"$publication_json" >/dev/null
+
+          observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/labels?per_page=100" | jq -s 'add // []' > "$labels_json"
+          [[ $(jq 'length' "$labels_json") -lt 1000 ]]
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&since=$rc_published_at&sort=created&direction=asc&per_page=100" \
+            | jq -s 'add // []' | jq --arg published "$rc_published_at" --arg observed "$observed_at" \
+              '[.[] | select(has("pull_request") | not) | select(.created_at >= $published and .created_at <= $observed)]' \
+              > "$issues_json"
+          [[ $(jq 'length' "$issues_json") -le 1000 ]]
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&labels=gate%3Arelease-blocker&per_page=100" \
+            | jq -s 'add // []' | jq '[.[] | select(has("pull_request") | not)]' > "$open_blockers_json"
+          [[ $(jq 'length' "$open_blockers_json") -le 1000 ]]
+
+          output="$stage/rc-observation-result.json"
+          python3 scripts/rc_observation_contract.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --rc-tag "$RC_TAG" \
+            --rc-source-commit "$RC_SOURCE_COMMIT" \
+            --rc-release-id "$release_id" \
+            --rc-jar-sha256 "$rc_jar_sha" \
+            --rc-asset-snapshot-sha256 "$rc_asset_snapshot" \
+            --rc-published-at "$rc_published_at" \
+            --observed-at "$observed_at" \
+            --protected-smoke-run "$PROTECTED_SMOKE_RUN_ID" \
+            --publication-run "$PUBLICATION_RUN_ID" \
+            --observation-workflow-run "$GITHUB_RUN_ID" \
+            --observation-workflow-commit "$GITHUB_SHA" \
+            --observer-actor "$GITHUB_ACTOR" \
+            --authorized-actor "$AUTHORIZED_ACTOR" \
+            --repository-json "$repository_json" \
+            --compare-json "$compare_json" \
+            --labels-json "$labels_json" \
+            --issues-json "$issues_json" \
+            --open-blockers-json "$open_blockers_json" \
+            --output "$output"
+          python3 - "$output" <<'PY'
+          import pathlib
+          import sys
+          sys.path.insert(0, "scripts")
+          import exact_smoke_contract
+          exact_smoke_contract.scan_evidence_privacy([pathlib.Path(sys.argv[1])], ())
+          PY
+          [[ $(stat -c '%a' "$output") == 600 ]]
+          echo "record=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable RC observation record
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-rc-observation-record-${{ inputs.rc_tag }}-${{ inputs.rc_source_sha }}
+          path: ${{ steps.record.outputs.record }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record observation artifact identity
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          {
+            echo "RC observation record artifact ID: $ARTIFACT_ID"
+            echo "RC observation record artifact digest: $ARTIFACT_DIGEST"
+            echo "Stable eligibility begins only after this attested record succeeds."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  attest:
+    name: Attest the RC observation record
+    needs: observe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-rc-observation-record-${{ inputs.rc_tag }}-${{ inputs.rc_source_sha }}
+          path: ${{ runner.temp }}/rc-observation-record
+
+      - name: Attest the machine-verifiable RC observation
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ runner.temp }}/rc-observation-record/rc-observation-result.json
+
+      - name: Upload detached RC observation attestation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-rc-observation-attestation-${{ inputs.rc_tag }}-${{ inputs.rc_source_sha }}
+          path: ${{ steps.attest.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 90

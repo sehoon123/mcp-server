@@ -1,10 +1,10 @@
-name: Publish verified immutable prerelease
+name: Publish verified immutable release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable draft prerelease tag
+        description: Existing immutable draft release tag
         required: true
         type: string
       source_sha:
@@ -12,8 +12,23 @@ on:
         required: true
         type: string
       smoke_run_id:
-        description: Successful release-smoke workflow run ID
+        description: Successful release-smoke workflow run ID for these exact draft bytes
         required: true
+        type: string
+      rc_observation_run_id:
+        description: Successful seven-day RC observation run ID; required only for a stable tag
+        required: false
+        default: ''
+        type: string
+      observed_rc_tag:
+        description: Published immutable RC tag observed for the stable line; required only for a stable tag
+        required: false
+        default: ''
+        type: string
+      observed_rc_source_sha:
+        description: Exact source commit targeted by the observed RC; required only for a stable tag
+        required: false
+        default: ''
         type: string
 
 permissions: {}
@@ -33,6 +48,7 @@ jobs:
       contents: write
       actions: read
       attestations: read
+      issues: read
     outputs:
       release_id: ${{ steps.verify.outputs.release_id }}
       snapshot: ${{ steps.verify.outputs.snapshot }}
@@ -44,6 +60,9 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           SOURCE_COMMIT: ${{ inputs.source_sha }}
           SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          RC_OBSERVATION_RUN_ID: ${{ inputs.rc_observation_run_id }}
+          OBSERVED_RC_TAG: ${{ inputs.observed_rc_tag }}
+          OBSERVED_RC_SOURCE_COMMIT: ${{ inputs.observed_rc_source_sha }}
           AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
           AUTHORIZED_TESTER_LOGIN: sehoon123
         shell: bash
@@ -53,9 +72,20 @@ jobs:
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           [[ "$RELEASE_TAG" =~ $semver ]]
-          # Stable publication remains blocked until the seven-day RC and defect gate is machine-verifiable.
           tag_without_build=${RELEASE_TAG%%+*}
-          [[ "$tag_without_build" == *-* ]]
+          if [[ "$tag_without_build" == *-* ]]; then
+            expected_prerelease=true
+            [[ -z "$RC_OBSERVATION_RUN_ID" && -z "$OBSERVED_RC_TAG" && -z "$OBSERVED_RC_SOURCE_COMMIT" ]]
+          else
+            expected_prerelease=false
+            [[ "$RELEASE_TAG" != *+* ]]
+            [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
+            [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+            rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+            [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
+            [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+          fi
 
           expected_assets=$(cat <<'EOF'
           Apache-2.0.txt
@@ -98,8 +128,8 @@ jobs:
           release_id=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq '.databaseId')
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")
-          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
-            .draft == true and .prerelease == true and .tag_name == $tag and
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" --argjson prerelease "$expected_prerelease" '
+            .draft == true and .prerelease == $prerelease and .tag_name == $tag and
             .target_commitish == $sha and .name == ("Independent MCP Bridge " + $tag)
           ' <<<"$release_json" >/dev/null
           actual_assets=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
@@ -214,6 +244,286 @@ jobs:
             ([.scenarios[]] | all(. == "pass"))
           ' "$smoke_dir/record/smoke-result.json" >/dev/null
 
+          if [[ "$expected_prerelease" == false ]]; then
+            observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-rc-observation.yml" and
+              .actor.login == $actor
+            ' <<<"$observation_json" >/dev/null
+            observation_head=$(jq -r '.head_sha' <<<"$observation_json")
+            [[ "$observation_head" =~ ^[a-f0-9]{40}$ ]]
+            observation_ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$observation_head...$SOURCE_COMMIT")
+            jq -e --arg sha "$observation_head" '
+              .merge_base_commit.sha == $sha and .behind_by == 0 and
+              (.status == "ahead" or .status == "identical")
+            ' <<<"$observation_ancestry" >/dev/null
+
+            observation_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID/artifacts?per_page=100")
+            jq -e --arg record "release-rc-observation-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --arg attestation "release-rc-observation-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" '
+              .total_count == 2 and
+              ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+              ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+            ' <<<"$observation_artifacts" >/dev/null
+            observation_dir="$RUNNER_TEMP/stable-observation"
+            mkdir -p "$observation_dir/record" "$observation_dir/attestation"
+            gh run download "$RC_OBSERVATION_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "release-rc-observation-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$observation_dir/record"
+            gh run download "$RC_OBSERVATION_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "release-rc-observation-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$observation_dir/attestation"
+            observation_record="$observation_dir/record/rc-observation-result.json"
+            observation_bundle=$(find "$observation_dir/attestation" -maxdepth 1 -type f)
+            [[ -f "$observation_record" && ! -L "$observation_record" ]]
+            [[ -n "$observation_bundle" && $(printf '%s\n' "$observation_bundle" | wc -l) -eq 1 ]]
+            gh attestation verify "$observation_record" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$observation_bundle" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-rc-observation.yml" \
+              --signer-digest "$observation_head" --source-digest "$observation_head" \
+              --source-ref refs/heads/main >/dev/null
+
+            stable_version=${RELEASE_TAG#v}
+            stable_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg rcTag "$OBSERVED_RC_TAG" \
+              --arg rcSha "$OBSERVED_RC_SOURCE_COMMIT" --arg version "$stable_version" \
+              --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg observationHead "$observation_head" \
+              --argjson observationRun "$RC_OBSERVATION_RUN_ID" --arg stableJar "$stable_jar_sha" '
+              (keys | sort) == ["baseVersion", "continuityChangedPaths", "elapsedSeconds", "eligibleForStable",
+                "issueTriage", "minimumObservationSeconds", "observationWorkflowCommit", "observationWorkflowRun",
+                "observedAt", "observerActor", "protectedSmokeWorkflowRun", "publicationWorkflowRun",
+                "rcAssetSnapshotSha256", "rcJarSha256", "rcPublishedAt", "rcReleaseId", "rcSourceCommit",
+                "rcTag", "repository", "requiredLabels", "schemaVersion"] and
+              .schemaVersion == 1 and .repository == $repo and .rcTag == $rcTag and .baseVersion == $version and
+              .rcSourceCommit == $rcSha and .observerActor == $actor and
+              .observationWorkflowRun == $observationRun and .observationWorkflowCommit == $observationHead and
+              .minimumObservationSeconds == 604800 and .elapsedSeconds >= 604800 and .eligibleForStable == true and
+              (.protectedSmokeWorkflowRun | type) == "number" and .protectedSmokeWorkflowRun > 0 and
+              (.publicationWorkflowRun | type) == "number" and .publicationWorkflowRun > 0 and
+              (.rcReleaseId | type) == "number" and .rcReleaseId > 0 and
+              (.rcJarSha256 | test("^[a-f0-9]{64}$")) and .rcJarSha256 != $stableJar and
+              (.rcAssetSnapshotSha256 | test("^[a-f0-9]{64}$")) and
+              .requiredLabels == ["gate:non-blocking", "gate:release-blocker", "priority:P0", "priority:P1", "priority:P2"] and
+              (.continuityChangedPaths | type) == "array" and (.continuityChangedPaths | length) > 0 and
+              (.issueTriage | keys | sort) == ["globalOpenBlockerIssueCount", "globalOpenBlockerIssueNumbers",
+                "globalOpenReleaseBlockingP0", "globalOpenReleaseBlockingP1", "observedIssueCount",
+                "openReleaseBlockingP0", "openReleaseBlockingP1", "snapshotSha256", "triagedIssueNumbers"] and
+              .issueTriage.openReleaseBlockingP0 == 0 and .issueTriage.openReleaseBlockingP1 == 0 and
+              .issueTriage.globalOpenReleaseBlockingP0 == 0 and .issueTriage.globalOpenReleaseBlockingP1 == 0
+            ' "$observation_record" >/dev/null
+
+            rc_ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$OBSERVED_RC_TAG")
+            [[ $(jq -r '.object.type' <<<"$rc_ref_json") == tag ]]
+            rc_tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$rc_ref_json")")
+            jq -e --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg email "$AUTHORIZED_TAGGER_EMAIL" \
+              --arg tag "$OBSERVED_RC_TAG" '
+              .object.type == "commit" and .object.sha == $sha and .tag == $tag and
+              .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
+            ' <<<"$rc_tag_json" >/dev/null
+            rc_release_id=$(jq -r '.rcReleaseId' "$observation_record")
+            rc_published_at=$(jq -r '.rcPublishedAt' "$observation_record")
+            rc_release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$rc_release_id")
+            jq -e --argjson id "$rc_release_id" --arg tag "$OBSERVED_RC_TAG" \
+              --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg published "$rc_published_at" \
+              --arg jar "$(jq -r '.rcJarSha256' "$observation_record")" '
+              .id == $id and .draft == false and .prerelease == true and .immutable == true and
+              .tag_name == $tag and .target_commitish == $sha and .published_at == $published and
+              ([.assets[] | select(.name == "independent-mcp-bridge-all.jar" and .digest == ("sha256:" + $jar))] | length) == 1
+            ' <<<"$rc_release_json" >/dev/null
+            rc_asset_snapshot=$(jq -cS '[.assets[] | [.id, .name, .size, .digest]] | sort' \
+              <<<"$rc_release_json" | sha256sum | cut -d' ' -f1)
+            [[ "$rc_asset_snapshot" == "$(jq -r '.rcAssetSnapshotSha256' "$observation_record")" ]]
+            published_epoch=$(date -u -d "$rc_published_at" +%s)
+            observed_epoch=$(date -u -d "$(jq -r '.observedAt' "$observation_record")" +%s)
+            now_epoch=$(date -u +%s)
+            [[ $((observed_epoch - published_epoch)) -ge 604800 ]]
+            [[ $((now_epoch - published_epoch)) -ge 604800 ]]
+
+            rc_proof_dir="$observation_dir/rc-proof"
+            mkdir -p "$rc_proof_dir/assets" "$rc_proof_dir/smoke-record" "$rc_proof_dir/smoke-attestation"
+            gh release download "$OBSERVED_RC_TAG" --repo "$GITHUB_REPOSITORY" --dir "$rc_proof_dir/assets" \
+              --pattern independent-mcp-bridge-all.jar --pattern provenance.intoto.jsonl
+            [[ $(find "$rc_proof_dir/assets" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 2 ]]
+            [[ $(sha256sum "$rc_proof_dir/assets/independent-mcp-bridge-all.jar" | cut -d' ' -f1) == \
+              "$(jq -r '.rcJarSha256' "$observation_record")" ]]
+            gh attestation verify "$rc_proof_dir/assets/independent-mcp-bridge-all.jar" \
+              --repo "$GITHUB_REPOSITORY" --bundle "$rc_proof_dir/assets/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$OBSERVED_RC_SOURCE_COMMIT" --source-digest "$OBSERVED_RC_SOURCE_COMMIT" \
+              --source-ref "refs/tags/$OBSERVED_RC_TAG" >/dev/null
+
+            rc_smoke_run=$(jq -r '.protectedSmokeWorkflowRun' "$observation_record")
+            rc_publication_run=$(jq -r '.publicationWorkflowRun' "$observation_record")
+            [[ "$rc_smoke_run" =~ ^[1-9][0-9]*$ && "$rc_publication_run" =~ ^[1-9][0-9]*$ ]]
+            rc_smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_smoke_run")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+            ' <<<"$rc_smoke_json" >/dev/null
+            rc_smoke_head=$(jq -r '.head_sha' <<<"$rc_smoke_json")
+            [[ "$rc_smoke_head" =~ ^[a-f0-9]{40}$ ]]
+            rc_smoke_ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$OBSERVED_RC_SOURCE_COMMIT...$rc_smoke_head")
+            jq -e --arg sha "$OBSERVED_RC_SOURCE_COMMIT" '
+              .merge_base_commit.sha == $sha and .behind_by == 0 and
+              (.status == "ahead" or .status == "identical")
+            ' <<<"$rc_smoke_ancestry" >/dev/null
+            rc_smoke_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_smoke_run/artifacts?per_page=100")
+            jq -e --arg record "release-smoke-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --arg attestation "release-smoke-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" '
+              .total_count == 2 and
+              ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+              ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+            ' <<<"$rc_smoke_artifacts" >/dev/null
+            gh run download "$rc_smoke_run" --repo "$GITHUB_REPOSITORY" \
+              --name "release-smoke-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$rc_proof_dir/smoke-record"
+            gh run download "$rc_smoke_run" --repo "$GITHUB_REPOSITORY" \
+              --name "release-smoke-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$rc_proof_dir/smoke-attestation"
+            rc_smoke_record="$rc_proof_dir/smoke-record/smoke-result.json"
+            rc_smoke_bundle=$(find "$rc_proof_dir/smoke-attestation" -maxdepth 1 -type f)
+            [[ -f "$rc_smoke_record" && ! -L "$rc_smoke_record" ]]
+            [[ -n "$rc_smoke_bundle" && $(printf '%s\n' "$rc_smoke_bundle" | wc -l) -eq 1 ]]
+            gh attestation verify "$rc_smoke_record" --repo "$GITHUB_REPOSITORY" --bundle "$rc_smoke_bundle" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
+              --signer-digest "$rc_smoke_head" --source-digest "$rc_smoke_head" --source-ref refs/heads/main >/dev/null
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$OBSERVED_RC_TAG" \
+              --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg jar "$(jq -r '.rcJarSha256' "$observation_record")" \
+              --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$rc_smoke_run" '
+              (keys | sort) == ["burp", "editions", "jarSha256", "mcpClients", "observedExtensionVersion",
+                "operatingSystems", "recordedAt", "repository", "scenarios", "schemaVersion", "sourceCommit",
+                "tag", "testerActor", "workflowRun"] and
+              .schemaVersion == "1" and .repository == $repo and .tag == $tag and .sourceCommit == $sha and
+              .jarSha256 == $jar and .testerActor == $actor and .observedExtensionVersion == ($tag | ltrimstr("v")) and
+              .workflowRun == ("https://github.com/" + $repo + "/actions/runs/" + $run) and
+              (.editions | keys | sort) == ["community", "professional"] and ([.editions[]] | all(. == "pass")) and
+              (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
+                "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp", "professionalScannerCollaborator",
+                "routingNoHiddenNetwork", "serverLifecycle", "stableIdReplayIndependentApprovals",
+                "unloadDuringBackgroundWork"] and ([.scenarios[]] | all(. == "pass"))
+            ' "$rc_smoke_record" >/dev/null
+            rc_publication_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_publication_run")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg head "$rc_smoke_head" --arg published "$rc_published_at" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-publish.yml" and .actor.login == $actor and
+              .head_sha == $head and .run_started_at <= $published and .updated_at >= $published
+            ' <<<"$rc_publication_json" >/dev/null
+
+            observation_paths=$(printf '%s\n' .github/workflows/build.yml .github/workflows/release-draft.yml \
+              .github/workflows/release-publish.yml .github/workflows/release-rc-observation.yml \
+              docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
+              scripts/test-exact-smoke-contract.py scripts/test-rc-observation-contract.py \
+              scripts/test-release-vulnerability-gate.py | LC_ALL=C sort | \
+              jq -Rsc 'split("\n")[:-1]')
+            stable_paths=$(printf '%s\n' BappManifest.bmf docs/VULNERABILITY_REPORT.md gradle.properties \
+              "docs/releases/$stable_version.md" | LC_ALL=C sort | jq -Rsc 'split("\n")[:-1]')
+            validate_continuity() {
+              local base=$1 target=$2 expected=$3 output=$4
+              gh api "repos/$GITHUB_REPOSITORY/compare/$base...$target" > "$output"
+              jq -e --arg base "$base" --argjson expected "$expected" '
+                .merge_base_commit.sha == $base and .status == "ahead" and .behind_by == 0 and
+                (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300 and
+                ([.files[].filename] | sort) == $expected and
+                all(.files[];
+                  (.filename as $name | ($expected | index($name)) != null) and
+                  ((.previous_filename? // .filename) as $previous | ($expected | index($previous)) != null))
+              ' "$output" >/dev/null
+            }
+            validate_continuity "$OBSERVED_RC_SOURCE_COMMIT" "$observation_head" "$observation_paths" \
+              "$observation_dir/observation-compare.json"
+            validate_continuity "$observation_head" "$SOURCE_COMMIT" "$stable_paths" \
+              "$observation_dir/stable-compare.json"
+            observation_changed=$(jq -c '[.files[].filename] | sort' "$observation_dir/observation-compare.json")
+            [[ "$observation_changed" == "$(jq -c '.continuityChangedPaths' "$observation_record")" ]]
+
+            content_at() {
+              local commit=$1 path=$2 output=$3
+              gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$commit" --jq '.content' | base64 -d > "$output"
+              [[ -s "$output" ]]
+            }
+            content_at "$observation_head" gradle.properties "$observation_dir/gradle.rc"
+            content_at "$SOURCE_COMMIT" gradle.properties "$observation_dir/gradle.stable"
+            [[ $(grep -c '^version=' "$observation_dir/gradle.rc") -eq 1 ]]
+            [[ $(grep -c '^version=' "$observation_dir/gradle.stable") -eq 1 ]]
+            grep -Fx "version=${OBSERVED_RC_TAG#v}" "$observation_dir/gradle.rc" >/dev/null
+            grep -Fx "version=$stable_version" "$observation_dir/gradle.stable" >/dev/null
+            sed -E 's/^version=.*/version=<PROMOTION>/' "$observation_dir/gradle.rc" > "$observation_dir/gradle.rc.normalized"
+            sed -E 's/^version=.*/version=<PROMOTION>/' "$observation_dir/gradle.stable" > "$observation_dir/gradle.stable.normalized"
+            cmp "$observation_dir/gradle.rc.normalized" "$observation_dir/gradle.stable.normalized"
+
+            content_at "$observation_head" BappManifest.bmf "$observation_dir/manifest.rc"
+            content_at "$SOURCE_COMMIT" BappManifest.bmf "$observation_dir/manifest.stable"
+            [[ $(grep -c '^ScreenVersion:' "$observation_dir/manifest.rc") -eq 1 ]]
+            [[ $(grep -c '^ScreenVersion:' "$observation_dir/manifest.stable") -eq 1 ]]
+            [[ $(grep -c '^SerialVersion:' "$observation_dir/manifest.rc") -eq 1 ]]
+            [[ $(grep -c '^SerialVersion:' "$observation_dir/manifest.stable") -eq 1 ]]
+            grep -Fx "ScreenVersion: ${OBSERVED_RC_TAG#v}" "$observation_dir/manifest.rc" >/dev/null
+            grep -Fx "ScreenVersion: $stable_version" "$observation_dir/manifest.stable" >/dev/null
+            rc_serial=$(awk '/^SerialVersion:/ {print $2}' "$observation_dir/manifest.rc")
+            stable_serial=$(awk '/^SerialVersion:/ {print $2}' "$observation_dir/manifest.stable")
+            [[ "$rc_serial" =~ ^[0-9]+$ && "$stable_serial" =~ ^[0-9]+$ && "$stable_serial" -gt "$rc_serial" ]]
+            sed -E 's/^(ScreenVersion|SerialVersion):.*/\1: <PROMOTION>/' "$observation_dir/manifest.rc" \
+              > "$observation_dir/manifest.rc.normalized"
+            sed -E 's/^(ScreenVersion|SerialVersion):.*/\1: <PROMOTION>/' "$observation_dir/manifest.stable" \
+              > "$observation_dir/manifest.stable.normalized"
+            cmp "$observation_dir/manifest.rc.normalized" "$observation_dir/manifest.stable.normalized"
+            content_at "$observation_head" docs/VULNERABILITY_REPORT.md "$observation_dir/vulnerability-report.rc"
+            content_at "$SOURCE_COMMIT" docs/VULNERABILITY_REPORT.md "$observation_dir/vulnerability-report.stable"
+            grep -Fx "# v$stable_version vulnerability review" "$observation_dir/vulnerability-report.stable" >/dev/null
+            grep -E '^\*\*Review date:\*\* [0-9]{4}-[0-9]{2}-[0-9]{2} \(UTC\)<br>$' \
+              "$observation_dir/vulnerability-report.stable" >/dev/null
+            grep -Fx "**Candidate version:** \`$stable_version\`<br>" "$observation_dir/vulnerability-report.stable" >/dev/null
+            sed -E -e 's/^# .* vulnerability review$/# <PROMOTION> vulnerability review/' \
+              -e 's/^\*\*Review date:\*\* .*$/**Review date:** <PROMOTION>/' \
+              -e 's/^\*\*Candidate version:\*\* .*$/**Candidate version:** <PROMOTION>/' \
+              "$observation_dir/vulnerability-report.rc" > "$observation_dir/vulnerability-report.rc.normalized"
+            sed -E -e 's/^# .* vulnerability review$/# <PROMOTION> vulnerability review/' \
+              -e 's/^\*\*Review date:\*\* .*$/**Review date:** <PROMOTION>/' \
+              -e 's/^\*\*Candidate version:\*\* .*$/**Candidate version:** <PROMOTION>/' \
+              "$observation_dir/vulnerability-report.stable" > "$observation_dir/vulnerability-report.stable.normalized"
+            cmp "$observation_dir/vulnerability-report.rc.normalized" \
+              "$observation_dir/vulnerability-report.stable.normalized"
+            content_at "$SOURCE_COMMIT" "docs/releases/$stable_version.md" "$observation_dir/release-note.stable"
+
+            gh api --paginate "repos/$GITHUB_REPOSITORY/labels?per_page=100" | jq -s 'add // []' \
+              > "$observation_dir/labels.json"
+            [[ $(jq 'length' "$observation_dir/labels.json") -lt 1000 ]]
+            for required_label in gate:non-blocking gate:release-blocker priority:P0 priority:P1 priority:P2; do
+              jq -e --arg label "$required_label" 'any(.[]; .name == $label)' \
+                "$observation_dir/labels.json" >/dev/null
+            done
+            gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues == true and .archived == false and .disabled == false' \
+              | grep -Fx true >/dev/null
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&since=$rc_published_at&sort=created&direction=asc&per_page=100" \
+              | jq -s 'add // []' | jq --arg published "$rc_published_at" \
+                '[.[] | select(has("pull_request") | not) | select(.created_at >= $published)]' \
+                > "$observation_dir/issues.json"
+            [[ $(jq 'length' "$observation_dir/issues.json") -le 1000 ]]
+            jq -e '
+              all(.[];
+                (.labels | map(.name)) as $names |
+                ([$names[] | select(. == "priority:P0" or . == "priority:P1" or . == "priority:P2")] | length) == 1 and
+                ([$names[] | select(. == "gate:release-blocker" or . == "gate:non-blocking")] | length) == 1) and
+              ([.[] | select(.state == "open") | (.labels | map(.name)) as $names |
+                select(($names | index("gate:release-blocker")) != null and
+                  (($names | index("priority:P0")) != null or ($names | index("priority:P1")) != null))] | length) == 0
+            ' "$observation_dir/issues.json" >/dev/null
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&labels=gate%3Arelease-blocker&per_page=100" \
+              | jq -s 'add // []' | jq '[.[] | select(has("pull_request") | not)]' \
+                > "$observation_dir/open-blockers.json"
+            [[ $(jq 'length' "$observation_dir/open-blockers.json") -le 1000 ]]
+            jq -e '
+              all(.[];
+                (.labels | map(.name)) as $names |
+                ([$names[] | select(. == "priority:P0" or . == "priority:P1" or . == "priority:P2")] | length) == 1 and
+                ($names | index("gate:release-blocker")) != null and
+                ($names | index("gate:non-blocking")) == null) and
+              ([.[] | (.labels | map(.name)) as $names |
+                select(($names | index("priority:P0")) != null or ($names | index("priority:P1")) != null)] | length) == 0
+            ' "$observation_dir/open-blockers.json" >/dev/null
+          fi
+
           snapshot=$(jq -cS '[.id, .tag_name, .target_commitish, .name, .body, .draft, .prerelease,
             ([.assets[] | [.id, .name, .size, .digest]] | sort)]' <<<"$release_json" | sha256sum | cut -d' ' -f1)
           {
@@ -230,6 +540,7 @@ jobs:
       contents: write
       actions: read
       attestations: read
+      issues: read
     steps:
       - name: Fail closed unless repository immutable releases are enabled
         env:
@@ -251,6 +562,9 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           SOURCE_COMMIT: ${{ inputs.source_sha }}
           SMOKE_RUN_ID: ${{ inputs.smoke_run_id }}
+          RC_OBSERVATION_RUN_ID: ${{ inputs.rc_observation_run_id }}
+          OBSERVED_RC_TAG: ${{ inputs.observed_rc_tag }}
+          OBSERVED_RC_SOURCE_COMMIT: ${{ inputs.observed_rc_source_sha }}
           EXPECTED_RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
           EXPECTED_SNAPSHOT: ${{ needs.preflight.outputs.snapshot }}
           AUTHORIZED_TAGGER_EMAIL: 60769447+sehoon123@users.noreply.github.com
@@ -261,7 +575,19 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/main ]]
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           tag_without_build=${RELEASE_TAG%%+*}
-          [[ "$tag_without_build" == *-* ]]
+          if [[ "$tag_without_build" == *-* ]]; then
+            expected_prerelease=true
+            [[ -z "$RC_OBSERVATION_RUN_ID" && -z "$OBSERVED_RC_TAG" && -z "$OBSERVED_RC_SOURCE_COMMIT" ]]
+          else
+            expected_prerelease=false
+            [[ "$RELEASE_TAG" != *+* ]]
+            [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
+            [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+            rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+            [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
+            [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+          fi
 
           ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
           [[ $(jq -r '.object.type' <<<"$ref_json") == tag ]]
@@ -273,8 +599,9 @@ jobs:
           [[ $(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...$GITHUB_SHA" --jq '.merge_base_commit.sha') == "$SOURCE_COMMIT" ]]
 
           release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$EXPECTED_RELEASE_ID")
-          jq -e --argjson id "$EXPECTED_RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
-            .id == $id and .draft == true and .prerelease == true and .tag_name == $tag and
+          jq -e --argjson id "$EXPECTED_RELEASE_ID" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" \
+            --argjson prerelease "$expected_prerelease" '
+            .id == $id and .draft == true and .prerelease == $prerelease and .tag_name == $tag and
             .target_commitish == $sha and .name == ("Independent MCP Bridge " + $tag) and
             ([.assets[].name] | length == (unique | length)) and
             all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
@@ -383,17 +710,300 @@ jobs:
             ([.scenarios[]] | all(. == "pass"))
           ' "$RUNNER_TEMP/smoke/record/smoke-result.json" >/dev/null
 
+          if [[ "$expected_prerelease" == false ]]; then
+            observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-rc-observation.yml" and
+              .actor.login == $actor
+            ' <<<"$observation_json" >/dev/null
+            observation_head=$(jq -r '.head_sha' <<<"$observation_json")
+            [[ "$observation_head" =~ ^[a-f0-9]{40}$ ]]
+            observation_ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$observation_head...$SOURCE_COMMIT")
+            jq -e --arg sha "$observation_head" '
+              .merge_base_commit.sha == $sha and .behind_by == 0 and
+              (.status == "ahead" or .status == "identical")
+            ' <<<"$observation_ancestry" >/dev/null
+
+            observation_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID/artifacts?per_page=100")
+            jq -e --arg record "release-rc-observation-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --arg attestation "release-rc-observation-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" '
+              .total_count == 2 and
+              ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+              ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+            ' <<<"$observation_artifacts" >/dev/null
+            observation_dir="$RUNNER_TEMP/stable-observation"
+            mkdir -p "$observation_dir/record" "$observation_dir/attestation"
+            gh run download "$RC_OBSERVATION_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "release-rc-observation-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$observation_dir/record"
+            gh run download "$RC_OBSERVATION_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "release-rc-observation-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$observation_dir/attestation"
+            observation_record="$observation_dir/record/rc-observation-result.json"
+            observation_bundle=$(find "$observation_dir/attestation" -maxdepth 1 -type f)
+            [[ -f "$observation_record" && ! -L "$observation_record" ]]
+            [[ -n "$observation_bundle" && $(printf '%s\n' "$observation_bundle" | wc -l) -eq 1 ]]
+            gh attestation verify "$observation_record" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$observation_bundle" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-rc-observation.yml" \
+              --signer-digest "$observation_head" --source-digest "$observation_head" \
+              --source-ref refs/heads/main >/dev/null
+
+            stable_version=${RELEASE_TAG#v}
+            stable_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg rcTag "$OBSERVED_RC_TAG" \
+              --arg rcSha "$OBSERVED_RC_SOURCE_COMMIT" --arg version "$stable_version" \
+              --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg observationHead "$observation_head" \
+              --argjson observationRun "$RC_OBSERVATION_RUN_ID" --arg stableJar "$stable_jar_sha" '
+              (keys | sort) == ["baseVersion", "continuityChangedPaths", "elapsedSeconds", "eligibleForStable",
+                "issueTriage", "minimumObservationSeconds", "observationWorkflowCommit", "observationWorkflowRun",
+                "observedAt", "observerActor", "protectedSmokeWorkflowRun", "publicationWorkflowRun",
+                "rcAssetSnapshotSha256", "rcJarSha256", "rcPublishedAt", "rcReleaseId", "rcSourceCommit",
+                "rcTag", "repository", "requiredLabels", "schemaVersion"] and
+              .schemaVersion == 1 and .repository == $repo and .rcTag == $rcTag and .baseVersion == $version and
+              .rcSourceCommit == $rcSha and .observerActor == $actor and
+              .observationWorkflowRun == $observationRun and .observationWorkflowCommit == $observationHead and
+              .minimumObservationSeconds == 604800 and .elapsedSeconds >= 604800 and .eligibleForStable == true and
+              (.protectedSmokeWorkflowRun | type) == "number" and .protectedSmokeWorkflowRun > 0 and
+              (.publicationWorkflowRun | type) == "number" and .publicationWorkflowRun > 0 and
+              (.rcReleaseId | type) == "number" and .rcReleaseId > 0 and
+              (.rcJarSha256 | test("^[a-f0-9]{64}$")) and .rcJarSha256 != $stableJar and
+              (.rcAssetSnapshotSha256 | test("^[a-f0-9]{64}$")) and
+              .requiredLabels == ["gate:non-blocking", "gate:release-blocker", "priority:P0", "priority:P1", "priority:P2"] and
+              (.continuityChangedPaths | type) == "array" and (.continuityChangedPaths | length) > 0 and
+              (.issueTriage | keys | sort) == ["globalOpenBlockerIssueCount", "globalOpenBlockerIssueNumbers",
+                "globalOpenReleaseBlockingP0", "globalOpenReleaseBlockingP1", "observedIssueCount",
+                "openReleaseBlockingP0", "openReleaseBlockingP1", "snapshotSha256", "triagedIssueNumbers"] and
+              .issueTriage.openReleaseBlockingP0 == 0 and .issueTriage.openReleaseBlockingP1 == 0 and
+              .issueTriage.globalOpenReleaseBlockingP0 == 0 and .issueTriage.globalOpenReleaseBlockingP1 == 0
+            ' "$observation_record" >/dev/null
+
+            rc_ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$OBSERVED_RC_TAG")
+            [[ $(jq -r '.object.type' <<<"$rc_ref_json") == tag ]]
+            rc_tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$rc_ref_json")")
+            jq -e --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg email "$AUTHORIZED_TAGGER_EMAIL" \
+              --arg tag "$OBSERVED_RC_TAG" '
+              .object.type == "commit" and .object.sha == $sha and .tag == $tag and
+              .verification.verified == true and .verification.reason == "valid" and .tagger.email == $email
+            ' <<<"$rc_tag_json" >/dev/null
+            rc_release_id=$(jq -r '.rcReleaseId' "$observation_record")
+            rc_published_at=$(jq -r '.rcPublishedAt' "$observation_record")
+            rc_release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$rc_release_id")
+            jq -e --argjson id "$rc_release_id" --arg tag "$OBSERVED_RC_TAG" \
+              --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg published "$rc_published_at" \
+              --arg jar "$(jq -r '.rcJarSha256' "$observation_record")" '
+              .id == $id and .draft == false and .prerelease == true and .immutable == true and
+              .tag_name == $tag and .target_commitish == $sha and .published_at == $published and
+              ([.assets[] | select(.name == "independent-mcp-bridge-all.jar" and .digest == ("sha256:" + $jar))] | length) == 1
+            ' <<<"$rc_release_json" >/dev/null
+            rc_asset_snapshot=$(jq -cS '[.assets[] | [.id, .name, .size, .digest]] | sort' \
+              <<<"$rc_release_json" | sha256sum | cut -d' ' -f1)
+            [[ "$rc_asset_snapshot" == "$(jq -r '.rcAssetSnapshotSha256' "$observation_record")" ]]
+            published_epoch=$(date -u -d "$rc_published_at" +%s)
+            observed_epoch=$(date -u -d "$(jq -r '.observedAt' "$observation_record")" +%s)
+            now_epoch=$(date -u +%s)
+            [[ $((observed_epoch - published_epoch)) -ge 604800 ]]
+            [[ $((now_epoch - published_epoch)) -ge 604800 ]]
+
+            rc_proof_dir="$observation_dir/rc-proof"
+            mkdir -p "$rc_proof_dir/assets" "$rc_proof_dir/smoke-record" "$rc_proof_dir/smoke-attestation"
+            gh release download "$OBSERVED_RC_TAG" --repo "$GITHUB_REPOSITORY" --dir "$rc_proof_dir/assets" \
+              --pattern independent-mcp-bridge-all.jar --pattern provenance.intoto.jsonl
+            [[ $(find "$rc_proof_dir/assets" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 2 ]]
+            [[ $(sha256sum "$rc_proof_dir/assets/independent-mcp-bridge-all.jar" | cut -d' ' -f1) == \
+              "$(jq -r '.rcJarSha256' "$observation_record")" ]]
+            gh attestation verify "$rc_proof_dir/assets/independent-mcp-bridge-all.jar" \
+              --repo "$GITHUB_REPOSITORY" --bundle "$rc_proof_dir/assets/provenance.intoto.jsonl" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-draft.yml" \
+              --signer-digest "$OBSERVED_RC_SOURCE_COMMIT" --source-digest "$OBSERVED_RC_SOURCE_COMMIT" \
+              --source-ref "refs/tags/$OBSERVED_RC_TAG" >/dev/null
+
+            rc_smoke_run=$(jq -r '.protectedSmokeWorkflowRun' "$observation_record")
+            rc_publication_run=$(jq -r '.publicationWorkflowRun' "$observation_record")
+            [[ "$rc_smoke_run" =~ ^[1-9][0-9]*$ && "$rc_publication_run" =~ ^[1-9][0-9]*$ ]]
+            rc_smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_smoke_run")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+            ' <<<"$rc_smoke_json" >/dev/null
+            rc_smoke_head=$(jq -r '.head_sha' <<<"$rc_smoke_json")
+            [[ "$rc_smoke_head" =~ ^[a-f0-9]{40}$ ]]
+            rc_smoke_ancestry=$(gh api "repos/$GITHUB_REPOSITORY/compare/$OBSERVED_RC_SOURCE_COMMIT...$rc_smoke_head")
+            jq -e --arg sha "$OBSERVED_RC_SOURCE_COMMIT" '
+              .merge_base_commit.sha == $sha and .behind_by == 0 and
+              (.status == "ahead" or .status == "identical")
+            ' <<<"$rc_smoke_ancestry" >/dev/null
+            rc_smoke_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_smoke_run/artifacts?per_page=100")
+            jq -e --arg record "release-smoke-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --arg attestation "release-smoke-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" '
+              .total_count == 2 and
+              ([.artifacts[] | select(.name == $record and .expired == false and (.digest | startswith("sha256:")))] | length) == 1 and
+              ([.artifacts[] | select(.name == $attestation and .expired == false and (.digest | startswith("sha256:")))] | length) == 1
+            ' <<<"$rc_smoke_artifacts" >/dev/null
+            gh run download "$rc_smoke_run" --repo "$GITHUB_REPOSITORY" \
+              --name "release-smoke-record-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$rc_proof_dir/smoke-record"
+            gh run download "$rc_smoke_run" --repo "$GITHUB_REPOSITORY" \
+              --name "release-smoke-attestation-$OBSERVED_RC_TAG-$OBSERVED_RC_SOURCE_COMMIT" \
+              --dir "$rc_proof_dir/smoke-attestation"
+            rc_smoke_record="$rc_proof_dir/smoke-record/smoke-result.json"
+            rc_smoke_bundle=$(find "$rc_proof_dir/smoke-attestation" -maxdepth 1 -type f)
+            [[ -f "$rc_smoke_record" && ! -L "$rc_smoke_record" ]]
+            [[ -n "$rc_smoke_bundle" && $(printf '%s\n' "$rc_smoke_bundle" | wc -l) -eq 1 ]]
+            gh attestation verify "$rc_smoke_record" --repo "$GITHUB_REPOSITORY" --bundle "$rc_smoke_bundle" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
+              --signer-digest "$rc_smoke_head" --source-digest "$rc_smoke_head" --source-ref refs/heads/main >/dev/null
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$OBSERVED_RC_TAG" \
+              --arg sha "$OBSERVED_RC_SOURCE_COMMIT" --arg jar "$(jq -r '.rcJarSha256' "$observation_record")" \
+              --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$rc_smoke_run" '
+              (keys | sort) == ["burp", "editions", "jarSha256", "mcpClients", "observedExtensionVersion",
+                "operatingSystems", "recordedAt", "repository", "scenarios", "schemaVersion", "sourceCommit",
+                "tag", "testerActor", "workflowRun"] and
+              .schemaVersion == "1" and .repository == $repo and .tag == $tag and .sourceCommit == $sha and
+              .jarSha256 == $jar and .testerActor == $actor and .observedExtensionVersion == ($tag | ltrimstr("v")) and
+              .workflowRun == ("https://github.com/" + $repo + "/actions/runs/" + $run) and
+              (.editions | keys | sort) == ["community", "professional"] and ([.editions[]] | all(. == "pass")) and
+              (.scenarios | keys | sort) == ["boundedLargeDataAndCancellation", "catalogEditionGating",
+                "diagnosticsRedaction", "embeddedStdio", "loadUnload", "nativeHttp", "professionalScannerCollaborator",
+                "routingNoHiddenNetwork", "serverLifecycle", "stableIdReplayIndependentApprovals",
+                "unloadDuringBackgroundWork"] and ([.scenarios[]] | all(. == "pass"))
+            ' "$rc_smoke_record" >/dev/null
+            rc_publication_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rc_publication_run")
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg head "$rc_smoke_head" --arg published "$rc_published_at" '
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/release-publish.yml" and .actor.login == $actor and
+              .head_sha == $head and .run_started_at <= $published and .updated_at >= $published
+            ' <<<"$rc_publication_json" >/dev/null
+
+            observation_paths=$(printf '%s\n' .github/workflows/build.yml .github/workflows/release-draft.yml \
+              .github/workflows/release-publish.yml .github/workflows/release-rc-observation.yml \
+              docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
+              scripts/test-exact-smoke-contract.py scripts/test-rc-observation-contract.py \
+              scripts/test-release-vulnerability-gate.py | LC_ALL=C sort | \
+              jq -Rsc 'split("\n")[:-1]')
+            stable_paths=$(printf '%s\n' BappManifest.bmf docs/VULNERABILITY_REPORT.md gradle.properties \
+              "docs/releases/$stable_version.md" | LC_ALL=C sort | jq -Rsc 'split("\n")[:-1]')
+            validate_continuity() {
+              local base=$1 target=$2 expected=$3 output=$4
+              gh api "repos/$GITHUB_REPOSITORY/compare/$base...$target" > "$output"
+              jq -e --arg base "$base" --argjson expected "$expected" '
+                .merge_base_commit.sha == $base and .status == "ahead" and .behind_by == 0 and
+                (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300 and
+                ([.files[].filename] | sort) == $expected and
+                all(.files[];
+                  (.filename as $name | ($expected | index($name)) != null) and
+                  ((.previous_filename? // .filename) as $previous | ($expected | index($previous)) != null))
+              ' "$output" >/dev/null
+            }
+            validate_continuity "$OBSERVED_RC_SOURCE_COMMIT" "$observation_head" "$observation_paths" \
+              "$observation_dir/observation-compare.json"
+            validate_continuity "$observation_head" "$SOURCE_COMMIT" "$stable_paths" \
+              "$observation_dir/stable-compare.json"
+            observation_changed=$(jq -c '[.files[].filename] | sort' "$observation_dir/observation-compare.json")
+            [[ "$observation_changed" == "$(jq -c '.continuityChangedPaths' "$observation_record")" ]]
+
+            content_at() {
+              local commit=$1 path=$2 output=$3
+              gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$commit" --jq '.content' | base64 -d > "$output"
+              [[ -s "$output" ]]
+            }
+            content_at "$observation_head" gradle.properties "$observation_dir/gradle.rc"
+            content_at "$SOURCE_COMMIT" gradle.properties "$observation_dir/gradle.stable"
+            [[ $(grep -c '^version=' "$observation_dir/gradle.rc") -eq 1 ]]
+            [[ $(grep -c '^version=' "$observation_dir/gradle.stable") -eq 1 ]]
+            grep -Fx "version=${OBSERVED_RC_TAG#v}" "$observation_dir/gradle.rc" >/dev/null
+            grep -Fx "version=$stable_version" "$observation_dir/gradle.stable" >/dev/null
+            sed -E 's/^version=.*/version=<PROMOTION>/' "$observation_dir/gradle.rc" > "$observation_dir/gradle.rc.normalized"
+            sed -E 's/^version=.*/version=<PROMOTION>/' "$observation_dir/gradle.stable" > "$observation_dir/gradle.stable.normalized"
+            cmp "$observation_dir/gradle.rc.normalized" "$observation_dir/gradle.stable.normalized"
+
+            content_at "$observation_head" BappManifest.bmf "$observation_dir/manifest.rc"
+            content_at "$SOURCE_COMMIT" BappManifest.bmf "$observation_dir/manifest.stable"
+            [[ $(grep -c '^ScreenVersion:' "$observation_dir/manifest.rc") -eq 1 ]]
+            [[ $(grep -c '^ScreenVersion:' "$observation_dir/manifest.stable") -eq 1 ]]
+            [[ $(grep -c '^SerialVersion:' "$observation_dir/manifest.rc") -eq 1 ]]
+            [[ $(grep -c '^SerialVersion:' "$observation_dir/manifest.stable") -eq 1 ]]
+            grep -Fx "ScreenVersion: ${OBSERVED_RC_TAG#v}" "$observation_dir/manifest.rc" >/dev/null
+            grep -Fx "ScreenVersion: $stable_version" "$observation_dir/manifest.stable" >/dev/null
+            rc_serial=$(awk '/^SerialVersion:/ {print $2}' "$observation_dir/manifest.rc")
+            stable_serial=$(awk '/^SerialVersion:/ {print $2}' "$observation_dir/manifest.stable")
+            [[ "$rc_serial" =~ ^[0-9]+$ && "$stable_serial" =~ ^[0-9]+$ && "$stable_serial" -gt "$rc_serial" ]]
+            sed -E 's/^(ScreenVersion|SerialVersion):.*/\1: <PROMOTION>/' "$observation_dir/manifest.rc" \
+              > "$observation_dir/manifest.rc.normalized"
+            sed -E 's/^(ScreenVersion|SerialVersion):.*/\1: <PROMOTION>/' "$observation_dir/manifest.stable" \
+              > "$observation_dir/manifest.stable.normalized"
+            cmp "$observation_dir/manifest.rc.normalized" "$observation_dir/manifest.stable.normalized"
+            content_at "$observation_head" docs/VULNERABILITY_REPORT.md "$observation_dir/vulnerability-report.rc"
+            content_at "$SOURCE_COMMIT" docs/VULNERABILITY_REPORT.md "$observation_dir/vulnerability-report.stable"
+            grep -Fx "# v$stable_version vulnerability review" "$observation_dir/vulnerability-report.stable" >/dev/null
+            grep -E '^\*\*Review date:\*\* [0-9]{4}-[0-9]{2}-[0-9]{2} \(UTC\)<br>$' \
+              "$observation_dir/vulnerability-report.stable" >/dev/null
+            grep -Fx "**Candidate version:** \`$stable_version\`<br>" "$observation_dir/vulnerability-report.stable" >/dev/null
+            sed -E -e 's/^# .* vulnerability review$/# <PROMOTION> vulnerability review/' \
+              -e 's/^\*\*Review date:\*\* .*$/**Review date:** <PROMOTION>/' \
+              -e 's/^\*\*Candidate version:\*\* .*$/**Candidate version:** <PROMOTION>/' \
+              "$observation_dir/vulnerability-report.rc" > "$observation_dir/vulnerability-report.rc.normalized"
+            sed -E -e 's/^# .* vulnerability review$/# <PROMOTION> vulnerability review/' \
+              -e 's/^\*\*Review date:\*\* .*$/**Review date:** <PROMOTION>/' \
+              -e 's/^\*\*Candidate version:\*\* .*$/**Candidate version:** <PROMOTION>/' \
+              "$observation_dir/vulnerability-report.stable" > "$observation_dir/vulnerability-report.stable.normalized"
+            cmp "$observation_dir/vulnerability-report.rc.normalized" \
+              "$observation_dir/vulnerability-report.stable.normalized"
+            content_at "$SOURCE_COMMIT" "docs/releases/$stable_version.md" "$observation_dir/release-note.stable"
+
+            gh api --paginate "repos/$GITHUB_REPOSITORY/labels?per_page=100" | jq -s 'add // []' \
+              > "$observation_dir/labels.json"
+            [[ $(jq 'length' "$observation_dir/labels.json") -lt 1000 ]]
+            for required_label in gate:non-blocking gate:release-blocker priority:P0 priority:P1 priority:P2; do
+              jq -e --arg label "$required_label" 'any(.[]; .name == $label)' \
+                "$observation_dir/labels.json" >/dev/null
+            done
+            gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues == true and .archived == false and .disabled == false' \
+              | grep -Fx true >/dev/null
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&since=$rc_published_at&sort=created&direction=asc&per_page=100" \
+              | jq -s 'add // []' | jq --arg published "$rc_published_at" \
+                '[.[] | select(has("pull_request") | not) | select(.created_at >= $published)]' \
+                > "$observation_dir/issues.json"
+            [[ $(jq 'length' "$observation_dir/issues.json") -le 1000 ]]
+            jq -e '
+              all(.[];
+                (.labels | map(.name)) as $names |
+                ([$names[] | select(. == "priority:P0" or . == "priority:P1" or . == "priority:P2")] | length) == 1 and
+                ([$names[] | select(. == "gate:release-blocker" or . == "gate:non-blocking")] | length) == 1) and
+              ([.[] | select(.state == "open") | (.labels | map(.name)) as $names |
+                select(($names | index("gate:release-blocker")) != null and
+                  (($names | index("priority:P0")) != null or ($names | index("priority:P1")) != null))] | length) == 0
+            ' "$observation_dir/issues.json" >/dev/null
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&labels=gate%3Arelease-blocker&per_page=100" \
+              | jq -s 'add // []' | jq '[.[] | select(has("pull_request") | not)]' \
+                > "$observation_dir/open-blockers.json"
+            [[ $(jq 'length' "$observation_dir/open-blockers.json") -le 1000 ]]
+            jq -e '
+              all(.[];
+                (.labels | map(.name)) as $names |
+                ([$names[] | select(. == "priority:P0" or . == "priority:P1" or . == "priority:P2")] | length) == 1 and
+                ($names | index("gate:release-blocker")) != null and
+                ($names | index("gate:non-blocking")) == null) and
+              ([.[] | (.labels | map(.name)) as $names |
+                select(($names | index("priority:P0")) != null or ($names | index("priority:P1")) != null)] | length) == 0
+            ' "$observation_dir/open-blockers.json" >/dev/null
+          fi
+
       - name: Publish by changing only the draft flag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           response=$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' --method PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false)
-          jq -e --argjson id "$RELEASE_ID" \
-            '.id == $id and .draft == false and .prerelease == true and .immutable == true' <<<"$response" >/dev/null
+          tag_without_build=${RELEASE_TAG%%+*}
+          if [[ "$tag_without_build" == *-* ]]; then expected_prerelease=true; else expected_prerelease=false; fi
+          jq -e --argjson id "$RELEASE_ID" --argjson prerelease "$expected_prerelease" \
+            '.id == $id and .draft == false and .prerelease == $prerelease and .immutable == true' <<<"$response" >/dev/null
 
       - name: Verify publication did not change release identity or assets
         env:
@@ -413,7 +1023,7 @@ jobs:
             ([.assets[] | [.id, .name, .size, .digest]] | sort)]' | sha256sum | cut -d' ' -f1)
           [[ "$snapshot" == "$EXPECTED_SNAPSHOT" ]]
           {
-            echo "## Published immutable prerelease"
+            echo "## Published immutable release"
             echo
             echo "- Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
             echo "- Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -441,8 +1051,10 @@ jobs:
           api_url="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
           release_json=$(curl --fail --silent --show-error --location \
             -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "$api_url")
-          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" '
-            .draft == false and .prerelease == true and .immutable == true and
+          tag_without_build=${RELEASE_TAG%%+*}
+          if [[ "$tag_without_build" == *-* ]]; then expected_prerelease=true; else expected_prerelease=false; fi
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" --argjson prerelease "$expected_prerelease" '
+            .draft == false and .prerelease == $prerelease and .immutable == true and
             .tag_name == $tag and .target_commitish == $sha and
             all(.assets[]; (.digest | type) == "string" and (.digest | startswith("sha256:")) and (.size > 0))
           ' <<<"$release_json" >/dev/null

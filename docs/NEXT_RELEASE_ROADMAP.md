@@ -1,7 +1,9 @@
 # Active release roadmap
 
-**Status date:** 2026-07-28<br>
-**Baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`  
+**Status date:** 2026-07-31<br>
+**Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
+**Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
+**Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
 **Planning model:** gate-based; versions have no promised calendar date
 
 This is the canonical near-term release plan for the independently maintained `sehoon123/mcp-server` fork. The longer
@@ -10,9 +12,12 @@ active roadmap controls release priority.
 
 ## Product decision
 
-The next public release should be **v4.8.0 — Independent Trust Baseline**, not v4.7.1.
+The v4.8–v4.11 RC sequence accumulated the independent trust baseline, analysis workflows, correlation, lifecycle,
+credential-persistence, and release-evidence work without publishing an intervening stable artifact. The next stable
+release is therefore **v4.11.0**. Historical RC tags/releases remain immutable; `v4.11.0-rc.6` remains permanently
+withheld, and the published `v4.11.0-rc.7` is the observed candidate.
 
-The required work is larger than a patch:
+The required work was larger than a patch:
 
 - network and request-routing approval semantics change;
 - bounded Scanner behavior and stable identifiers may change;
@@ -21,11 +26,9 @@ The required work is larger than a patch:
 - legal/source artifacts and the release pipeline change;
 - existing installations may need explicit migration.
 
-`v4.7.0` should be marked superseded after v4.8.0 is available. Its tag and published assets must not be moved or
-replaced. Start public validation at `v4.8.0-rc.1`; do not publish another locally assembled corrective artifact.
-
-No new MCP tool is planned for v4.8.0. Stable v4.9 remains sequenced after the trust baseline; approved feature work
-may proceed earlier only on the isolated v4.9 branch without changing any v4.8 tag, draft, asset, or release claim.
+`v4.7.0` should be marked superseded after v4.11.0 is available. Its tag and published assets must not be moved or
+replaced. Public validation began at `v4.8.0-rc.1` and now continues on immutable `v4.11.0-rc.7`; do not publish another
+locally assembled corrective artifact or reuse RC evidence as stable exact-byte evidence.
 
 ## Release sequence
 
@@ -34,6 +37,7 @@ may proceed earlier only on the isolated v4.9 branch without changing any v4.8 t
 | `v4.8.0` | Independent Trust Baseline | None | Security, boundedness, identity, legal, and protected-release gates |
 | `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
 | `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
+| `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, seven-day attested observation, fresh stable evidence |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
 ## v4.8.0 — Independent Trust Baseline
@@ -226,11 +230,12 @@ Release notes for v4.8.0 must call out:
 - any catalog-wide `isError` behavior change;
 - v4.7.0 supersession without changing its old bytes.
 
-### v4.8.0 pre-publication gate
+## Stable promotion — v4.11.0
 
-A stable candidate may be published only after all of the following are true:
+The earlier versioned workstreams roll into the v4.11.0 stable candidate. It may be published only after all of the
+following are true:
 
-- [ ] No unresolved v4.8 release-blocking P0/P1 issue; an accepted lower risk has an owner, mitigation, expiry, and
+- [ ] No unresolved v4.11 release-blocking P0/P1 issue; an accepted lower risk has an owner, mitigation, expiry, and
   revisit version.
 - [ ] Full unit, integration, lifecycle, schema, security, provider, and catalog tests pass.
 - [ ] Stable conformance and supported modern sub-behavior tests pass without a new waiver.
@@ -241,10 +246,11 @@ A stable candidate may be published only after all of the following are true:
 - [ ] SBOM schema, hashes, dependency relationships, and explicit licenses validate.
 - [ ] Required legal, fork, source, checksum, vulnerability report/evidence, and attestation assets validate.
 - [ ] The exact draft JAR digest equals the attested smoke-test digest.
-- [ ] `v4.8.0-rc.1` or later completes at least seven days without an unresolved release-blocking P0/P1 defect.
+- [ ] `release-rc-observation.yml` attests at least 604,800 seconds from immutable `v4.11.0-rc.7` publication with
+  complete issue triage, no unresolved release-blocking P0/P1 defect, and release-only source continuity.
 - [ ] The no-rebuild publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
 
-### v4.8.0 mandatory publication completion
+### Mandatory publication completion
 
 The release is complete only after:
 
@@ -360,8 +366,9 @@ Development began under the non-release identity `4.11.0-dev.1`; the first froze
 The immutable `v4.10.0-rc.1` and `v4.11.0-rc.1` through `v4.11.0-rc.4` tags, drafts, notes, and assets remain unchanged.
 Follow-up exact-smoke orchestration and diagnostics work used the non-release `4.11.0-dev.2` identity; surface reduction
 used `4.11.0-dev.3`; and bounded performance work used `4.11.0-dev.4`. RC2 froze the reduced surface and performance
-contracts, RC3 froze deterministic session-cancellation evidence, RC4 froze schema/result consistency, and RC5 is the
-current reader-correctness, metadata-index coordination, simplified release-policy, and evidence-binding candidate. Work
+contracts, RC3 froze deterministic session-cancellation evidence, RC4 froze schema/result consistency, and RC5 froze
+reader correctness and metadata-index coordination. RC6 remains permanently withheld after privacy/cleanup blockers;
+immutable RC7 fixes those blockers, preserves the 21/28-tool catalogs, and is the published observation candidate. Work
 remains ordered so measurement precedes scheduling and catalog changes.
 
 Milestones:
@@ -440,10 +447,12 @@ aliases or families.
 - [x] Metadata refresh and hint builders are independently serialized, slow acquisition/processing runs outside the
   state mutex, publication is generation/project/mutation checked, retry is bounded, and close drains active builders
   plus project/Scope mutation blocks; no Burp wall-clock improvement is claimed without a fresh dual-edition run.
-- [ ] The exact 11-scenario Community/Professional smoke contract, native HTTP, embedded stdio, cancellation, scale,
-  unload, SBOM, conformance, and reproducibility gates pass for a new immutable v4.11 candidate. Same-process project
-  replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather than
-  being represented as passing evidence.
+- [x] The exact 11-scenario Community/Professional smoke contract, native HTTP, embedded stdio, cancellation, scale,
+  unload, SBOM, conformance, reproducibility, and no-rebuild publication gates passed for immutable RC7. Same-process
+  project replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather
+  than being represented as passing evidence.
+- [ ] RC7 completes the attested 604,800-second public observation window with complete issue triage and no unresolved
+  release-blocking P0/P1 before a fresh stable candidate is created.
 
 ## v5.0.0 — Modern MCP gate
 
@@ -491,13 +500,19 @@ The following are not part of v4.8 or v4.9:
 
 ## Milestones and issue map
 
-Suggested labels:
+Required machine-readable release-gate labels:
 
-- priority: `priority:P0`, `priority:P1`, `priority:P2`
+- priority: exactly one of `priority:P0`, `priority:P1`, `priority:P2`
+- disposition: exactly one of `gate:release-blocker`, `gate:non-blocking`
+
+Every GitHub issue created during an RC observation window must carry both classifications. The observation and stable
+publication workflows fail closed if Issues are disabled, any required label is absent, triage is ambiguous or missing,
+or an open release-blocking P0/P1 exists. Other suggested labels remain:
+
 - area: `area:security`, `area:scanner`, `area:api`, `area:runtime`, `area:ui`, `area:release`, `area:legal`,
   `area:performance`, `area:integration`, `area:docs`
 - type: `type:bug`, `type:feature`, `type:decision`, `type:chore`
-- gate: `gate:release-blocker`, `gate:v5`
+- additional gate: `gate:v5`
 - edition: `edition:community`, `edition:professional`
 
 ### Milestone: v4.8.0 — Independent Trust Baseline
