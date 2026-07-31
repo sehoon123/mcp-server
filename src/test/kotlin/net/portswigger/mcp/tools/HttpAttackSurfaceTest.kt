@@ -54,7 +54,7 @@ class HttpAttackSurfaceTest {
         every { project.id() } answers { projectId }
         every { api.proxy() } returns proxy
         every { proxy.history() } answers { history.toList() }
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
         index = HttpMetadataIndex(api, maxRecordsPerSource = 20, nanoTime = { nowNanos })
         service = HttpAttackSurfaceService(api, config, index)
     }
@@ -243,7 +243,7 @@ class HttpAttackSurfaceTest {
         val approvalStorage = mockk<PersistedObject>(relaxed = true)
         every { approvalStorage.getBoolean("requireDataAccessApproval") } returns true
         every { approvalStorage.getString(any()) } returns ""
-        config = McpConfig(approvalStorage, logging)
+        config = McpConfig(approvalStorage, logging, net.portswigger.mcp.testPreferences())
         service = HttpAttackSurfaceService(api, config, index)
         var currentProjectId = projectId
         every { project.id() } answers { currentProjectId }

@@ -75,6 +75,79 @@ def claims(status: str = "NOT RUN") -> dict[str, dict]:
     }
 
 
+def lifecycle_report(edition: str, source: str, jar: str, version: str) -> dict:
+    return {
+        "schemaVersion": 1,
+        "status": "passed",
+        "edition": edition,
+        "sourceCommit": source,
+        "candidateJarSha256": jar,
+        "serverVersion": version,
+        "crossEditionIsolation": {
+            "separateInstallationProfile": True,
+            "separateDataDirectory": True,
+            "separateProject": True,
+        },
+        "events": [
+            {"stage": "initial", "candidateLoaded": True, "authenticated": True},
+            {
+                "stage": "projectSwitch",
+                "differentProjectOpened": True,
+                "tokenStable": True,
+                "authenticated": True,
+            },
+            {"stage": "processExit", "fullBurpExit": True, "listenerClosed": True},
+            {
+                "stage": "processRestart",
+                "fullBurpRelaunch": True,
+                "sameInstallationProfile": True,
+                "tokenStable": True,
+                "authenticated": True,
+            },
+            {
+                "stage": "rotationBeforeListenerRestart",
+                "explicitUiRotation": True,
+                "tokenChanged": True,
+                "oldTokenAuthenticated": True,
+            },
+            {
+                "stage": "listenerRestart",
+                "listenerRestarted": True,
+                "oldTokenRejected401": True,
+                "rotatedTokenAuthenticated": True,
+            },
+            {
+                "stage": "secondProcessRestart",
+                "fullBurpExit": True,
+                "listenerClosed": True,
+                "fullBurpRelaunch": True,
+                "rotatedTokenStable": True,
+                "oldTokenRejected401": True,
+                "rotatedTokenAuthenticated": True,
+            },
+        ],
+        "projectIdentifierRecorded": False,
+        "sessionIdentifierRecorded": False,
+        "bearerRecorded": False,
+        "authorizationHeaderRecorded": False,
+        "rawTrafficRecorded": False,
+        "localPathRecorded": False,
+    }
+
+
+def lifecycle_token_arguments(root: pathlib.Path) -> list[str]:
+    arguments: list[str] = []
+    for edition in ("community", "professional"):
+        for stage in (
+            "before-project-switch",
+            "after-project-switch",
+            "after-restart",
+            "after-rotation",
+        ):
+            arguments.extend([f"--{edition}-token-{stage}", str(root / f"private-{edition}-token-{stage}")])
+    return arguments
+
+
 def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
     source = "a" * 40
     version = "4.11.0-rc.2"
@@ -87,6 +160,20 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
     forbidden = root / "private-forbidden-value"
     forbidden.write_text("private-runtime-marker", encoding="utf-8")
     forbidden.chmod(0o600)
+    for edition, initial, rotated in (
+        ("community", "c" * 43, "d" * 43),
+        ("professional", "p" * 43, "r" * 43),
+    ):
+        stage_values = {
+            "before-project-switch": initial,
+            "after-project-switch": initial,
+            "after-restart": initial,
+            "after-rotation": rotated,
+        }
+        for stage, value in stage_values.items():
+            token_file = root / f"private-{edition}-token-{stage}"
+            token_file.write_text(value, encoding="utf-8")
+            token_file.chmod(0o600)
     jar = hashlib.sha256(candidate.read_bytes()).hexdigest()
 
     for edition, expected in contract.EDITION_CATALOG_COUNTS.items():
@@ -121,6 +208,10 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
             },
         }
         (evidence / f"{edition}-preflight.json").write_text(json.dumps(report), encoding="utf-8")
+        (evidence / f"{edition}-bearer-lifecycle.json").write_text(
+            json.dumps(lifecycle_report(edition, source, jar, version)),
+            encoding="utf-8",
+        )
 
     scenario_claims = claims("PASS")
     for scenario in sorted(contract.SMOKE_SCENARIO_KEYS):
@@ -128,7 +219,21 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
         record_relative = f"evidence/{scenario}-record.json"
         proof = root / proof_relative
         proof.write_text(json.dumps({"scenario": scenario, "status": "passed"}), encoding="utf-8")
-        digest = hashlib.sha256(proof.read_bytes()).hexdigest()
+        objective_relatives = [proof_relative]
+        if scenario == "serverLifecycle":
+            objective_relatives.extend([
+                "evidence/community-bearer-lifecycle.json",
+                "evidence/professional-bearer-lifecycle.json",
+            ])
+        checks = [
+            {
+                "name": "objective-check" if index == 0 else f"{pathlib.PurePosixPath(relative).stem}-check",
+                "path": relative,
+                "sha256": hashlib.sha256((root / relative).read_bytes()).hexdigest(),
+                "result": "pass",
+            }
+            for index, relative in enumerate(objective_relatives)
+        ]
         record = {
             "schemaVersion": 1,
             "scenario": scenario,
@@ -137,15 +242,10 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
             "candidateJarSha256": jar,
             "serverVersion": version,
             "editions": list(contract.SCENARIO_REQUIRED_EDITIONS[scenario]),
-            "checks": [{
-                "name": "objective-check",
-                "path": proof_relative,
-                "sha256": digest,
-                "result": "pass",
-            }],
+            "checks": checks,
         }
         (root / record_relative).write_text(json.dumps(record), encoding="utf-8")
-        scenario_claims[scenario]["evidence"] = [record_relative, proof_relative]
+        scenario_claims[scenario]["evidence"] = [record_relative, *objective_relatives]
     (root / "SCENARIO_CLAIMS.json").write_text(
         json.dumps({"schemaVersion": 1, "scenarios": scenario_claims}),
         encoding="utf-8",
@@ -600,12 +700,15 @@ class ExactSmokeContractTest(unittest.TestCase):
                     "--root", str(root),
                     "--community-preflight", "evidence/community-preflight.json",
                     "--professional-preflight", "evidence/professional-preflight.json",
+                    "--community-lifecycle-report", "evidence/community-bearer-lifecycle.json",
+                    "--professional-lifecycle-report", "evidence/professional-bearer-lifecycle.json",
                     "--scenario-claims", claims_file,
                     "--candidate-jar", "assets/candidate.jar",
                     "--expected-jar-sha256", jar,
                     "--expected-source-commit", source,
                     "--expected-server-version", version,
                     "--forbidden-value-file", str(root / "private-forbidden-value"),
+                    *lifecycle_token_arguments(root),
                     "--output", matrix,
                     "--workflow-results-output", workflow,
                     "--require-all-pass",
@@ -621,6 +724,33 @@ class ExactSmokeContractTest(unittest.TestCase):
             matrix = json.loads((root / "MATRIX.json").read_text(encoding="utf-8"))
             workflow = json.loads((root / "WORKFLOW.json").read_text(encoding="utf-8"))
             self.assertTrue(matrix["summary"]["protectedSmokeEligible"])
+            self.assertEqual(
+                {
+                    "community": {
+                        "crossEditionIsolationConfirmed": True,
+                        "projectSwitchStable": True,
+                        "restartStable": True,
+                        "rotationChanged": True,
+                        "projectSwitchAuthenticated": True,
+                        "restartAuthenticated": True,
+                        "listenerStartupTokenRetained": True,
+                        "rotationCutoverAuthenticated": True,
+                        "secondRestartStable": True,
+                    },
+                    "professional": {
+                        "crossEditionIsolationConfirmed": True,
+                        "projectSwitchStable": True,
+                        "restartStable": True,
+                        "rotationChanged": True,
+                        "projectSwitchAuthenticated": True,
+                        "restartAuthenticated": True,
+                        "listenerStartupTokenRetained": True,
+                        "rotationCutoverAuthenticated": True,
+                        "secondRestartStable": True,
+                    },
+                },
+                matrix["credentialLifecycle"],
+            )
             self.assertEqual(11, len(workflow["scenarios"]))
             self.assertEqual(0o600, stat.S_IMODE((root / "MATRIX.json").stat().st_mode))
             self.assertEqual(0o600, stat.S_IMODE((root / "WORKFLOW.json").stat().st_mode))
@@ -638,6 +768,83 @@ class ExactSmokeContractTest(unittest.TestCase):
             self.assertFalse(withheld_matrix["summary"]["protectedSmokeEligible"])
             self.assertEqual("WITHHOLD", withheld_matrix["releaseDisposition"])
             self.assertFalse((root / "ABSENT_WORKFLOW.json").exists())
+
+    def test_finalizer_requires_distinct_stable_then_rotated_private_tokens_for_both_editions(self):
+        finalizer = load_finalizer_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            build_finalizer_fixture(root)
+            paths = {
+                edition: {
+                    "beforeProjectSwitch": root / f"private-{edition}-token-before-project-switch",
+                    "afterProjectSwitch": root / f"private-{edition}-token-after-project-switch",
+                    "afterRestart": root / f"private-{edition}-token-after-restart",
+                    "afterRotation": root / f"private-{edition}-token-after-rotation",
+                }
+                for edition in ("community", "professional")
+            }
+
+            summary, values = finalizer.validate_lifecycle_token_files(paths)
+            self.assertTrue(summary["community"]["projectSwitchStable"])
+            self.assertTrue(summary["professional"]["restartStable"])
+            self.assertEqual(8, len(values))
+
+            paths["community"]["afterProjectSwitch"].write_text("x" * 43, encoding="utf-8")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_lifecycle_token_files(paths)
+            paths["community"]["afterProjectSwitch"].write_text("c" * 43, encoding="utf-8")
+
+            paths["community"]["afterRestart"].write_text("x" * 43, encoding="utf-8")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_lifecycle_token_files(paths)
+            paths["community"]["afterRestart"].write_text("c" * 43, encoding="utf-8")
+
+            paths["community"]["afterRotation"].write_text("c" * 43, encoding="utf-8")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_lifecycle_token_files(paths)
+            paths["community"]["afterRotation"].write_text("d" * 43, encoding="utf-8")
+
+            for stage in ("beforeProjectSwitch", "afterProjectSwitch", "afterRestart"):
+                paths["professional"][stage].write_text("c" * 43, encoding="utf-8")
+            paths["professional"]["afterRotation"].write_text("d" * 43, encoding="utf-8")
+            with self.assertRaises(HarnessError):
+                finalizer.validate_lifecycle_token_files(paths)
+            for stage in ("beforeProjectSwitch", "afterProjectSwitch", "afterRestart"):
+                paths["professional"][stage].write_text("p" * 43, encoding="utf-8")
+            paths["professional"]["afterRotation"].write_text("r" * 43, encoding="utf-8")
+
+            duplicate = paths["professional"]["afterRestart"]
+            duplicate.unlink()
+            duplicate.hardlink_to(paths["professional"]["afterProjectSwitch"])
+            with self.assertRaises(HarnessError):
+                finalizer.validate_lifecycle_token_files(paths)
+
+    def test_lifecycle_report_requires_exact_candidate_bound_ordered_authentication_events(self):
+        finalizer = load_finalizer_module()
+        source = "a" * 40
+        jar = "b" * 64
+        version = "4.11.0-rc.6"
+        report = lifecycle_report("community", source, jar, version)
+
+        summary = finalizer.validate_lifecycle_report(report, "community", source, jar, version)
+        self.assertTrue(summary["rotationCutoverAuthenticated"])
+        self.assertTrue(summary["secondRestartStable"])
+
+        report["crossEditionIsolation"]["separateDataDirectory"] = False
+        with self.assertRaises(HarnessError):
+            finalizer.validate_lifecycle_report(report, "community", source, jar, version)
+        report["crossEditionIsolation"]["separateDataDirectory"] = True
+        report["events"][1]["differentProjectOpened"] = False
+        with self.assertRaises(HarnessError):
+            finalizer.validate_lifecycle_report(report, "community", source, jar, version)
+        report["events"][1]["differentProjectOpened"] = True
+        report["events"][5]["oldTokenRejected401"] = 1
+        with self.assertRaises(HarnessError):
+            finalizer.validate_lifecycle_report(report, "community", source, jar, version)
+        report["events"][5]["oldTokenRejected401"] = True
+        report["events"][6]["oldTokenRejected401"] = False
+        with self.assertRaises(HarnessError):
+            finalizer.validate_lifecycle_report(report, "community", source, jar, version)
 
     def test_finalizer_rejects_cross_batch_physical_file_aliases(self):
         finalizer = load_finalizer_module()
@@ -661,12 +868,15 @@ class ExactSmokeContractTest(unittest.TestCase):
                 "--root", str(root),
                 "--community-preflight", "evidence/community-preflight.json",
                 "--professional-preflight", "evidence/professional-preflight.json",
+                "--community-lifecycle-report", "evidence/community-bearer-lifecycle.json",
+                "--professional-lifecycle-report", "evidence/professional-bearer-lifecycle.json",
                 "--scenario-claims", "SCENARIO_CLAIMS.json",
                 "--candidate-jar", "assets/candidate.jar",
                 "--expected-jar-sha256", jar,
                 "--expected-source-commit", source,
                 "--expected-server-version", version,
                 "--forbidden-value-file", str(root / "private-forbidden-value"),
+                *lifecycle_token_arguments(root),
                 "--output", "MATRIX.json",
                 "--require-all-pass",
             ]
@@ -691,6 +901,11 @@ class ExactSmokeContractTest(unittest.TestCase):
             '{"projectId":"opaque"}',
             r'{"session\u0049d":"opaque"}',
             r'{"Authoriz\u0061tion":"Bearer redacted"}',
+            r'{"bearer\u0054oken":"private-value"}',
+            r'{"client\u0053ecret":"private-value"}',
+            r'{"o\u0061uth_token":"private-value"}',
+            r'{"secret\u004bey":"private-value"}',
+            r'{"x-api-key":"private-value"}',
         )
         bad_values = (
             b'{"value":"private-marker"}\n',
@@ -698,6 +913,24 @@ class ExactSmokeContractTest(unittest.TestCase):
             b'{"value":"123e4567-e89b-12d3-a456-426614174000"}\n',
             b'Authorization: Bearer redacted\n',
             b'{"Authorization":"Bearer redacted"}\n',
+            b'{"token":"private-value"}\n',
+            b'{"bearerToken":"private-value"}\n',
+            b'{"access_token":"private-value"}\n',
+            b'{"authToken":"private-value"}\n',
+            b'{"apiToken":"private-value"}\n',
+            b'{"oauth_token":"private-value"}\n',
+            b'{"id.token":"private-value"}\n',
+            b'{"client_secret":"private-value"}\n',
+            b'{"password":"private-value"}\n',
+            b'{"credentials":{"kind":"private"}}\n',
+            b'{"x_api_key":"private-value"}\n',
+            b'{"privateKey":"private-value"}\n',
+            b'{"secretKey":"private-value"}\n',
+            b'{"passwd":"private-value"}\n',
+            b'{"jwt":"private-value"}\n',
+            b'{"token":false}\n',
+            b'client-secret: private-value\n',
+            b'oauth.token: private-value\n',
             b'{"Set-Cookie" : "redacted"}\n',
             b'{"Authoriz\\u0061tion":"Bearer redacted"}\n',
             b'{"session\\u0049d":"opaque"}\n',
@@ -725,7 +958,10 @@ class ExactSmokeContractTest(unittest.TestCase):
             with self.assertRaises(HarnessError):
                 contract.validate_permanent_text(escaped_forbidden_key, ("private😀".encode("utf-8"),))
             good = root / "good.json"
-            good.write_text('{"projectIdentifierRecorded":false,"status":"passed"}\n', encoding="utf-8")
+            good.write_text(
+                '{"projectIdentifierRecorded":false,"tokenRecorded":false,"status":"passed"}\n',
+                encoding="utf-8",
+            )
             contract.scan_evidence_privacy([good], [b"private-marker"])
 
     def test_privacy_json_parser_bounds_apply_before_dom_construction(self):

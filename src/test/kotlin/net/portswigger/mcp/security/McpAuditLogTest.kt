@@ -283,7 +283,7 @@ class McpAuditLogTest {
             }
         }
         val logging = mockk<Logging>(relaxed = true)
-        val config = McpConfig(persistedObject, logging)
+        val config = McpConfig(persistedObject, logging, net.portswigger.mcp.testPreferences())
         val log = PersistentMcpAuditLog(persistedObject, config, logging, fixedClock)
         return AuditFixture(storage, persistedObject, logging, config, log)
     }

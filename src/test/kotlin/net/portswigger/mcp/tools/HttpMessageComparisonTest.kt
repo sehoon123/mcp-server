@@ -315,7 +315,7 @@ class HttpMessageComparisonTest {
             }
         }
         every { storage.getString(any()) } returns ""
-        return McpConfig(storage, logging)
+        return McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
     }
 
     private fun refs(vararg ids: Int) = ids.map {

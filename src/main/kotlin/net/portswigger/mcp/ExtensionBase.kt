@@ -2,6 +2,7 @@ package net.portswigger.mcp
 
 import burp.api.montoya.BurpExtension
 import burp.api.montoya.MontoyaApi
+import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.config.ConfigUi
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
@@ -16,8 +17,18 @@ class ExtensionBase : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName(ProductIdentity.EXTENSION_NAME)
 
-        val extensionStorage = api.persistence().extensionData()
-        val config = McpConfig(extensionStorage, api.logging())
+        val persistence = api.persistence()
+        val extensionStorage = persistence.extensionData()
+        val config = McpConfig(extensionStorage, api.logging(), persistence.preferences())
+        try {
+            config.localBearerToken // Migrate the currently loaded project's legacy credential before a project change.
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            api.logging().logToError(
+                "Failed to initialize the installation-scoped MCP credential: ${safeExceptionSummary(e)}"
+            )
+        }
         val auditLog = PersistentMcpAuditLog(extensionStorage, config, api.logging())
         val edtWatchdog = EdtWatchdog()
         val serverManager = KtorServerManager(api, auditLog, extensionStorage = extensionStorage)

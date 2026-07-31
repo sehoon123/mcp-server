@@ -24,7 +24,11 @@ class ConfigUiTest {
         every { storage.getBoolean(any()) } returns null
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
         val ui = ConfigUi(config, emptyList())
 
         try {
@@ -54,7 +58,11 @@ class ConfigUiTest {
         every { storage.setBoolean(any(), any()) } answers { booleans[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
         val ui = ConfigUi(config, emptyList())
 
         try {
@@ -82,7 +90,11 @@ class ConfigUiTest {
         every { storage.getBoolean(any()) } returns null
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
         var sessionResetCalls = 0
         val ui = ConfigUi(
             config = config,
@@ -130,7 +142,11 @@ class ConfigUiTest {
         every { storage.getString(any()) } answers { strings[firstArg()] }
         every { storage.setString(any(), any()) } answers { strings[firstArg()] = secondArg() }
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
         val ui = ConfigUi(config, emptyList())
         mockkStatic(JOptionPane::class)
         try {
@@ -174,7 +190,11 @@ class ConfigUiTest {
         every { storage.setBoolean(any(), any()) } answers { booleans[firstArg()] = secondArg() }
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
         val ui = ConfigUi(config, emptyList())
 
         try {

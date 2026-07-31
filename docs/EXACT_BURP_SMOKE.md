@@ -77,6 +77,25 @@ baseline. Its exact staged accounting must fail rather than reuse a project with
 Professional and Community runs are separate lifecycles. Never reuse the bearer, project, data directory, or a successful
 Community scale report as Professional evidence.
 
+For each edition's `serverLifecycle` claim, retain token values only in mode-0600 private files and record only boolean
+comparisons and authentication outcomes. Copy token A, switch to a different disposable Burp project under the same
+installation profile, and require the token to remain equal to A and authenticate. Fully exit Burp, verify the listener
+closes, relaunch the same installation/data directory with the exact candidate, and require token B to equal A and
+authenticate. Then use the explicit rotation control to obtain token C, require C to differ from A, verify the running
+listener still accepts A until it is restarted, and verify only C authenticates after listener restart and after one more
+full Burp restart. Pass the eight edition/stage token files through the finalizer's explicit lifecycle-token arguments;
+no token, Authorization header, project/session identifier, or local path may enter permanent evidence.
+
+Create one candidate-bound, secret-free lifecycle report per edition and bind both reports as objective files in the
+`serverLifecycle` scenario record. The finalizer accepts only the exact ordered stages `initial`, `projectSwitch`,
+`processExit`, `processRestart`, `rotationBeforeListenerRestart`, `listenerRestart`, and `secondProcessRestart`. Those
+stages must assert the real project transition, listener closure, authenticated A/B continuity, old-token acceptance
+before listener restart, old-token `401` plus C acceptance after listener restart, and old-token `401` plus C continuity
+after the second full Burp restart. Each report must also attest separate Community/Professional installation profiles,
+data directories, and projects. The report schema requires every private-data-recorded flag to be `false`; arbitrary fields are
+rejected. Credential-named fields are forbidden in all permanent evidence even when their value is `false` or `null`;
+use aggregate booleans such as `tokenRecorded` only where an existing exact schema explicitly permits them.
+
 ## Diagnostics-gated cancellation
 
 With no other MCP client or event stream connected, `run-live-cancellation-barrier.py` first requires exactly its target
@@ -172,19 +191,32 @@ scripts/finalize-exact-burp-smoke.py \
   --root <smoke-evidence-root> \
   --community-preflight evidence/community-preflight.json \
   --professional-preflight evidence/professional-preflight.json \
+  --community-lifecycle-report evidence/community-bearer-lifecycle.json \
+  --professional-lifecycle-report evidence/professional-bearer-lifecycle.json \
   --scenario-claims SCENARIO_CLAIMS.json \
   --candidate-jar assets/independent-mcp-bridge-all.jar \
   --expected-jar-sha256 <sha256> \
   --expected-source-commit <full-commit> \
   --expected-server-version <candidate-version> \
-  --forbidden-value-file <private-current-or-retired-token-file> \
+  --forbidden-value-file <private-marker-or-other-runtime-value-file> \
+  --community-token-before-project-switch <private-community-token-a-file> \
+  --community-token-after-project-switch <private-community-token-after-project-file> \
+  --community-token-after-restart <private-community-token-b-file> \
+  --community-token-after-rotation <private-community-token-c-file> \
+  --professional-token-before-project-switch <private-professional-token-a-file> \
+  --professional-token-after-project-switch <private-professional-token-after-project-file> \
+  --professional-token-after-restart <private-professional-token-b-file> \
+  --professional-token-after-rotation <private-professional-token-c-file> \
   --output SCENARIO_MATRIX.json \
   --workflow-results-output PRIVATE_WORKFLOW_RESULTS.json \
   --require-all-pass
 ```
 
-Repeat `--forbidden-value-file` for every current/retired edition token and private marker used during the workflow; at
-least one private mode-0600 value file is mandatory.
+Repeat `--forbidden-value-file` for every additional private marker or retired token used during the workflow; at least
+one such mode-0600 value file is mandatory in addition to the eight explicit lifecycle token files. The finalizer
+privately requires equality before/after the project switch and Burp restart plus inequality after rotation for both
+editions, rejects any token value shared across editions, and automatically adds all eight values to the permanent-
+evidence deny scan. Both exact lifecycle reports must be hash-bound into the `serverLifecycle` scenario record.
 
 The matrix is always honest: any `FAIL`, `BLOCKED`, or `NOT RUN` produces disposition `WITHHOLD` and
 `protectedSmokeEligible: false`. The single-line workflow results file is created only when both exact edition

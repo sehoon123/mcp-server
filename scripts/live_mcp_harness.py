@@ -107,8 +107,8 @@ def read_private_text_file(path: pathlib.Path, *, min_chars: int, max_chars: int
 
 
 def read_private_token(path: pathlib.Path) -> str:
-    token = read_private_text_file(path, min_chars=32, max_chars=128)
-    if any(character.isspace() for character in token):
+    token = read_private_text_file(path, min_chars=43, max_chars=128)
+    if not all(character.isascii() and (character.isalnum() or character in "_-") for character in token):
         raise HarnessError("token file does not contain a valid local bearer value")
     return token
 

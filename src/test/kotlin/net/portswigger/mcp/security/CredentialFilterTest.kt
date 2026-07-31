@@ -55,7 +55,7 @@ class CredentialFilterTest {
 
         this.get_user_options_with_customizable_field()
         this.get_project_options_with_customizable_field()
-        config = McpConfig(persistedObject, mockLogging)
+        config = McpConfig(persistedObject, mockLogging, net.portswigger.mcp.testPreferences())
     }
 
     fun get_user_options_with_customizable_field(username: String = "", password: String = ""): String {

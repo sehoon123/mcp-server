@@ -17,6 +17,7 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.organizer.Organizer
 import burp.api.montoya.organizer.OrganizerItem
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
@@ -110,7 +111,6 @@ class ToolsKtTest {
             every { getBoolean("_alwaysAllowScannerIssues") } returns false
             every { getBoolean("_alwaysAllowCollaboratorInteractions") } returns false
             every { getString("host") } returns "127.0.0.1"
-            every { getString("localBearerToken") } returns testBearerToken
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
             every { setBoolean(any(), any()) } answers {
@@ -126,7 +126,9 @@ class ToolsKtTest {
             every { logToOutput(any<String>()) } returns Unit
         }
 
-        config = McpConfig(persistedObject, mockLogging)
+        val preferences = mockk<Preferences>(relaxed = true)
+        every { preferences.getString("independentMcpBridge.localBearerToken.v1") } returns testBearerToken
+        config = McpConfig(persistedObject, mockLogging, preferences)
         
         mockkStatic(HttpHeader::class)
         mockkStatic(burp.api.montoya.http.HttpService::class)

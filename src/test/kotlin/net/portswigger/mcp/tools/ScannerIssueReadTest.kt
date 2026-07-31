@@ -40,7 +40,7 @@ class ScannerIssueReadTest {
         every { project.id() } returns "project-123"
         every { api.siteMap() } returns siteMap
         every { api.logging() } returns logging
-        service = ScannerIssueReadService(api, McpConfig(storage, logging))
+        service = ScannerIssueReadService(api, McpConfig(storage, logging, net.portswigger.mcp.testPreferences()))
     }
 
     @Test

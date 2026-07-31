@@ -60,7 +60,7 @@ class HttpMessageIndexedSearchTest {
         every { organizer.items() } answers { organizerItems.toList() }
         every { api.siteMap() } returns siteMap
         every { siteMap.requestResponses() } answers { siteMapItems.toList() }
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
     }
 
     @AfterEach

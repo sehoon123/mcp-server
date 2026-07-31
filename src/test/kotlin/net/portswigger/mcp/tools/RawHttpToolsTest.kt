@@ -58,7 +58,7 @@ class RawHttpToolsTest {
         currentProjectId = "project-raw"
         every { api.project() } returns project
         every { project.id() } answers { currentProjectId }
-        config = McpConfig(storage, logging)
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
         service = RawHttpActionService(api, config)
         mockkStatic(HttpService::class)
         mockkStatic(HttpRequest::class)

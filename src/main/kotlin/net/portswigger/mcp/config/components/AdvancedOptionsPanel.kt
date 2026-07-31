@@ -1,5 +1,6 @@
 package net.portswigger.mcp.config.components
 
+import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.McpConfig
 import java.awt.Toolkit
@@ -58,10 +59,13 @@ class AdvancedOptionsPanel(
 
         val copyTokenButton = JButton("Copy local bearer token").apply {
             addActionListener {
-                copyTokenToClipboard(config.localBearerToken).onSuccess {
+                try {
+                    copyTokenToClipboard(config.localBearerToken)
                     tokenStatus.updateContent("Bearer token copied; treat the clipboard as sensitive")
-                }.onFailure {
-                    tokenStatus.updateContent("Could not access the system clipboard")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    tokenStatus.updateContent("Could not read or copy the bearer token")
                 }
             }
         }
@@ -76,11 +80,23 @@ class AdvancedOptionsPanel(
                     JOptionPane.WARNING_MESSAGE,
                 )
                 if (confirmed == JOptionPane.OK_OPTION) {
-                    val token = config.rotateLocalBearerToken()
+                    val token = try {
+                        config.rotateLocalBearerToken()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        tokenStatus.updateContent(
+                            "Token rotation could not be confirmed; re-copy or rotate before restarting the server"
+                        )
+                        return@addActionListener
+                    }
                     reinstallNotice.isVisible = true
-                    copyTokenToClipboard(token).onSuccess {
+                    try {
+                        copyTokenToClipboard(token)
                         tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
-                    }.onFailure {
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
                         tokenStatus.updateContent("Token rotated; restart the server and update clients")
                     }
                 }
@@ -91,7 +107,7 @@ class AdvancedOptionsPanel(
         add(tokenStatus)
     }
 
-    private fun copyTokenToClipboard(token: String): Result<Unit> = runCatching {
+    private fun copyTokenToClipboard(token: String) {
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(token), null)
     }
 

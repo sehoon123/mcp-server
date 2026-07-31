@@ -310,7 +310,9 @@ Local matching builds are useful preflight evidence only. The protected workflow
 At minimum, exercise the 11 required scenarios:
 
 1. clean extension load, unload, and proxy checksum/provenance diagnostics;
-2. start, stop, restart, occupied-port failure, correction, and extension reload;
+2. start, stop, restart, occupied-port failure, correction, extension reload, and exact private equality of the local
+   bearer credential across a project switch and full Burp process restart, followed by explicit-rotation cutover and
+   another restart;
 3. native Streamable HTTP initialize, initialized notification, ping, list, call, and authenticated DELETE;
 4. stdio proxy initialize, one read call, one action denial, and graceful EOF cleanup;
 5. exact Community tool/resource/prompt catalog and Professional-only gating;

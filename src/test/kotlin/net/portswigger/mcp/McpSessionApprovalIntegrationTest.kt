@@ -113,6 +113,6 @@ class McpSessionApprovalIntegrationTest {
             every { setString(any(), any()) } answers { storage[firstArg()] = secondArg<String>() }
             every { setInteger(any(), any()) } answers { storage[firstArg()] = secondArg<Int>() }
         }
-        return McpConfig(persisted, mockk<Logging>(relaxed = true))
+        return McpConfig(persisted, mockk<Logging>(relaxed = true), testPreferences())
     }
 }

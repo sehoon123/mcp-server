@@ -47,7 +47,7 @@ class WebSocketMessageReadTest {
         every { api.project() } returns project
         every { project.id() } answers { currentProjectId }
         every { api.proxy() } returns proxy
-        config = McpConfig(storage, logging).also { it.requireDataAccessApproval = true }
+        config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences()).also { it.requireDataAccessApproval = true }
         service = WebSocketMessageReadService(api, config)
     }
 

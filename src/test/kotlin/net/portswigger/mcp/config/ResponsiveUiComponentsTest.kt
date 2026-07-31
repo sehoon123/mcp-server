@@ -198,7 +198,7 @@ class ResponsiveUiComponentsTest {
         every { storage.getBoolean(any()) } returns null
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true))
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
         val ui = ConfigUi(config, emptyList())
 
         try {

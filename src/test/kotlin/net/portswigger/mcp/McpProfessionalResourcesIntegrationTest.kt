@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import burp.api.montoya.scanner.audit.issues.AuditIssueConfidence
 import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
@@ -52,14 +53,15 @@ class McpProfessionalResourcesIntegrationTest {
         every { storage.getBoolean("approvalYoloMode") } returns false
         every { storage.getBoolean("emergencyReadOnlyMode") } returns false
         every { storage.getString(any()) } returns "127.0.0.1"
-        every { storage.getString("localBearerToken") } returns token
         every { storage.getInteger("port") } returns port
         every { storage.setBoolean(any(), any()) } returns Unit
         every { storage.setString(any(), any()) } returns Unit
         every { storage.setInteger(any(), any()) } returns Unit
         every { api.project().id() } returns "professional-project"
         every { api.burpSuite().version().edition() } returns BurpSuiteEdition.PROFESSIONAL
-        config = McpConfig(storage, logging)
+        val preferences = mockk<Preferences>(relaxed = true)
+        every { preferences.getString("independentMcpBridge.localBearerToken.v1") } returns token
+        config = McpConfig(storage, logging, preferences)
     }
 
     @BeforeEach
