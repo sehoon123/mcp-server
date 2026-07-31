@@ -823,7 +823,7 @@ class ExactSmokeContractTest(unittest.TestCase):
         finalizer = load_finalizer_module()
         source = "a" * 40
         jar = "b" * 64
-        version = "4.11.0-rc.6"
+        version = "4.11.0-rc.7"
         report = lifecycle_report("community", source, jar, version)
 
         summary = finalizer.validate_lifecycle_report(report, "community", source, jar, version)
@@ -910,6 +910,26 @@ class ExactSmokeContractTest(unittest.TestCase):
         bad_values = (
             b'{"value":"private-marker"}\n',
             b'{"projectId":"opaque"}\n',
+            b'{"stable-id":"opaque"}\n',
+            b'{"stable_id":"opaque"}\n',
+            b'{"stable.id":"opaque"}\n',
+            b'{"stable id":"opaque"}\n',
+            b'{"scanner.task-id":"opaque"}\n',
+            b'{"collaborator_payload":"opaque"}\n',
+            b'prefix "stableId": opaque\n',
+            b'prefix stableId: opaque\n',
+            b'stableId: opaque\n',
+            b'session_id: opaque\n',
+            b'prefix "token": false\n',
+            b"prefix {'client_secret': null}\n",
+            b'prefix "stable/id": opaque\n',
+            b"prefix 'client/secret': null\n",
+            'prefix "stable\u200bid": opaque\n'.encode("utf-8"),
+            'prefix "ſtableId": opaque\n'.encode("utf-8"),
+            b'prefix stable\tid: opaque\n',
+            json.dumps({"log": 'prefix "token": false'}).encode("utf-8"),
+            json.dumps({"log": 'prefix "stable/id": opaque'}).encode("utf-8"),
+            json.dumps({"log": 'prefix "client/secret": null'}).encode("utf-8"),
             b'{"value":"123e4567-e89b-12d3-a456-426614174000"}\n',
             b'Authorization: Bearer redacted\n',
             b'{"Authorization":"Bearer redacted"}\n',
@@ -954,12 +974,43 @@ class ExactSmokeContractTest(unittest.TestCase):
                 path.write_bytes(value)
                 with self.assertRaises(HarnessError):
                     contract.scan_evidence_privacy([path], [b"private-marker"])
+            for structural_value in (
+                b'{"stableId":"opaque"}',
+                b'{"stable-id":"opaque"}',
+                b'{"scanner.task-id":"opaque"}',
+                b'{"collaborator_payload":"opaque"}',
+                b'{"token":false}',
+                b'bearer-token: null',
+            ):
+                with self.assertRaises(HarnessError):
+                    contract.validate_permanent_text(structural_value, ())
+            for escaped_value, forbidden_value in (
+                (b'prefix "value":"private\\ud83d\\ude00"', "private😀".encode("utf-8")),
+                (b'prefix "value":"private\\/value"', b"private/value"),
+                (b'prefix \\"token\\": false', b"unrelated-private-value"),
+            ):
+                with self.assertRaises(HarnessError):
+                    contract.validate_permanent_text(escaped_value, (forbidden_value,))
             escaped_forbidden_key = json.dumps({"private😀": "value"}).encode("utf-8")
             with self.assertRaises(HarnessError):
                 contract.validate_permanent_text(escaped_forbidden_key, ("private😀".encode("utf-8"),))
             good = root / "good.json"
             good.write_text(
-                '{"projectIdentifierRecorded":false,"tokenRecorded":false,"status":"passed"}\n',
+                json.dumps({
+                    "projectIdentifierRecorded": False,
+                    "tokenRecorded": False,
+                    "cursorAndStableId": {"pagesDisjoint": True, "rawIdentifiersRecorded": False},
+                    "cursor_stable_id": "categorical-check-name",
+                    "cursor stableId": "categorical-check-name",
+                    "cursor/stableId": "categorical-check-name",
+                    "cursor\u200bstableId": "categorical-check-name",
+                    "cursorſtableId": "categorical-check-name",
+                    "stableReferenceIdentifierPresent": True,
+                    "nestedReport": json.dumps({
+                        "cursorAndStableId": {"stableReferenceResolved": True},
+                    }),
+                    "status": "passed",
+                }) + "\n",
                 encoding="utf-8",
             )
             contract.scan_evidence_privacy([good], [b"private-marker"])

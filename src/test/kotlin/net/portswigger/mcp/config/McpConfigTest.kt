@@ -6,6 +6,7 @@ import burp.api.montoya.persistence.Preferences
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -405,6 +406,19 @@ class McpConfigTest {
     }
 
     @Test
+    fun `pre-commit preference write cancellation propagates without cleanup`() {
+        every { preferences.setString(installationTokenKey, any()) } throws CancellationException("pre-commit")
+
+        val failure = assertThrows(CancellationException::class.java) {
+            config.localBearerToken
+        }
+
+        assertEquals("pre-commit", failure.message)
+        assertFalse(preferenceValues.containsKey(installationTokenKey))
+        verify(exactly = 0) { persistedObject.deleteString(any()) }
+    }
+
+    @Test
     fun `definitely failed explicit rotation retains the persisted token`() {
         val original = "o".repeat(43)
         preferenceValues[installationTokenKey] = original
@@ -538,6 +552,54 @@ class McpConfigTest {
                 it.contains("obsolete project-scoped MCP credential") && !it.contains(preferred)
             })
         }
+    }
+
+    @Test
+    fun `legacy cleanup cancellation does not overturn a committed migration`() {
+        val legacy = "m".repeat(43)
+        projectValues["localBearerToken"] = legacy
+        every { persistedObject.deleteString("localBearerToken") } throws CancellationException("cleanup cancelled")
+
+        assertEquals(legacy, config.localBearerToken)
+        assertEquals(legacy, preferenceValues[installationTokenKey])
+        assertEquals(legacy, projectValues["localBearerToken"])
+        verify {
+            mockLogging.logToError(match<String> {
+                it.contains("obsolete project-scoped MCP credential") && !it.contains(legacy)
+            })
+        }
+    }
+
+    @Test
+    fun `legacy cleanup cancellation does not overturn a committed rotation`() {
+        val original = "o".repeat(43)
+        val legacy = "l".repeat(43)
+        preferenceValues[installationTokenKey] = original
+        projectValues["localBearerToken"] = legacy
+        every { persistedObject.deleteString("localBearerToken") } throws CancellationException("cleanup cancelled")
+
+        val rotated = config.rotateLocalBearerToken()
+
+        assertNotEquals(original, rotated)
+        assertEquals(rotated, preferenceValues[installationTokenKey])
+        assertEquals(rotated, config.localBearerToken)
+        verify(atLeast = 1) {
+            mockLogging.logToError(match<String> {
+                it.contains("obsolete project-scoped MCP credential") &&
+                    !it.contains(original) && !it.contains(legacy) && !it.contains(rotated)
+            })
+        }
+    }
+
+    @Test
+    fun `cleanup logging cancellation does not overturn an authoritative preference`() {
+        val preferred = "q".repeat(43)
+        preferenceValues[installationTokenKey] = preferred
+        every { persistedObject.deleteString("localBearerToken") } throws IllegalStateException("cleanup failed")
+        every { mockLogging.logToError(any<String>()) } throws CancellationException("logging cancelled")
+
+        assertEquals(preferred, config.localBearerToken)
+        assertEquals(preferred, preferenceValues[installationTokenKey])
     }
 
     @Test

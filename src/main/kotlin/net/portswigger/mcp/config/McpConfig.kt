@@ -458,15 +458,13 @@ private class InstallationBearerTokenStore(
     private fun removeLegacyProjectToken() {
         try {
             legacyProjectStorage.deleteString(LEGACY_PROJECT_BEARER_TOKEN_KEY)
-        } catch (e: CancellationException) {
-            throw e
         } catch (failure: Exception) {
+            // The installation credential is already authoritative here. Cleanup cancellation or failure must not
+            // overturn a committed migration/rotation or make an existing preference unavailable to this operation.
             try {
                 logging.logToError(
                     "Failed to remove the obsolete project-scoped MCP credential: ${safeExceptionSummary(failure)}"
                 )
-            } catch (e: CancellationException) {
-                throw e
             } catch (_: Exception) {
                 // A logging failure must not invalidate an already committed installation credential.
             }
