@@ -94,6 +94,10 @@ def validate_preflight(
         raise HarnessError("edition preflight catalog contract failed")
 
 
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def validate_lifecycle_report(
     report: dict[str, Any],
     edition: str,
@@ -158,8 +162,7 @@ def validate_lifecycle_report(
         "rawTrafficRecorded": False,
         "localPathRecorded": False,
     }
-    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))
-    if canonical(report) != canonical(expected):
+    if canonical_json(report) != canonical_json(expected):
         raise HarnessError(f"{edition} bearer lifecycle report is incomplete, stale, or not candidate-bound")
     return {
         "crossEditionIsolationConfirmed": True,
