@@ -53,6 +53,7 @@ jobs:
         run: |
           python3 scripts/test-live-mcp-harness.py
           python3 scripts/test-exact-smoke-contract.py
+          python3 scripts/test-rc-observation-contract.py
           python3 scripts/test-release-vulnerability-gate.py
 
       - name: Run tests

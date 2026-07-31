@@ -285,11 +285,25 @@ class ExactSmokeContractTest(unittest.TestCase):
                 flags=re.DOTALL,
             )
         )
-        self.assertEqual(2, len(publish_matches), "publication scenario assertions are missing or duplicated")
+        self.assertEqual(4, len(publish_matches), "publication scenario assertions are missing or duplicated")
         for match in publish_matches:
             publish_scenarios = re.findall(r'"([A-Za-z][A-Za-z0-9]+)"', match.group(1))
             self.assertEqual(len(contract.SMOKE_SCENARIO_KEYS), len(publish_scenarios))
             self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), publish_scenarios)
+
+        observation = (SCRIPTS.parent / ".github/workflows/release-rc-observation.yml").read_text(encoding="utf-8")
+        observation_matches = list(
+            re.finditer(
+                r"\(\.scenarios \| keys \| sort\) == \[(.*?)\]\s+and\s+\(\[\.scenarios\[\]\]",
+                observation,
+                flags=re.DOTALL,
+            )
+        )
+        self.assertEqual(1, len(observation_matches), "RC observation scenario assertion is missing or duplicated")
+        observation_scenarios = re.findall(
+            r'"([A-Za-z][A-Za-z0-9]+)"', observation_matches[0].group(1)
+        )
+        self.assertEqual(sorted(contract.SMOKE_SCENARIO_KEYS), observation_scenarios)
 
     def test_draft_release_readers_isolate_exact_ephemeral_permissions(self):
         def job_block(workflow: str, job_id: str) -> str:
@@ -342,7 +356,7 @@ class ExactSmokeContractTest(unittest.TestCase):
         publish = (SCRIPTS.parent / ".github/workflows/release-publish.yml").read_text(encoding="utf-8")
         preflight_job = job_block(publish, "preflight")
         self.assertEqual(
-            {"contents": "write", "actions": "read", "attestations": "read"},
+            {"contents": "write", "actions": "read", "attestations": "read", "issues": "read"},
             permission_map(preflight_job),
         )
         self.assertIn("GH_TOKEN: ${{ github.token }}", preflight_job)
@@ -351,6 +365,87 @@ class ExactSmokeContractTest(unittest.TestCase):
         self.assertEqual(2, publish.count("compare/$SOURCE_COMMIT...$GITHUB_SHA"))
         self.assertNotIn("compare/$SOURCE_COMMIT...main", publish)
         self.assertEqual(1, publish.count("secrets.IMMUTABLE_RELEASES_READ_TOKEN"))
+
+    def test_rc_observation_and_stable_publication_are_structurally_fail_closed(self):
+        def job_block(workflow: str, job_id: str) -> str:
+            match = re.search(
+                rf"^  {re.escape(job_id)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                workflow,
+                flags=re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match, f"missing workflow job: {job_id}")
+            return match.group("body")
+
+        def permission_map(job: str) -> dict[str, str]:
+            match = re.search(r"^    permissions:(?P<inline> \{\})?\n", job, flags=re.MULTILINE)
+            self.assertIsNotNone(match, "job must declare an explicit permission map")
+            if match.group("inline"):
+                return {}
+            permissions = {}
+            for line in job[match.end() :].splitlines():
+                if not line.strip() or line.startswith("      #"):
+                    continue
+                item = re.fullmatch(r"      ([a-z-]+): (read|write|none)", line)
+                if item is None:
+                    break
+                permissions[item.group(1)] = item.group(2)
+            return permissions
+
+        observation = (SCRIPTS.parent / ".github/workflows/release-rc-observation.yml").read_text(encoding="utf-8")
+        self.assertIn("permissions: {}", observation)
+        observe_job = job_block(observation, "observe")
+        self.assertEqual(
+            {"contents": "read", "actions": "read", "attestations": "read", "issues": "read"},
+            permission_map(observe_job),
+        )
+        self.assertIn("ref: ${{ github.sha }}", observe_job)
+        self.assertIn("persist-credentials: false", observe_job)
+        self.assertIn("python3 scripts/rc_observation_contract.py", observe_job)
+        self.assertNotIn("secrets.", observe_job)
+        attest_job = job_block(observation, "attest")
+        self.assertEqual({"id-token": "write", "attestations": "write"}, permission_map(attest_job))
+        self.assertNotIn("actions/checkout", attest_job)
+        self.assertNotIn("GH_TOKEN:", attest_job)
+        self.assertNotIn("secrets.", attest_job)
+        uses = re.findall(r"(?m)^\s+(?:- )?uses: ([^\s#]+)", observation)
+        self.assertGreaterEqual(len(uses), 4)
+        for action in uses:
+            self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[a-f0-9]{40}$")
+
+        publish = (SCRIPTS.parent / ".github/workflows/release-publish.yml").read_text(encoding="utf-8")
+        publish_job = job_block(publish, "publish")
+        self.assertEqual(
+            {"contents": "write", "actions": "read", "attestations": "read", "issues": "read"},
+            permission_map(publish_job),
+        )
+        self.assertEqual(
+            2,
+            publish.count('--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-rc-observation.yml"'),
+        )
+        self.assertEqual(2, publish.count('(keys | sort) == ["baseVersion", "continuityChangedPaths"'))
+        self.assertEqual(2, publish.count(".minimumObservationSeconds == 604800"))
+        self.assertEqual(2, publish.count(".issueTriage.openReleaseBlockingP0 == 0"))
+        self.assertEqual(2, publish.count(".issueTriage.globalOpenReleaseBlockingP0 == 0"))
+        self.assertEqual(2, publish.count("issues?state=open&labels=gate%3Arelease-blocker"))
+        self.assertEqual(2, publish.count("rc_publication_json=$(gh api"))
+        self.assertEqual(2, publish.count("rc_smoke_json=$(gh api"))
+        self.assertEqual(2, publish.count("--pattern independent-mcp-bridge-all.jar --pattern provenance.intoto.jsonl"))
+        self.assertEqual(
+            2,
+            publish.count('validate_continuity "$OBSERVED_RC_SOURCE_COMMIT" "$observation_head"'),
+        )
+        self.assertEqual(2, publish.count('validate_continuity "$observation_head" "$SOURCE_COMMIT"'))
+        self.assertEqual(2, publish.count("cmp \"$observation_dir/gradle.rc.normalized\""))
+        self.assertEqual(2, publish.count("cmp \"$observation_dir/manifest.rc.normalized\""))
+        self.assertEqual(2, publish.count("cmp \"$observation_dir/vulnerability-report.rc.normalized\""))
+        self.assertEqual(2, publish.count('grep -Fx "# v$stable_version vulnerability review"'))
+        self.assertEqual(2, publish.count('[[ -z "$RC_OBSERVATION_RUN_ID"'))
+        self.assertEqual(2, publish.count('[[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]'))
+        self.assertEqual(2, publish.count('[[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]'))
+        self.assertEqual(2, publish.count(".draft == true and .prerelease == $prerelease"))
+        self.assertEqual(2, publish.count(".draft == false and .prerelease == true and .immutable == true"))
+        self.assertEqual(2, publish.count(".draft == false and .prerelease == $prerelease and .immutable == true"))
+        self.assertNotIn("Stable publication remains blocked until", publish)
 
     def test_release_identity_is_exact_and_bounded(self):
         contract.validate_release_identity("a" * 40, "b" * 64, "4.11.0-rc.2")
