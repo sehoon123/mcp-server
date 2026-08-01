@@ -7,11 +7,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import stat
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -445,6 +448,145 @@ class ExactSmokeContractTest(unittest.TestCase):
         self.assertEqual(2, publish.count(".draft == true and .prerelease == $prerelease"))
         self.assertEqual(2, publish.count(".draft == false and .prerelease == true and .immutable == true"))
         self.assertEqual(2, publish.count(".draft == false and .prerelease == $prerelease and .immutable == true"))
+
+        smoke = (SCRIPTS.parent / ".github/workflows/release-smoke.yml").read_text(encoding="utf-8")
+        draft = (SCRIPTS.parent / ".github/workflows/release-draft.yml").read_text(encoding="utf-8")
+        self.assertEqual(1, smoke.count("V411_RELEASE_TAG=v4.11.0"))
+        self.assertEqual(1, smoke.count("V411_RELEASE_REF=refs/heads/release/v4.11"))
+        self.assertEqual(1, smoke.count("DEFAULT_REF=refs/heads/main"))
+        self.assertIn('if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then', smoke)
+        self.assertIn('[[ "$GITHUB_REF" == "$expected_workflow_ref" ]]', smoke)
+        self.assertIn('[[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]', smoke)
+
+        self.assertEqual(1, draft.count("V411_RELEASE_TAG=v4.11.0"))
+        self.assertEqual(1, draft.count("V411_RELEASE_BRANCH=release/v4.11"))
+        self.assertEqual(1, draft.count("DEFAULT_BRANCH=main"))
+        self.assertIn('[[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]', draft)
+        self.assertIn('git fetch --no-tags origin "+refs/heads/$expected_ancestry_branch:$expected_ancestry_ref"', draft)
+        self.assertIn('git merge-base --is-ancestor "$commit" "$expected_ancestry_ref"', draft)
+
+        selector_pattern = re.compile(
+            r"(?ms)^          V411_RELEASE_TAG=v4\.11\.0\n.*?^          fi"
+            r"(?=\n          (?:\[\[|expected_ancestry_ref=))"
+        )
+        smoke_selectors = [textwrap.dedent(value) for value in selector_pattern.findall(smoke)]
+        publish_selectors = [textwrap.dedent(value) for value in selector_pattern.findall(publish)]
+        draft_selectors = [textwrap.dedent(value) for value in selector_pattern.findall(draft)]
+        self.assertEqual(1, len(smoke_selectors))
+        self.assertEqual(2, len(publish_selectors))
+        self.assertEqual(publish_selectors[0], publish_selectors[1])
+        self.assertEqual(1, len(draft_selectors))
+
+        def assert_ref_matrix(
+            selector: str,
+            selected_variable: str,
+            selected_branch_variable: str | None = None,
+        ) -> None:
+            for release_tag, github_ref, accepted in (
+                ("v4.11.0", "refs/heads/release/v4.11", True),
+                ("v4.11.0", "refs/heads/main", False),
+                ("v4.11.0-rc.7", "refs/heads/main", True),
+                ("v4.11.0-rc.7", "refs/heads/release/v4.11", False),
+                ("v4.12.0-rc.1", "refs/heads/main", True),
+            ):
+                expected_branch = "release/v4.11" if release_tag == "v4.11.0" else "main"
+                checks = [f'[[ "$GITHUB_REF" == "${selected_variable}" ]]']
+                if selected_branch_variable is not None:
+                    checks.append(f'[[ "${selected_branch_variable}" == "$EXPECTED_BRANCH" ]]')
+                assertions = "\n" + " && ".join(checks) + "\n"
+                result = subprocess.run(
+                    ["bash", "-c", selector + assertions],
+                    env={
+                        **os.environ,
+                        "RELEASE_TAG": release_tag,
+                        "GITHUB_REF": github_ref,
+                        "EXPECTED_BRANCH": expected_branch,
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    accepted,
+                    result.returncode == 0,
+                    f"tag={release_tag} ref={github_ref} stderr={result.stderr!r}",
+                )
+
+        assert_ref_matrix(smoke_selectors[0], "expected_workflow_ref")
+        for selector in publish_selectors:
+            assert_ref_matrix(selector, "expected_workflow_ref", "expected_workflow_branch")
+
+        for release_tag, expected_branch in (
+            ("v4.11.0", "release/v4.11"),
+            ("v4.11.0-rc.7", "main"),
+            ("v4.12.0-rc.1", "main"),
+        ):
+            result = subprocess.run(
+                ["bash", "-c", draft_selectors[0] + '\nprintf "%s" "$expected_ancestry_branch"\n'],
+                env={**os.environ, "RELEASE_TAG": release_tag},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(expected_branch, result.stdout)
+
+        self.assertEqual(2, publish.count("V411_RELEASE_TAG=v4.11.0"))
+        self.assertEqual(2, publish.count("V411_RELEASE_BRANCH=release/v4.11"))
+        self.assertEqual(2, publish.count("V411_RELEASE_REF=refs/heads/release/v4.11"))
+        self.assertEqual(2, publish.count("DEFAULT_BRANCH=main"))
+        self.assertEqual(2, publish.count("DEFAULT_REF=refs/heads/main"))
+        self.assertEqual(2, publish.count('[[ "$GITHUB_REF" == "$expected_workflow_ref" ]]'))
+        self.assertEqual(4, publish.count("expected_workflow_branch="))
+        self.assertEqual(4, publish.count("expected_workflow_ref="))
+        self.assertEqual(4, publish.count('.head_branch == $branch'))
+        self.assertEqual(4, publish.count('--source-ref "$expected_workflow_ref"'))
+        self.assertEqual(4, publish.count('.head_branch == "main"'))
+        self.assertEqual(2, publish.count("--source-ref refs/heads/main"))
+        self.assertEqual(2, publish.count('[[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]'))
+        self.assertEqual(2, publish.count('[[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]'))
+
+        self.assertIn("V411_RELEASE_REF: refs/heads/release/v4.11", observation)
+        self.assertIn("V411_RC_TAG: v4.11.0-rc.7", observation)
+        self.assertIn("V411_RC_SOURCE_SHA: 3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121", observation)
+        self.assertIn('[[ "$GITHUB_REF" == "$V411_RELEASE_REF" ]]', observation)
+        self.assertEqual(2, observation.count('.head_branch == "main"'))
+        self.assertEqual(1, observation.count("--source-ref refs/heads/main"))
+
+        def workflow_dispatch_inputs(workflow: str) -> set[str]:
+            self.assertEqual(1, workflow.count("    inputs:\n"))
+            body = workflow.split("    inputs:\n", maxsplit=1)[1].split("\npermissions:", maxsplit=1)[0]
+            return set(re.findall(r"(?m)^      ([A-Za-z_][A-Za-z0-9_-]*):$", body))
+
+        self.assertEqual({"tag", "source_sha"}, workflow_dispatch_inputs(draft))
+        self.assertEqual(
+            {
+                "tag",
+                "source_sha",
+                "tested_jar_sha256",
+                "operating_systems",
+                "burp_community_version",
+                "burp_professional_version",
+                "mcp_clients",
+                "results_json",
+            },
+            workflow_dispatch_inputs(smoke),
+        )
+        self.assertEqual(
+            {
+                "tag",
+                "source_sha",
+                "smoke_run_id",
+                "rc_observation_run_id",
+                "observed_rc_tag",
+                "observed_rc_source_sha",
+            },
+            workflow_dispatch_inputs(publish),
+        )
+        self.assertEqual(
+            {"rc_tag", "rc_source_sha", "protected_smoke_run_id", "publication_run_id"},
+            workflow_dispatch_inputs(observation),
+        )
         self.assertNotIn("Stable publication remains blocked until", publish)
 
     def test_release_identity_is_exact_and_bounded(self):

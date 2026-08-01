@@ -23,6 +23,7 @@ OBSERVATION_CONTINUITY_PATHS = frozenset(
         ".github/workflows/release-draft.yml",
         ".github/workflows/release-publish.yml",
         ".github/workflows/release-rc-observation.yml",
+        ".github/workflows/release-smoke.yml",
         "docs/NEXT_RELEASE_ROADMAP.md",
         "docs/RELEASING.md",
         "scripts/rc_observation_contract.py",

@@ -183,12 +183,20 @@ class RcObservationContractTest(unittest.TestCase):
         valid_compare = self.arguments()["compare_json"]
         invalid_comparisons = (
             {**valid_compare, "status": "diverged", "behind_by": 1},
+            {**valid_compare, "status": "behind", "behind_by": 1},
             {**valid_compare, "merge_base_commit": {"sha": "e" * 40}},
             {**valid_compare, "files": []},
             {**valid_compare, "files": [*valid_compare["files"], {"filename": "src/main/kotlin/Runtime.kt"}]},
             {**valid_compare, "files": [{"filename": "docs/RELEASING.md", "previous_filename": "src/main/kotlin/Runtime.kt"}, *valid_compare["files"][1:]]},
             {**valid_compare, "files": [*valid_compare["files"], valid_compare["files"][0]]},
             {**valid_compare, "files": valid_compare["files"][:-1]},
+            {
+                **valid_compare,
+                "files": [
+                    entry for entry in valid_compare["files"]
+                    if entry["filename"] != ".github/workflows/release-smoke.yml"
+                ],
+            },
         )
         for compare in invalid_comparisons:
             with self.subTest(compare=compare), self.assertRaises(contract.ContractError):
@@ -253,8 +261,28 @@ class RcObservationContractTest(unittest.TestCase):
         for label in contract.REQUIRED_LABELS:
             self.assertGreaterEqual(publish.count(label), 4, label)
         self.assertIn("python3 scripts/rc_observation_contract.py", observation)
+        self.assertIn("V411_RELEASE_REF: refs/heads/release/v4.11", observation)
+        self.assertIn("V411_RC_TAG: v4.11.0-rc.7", observation)
+        self.assertIn(
+            "V411_RC_SOURCE_SHA: 3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121",
+            observation,
+        )
+        self.assertIn('[[ "$GITHUB_REF" == "$V411_RELEASE_REF" ]]', observation)
+        self.assertIn('[[ "$RC_TAG" == "$V411_RC_TAG" && "$RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]', observation)
+        self.assertEqual(2, observation.count('.head_branch == "main"'))
+        self.assertEqual(1, observation.count("--source-ref refs/heads/main"))
         self.assertEqual(1, observation.count("issues?state=open&labels=gate%3Arelease-blocker"))
         self.assertIn('--open-blockers-json "$open_blockers_json"', observation)
+        self.assertEqual(2, publish.count("V411_RELEASE_BRANCH=release/v4.11"))
+        self.assertEqual(2, publish.count("V411_RC_TAG=v4.11.0-rc.7"))
+        self.assertEqual(
+            2,
+            publish.count("V411_RC_SOURCE_SHA=3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121"),
+        )
+        self.assertEqual(4, publish.count('--arg branch "$expected_workflow_branch"'))
+        self.assertEqual(4, publish.count('--source-ref "$expected_workflow_ref"'))
+        self.assertEqual(4, publish.count('.head_branch == "main"'))
+        self.assertEqual(2, publish.count("--source-ref refs/heads/main"))
         self.assertEqual(604_800, contract.MINIMUM_OBSERVATION_SECONDS)
         self.assertEqual(2, publish.count(".minimumObservationSeconds == 604800"))
 

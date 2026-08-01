@@ -49,6 +49,10 @@ sufficient.
 Configure these controls in GitHub before enabling publication:
 
 - protected `main` with required read-only CI;
+- protected `release/v4.11`, created once at the reviewed release-control anchor, with force-push and deletion disabled,
+  writes restricted to the release maintainer, and recorded independent review plus full validation before its one signed
+  stable-promotion commit; the tag-dispatched draft workflow is the mandatory CI gate before publication, and advancing
+  `main` must never be merged into this release line;
 - protected `v*` tags restricted to authorized maintainers;
 - Actions restricted to approved, full-SHA-pinned actions;
 - minimal default `GITHUB_TOKEN` permissions;
@@ -77,11 +81,17 @@ no release mutation. Record upload and attestation run in separate jobs without 
 `IMMUTABLE_RELEASES_READ_TOKEN` remains limited to the repository-immutability check.
 
 The release workflows do not use GitHub environments or required-reviewer approvals. Remote repository settings cannot
-be proved by source review, so record API output for each release audit.
+be proved by source review, so record API output for each release audit. For the one-time v4.11 migration, merge the
+reviewed release-control change through `main`, record that signed merge commit as the exact anchor, and create
+`release/v4.11` at that commit before any later `main` commit lands. Archive the anchor SHA and branch-rules evidence
+before allowing `main` to advance. Never repurpose the historical `release/v4.11-stability-gate` PR branch, force-push
+the release line, or move a release tag.
 
 ## Version and source preparation
 
-A release candidate starts from a reviewed, clean commit on protected `main`.
+A release candidate starts from a reviewed, clean commit on protected `main`. The one-time v4.11 stable promotion is
+isolated after RC7 on protected `release/v4.11`; once that branch is anchored, unrelated development may continue on
+`main` without entering the observed release line.
 
 ### 1. Select the version
 
@@ -150,7 +160,8 @@ checkout; matrix and package jobs must not independently resolve a movable ref.
 - verify the tag signature/authorized actor;
 - verify Gradle, BApp, tag, and requested version agree;
 - emit one full source SHA;
-- fail if the SHA is not reachable from protected `main`;
+- fail if the SHA is not reachable from the exact expected ancestry branch (`release/v4.11` only for `v4.11.0`,
+  otherwise protected `main`);
 - make no release changes.
 
 ### Job B — tests and conformance (`contents: read`)
@@ -236,11 +247,13 @@ artifact digest. The publish job must independently download and verify the atte
 all-pass result, tag/source identity, and matching JAR digest; an unchecked workflow input, local matrix, or editable
 comment is not sufficient evidence.
 
-The immutable candidate source and the release-control workflow revision are separate identities. If a workflow-only
-defect is discovered after the candidate is tagged, a reviewed signed descendant on protected `main` may repair only
-the orchestration without moving the tag, rebuilding, changing the draft, or replacing assets. The smoke attestation is
-then bound to that workflow revision while its record remains bound to the tagged candidate source and exact JAR. Run
-publication from the same `main` revision as the successful smoke run; any later `main` change requires a new smoke run.
+The immutable candidate source and the release-control workflow revision are separate identities. Historical RC7 smoke
+and publication evidence remains bound to the `main` revision that produced it. The one-time v4.11 release-control
+adaptation is instead anchored on protected `release/v4.11`: its observation record is bound to the exact branch head,
+and the later stable smoke and publication runs must use the exact four-path stable promotion head on that same branch.
+Draft provenance remains bound to the immutable candidate tag. Other prerelease workflows retain their existing `main`
+behavior: prerelease publication must run from the same `main` revision as its successful smoke run, and a later `main`
+change requires a new smoke run. No workflow input may select a trust branch or source ref.
 
 ### Job G — no-rebuild publication
 
@@ -261,8 +274,13 @@ The publish job performs no source build and runs no project-provided executable
 
 Stable publication requires a successful `release-rc-observation.yml` run. The observation window starts at the
 immutable public RC release's GitHub `published_at` timestamp and must be at least 604,800 seconds. Tag creation, draft
-creation, or a local test does not start the clock. Dispatch the workflow from protected `main` with the published RC
-tag/source SHA, its protected exact-byte smoke run ID, and its no-rebuild publication run ID.
+creation, or a local test does not start the clock. For v4.11, dispatch from the fixed protected
+`release/v4.11` branch with exact RC identity `v4.11.0-rc.7` /
+`3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`, its historical main-based protected smoke run ID, and its historical
+main-based no-rebuild publication run ID. The workflow rejects `main`, any other branch, and any substituted RC identity.
+These checked-in pins are deliberately single-use for the RC7-to-v4.11.0 promotion. RC8, a v4.11 patch, or any later
+stable line requires a separately reviewed source change to the fixed observation and publication identities; an
+operator input must never generalize them.
 
 The read-only observation job re-resolves the signed annotated tag, immutable prerelease, exact asset names/digests,
 checksums, draft provenance, protected smoke attestation, publication-run timing, repository issue controls, complete
@@ -274,16 +292,17 @@ the observation record and bundle must also still be available when stable publi
 artifacts for 90 days, making RC smoke expiry a hard stable-publication deadline.
 
 Observation-to-stable continuity is deliberately narrower than ancestry and has two exact phases. The one-time RC7 gate
-installation comparison must contain exactly these reviewed paths: `.github/workflows/build.yml`,
-`.github/workflows/release-draft.yml`, `.github/workflows/release-publish.yml`,
-`.github/workflows/release-rc-observation.yml`, `docs/NEXT_RELEASE_ROADMAP.md`, `docs/RELEASING.md`,
-`scripts/rc_observation_contract.py`, `scripts/test-exact-smoke-contract.py`,
-`scripts/test-rc-observation-contract.py`, and `scripts/test-release-vulnerability-gate.py`. The attested observation
-record pins that workflow revision and exact path set. This one-time exception exists because the observation gate was
-implemented after RC7; its code content is trusted through reviewed protected-`main` commit identity rather than a claim
-that RC7 exercised the release builder or gate itself. Fresh stable reproducibility, vulnerability, provenance, and Burp
-smoke gates remain mandatory. This is an intentional freeze, not a permissive allowlist: any additional `main` path
-before observation makes RC7 ineligible and requires RC8.
+installation and release-track adaptation comparison must contain exactly these eleven reviewed paths:
+`.github/workflows/build.yml`, `.github/workflows/release-draft.yml`, `.github/workflows/release-publish.yml`,
+`.github/workflows/release-rc-observation.yml`, `.github/workflows/release-smoke.yml`,
+`docs/NEXT_RELEASE_ROADMAP.md`, `docs/RELEASING.md`, `scripts/rc_observation_contract.py`,
+`scripts/test-exact-smoke-contract.py`, `scripts/test-rc-observation-contract.py`, and
+`scripts/test-release-vulnerability-gate.py`. The attested observation record pins the exact `release/v4.11` workflow
+head and path set. This one-time exception exists because the observation and isolated release track were implemented
+after RC7; it does not claim that RC7 exercised the new release controls. Fresh stable reproducibility, vulnerability,
+provenance, and Burp smoke gates remain mandatory. After the release branch is anchored, `main` may advance freely, but
+no later `main` commit may enter `release/v4.11`; an additional release-line path before observation requires RC8 and
+reviewed re-parameterization of the fixed RC identity without changing or replacing immutable RC7.
 
 From the observation revision to the stable source, the comparison must contain exactly `gradle.properties`,
 `BappManifest.bmf`, `docs/VULNERABILITY_REPORT.md`, and `docs/releases/<stable-version>.md`. The first file may change
@@ -303,6 +322,32 @@ evidence, exact-byte Community/Professional smoke run, and provenance; RC smoke 
 exact-byte evidence. Publish nevertheless re-verifies the RC JAR's draft provenance, RC smoke run/attestation, and RC
 publication run independently rather than trusting only the observation producer. If the companion proxy `main` moves
 away from the immutable pin before stable draft creation, the stable flow fails closed and requires a successor RC.
+
+The evidence refs are fixed: RC7 draft provenance uses `refs/tags/v4.11.0-rc.7`; historical RC7 smoke and publication
+remain `refs/heads/main`; the new RC7 observation uses `refs/heads/release/v4.11`; stable draft provenance uses
+`refs/tags/v4.11.0`; and stable smoke/publication use `refs/heads/release/v4.11`. Run the sequence without choosing a
+trust ref:
+
+```bash
+gh workflow run release-rc-observation.yml --ref release/v4.11 \
+  -f rc_tag=v4.11.0-rc.7 \
+  -f rc_source_sha=3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121 \
+  -f protected_smoke_run_id="$RC7_SMOKE_RUN_ID" \
+  -f publication_run_id="$RC7_PUBLICATION_RUN_ID"
+
+gh workflow run release-draft.yml --ref v4.11.0 \
+  -f tag=v4.11.0 -f source_sha="$STABLE_SOURCE_SHA"
+gh workflow run release-smoke.yml --ref release/v4.11 \
+  -f tag=v4.11.0 -f source_sha="$STABLE_SOURCE_SHA" \
+  -f tested_jar_sha256="$STABLE_JAR_SHA256" -f operating_systems="$OPERATING_SYSTEMS" \
+  -f burp_community_version="$BURP_COMMUNITY_VERSION" \
+  -f burp_professional_version="$BURP_PROFESSIONAL_VERSION" \
+  -f mcp_clients="$MCP_CLIENTS" -f results_json="$RESULTS_JSON"
+gh workflow run release-publish.yml --ref release/v4.11 \
+  -f tag=v4.11.0 -f source_sha="$STABLE_SOURCE_SHA" -f smoke_run_id="$STABLE_SMOKE_RUN_ID" \
+  -f rc_observation_run_id="$RC7_OBSERVATION_RUN_ID" -f observed_rc_tag=v4.11.0-rc.7 \
+  -f observed_rc_source_sha=3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121
+```
 
 ## Required release assets
 
@@ -338,7 +383,8 @@ collision-safe bundle. CI should fail on unknown components or missing legal ent
 
 ## Release build commands
 
-After the reviewed candidate commit is on protected `main`, run the canonical local build preflight:
+After the reviewed candidate commit is on its expected protected ancestry branch (`release/v4.11` for exact
+`v4.11.0`, protected `main` otherwise), run the canonical local build preflight:
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
@@ -455,9 +501,10 @@ downloaded JAR digest and environment versions. The workflow independently downl
 and source identity, emits a bounded `smoke-result.json`, and attests the record in a separate no-checkout OIDC job.
 
 `release-publish.yml` supports both SemVer prereleases and stable tags. Its read-only preflight and publication job
-independently re-resolve the signed tag, protected-main ancestry, one-shot draft, exact asset/API-digest snapshot,
-checksums, source identity, release body, draft provenance, authorized smoke workflow run, tester identity, smoke
-attestation, and JAR digest. Stable tags additionally require the attested seven-day RC observation run and live
+independently re-resolve the signed tag, exact expected execution ref and smoke-head identity, one-shot draft, exact
+asset/API-digest snapshot, checksums, source identity, release body, draft provenance, authorized smoke workflow run,
+tester identity, smoke attestation, and JAR digest. Prereleases remain `main`-bound; exact `v4.11.0` observation, smoke, and publication are
+bound to `release/v4.11`. Stable tags additionally require the attested seven-day RC observation run and live
 release-blocking issue revalidation described in Job H; prerelease tags reject observation inputs. The publication step
 first checks the repository immutable-release setting using a read-only administration token, sends only `draft=false`,
 requires the resulting release to report `immutable=true`, does not rebuild or replace assets, and is followed by an
@@ -477,12 +524,17 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 ## Final release checklist
 
 - [ ] Fork name, UUID, vendor, maintainer, links, and disclaimer are consistent.
-- [ ] Protected main/tag controls and immutable-release settings are recorded.
+- [ ] Protected main, `release/v4.11`, tag controls, and immutable-release settings are recorded; the release branch
+  prohibits force-push/deletion, points to the reviewed anchor, and has independent review/full-validation evidence for
+  its signed promotion commit before the tag-dispatched draft CI gate.
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
 - [ ] Stable publication inputs reference a successful attested RC observation whose window is at least 604,800 seconds
   after the RC's public `published_at` timestamp.
+- [ ] After v4.11.0 publication, retain `release/v4.11` as protected history and, before tagging any later main-line
+  release, review the draft identity logic so non-ancestor published `v4.11.0` remains part of the SerialVersion ceiling
+  and previous-release provenance; do not merge advancing `main` into the frozen release line.
 - [ ] Two isolated builds produce identical JAR and SBOM bytes.
 - [ ] Wrapper, Gradle/npm dependencies, JDK/container, and Actions are integrity-pinned.
 - [ ] SBOM schema, hashes, relationships, and explicit licenses validate.

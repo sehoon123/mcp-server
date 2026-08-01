@@ -106,8 +106,17 @@ jobs:
             .tagger.email == $email
           ' <<< "$tag_json" >/dev/null
 
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          V411_RELEASE_TAG=v4.11.0
+          V411_RELEASE_BRANCH=release/v4.11
+          DEFAULT_BRANCH=main
+          if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+            expected_ancestry_branch=$V411_RELEASE_BRANCH
+          else
+            expected_ancestry_branch=$DEFAULT_BRANCH
+          fi
+          expected_ancestry_ref="refs/remotes/origin/$expected_ancestry_branch"
+          git fetch --no-tags origin "+refs/heads/$expected_ancestry_branch:$expected_ancestry_ref"
+          git merge-base --is-ancestor "$commit" "$expected_ancestry_ref"
           previous_tag=
           while IFS= read -r ancestor; do
             while IFS= read -r candidate; do

@@ -68,7 +68,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/heads/main ]]
+          V411_RELEASE_TAG=v4.11.0
+          V411_RC_TAG=v4.11.0-rc.7
+          V411_RC_SOURCE_SHA=3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121
+          V411_RELEASE_BRANCH=release/v4.11
+          V411_RELEASE_REF=refs/heads/release/v4.11
+          DEFAULT_BRANCH=main
+          DEFAULT_REF=refs/heads/main
+          if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+            expected_workflow_branch=$V411_RELEASE_BRANCH
+            expected_workflow_ref=$V411_RELEASE_REF
+          else
+            expected_workflow_branch=$DEFAULT_BRANCH
+            expected_workflow_ref=$DEFAULT_REF
+          fi
+          [[ "$GITHUB_REF" == "$expected_workflow_ref" ]]
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           [[ "$RELEASE_TAG" =~ $semver ]]
@@ -85,6 +99,10 @@ jobs:
             rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
             [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
             [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+            if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+              [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
+              [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+            fi
           fi
 
           expected_assets=$(cat <<'EOF'
@@ -198,9 +216,9 @@ jobs:
           done
 
           smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
-          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
             .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
-            .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+            .head_branch == $branch and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
           ' <<<"$smoke_json" >/dev/null
           smoke_head=$(jq -r '.head_sha' <<<"$smoke_json")
           [[ "$smoke_head" == "$GITHUB_SHA" ]]
@@ -225,7 +243,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
             --signer-digest "$smoke_head" \
             --source-digest "$smoke_head" \
-            --source-ref refs/heads/main >/dev/null
+            --source-ref "$expected_workflow_ref" >/dev/null
           jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" \
             --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
             --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$SMOKE_RUN_ID" '
@@ -246,9 +264,9 @@ jobs:
 
           if [[ "$expected_prerelease" == false ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
-            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
               .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
-              .head_branch == "main" and .path == ".github/workflows/release-rc-observation.yml" and
+              .head_branch == $branch and .path == ".github/workflows/release-rc-observation.yml" and
               .actor.login == $actor
             ' <<<"$observation_json" >/dev/null
             observation_head=$(jq -r '.head_sha' <<<"$observation_json")
@@ -282,7 +300,7 @@ jobs:
               --bundle "$observation_bundle" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-rc-observation.yml" \
               --signer-digest "$observation_head" --source-digest "$observation_head" \
-              --source-ref refs/heads/main >/dev/null
+              --source-ref "$expected_workflow_ref" >/dev/null
 
             stable_version=${RELEASE_TAG#v}
             stable_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
@@ -412,7 +430,7 @@ jobs:
 
             observation_paths=$(printf '%s\n' .github/workflows/build.yml .github/workflows/release-draft.yml \
               .github/workflows/release-publish.yml .github/workflows/release-rc-observation.yml \
-              docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
+              .github/workflows/release-smoke.yml docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
               scripts/test-exact-smoke-contract.py scripts/test-rc-observation-contract.py \
               scripts/test-release-vulnerability-gate.py | LC_ALL=C sort | \
               jq -Rsc 'split("\n")[:-1]')
@@ -572,7 +590,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/heads/main ]]
+          V411_RELEASE_TAG=v4.11.0
+          V411_RC_TAG=v4.11.0-rc.7
+          V411_RC_SOURCE_SHA=3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121
+          V411_RELEASE_BRANCH=release/v4.11
+          V411_RELEASE_REF=refs/heads/release/v4.11
+          DEFAULT_BRANCH=main
+          DEFAULT_REF=refs/heads/main
+          if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+            expected_workflow_branch=$V411_RELEASE_BRANCH
+            expected_workflow_ref=$V411_RELEASE_REF
+          else
+            expected_workflow_branch=$DEFAULT_BRANCH
+            expected_workflow_ref=$DEFAULT_REF
+          fi
+          [[ "$GITHUB_REF" == "$expected_workflow_ref" ]]
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           tag_without_build=${RELEASE_TAG%%+*}
           if [[ "$tag_without_build" == *-* ]]; then
@@ -587,6 +619,10 @@ jobs:
             rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
             [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
             [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+            if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+              [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
+              [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+            fi
           fi
 
           ref_json=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
@@ -670,9 +706,9 @@ jobs:
           done
 
           smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
-          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+          jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
             .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
-            .head_branch == "main" and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
+            .head_branch == $branch and .path == ".github/workflows/release-smoke.yml" and .actor.login == $actor
           ' <<<"$smoke_json" >/dev/null
           smoke_head=$(jq -r '.head_sha' <<<"$smoke_json")
           [[ "$smoke_head" == "$GITHUB_SHA" ]]
@@ -691,7 +727,7 @@ jobs:
           [[ -f "$RUNNER_TEMP/smoke/record/smoke-result.json" && $(printf '%s\n' "$smoke_bundle" | wc -l) -eq 1 ]]
           gh attestation verify "$RUNNER_TEMP/smoke/record/smoke-result.json" --repo "$GITHUB_REPOSITORY" \
             --bundle "$smoke_bundle" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-smoke.yml" \
-            --signer-digest "$smoke_head" --source-digest "$smoke_head" --source-ref refs/heads/main >/dev/null
+            --signer-digest "$smoke_head" --source-digest "$smoke_head" --source-ref "$expected_workflow_ref" >/dev/null
           jq -e --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" --arg sha "$SOURCE_COMMIT" \
             --arg jar "$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)" \
             --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg run "$SMOKE_RUN_ID" '
@@ -712,9 +748,9 @@ jobs:
 
           if [[ "$expected_prerelease" == false ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
-            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" '
+            jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
               .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
-              .head_branch == "main" and .path == ".github/workflows/release-rc-observation.yml" and
+              .head_branch == $branch and .path == ".github/workflows/release-rc-observation.yml" and
               .actor.login == $actor
             ' <<<"$observation_json" >/dev/null
             observation_head=$(jq -r '.head_sha' <<<"$observation_json")
@@ -748,7 +784,7 @@ jobs:
               --bundle "$observation_bundle" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-rc-observation.yml" \
               --signer-digest "$observation_head" --source-digest "$observation_head" \
-              --source-ref refs/heads/main >/dev/null
+              --source-ref "$expected_workflow_ref" >/dev/null
 
             stable_version=${RELEASE_TAG#v}
             stable_jar_sha=$(sha256sum "$stage/independent-mcp-bridge-all.jar" | cut -d' ' -f1)
@@ -878,7 +914,7 @@ jobs:
 
             observation_paths=$(printf '%s\n' .github/workflows/build.yml .github/workflows/release-draft.yml \
               .github/workflows/release-publish.yml .github/workflows/release-rc-observation.yml \
-              docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
+              .github/workflows/release-smoke.yml docs/NEXT_RELEASE_ROADMAP.md docs/RELEASING.md scripts/rc_observation_contract.py \
               scripts/test-exact-smoke-contract.py scripts/test-rc-observation-contract.py \
               scripts/test-release-vulnerability-gate.py | LC_ALL=C sort | \
               jq -Rsc 'split("\n")[:-1]')

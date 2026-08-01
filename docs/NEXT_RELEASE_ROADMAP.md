@@ -15,7 +15,13 @@ active roadmap controls release priority.
 The v4.8–v4.11 RC sequence accumulated the independent trust baseline, analysis workflows, correlation, lifecycle,
 credential-persistence, and release-evidence work without publishing an intervening stable artifact. The next stable
 release is therefore **v4.11.0**. Historical RC tags/releases remain immutable; `v4.11.0-rc.6` remains permanently
-withheld, and the published `v4.11.0-rc.7` is the observed candidate.
+withheld, and the published `v4.11.0-rc.7` is the observed candidate. Its observation and four-path stable promotion
+run only on protected `release/v4.11`, anchored at the reviewed release-control revision. After that anchor is created,
+`main` may advance with later development, but those commits must never be merged or cherry-picked into the v4.11
+release line. The RC7/v4.11.0 workflow pins are intentionally single-use: RC8, a v4.11 patch, or a later stable line
+requires a reviewed re-parameterization rather than an operator-selected trust ref. Before the next main-line release is
+tagged, its draft identity gate must also account for published `v4.11.0` as a non-ancestor SerialVersion and provenance
+predecessor.
 
 The required work was larger than a patch:
 
@@ -246,8 +252,11 @@ following are true:
 - [ ] SBOM schema, hashes, dependency relationships, and explicit licenses validate.
 - [ ] Required legal, fork, source, checksum, vulnerability report/evidence, and attestation assets validate.
 - [ ] The exact draft JAR digest equals the attested smoke-test digest.
-- [ ] `release-rc-observation.yml` attests at least 604,800 seconds from immutable `v4.11.0-rc.7` publication with
-  complete issue triage, no unresolved release-blocking P0/P1 defect, and release-only source continuity.
+- [ ] `release-rc-observation.yml`, dispatched only from protected `release/v4.11`, attests at least 604,800 seconds
+  from immutable `v4.11.0-rc.7` publication with complete issue triage, no unresolved release-blocking P0/P1 defect,
+  and exact eleven-path RC7-to-observation continuity.
+- [ ] The observation head to stable source changes exactly `gradle.properties`, `BappManifest.bmf`,
+  `docs/VULNERABILITY_REPORT.md`, and `docs/releases/4.11.0.md`; later `main` work is absent from the release line.
 - [ ] The no-rebuild publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
 
 ### Mandatory publication completion
@@ -451,8 +460,10 @@ aliases or families.
   unload, SBOM, conformance, reproducibility, and no-rebuild publication gates passed for immutable RC7. Same-process
   project replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather
   than being represented as passing evidence.
-- [ ] RC7 completes the attested 604,800-second public observation window with complete issue triage and no unresolved
-  release-blocking P0/P1 before a fresh stable candidate is created.
+- [ ] RC7 completes the attested 604,800-second public observation window on protected `release/v4.11`, with complete
+  issue triage and no unresolved release-blocking P0/P1, before the exact four-path stable promotion is created.
+- [x] The release-control track keeps the MCP surface unchanged at 21 Community / 28 Professional tools and allows
+  unrelated post-anchor development to continue on `main` without entering v4.11 stable evidence.
 
 ## v5.0.0 — Modern MCP gate
 
