@@ -62,8 +62,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/heads/main ]]
+          V411_RELEASE_TAG=v4.11.0
+          V411_RELEASE_REF=refs/heads/release/v4.11
+          DEFAULT_REF=refs/heads/main
+          if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+            expected_workflow_ref=$V411_RELEASE_REF
+          else
+            expected_workflow_ref=$DEFAULT_REF
+          fi
+          [[ "$GITHUB_REF" == "$expected_workflow_ref" ]]
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+            [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
+          fi
           [[ "$TESTED_JAR_SHA256" =~ ^[a-f0-9]{64}$ ]]
           [[ ${#RESULTS_JSON} -ge 1 && ${#RESULTS_JSON} -le 4096 ]]
           [[ "$RESULTS_JSON" != *$'\n'* && "$RESULTS_JSON" != *$'\r'* ]]
