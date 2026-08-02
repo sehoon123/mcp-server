@@ -181,6 +181,51 @@ class WorkflowPresetStoreTest {
     }
 
     @Test
+    fun `post-write mismatch and reread cancellation are uncertain`() {
+        val mismatchStorage = mockk<PersistedObject>()
+        var mismatchRead = false
+        every { mismatchStorage.getString(WORKFLOW_PRESET_STORAGE_KEY) } answers {
+            if (mismatchRead) "different persisted value" else null
+        }
+        every { mismatchStorage.setString(WORKFLOW_PRESET_STORAGE_KEY, any()) } answers {
+            mismatchRead = true
+        }
+        val mismatch = assertThrows(WorkflowPresetStoreException::class.java) {
+            WorkflowPresetStore(mismatchStorage).save(preset("one"), false)
+        }
+        assertEquals(WorkflowPresetStoreFailure.STORAGE, mismatch.failure)
+        assertTrue(mismatch.writeAttempted)
+
+        val cancellationStorage = mockk<PersistedObject>()
+        var writeInvoked = false
+        every { cancellationStorage.getString(WORKFLOW_PRESET_STORAGE_KEY) } answers {
+            if (writeInvoked) throw CancellationException("post-write reread") else null
+        }
+        every { cancellationStorage.setString(WORKFLOW_PRESET_STORAGE_KEY, any()) } answers {
+            writeInvoked = true
+        }
+        val cancelled = assertThrows(WorkflowPresetStoreException::class.java) {
+            WorkflowPresetStore(cancellationStorage).save(preset("one"), false)
+        }
+        assertEquals(WorkflowPresetStoreFailure.STORAGE, cancelled.failure)
+        assertTrue(cancelled.writeAttempted)
+        assertTrue(cancelled.cause is CancellationException)
+
+        val (sourceStorage, sourceValues) = storage()
+        WorkflowPresetStore(sourceStorage).save(preset("one"), false)
+        val priorRaw = sourceValues.getValue(WORKFLOW_PRESET_STORAGE_KEY)
+        val droppedDeleteStorage = mockk<PersistedObject>()
+        every { droppedDeleteStorage.getString(WORKFLOW_PRESET_STORAGE_KEY) } returns priorRaw
+        every { droppedDeleteStorage.setString(WORKFLOW_PRESET_STORAGE_KEY, any()) } returns Unit
+        val droppedDelete = assertThrows(WorkflowPresetStoreException::class.java) {
+            WorkflowPresetStore(droppedDeleteStorage).delete("one")
+        }
+        assertEquals(WorkflowPresetStoreFailure.STORAGE, droppedDelete.failure)
+        assertTrue(droppedDelete.writeAttempted)
+        verify(exactly = 1) { droppedDeleteStorage.setString(WORKFLOW_PRESET_STORAGE_KEY, any()) }
+    }
+
+    @Test
     fun `malformed unknown and oversized raw storage is preserved`() {
         listOf(
             "{malformed",

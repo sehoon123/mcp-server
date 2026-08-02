@@ -117,6 +117,66 @@ jobs:
           expected_ancestry_ref="refs/remotes/origin/$expected_ancestry_branch"
           git fetch --no-tags origin "+refs/heads/$expected_ancestry_branch:$expected_ancestry_ref"
           git merge-base --is-ancestor "$commit" "$expected_ancestry_ref"
+
+          # Later main-line releases must remain blocked until the published, non-ancestor v4.11.0 identity can be
+          # pinned into both the SerialVersion ceiling and previous-release provenance. This is a single-use bridge,
+          # never an operator-selected ref.
+          release_core=${version%%+*}
+          release_core=${release_core%%-*}
+          IFS=. read -r release_major release_minor release_patch <<< "$release_core"
+          [[ "$release_major" =~ ^(0|[1-9][0-9]*)$ ]]
+          [[ "$release_minor" =~ ^(0|[1-9][0-9]*)$ ]]
+          [[ "$release_patch" =~ ^(0|[1-9][0-9]*)$ ]]
+          # Bash arithmetic is signed and wrapping; reject oversized valid SemVer components before comparing them.
+          if (( ${#release_major} > 9 || ${#release_minor} > 9 || ${#release_patch} > 9 )); then
+            echo "::error::Release SemVer components exceed the reviewed arithmetic bound"
+            exit 1
+          fi
+          requires_v411_stable_bridge=false
+          if (( release_major > 4 ||
+            (release_major == 4 && release_minor > 11) ||
+            (release_major == 4 && release_minor == 11 && release_patch > 0) )) ||
+            [[ "$release_core" == 4.11.0 && "$version" != 4.11.0 ]]; then
+            # Any successor v4.11 prerelease/build identity (including RC8) requires reviewed re-parameterization first.
+            requires_v411_stable_bridge=true
+          fi
+          if [[ "$requires_v411_stable_bridge" == true ]]; then
+            V411_STABLE_TAG=v4.11.0
+            stable_remote_tags=$(git ls-remote --exit-code origin \
+              "refs/tags/$V411_STABLE_TAG" "refs/tags/$V411_STABLE_TAG^{}")
+            [[ $(printf '%s\n' "$stable_remote_tags" | wc -l) -eq 2 ]]
+            stable_tag_ref="refs/tags/$V411_STABLE_TAG"
+            stable_peeled_ref="$stable_tag_ref^{}"
+            stable_tag_object_sha=$(printf '%s\n' "$stable_remote_tags" | \
+              awk -v ref="$stable_tag_ref" '$2 == ref { print $1 }')
+            stable_source_commit=$(printf '%s\n' "$stable_remote_tags" | \
+              awk -v ref="$stable_peeled_ref" '$2 == ref { print $1 }')
+            [[ "$stable_tag_object_sha" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$stable_source_commit" =~ ^[a-f0-9]{40}$ ]]
+            git fetch --no-tags origin \
+              "+refs/tags/$V411_STABLE_TAG:refs/tags/$V411_STABLE_TAG"
+            [[ $(git cat-file -t "refs/tags/$V411_STABLE_TAG") == tag ]]
+            [[ $(git rev-parse "$V411_STABLE_TAG^{commit}") == "$stable_source_commit" ]]
+            stable_tag_json=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$stable_tag_object_sha")
+            jq -e --arg email "$AUTHORIZED_TAGGER_EMAIL" '
+              .verification.verified == true and
+              .verification.reason == "valid" and
+              .tagger.email == $email
+            ' <<< "$stable_tag_json" >/dev/null
+            stable_release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$V411_STABLE_TAG")
+            jq -e '
+              .draft == false and
+              .prerelease == false and
+              .immutable == true
+            ' <<< "$stable_release_json" >/dev/null
+            stable_release_ref="refs/remotes/origin/$V411_RELEASE_BRANCH"
+            git fetch --no-tags origin \
+              "+refs/heads/$V411_RELEASE_BRANCH:$stable_release_ref"
+            git merge-base --is-ancestor "$stable_source_commit" "$stable_release_ref"
+            echo "::error::Release drafting is blocked until the reviewed v4.11 identity bridge is pinned or re-parameterized"
+            exit 1
+          fi
+
           previous_tag=
           while IFS= read -r ancestor; do
             while IFS= read -r candidate; do

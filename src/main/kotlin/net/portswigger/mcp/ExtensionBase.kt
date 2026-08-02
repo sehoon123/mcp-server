@@ -39,7 +39,6 @@ class ExtensionBase : BurpExtension {
         val serverManager = KtorServerManager(
             api,
             auditLog,
-            extensionStorage = extensionStorage,
             workflowPresetStore = workflowPresetStore,
         )
 
@@ -68,6 +67,7 @@ class ExtensionBase : BurpExtension {
             clearSessionApprovals = serverManager::clearSessionApprovals,
             edtWatchdogProvider = edtWatchdog::snapshot,
             workflowPresetManager = workflowPresetManager,
+            cleanupErrorReporter = { message -> api.logging().logToError(message) },
         )
 
         configUi.onEnabledToggled { enabled ->

@@ -70,6 +70,7 @@ data class HistoryPerformanceSnapshot(
 
 internal const val HISTORY_PERFORMANCE_BUCKET_COUNT = 11
 private const val UNAVAILABLE_NANO_TIME = Long.MIN_VALUE
+private const val HISTORY_PERFORMANCE_SNAPSHOT_READ_ATTEMPTS = 4
 internal val HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS =
     listOf(1L, 5L, 10L, 25L, 50L, 100L, 250L, 500L, 1_000L, 5_000L)
 
@@ -77,7 +78,8 @@ internal val HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS =
  * Fixed-cardinality, value-free timing diagnostics for local performance attribution.
  *
  * Only aggregate counters and elapsed monotonic time are retained. No traffic, project, client, filter, exception, or
- * Montoya value is accepted by this API.
+ * Montoya value is accepted by this API. Each per-metric read is validated with a bounded retry, but a returned metric
+ * may still be torn under sustained writes and the complete fixed metric set is never cross-metric atomic.
  */
 internal class HistoryPerformanceDiagnostics private constructor(
     private val enabled: Boolean,
@@ -156,7 +158,6 @@ private class MetricCounters {
     }
 
     fun record(outcome: HistoryPerformanceOutcome, elapsedNanos: Long) {
-        attempts.incrementSaturated()
         when (outcome) {
             HistoryPerformanceOutcome.COMPLETED -> completed.incrementSaturated()
             HistoryPerformanceOutcome.FAILED -> failed.incrementSaturated()
@@ -165,19 +166,48 @@ private class MetricCounters {
         latencyBuckets.incrementSaturated(bucketIndex(elapsedNanos))
         totalNanos.addSaturated(elapsedNanos.coerceAtLeast(0))
         maxNanos.updateMaximum(elapsedNanos)
+        // Publish the record only after every counter contributing to the validated snapshot has been updated.
+        attempts.incrementSaturated()
     }
 
-    fun snapshot(metric: HistoryPerformanceMetric) = HistoryPerformanceMetricSnapshot(
-        metric = metric,
-        active = active.get().coerceAtLeast(0),
-        attempts = attempts.get(),
-        completed = completed.get(),
-        failed = failed.get(),
-        cancelled = cancelled.get(),
-        latencyBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT, latencyBuckets::get),
-        maxNanos = maxNanos.get(),
-        totalNanos = totalNanos.get(),
-    )
+    fun snapshot(metric: HistoryPerformanceMetric): HistoryPerformanceMetricSnapshot {
+        var observed = readSnapshot(metric)
+        repeat(HISTORY_PERFORMANCE_SNAPSHOT_READ_ATTEMPTS - 1) {
+            if (historyPerformanceCountersSettled(observed)) return observed
+            observed = readSnapshot(metric)
+        }
+        return observed
+    }
+
+    private fun readSnapshot(metric: HistoryPerformanceMetric): HistoryPerformanceMetricSnapshot {
+        val observedAttempts = attempts.get()
+        // Read timing before the outcome counters. If this read observes a writer's timing update, its preceding outcome
+        // and bucket writes happen-before the reads below and cannot make a partial first record look settled.
+        val observedMaximum = maxNanos.get()
+        val observedTotal = totalNanos.get()
+        val observedCompleted = completed.get()
+        val observedFailed = failed.get()
+        val observedCancelled = cancelled.get()
+        val observedBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT, latencyBuckets::get)
+        return HistoryPerformanceMetricSnapshot(
+            metric = metric,
+            active = active.get().coerceAtLeast(0),
+            attempts = observedAttempts,
+            completed = observedCompleted,
+            failed = observedFailed,
+            cancelled = observedCancelled,
+            latencyBuckets = observedBuckets,
+            totalNanos = observedTotal,
+            maxNanos = observedMaximum,
+        )
+    }
+}
+
+internal fun historyPerformanceCountersSettled(snapshot: HistoryPerformanceMetricSnapshot): Boolean = with(snapshot) {
+    completed.saturatedPlus(failed).saturatedPlus(cancelled) == attempts &&
+        latencyBuckets.fold(0L) { total, count -> total.saturatedPlus(count) } == attempts &&
+        maxNanos <= totalNanos &&
+        (attempts != 0L || (totalNanos == 0L && maxNanos == 0L))
 }
 
 private val HISTORY_PERFORMANCE_BUCKET_UPPER_NANOS =
@@ -188,6 +218,9 @@ private fun bucketIndex(elapsedNanos: Long): Int {
     val index = HISTORY_PERFORMANCE_BUCKET_UPPER_NANOS.indexOfFirst { upperBound -> bounded < upperBound }
     return if (index >= 0) index else HISTORY_PERFORMANCE_BUCKET_COUNT - 1
 }
+
+private fun Long.saturatedPlus(other: Long): Long =
+    if (this >= Long.MAX_VALUE - other.coerceAtLeast(0)) Long.MAX_VALUE else this + other.coerceAtLeast(0)
 
 private fun AtomicLong.incrementSaturated() {
     while (true) {

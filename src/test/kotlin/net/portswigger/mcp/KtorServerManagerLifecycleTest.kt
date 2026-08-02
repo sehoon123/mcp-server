@@ -1,6 +1,7 @@
 package net.portswigger.mcp
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.persistence.Preferences
@@ -8,6 +9,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.presets.WorkflowPresetStore
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
@@ -20,8 +23,10 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class KtorServerManagerLifecycleTest {
     private val bearerToken = "0123456789012345678901234567890123456789012"
@@ -88,6 +93,117 @@ class KtorServerManagerLifecycleTest {
             replacement.reuseAddress = false
             replacement.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
         }
+    }
+
+    @Test
+    fun `shutdown from lifecycle callback is nonblocking and repeated shutdown is a no-op`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val logging = mockk<Logging>(relaxed = true)
+        val manager = KtorServerManager(mockApi(logging))
+        val states = LinkedBlockingQueue<ServerState>()
+        val shutdownReturned = CountDownLatch(1)
+        val config = config(port, logging)
+        try {
+            manager.start(config) { state ->
+                states.add(state)
+                if (state is ServerState.Running) {
+                    manager.shutdown()
+                    shutdownReturned.countDown()
+                }
+            }
+
+            assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
+            assertInstanceOf(ServerState.Running::class.java, states.poll(10, TimeUnit.SECONDS))
+            assertTrue(shutdownReturned.await(5, TimeUnit.SECONDS))
+            assertInstanceOf(ServerState.Stopped::class.java, states.poll(5, TimeUnit.SECONDS))
+            assertEquals("stopped", manager.diagnostics().state)
+
+            manager.shutdown()
+            assertEquals("stopped", manager.diagnostics().state)
+            ServerSocket().use { replacement ->
+                replacement.reuseAddress = false
+                replacement.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+            }
+        } finally {
+            manager.shutdown()
+        }
+    }
+
+    @Test
+    fun `interrupt insensitive stalled startup cannot publish after bounded shutdown`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val logging = mockk<Logging>(relaxed = true)
+        val api = mockApi(logging)
+        val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>(relaxed = true)
+        val version = mockk<burp.api.montoya.core.Version>(relaxed = true)
+        every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+        every { burpSuite.version() } returns version
+        val startupBlocked = CountDownLatch(1)
+        val releaseStartup = AtomicBoolean()
+        every { api.burpSuite() } answers {
+            startupBlocked.countDown()
+            while (!releaseStartup.get()) {
+                try {
+                    Thread.sleep(5)
+                } catch (_: InterruptedException) {
+                    // Exercise an integration call that does not cooperate with shutdownNow().
+                }
+            }
+            burpSuite
+        }
+        val manager = KtorServerManager(
+            api,
+            NoOpMcpAuditSink,
+            workflowPresetStore = WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+            shutdownTimeoutMillis = 25,
+        )
+        val states = LinkedBlockingQueue<ServerState>()
+        val shutdownThread = Thread(manager::shutdown)
+        try {
+            manager.start(config(port, logging), states::add)
+            assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
+            assertTrue(startupBlocked.await(5, TimeUnit.SECONDS))
+            val startingMcpServerField = KtorServerManager::class.java.getDeclaredField("startingMcpServer").apply {
+                isAccessible = true
+            }
+            assertTrue(startingMcpServerField.get(manager) != null)
+
+            shutdownThread.start()
+            shutdownThread.join(5_000)
+            assertFalse(shutdownThread.isAlive)
+            assertEquals("stopped", manager.diagnostics().state)
+            assertEquals(null, startingMcpServerField.get(manager))
+            ServerSocket().use { replacement ->
+                replacement.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+            }
+
+            releaseStartup.set(true)
+            assertInstanceOf(ServerState.Stopped::class.java, states.poll(5, TimeUnit.SECONDS))
+            assertFalse(states.any { it is ServerState.Running })
+            ServerSocket().use { replacement ->
+                replacement.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+            }
+        } finally {
+            releaseStartup.set(true)
+            shutdownThread.join(5_000)
+            manager.shutdown()
+        }
+    }
+
+    @Test
+    fun `start and stop after shutdown return terminal states without throwing`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val logging = mockk<Logging>(relaxed = true)
+        val manager = KtorServerManager(mockApi(logging))
+        val states = LinkedBlockingQueue<ServerState>()
+
+        manager.shutdown()
+        manager.start(config(port, logging), states::add)
+        assertInstanceOf(ServerState.Failed::class.java, states.poll(5, TimeUnit.SECONDS))
+        manager.stop(states::add)
+        assertInstanceOf(ServerState.Stopped::class.java, states.poll(5, TimeUnit.SECONDS))
+        assertEquals("stopped", manager.diagnostics().state)
+        verify(exactly = 0) { logging.logToError(match<String> { it.contains("shutdown failed") }) }
     }
 
     @Test

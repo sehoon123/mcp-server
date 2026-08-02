@@ -99,7 +99,9 @@ For `X.Y.Z`, update and reconcile:
 
 - `gradle.properties`: `version=X.Y.Z`
 - `BappManifest.bmf`: `ScreenVersion: X.Y.Z`
-- `BappManifest.bmf`: `SerialVersion` strictly greater than every SemVer-tagged ancestor using the same BApp UUID (the immutable draft identity job enforces this)
+- `BappManifest.bmf`: `SerialVersion` strictly greater than every predecessor admitted by the fixed release-line
+  identity contract for the same BApp UUID. The current draft gate remains fail-closed above v4.11.0 and for any newly
+  drafted non-exact v4.11.0 identity until the required release-line pins are reviewed and installed.
 - release title/tag: `vX.Y.Z`
 - release notes and compatibility statements
 - `docs/VULNERABILITY_REPORT.md`: version, date, reviewed source-commit marker, dependencies, and results; the immutable
@@ -532,9 +534,11 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
 - [ ] Stable publication inputs reference a successful attested RC observation whose window is at least 604,800 seconds
   after the RC's public `published_at` timestamp.
-- [ ] After v4.11.0 publication, retain `release/v4.11` as protected history and, before tagging any later main-line
-  release, review the draft identity logic so non-ancestor published `v4.11.0` remains part of the SerialVersion ceiling
-  and previous-release provenance; do not merge advancing `main` into the frozen release line.
+- [ ] Retain `release/v4.11` as protected history and never merge advancing `main` into the frozen release line. The
+  draft identity job currently refuses every release above v4.11.0 and every newly drafted non-exact v4.11.0 identity.
+  After v4.11.0 publication, replace that refusal only
+  with reviewed exact source-SHA and serial pins that include non-ancestor v4.11.0 in both the SerialVersion ceiling and
+  previous-release provenance, including a predecessor commit identity revalidated by every consuming job.
 - [ ] Two isolated builds produce identical JAR and SBOM bytes.
 - [ ] Wrapper, Gradle/npm dependencies, JDK/container, and Actions are integrity-pinned.
 - [ ] SBOM schema, hashes, relationships, and explicit licenses validate.
