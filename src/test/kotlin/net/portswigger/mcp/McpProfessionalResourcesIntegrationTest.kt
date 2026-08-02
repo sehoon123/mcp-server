@@ -16,6 +16,8 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import io.mockk.every
 import io.mockk.mockk
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -24,6 +26,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import net.portswigger.mcp.tools.stableHistoryId
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -81,6 +84,85 @@ class McpProfessionalResourcesIntegrationTest {
     }
 
     @Test
+    fun `Professional Scanner delta completes a signed baseline and append round trip over MCP`() = runBlocking {
+        every { storage.getBoolean("_alwaysAllowScannerIssues") } returns true
+        val issues = mutableListOf(
+            scannerIssueFixture(typeIndex = 1_001, name = "Baseline issue", basePath = "/baseline", includeDetails = false),
+        )
+        every { api.siteMap().issues() } answers { issues.toList() }
+        client.connectToServer("http://127.0.0.1:$port/mcp")
+
+        val baseline = client.callTool(
+            "get_scanner_issues",
+            mapOf(
+                "count" to 50,
+                "offset" to 0,
+                "summariesOnly" to true,
+                "cursorMode" to true,
+            ),
+        ).singleTextToolJson()
+        assertEquals("ok", baseline["status"]?.jsonPrimitive?.content)
+        assertEquals(false, baseline["legacyMode"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(false, baseline["deltaMode"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(1, baseline["returned"]?.jsonPrimitive?.content?.toInt())
+        val snapshotCursor = baseline["snapshotCursor"]?.jsonPrimitive?.content
+        assertTrue(!snapshotCursor.isNullOrBlank())
+
+        issues += scannerIssueFixture(
+            typeIndex = 1_002,
+            name = "Appended issue",
+            basePath = "/appended",
+            includeDetails = false,
+        )
+        val delta = client.callTool(
+            "get_scanner_issues",
+            mapOf(
+                "count" to 1,
+                "offset" to 0,
+                "summariesOnly" to true,
+                "sinceSnapshotCursor" to snapshotCursor!!,
+            ),
+        ).singleTextToolJson()
+
+        assertEquals("ok", delta["status"]?.jsonPrimitive?.content)
+        assertEquals(true, delta["deltaMode"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(false, delta["legacyMode"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(false, delta["hasMore"]?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(1, delta["returned"]?.jsonPrimitive?.content?.toInt())
+        assertEquals(
+            "Appended issue",
+            delta["items"]?.jsonArray?.single()?.jsonObject?.get("name")?.jsonPrimitive?.content,
+        )
+        assertTrue(delta["snapshotCursor"]?.jsonPrimitive?.content?.isNotBlank() == true)
+        assertTrue(delta["nextDeltaCursor"] == null || delta["nextDeltaCursor"].toString() == "null")
+        val evidence = delta["delta"]?.jsonObject
+        assertEquals("append_stable_currently_visible_range", evidence?.get("basis")?.jsonPrimitive?.content)
+        assertEquals(1, evidence?.get("baselineSnapshotSize")?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, evidence?.get("currentSnapshotSize")?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, evidence?.get("appendedRangeSize")?.jsonPrimitive?.content?.toInt())
+        assertEquals(false, evidence?.get("regressionEstablished")?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(false, evidence?.get("removedOrChangedEstablished")?.jsonPrimitive?.content?.toBoolean())
+        assertEquals(false, evidence?.get("completeHistoryEstablished")?.jsonPrimitive?.content?.toBoolean())
+        assertFalse(delta.toString().contains("issue detail"))
+
+        val diagnostics = client.readResource(DIAGNOSTICS_RESOURCE_URI).singleTextJson()
+        val metrics = diagnostics["diagnostics"]?.jsonObject
+            ?.get("historyPerformance")?.jsonObject
+            ?.get("metrics")?.jsonArray.orEmpty()
+            .associateBy { it.jsonObject.getValue("metric").jsonPrimitive.content }
+        listOf(
+            HistoryPerformanceMetric.SCANNER_DELTA_MONTOYA_ACQUISITION,
+            HistoryPerformanceMetric.SCANNER_DELTA_EXTENSION_PROCESSING,
+        ).forEach { metric ->
+            val snapshot = requireNotNull(metrics[metric.name]).jsonObject
+            assertEquals(1, snapshot.getValue("attempts").jsonPrimitive.content.toInt())
+            assertEquals(1, snapshot.getValue("completed").jsonPrimitive.content.toInt())
+            assertEquals(0, snapshot.getValue("failed").jsonPrimitive.content.toInt())
+            assertEquals(0, snapshot.getValue("cancelled").jsonPrimitive.content.toInt())
+        }
+    }
+
+    @Test
     fun `Professional advertises and enforces Scanner issue resource templates`() = runBlocking {
         val issue = scannerIssueFixture()
         every { api.siteMap().issues() } returns listOf(issue)
@@ -133,6 +215,8 @@ class McpProfessionalResourcesIntegrationTest {
         }
         assertTrue(descriptions.getValue("get_scanner_issues").contains("hasMore=true"))
         assertTrue(descriptions.getValue("get_scanner_issues").contains("nextCursor as cursor"))
+        assertTrue(descriptions.getValue("get_scanner_issues").contains("nextDeltaCursor as sinceSnapshotCursor"))
+        assertTrue(descriptions.getValue("get_scanner_issues").contains("does not prove regression"))
         assertTrue(descriptions.getValue("get_scanner_issue_by_id").contains("evidenceIndex is required"))
         assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("Both modes reject out-of-scope requests"))
         assertTrue(descriptions.getValue("start_scanner_audit_from_ids").contains("active mode requires insertionPoints and can send requests"))
@@ -146,6 +230,8 @@ class McpProfessionalResourcesIntegrationTest {
 
         val scannerListSchema = tools.single { it.name == "get_scanner_issues" }.inputSchema.toString()
         assertTrue(scannerListSchema.contains("does not enable cursor mode"))
+        assertTrue(scannerListSchema.contains("sinceSnapshotCursor"))
+        assertTrue(scannerListSchema.contains("append-stable range"))
         val scannerReadSchema = tools.single { it.name == "get_scanner_issue_by_id" }.inputSchema.toString()
         assertTrue(scannerReadSchema.contains("Required when `field` is `evidence_request` or `evidence_response`"))
         val collaboratorSchema = tools.single { it.name == "get_collaborator_interactions" }.inputSchema.toString()
@@ -217,7 +303,12 @@ class McpProfessionalResourcesIntegrationTest {
         assertEquals("invalid_argument", noncanonical["status"]?.jsonPrimitive?.content)
     }
 
-    private fun scannerIssueFixture(): AuditIssue {
+    private fun scannerIssueFixture(
+        typeIndex: Int = 1234,
+        name: String = "Test issue",
+        basePath: String = "/issue",
+        includeDetails: Boolean = true,
+    ): AuditIssue {
         val issue = mockk<AuditIssue>()
         val definition = mockk<AuditIssueDefinition>()
         val service = mockk<HttpService>()
@@ -225,22 +316,24 @@ class McpProfessionalResourcesIntegrationTest {
         val request = mockk<HttpRequest>()
         val response = mockk<HttpResponse>()
         every { issue.definition() } returns definition
-        every { definition.typeIndex() } returns 1234
-        every { issue.name() } returns "Test issue"
-        every { issue.baseUrl() } returns "https://example.test/issue"
+        every { definition.typeIndex() } returns typeIndex
+        every { issue.name() } returns name
+        every { issue.baseUrl() } returns "https://example.test$basePath"
         every { issue.httpService() } returns service
         every { service.host() } returns "example.test"
         every { service.port() } returns 443
         every { service.secure() } returns true
         every { issue.severity() } returns AuditIssueSeverity.HIGH
         every { issue.confidence() } returns AuditIssueConfidence.CERTAIN
-        every { issue.detail() } returns "issue detail"
-        every { issue.remediation() } returns "issue remediation"
-        every { issue.requestResponses() } returns listOf(evidence)
-        every { evidence.request() } returns request
-        every { evidence.response() } returns response
-        every { request.toByteArray() } returns montoyaBytes("evidence request")
-        every { response.toByteArray() } returns montoyaBytes("evidence response")
+        if (includeDetails) {
+            every { issue.detail() } returns "issue detail"
+            every { issue.remediation() } returns "issue remediation"
+            every { issue.requestResponses() } returns listOf(evidence)
+            every { evidence.request() } returns request
+            every { evidence.response() } returns response
+            every { request.toByteArray() } returns montoyaBytes("evidence request")
+            every { response.toByteArray() } returns montoyaBytes("evidence response")
+        }
         return issue
     }
 
@@ -260,4 +353,8 @@ class McpProfessionalResourcesIntegrationTest {
 
     private fun io.modelcontextprotocol.kotlin.sdk.types.ReadResourceResult.singleTextJson() =
         Json.parseToJsonElement(assertIs<TextResourceContents>(contents.single()).text).jsonObject
+
+    private fun CallToolResult?.singleTextToolJson() = Json.parseToJsonElement(
+        assertIs<TextContent>(requireNotNull(this).content.single()).text!!,
+    ).jsonObject
 }

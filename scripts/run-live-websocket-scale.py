@@ -16,6 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from exact_smoke_contract import (  # noqa: E402
     EDITION_CATALOG_COUNTS,
     catalog_items,
+    requires_v412_catalog_schema,
     validate_catalog,
     validate_release_identity,
 )
@@ -184,6 +185,7 @@ def main() -> int:
                 client.rpc("resources/templates/list", {}),
                 "resourceTemplates",
             ),
+            require_v412_schema=requires_v412_catalog_schema(args.expected_server_version),
         )
         diagnostics, diagnostics_text = read_bounded_diagnostics(client)
         if diagnostics.get("loadedArtifactSha256") != actual_jar_sha256:

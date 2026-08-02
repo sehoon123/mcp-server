@@ -234,6 +234,16 @@ private enum class HttpSearchProgressStage(val message: String) {
 
 private val HTTP_SEARCH_PROGRESS_MESSAGES = HttpSearchProgressStage.entries.map(HttpSearchProgressStage::message)
 
+private enum class HttpSearchSummaryProjection {
+    FULL,
+    REFERENCE_METADATA,
+}
+
+private data class HttpSearchPreauthorization(
+    val authorization: HttpMessageResolutionAuthorization,
+    val verifier: HttpMessageResolver,
+)
+
 internal class HttpMessageSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
@@ -257,6 +267,35 @@ internal class HttpMessageSearchService(
     suspend fun search(
         input: SearchHttpMessages,
         reportProgress: ToolProgressReporter = NO_TOOL_PROGRESS_REPORTER,
+    ): SearchHttpMessagesResult = searchInternal(
+        input,
+        reportProgress,
+        HttpSearchSummaryProjection.FULL,
+        preauthorization = null,
+    )
+
+    /**
+     * Internal compound-read projection used only with the resolver-issued authorization for this project/source set.
+     * It emits bounded relation metadata with path-only URLs, bypasses adaptive index hints for fixed phase attribution,
+     * and does not materialize notes, body lengths, complete URLs, or auxiliary Proxy/Organizer fields. Site Map
+     * references retain the existing bounded private stable-ID check.
+     */
+    suspend fun searchReferenceMetadata(
+        input: SearchHttpMessages,
+        authorization: HttpMessageResolutionAuthorization,
+        authorizationVerifier: HttpMessageResolver,
+    ): SearchHttpMessagesResult = searchInternal(
+        input,
+        NO_TOOL_PROGRESS_REPORTER,
+        HttpSearchSummaryProjection.REFERENCE_METADATA,
+        HttpSearchPreauthorization(authorization, authorizationVerifier),
+    )
+
+    private suspend fun searchInternal(
+        input: SearchHttpMessages,
+        reportProgress: ToolProgressReporter,
+        summaryProjection: HttpSearchSummaryProjection,
+        preauthorization: HttpSearchPreauthorization?,
     ): SearchHttpMessagesResult {
         val progress = FixedStageProgress(HTTP_SEARCH_PROGRESS_MESSAGES, reportProgress)
         progress.report(HttpSearchProgressStage.VALIDATING.ordinal)
@@ -307,32 +346,49 @@ internal class HttpMessageSearchService(
             return searchBurpError(null, "capture the current project", e)
         }
         progress.report(HttpSearchProgressStage.AUTHORIZING.ordinal)
-        for (source in query.sources) {
-            val allowed = try {
-                checkAccess(source)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return searchBurpError(projectId, "check ${source.displayName()} access", e)
-            }
-            if (!allowed) {
-                val projectAfterDenial = try {
-                    currentProjectId()
+        if (preauthorization == null) {
+            for (source in query.sources) {
+                val allowed = try {
+                    checkAccess(source)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    return searchBurpError(projectId, "recheck the project after HTTP history denial", e)
+                    return searchBurpError(projectId, "check ${source.displayName()} access", e)
                 }
-                if (projectAfterDenial != projectId) {
+                if (!allowed) {
+                    val projectAfterDenial = try {
+                        currentProjectId()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        return searchBurpError(projectId, "recheck the project after HTTP history denial", e)
+                    }
+                    if (projectAfterDenial != projectId) {
+                        return searchError(
+                            HttpMessageSearchStatus.PROJECT_MISMATCH,
+                            "Burp project changed during HTTP history approval",
+                            projectAfterDenial,
+                        )
+                    }
                     return searchError(
-                        HttpMessageSearchStatus.PROJECT_MISMATCH,
-                        "Burp project changed during HTTP history approval",
-                        projectAfterDenial,
+                        HttpMessageSearchStatus.ACCESS_DENIED,
+                        "${source.displayName()} access denied by Burp Suite",
+                        projectId,
                     )
                 }
+            }
+        } else {
+            if (preauthorization.authorization.projectId != projectId) {
                 return searchError(
-                    HttpMessageSearchStatus.ACCESS_DENIED,
-                    "${source.displayName()} access denied by Burp Suite",
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed after HTTP source authorization",
+                    projectId,
+                )
+            }
+            if (!preauthorization.verifier.authorizes(preauthorization.authorization, projectId, query.sources)) {
+                return searchError(
+                    HttpMessageSearchStatus.BURP_ERROR,
+                    "Related HTTP source authorization was incomplete",
                     projectId,
                 )
             }
@@ -363,7 +419,7 @@ internal class HttpMessageSearchService(
 
         progress.report(HttpSearchProgressStage.SCANNING.ordinal)
         val initialRecords = try {
-            loadRecords(query.sources)
+            loadRecords(query.sources, summaryProjection)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -376,7 +432,12 @@ internal class HttpMessageSearchService(
         } catch (e: Exception) {
             return searchBurpError(projectId, "prepare HTTP history", e)
         }
-        val indexSources = query.metadataIndexSources()
+        // The internal relation projection keeps fixed phase attribution and never mutates or validates the adaptive index.
+        val indexSources = if (summaryProjection == HttpSearchSummaryProjection.FULL) {
+            query.metadataIndexSources()
+        } else {
+            emptyList()
+        }
         val indexSnapshot = if (metadataIndex != null && indexSources.isNotEmpty()) {
             val recordsBySource = initialRecords.associateBy(HttpSourceRecords::source)
             try {
@@ -399,7 +460,15 @@ internal class HttpMessageSearchService(
         }
 
         var result = try {
-            executeSearch(query, cursor, limit, projectId, indexSnapshot?.let(::IndexedSearchHints), initialViews)
+            executeSearch(
+                query,
+                cursor,
+                limit,
+                projectId,
+                indexSnapshot?.let(::IndexedSearchHints),
+                initialViews,
+                summaryProjection,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: ExpectedSearchError) {
@@ -426,14 +495,22 @@ internal class HttpMessageSearchService(
             }
             if (!indexStillCurrent) {
                 val retryViews = try {
-                    loadRecords(query.sources).map(HttpSourceRecords::toSearchView)
+                    loadRecords(query.sources, summaryProjection).map(HttpSourceRecords::toSearchView)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     return searchBurpError(projectId, "refresh HTTP history", e)
                 }
                 result = try {
-                    executeSearch(query, cursor, limit, projectId, hints = null, views = retryViews)
+                    executeSearch(
+                        query,
+                        cursor,
+                        limit,
+                        projectId,
+                        hints = null,
+                        views = retryViews,
+                        summaryProjection = summaryProjection,
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: ExpectedSearchError) {
@@ -470,8 +547,9 @@ internal class HttpMessageSearchService(
         projectId: String,
         hints: IndexedSearchHints?,
         views: List<SourceView>,
+        summaryProjection: HttpSearchSummaryProjection,
     ): SearchHttpMessagesResult {
-        return performanceDiagnostics.measure(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING) {
+        return performanceDiagnostics.measure(summaryProjection.processingMetric()) {
             val snapshots = if (cursor == null) {
                 views.map { it.snapshot() }
             } else {
@@ -518,6 +596,13 @@ internal class HttpMessageSearchService(
                 continue
             }
 
+            if (summaryProjection == HttpSearchSummaryProjection.REFERENCE_METADATA &&
+                !candidate.hasValidReferenceMetadata()
+            ) {
+                advancePosition(position, snapshots, query.newestFirst)
+                continue
+            }
+
             if (query.hasContentPredicate()) {
                 val candidateBytes = candidate.approximateContentBytes()
                 if (candidateBytes > maxTextBytes) {
@@ -536,7 +621,7 @@ internal class HttpMessageSearchService(
                 }
             }
 
-            results += candidate.toSummary(projectId, itemIndex)
+            results += candidate.toSummary(projectId, itemIndex, summaryProjection)
             advancePosition(position, snapshots, query.newestFirst)
         }
 
@@ -679,7 +764,10 @@ internal class HttpMessageSearchService(
         return allowed
     }
 
-    private suspend fun loadRecords(sources: List<HttpMessageSource>): List<HttpSourceRecords> {
+    private suspend fun loadRecords(
+        sources: List<HttpMessageSource>,
+        summaryProjection: HttpSearchSummaryProjection,
+    ): List<HttpSourceRecords> {
         val loaded = ArrayList<HttpSourceRecords>(sources.size)
         for (source in sources) {
             val coroutineContext = currentCoroutineContext()
@@ -688,13 +776,13 @@ internal class HttpMessageSearchService(
                 HttpMessageSource.PROXY -> {
                     val proxy = api.proxy()
                     HttpSourceRecords.Proxy(
-                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) { proxy.history() }
+                        performanceDiagnostics.measure(summaryProjection.acquisitionMetric(source)) { proxy.history() }
                     )
                 }
                 HttpMessageSource.SITE_MAP -> {
                     val siteMap = api.siteMap()
                     HttpSourceRecords.SiteMap(
-                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) {
+                        performanceDiagnostics.measure(summaryProjection.acquisitionMetric(source)) {
                             siteMap.requestResponses()
                         }
                     )
@@ -702,7 +790,7 @@ internal class HttpMessageSearchService(
                 HttpMessageSource.ORGANIZER -> {
                     val organizer = api.organizer()
                     HttpSourceRecords.Organizer(
-                        performanceDiagnostics.measure(source.httpSearchAcquisitionMetric()) { organizer.items() }
+                        performanceDiagnostics.measure(summaryProjection.acquisitionMetric(source)) { organizer.items() }
                     )
                 }
             }
@@ -710,6 +798,20 @@ internal class HttpMessageSearchService(
         }
         return loaded
     }
+
+    private fun HttpSearchSummaryProjection.acquisitionMetric(source: HttpMessageSource): HistoryPerformanceMetric =
+        if (this == HttpSearchSummaryProjection.REFERENCE_METADATA) {
+            HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION
+        } else {
+            source.httpSearchAcquisitionMetric()
+        }
+
+    private fun HttpSearchSummaryProjection.processingMetric(): HistoryPerformanceMetric =
+        if (this == HttpSearchSummaryProjection.REFERENCE_METADATA) {
+            HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING
+        } else {
+            HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING
+        }
 
     private fun validateCursor(cursor: HttpSearchCursor, views: List<SourceView>) {
         if (cursor.version != CURSOR_VERSION) {
@@ -1016,6 +1118,13 @@ private data class SearchCandidate(
 ) {
     fun approximateContentBytes(): Long = messageBytes(request) + (response?.let(::messageBytes) ?: 0L)
 
+    fun hasValidReferenceMetadata(): Boolean {
+        val host = service.host().trim().trimEnd('.')
+        val method = request.method().trim()
+        return host.isNotEmpty() && host.length <= MAX_HTTP_SEARCH_HOST_CHARS && host.none(Char::isISOControl) &&
+            service.port() in 1..65_535 && method.isNotEmpty() && method.length <= 32 && method.none(Char::isISOControl)
+    }
+
     fun matchesMetadata(matcher: CompiledHttpSearchQuery): Boolean {
         val query = matcher.query
         if (query.host != null && !hostMatches(service.host(), query.host)) return false
@@ -1043,18 +1152,47 @@ private data class SearchCandidate(
         }
     }
 
-    fun toSummary(projectId: String, sourceIndex: Int): HttpMessageSearchItem {
+    fun toSummary(
+        projectId: String,
+        sourceIndex: Int,
+        projection: HttpSearchSummaryProjection,
+    ): HttpMessageSearchItem {
+        val id = when (source) {
+            HttpMessageSource.PROXY -> requireNotNull(proxyItem).id().toString()
+            HttpMessageSource.ORGANIZER -> requireNotNull(organizerItem).id().toString()
+            HttpMessageSource.SITE_MAP -> stableSiteMapId(projectId, sourceIndex, requireNotNull(siteMapItem))
+        }
+        if (projection == HttpSearchSummaryProjection.REFERENCE_METADATA) {
+            val normalizedPath = normalizeHttpPath(request.path())
+            return HttpMessageSearchItem(
+                ref = HttpMessageReference(source, id),
+                method = request.method().trim().uppercase(),
+                url = normalizedPath.value,
+                urlTruncated = normalizedPath.truncated,
+                host = service.host().trim().trimEnd('.').lowercase(),
+                port = service.port(),
+                secure = service.secure(),
+                statusCode = response?.statusCode()?.toInt(),
+                mimeType = response?.mimeType()?.name,
+                hasResponse = response != null,
+                inScope = request.isInScope(),
+                requestBodyBytes = 0,
+                responseBodyBytes = null,
+                time = null,
+                listenerPort = null,
+                edited = null,
+                organizerStatus = null,
+                notes = null,
+                notesTruncated = false,
+            )
+        }
+
         val notes = when (source) {
             HttpMessageSource.PROXY -> requireNotNull(proxyItem).annotations().notes()
             HttpMessageSource.SITE_MAP -> requireNotNull(siteMapItem).annotations().notes()
             HttpMessageSource.ORGANIZER -> requireNotNull(organizerItem).annotations().notes()
         }
         val boundedNotes = notes.bounded(MAX_HTTP_SEARCH_NOTES_CHARS)
-        val id = when (source) {
-            HttpMessageSource.PROXY -> requireNotNull(proxyItem).id().toString()
-            HttpMessageSource.ORGANIZER -> requireNotNull(organizerItem).id().toString()
-            HttpMessageSource.SITE_MAP -> stableSiteMapId(projectId, sourceIndex, requireNotNull(siteMapItem))
-        }
         val boundedUrl = request.url().bounded(MAX_HTTP_SEARCH_URL_CHARS)
         return HttpMessageSearchItem(
             ref = HttpMessageReference(source, id),

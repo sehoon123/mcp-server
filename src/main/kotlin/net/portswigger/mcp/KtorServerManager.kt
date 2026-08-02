@@ -68,6 +68,7 @@ import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.security.safeSingleLine
+import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.tools.ToolServices
 import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.tools.activateToolExecutionSession
@@ -85,7 +86,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val MCP_PATH = "/mcp"
-private const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
+internal const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
+internal const val MCP_MAX_SESSION_ID_CHARS = 128
 private const val MCP_PROTOCOL_VERSION_HEADER = "Mcp-Protocol-Version"
 private const val MCP_MAX_REQUEST_BODY_BYTES = 2L * 1024 * 1024
 private const val MCP_MAX_REQUEST_URI_CHARS = 8 * 1024
@@ -779,7 +781,11 @@ internal class BoundedMcpSessionRegistry(
     suspend fun acquireExisting(call: ApplicationCall): ManagedMcpSessionLease? {
         val sessionIds = call.request.headers.getAll(MCP_SESSION_ID_HEADER).orEmpty()
         val sessionId = sessionIds.singleOrNull()
-        if (sessionId.isNullOrEmpty() || sessionId.length > 128 || sessionId.any(Char::isISOControl)) {
+        if (
+            sessionId.isNullOrEmpty() ||
+            sessionId.length > MCP_MAX_SESSION_ID_CHARS ||
+            sessionId.any(Char::isISOControl)
+        ) {
             call.rejectMcp(
                 HttpStatusCode.BadRequest,
                 RPCError.ErrorCode.CONNECTION_CLOSED,
@@ -1081,6 +1087,7 @@ class KtorServerManager internal constructor(
     private val auditSink: McpAuditSink,
     private val projectIdProvider: (() -> String)? = { api.project().id() },
     extensionStorage: PersistedObject = api.persistence().extensionData(),
+    workflowPresetStore: WorkflowPresetStore = WorkflowPresetStore(extensionStorage),
 ) : ServerManager {
 
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
@@ -1095,7 +1102,7 @@ class KtorServerManager internal constructor(
     private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
-    private val toolServices = ToolServices(api, extensionStorage)
+    private val toolServices = ToolServices(api, extensionStorage, workflowPresetStore)
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
         val requestedHost = config.host

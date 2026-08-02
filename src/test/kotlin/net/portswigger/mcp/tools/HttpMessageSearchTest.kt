@@ -38,6 +38,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.assertIs
 
 class HttpMessageSearchTest {
     private val api = mockk<MontoyaApi>()
@@ -49,6 +50,7 @@ class HttpMessageSearchTest {
     private val siteMapItems = mutableListOf<HttpRequestResponse>()
     private lateinit var config: McpConfig
     private lateinit var service: HttpMessageSearchService
+    private lateinit var resolver: HttpMessageResolver
     private lateinit var originalDataAccessHandler: DataAccessApprovalHandler
 
     @BeforeEach
@@ -66,6 +68,10 @@ class HttpMessageSearchTest {
         every { project.id() } returns "project-123"
         every { api.proxy() } returns proxy
         every { proxy.history() } answers { proxyHistory.toList() }
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            proxyHistory.filter(filter::matches)
+        }
         every { api.siteMap() } returns siteMap
         every { siteMap.requestResponses() } answers { siteMapItems.toList() }
         config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
@@ -74,6 +80,7 @@ class HttpMessageSearchTest {
             config,
             cursorSecret = ByteArray(32) { 7 },
         )
+        resolver = HttpMessageResolver(api, config)
     }
 
     @AfterEach
@@ -118,6 +125,59 @@ class HttpMessageSearchTest {
         assertEquals(HttpMessageSearchStatus.PROJECT_MISMATCH, result.status)
         assertEquals("project-after-denial", result.projectId)
         assertTrue(result.items.isEmpty())
+        verify(exactly = 0) { proxy.history() }
+    }
+
+    @Test
+    fun `reference metadata projection reuses exact preauthorization without materializing private summary fields`() = runBlocking {
+        val fixture = proxyItem(9, "GET", "https://example.test/api/items/1?private=query", 200, 512)
+        proxyHistory += fixture.item
+        val authorization = proxyAuthorization("9")
+        config.requireDataAccessApproval = true
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                error("reference metadata search must reuse prior authorization")
+            }
+        }
+
+        val result = service.searchReferenceMetadata(
+            input = SearchHttpMessages(host = "example.test", pathContains = "/api"),
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals(1, result.returned)
+        val item = result.items.single()
+        assertEquals("/api/items/1", item.url)
+        assertFalse(item.urlTruncated)
+        assertEquals(0, item.requestBodyBytes)
+        assertEquals(null, item.responseBodyBytes)
+        assertEquals(null, item.notes)
+        assertFalse(item.notesTruncated)
+        assertEquals(null, item.time)
+        assertFalse(result.toString().contains("private=query"))
+        verify(exactly = 0) { fixture.item.annotations() }
+        verify(exactly = 0) { fixture.item.time() }
+        verify(exactly = 0) { fixture.request.body() }
+        verify(exactly = 0) { fixture.request.url() }
+    }
+
+    @Test
+    fun `reference metadata projection rejects a handle from another resolver before source access`() = runBlocking {
+        proxyHistory += proxyItem(9, "GET", "https://example.test/api", 200).item
+        val authorization = proxyAuthorization("9")
+        val foreignResolver = HttpMessageResolver(api, config)
+
+        val result = service.searchReferenceMetadata(
+            input = SearchHttpMessages(sources = listOf(HttpMessageSource.PROXY)),
+            authorization = authorization,
+            authorizationVerifier = foreignResolver,
+        )
+
+        assertEquals(HttpMessageSearchStatus.BURP_ERROR, result.status)
+        assertTrue(result.items.isEmpty())
+        verify(exactly = 1) { proxy.history(any()) }
         verify(exactly = 0) { proxy.history() }
     }
 
@@ -577,6 +637,27 @@ class HttpMessageSearchTest {
     }
 
     @Test
+    fun `reference metadata projection skips a method that cannot be materialized within its bound`() = runBlocking {
+        proxyHistory += proxyItem(
+            id = 9,
+            method = "X".repeat(33),
+            url = "https://example.test/api/items/1",
+            status = 200,
+        ).item
+
+        val result = service.searchReferenceMetadata(
+            input = SearchHttpMessages(host = "example.test"),
+            authorization = proxyAuthorization("9"),
+            authorizationVerifier = resolver,
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals(1, result.scanned)
+        assertEquals(0, result.returned)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
     fun `oversized content search skips the item without scanning its bytes`() = runBlocking {
         val oversized = proxyItem(
             id = 9,
@@ -700,6 +781,14 @@ class HttpMessageSearchTest {
         every { it.host() } returns host
         every { it.port() } returns port
         every { it.secure() } returns secure
+    }
+
+    private suspend fun proxyAuthorization(id: String): HttpMessageResolutionAuthorization {
+        val result = resolver.resolveAll(
+            projectId = "project-123",
+            refs = listOf(HttpMessageReference(HttpMessageSource.PROXY, id)),
+        )
+        return assertIs<HttpMessageBatchResolution.Found>(result).authorization
     }
 
     private data class ProxyFixture(

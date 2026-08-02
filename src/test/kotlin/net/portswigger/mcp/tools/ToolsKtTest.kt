@@ -68,6 +68,40 @@ import java.time.ZonedDateTime
 import java.util.HexFormat
 import java.util.Optional
 
+private val EXPECTED_COMMUNITY_TOOL_NAMES = setOf(
+    "send_raw_http_request",
+    "route_raw_http_request",
+    "get_burp_options",
+    "set_burp_options",
+    "search_http_messages",
+    "summarize_http_attack_surface",
+    "correlate_http_activity",
+    "check_scope",
+    "update_scope",
+    "compare_http_messages",
+    "analyze_http_session_security",
+    "save_workflow_preset",
+    "list_workflow_presets",
+    "delete_workflow_preset",
+    "execute_workflow_preset",
+    "get_http_message",
+    "send_http_request_from_id",
+    "route_http_message_from_id",
+    "search_websocket_messages",
+    "get_websocket_message_by_id",
+    "set_burp_control_state",
+)
+
+private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_NAMES + setOf(
+    "get_scanner_issues",
+    "get_scanner_issue_by_id",
+    "start_scanner_audit_from_ids",
+    "get_scanner_audit",
+    "cancel_scanner_audit",
+    "generate_collaborator_payload",
+    "get_collaborator_interactions",
+)
+
 class ToolsKtTest {
     private val testBearerToken = "0123456789012345678901234567890123456789012"
     private val client = TestStreamableHttpMcpClient(
@@ -444,6 +478,7 @@ class ToolsKtTest {
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(21, tools.size)
+        assertEquals(EXPECTED_COMMUNITY_TOOL_NAMES, tools.keys)
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         assertTrue(tools.values.all { !it.description.isNullOrBlank() })
@@ -454,7 +489,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "15b9b63ea145194e982fdc4f073931cdbf7afdb340e4b7ad5011222b3c04cdbb",
+            "20c78ef615bf895f54ee7e21948e871d6af2661e7acb889a2219bbdbf153798d",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -478,8 +513,10 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("items=[] with hasMore=true"))
         assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
-        assertTrue(description("correlate_http_activity").contains("similarity without identity or deduplication"))
-        assertTrue(description("correlate_http_activity").contains("Site Map stable-ID validation may privately inspect bounded identity samples"))
+        assertTrue(description("correlate_http_activity").contains("ranked related events"))
+        assertTrue(description("correlate_http_activity").contains("never change the explicit delta"))
+        assertTrue(description("correlate_http_activity").contains("establish no identity, chronology, causality"))
+        assertTrue(description("correlate_http_activity").contains("Site Map ID checks may inspect bounded private samples"))
         assertTrue(description("update_scope").contains("before any approval prompt or policy bypass and before mutation"))
         assertTrue(description("analyze_http_session_security").contains("privately inspect bounded body and header samples"))
         assertTrue(description("save_workflow_preset").contains("Names are trimmed"))
@@ -1695,9 +1732,21 @@ class ToolsKtTest {
         assertTrue(correlation.inputSchema.properties?.get("baselineRefs").toString().contains("\"maxItems\":16"))
         assertTrue(correlation.inputSchema.properties?.get("comparisonRefs").toString().contains("\"maxItems\":16"))
         assertTrue(correlation.inputSchema.properties?.get("pathDepth").toString().contains("\"maximum\":4"))
+        val relatedInputSchema = correlation.inputSchema.properties?.get("relatedTraffic").toString()
+        assertTrue(relatedInputSchema.contains("seedEventIndices"))
+        assertTrue(relatedInputSchema.contains("\"maxItems\":4"))
+        assertTrue(relatedInputSchema.contains("\"maximum\":16"))
         assertNotNull(correlation.outputSchema?.properties?.get("timeline"))
         assertNotNull(correlation.outputSchema?.properties?.get("similarityGroups"))
         assertNotNull(correlation.outputSchema?.properties?.get("delta"))
+        assertTrue("relatedTraffic" in correlation.outputSchema?.required.orEmpty())
+        assertTrue(correlation.outputSchema?.properties?.get("timeline").toString().contains("\"maxItems\":48"))
+        val relatedOutputSchema = correlation.outputSchema?.properties?.get("relatedTraffic").toString()
+        assertTrue(relatedOutputSchema.contains("candidateSummariesExamined"))
+        assertTrue(relatedOutputSchema.contains("before bounded selected-reference revalidation"))
+        assertTrue(relatedOutputSchema.contains("identityEstablished"))
+        assertTrue(relatedOutputSchema.contains("seedMatches"))
+        assertTrue(relatedOutputSchema.contains("vulnerability evidence"))
         val correlationEvidenceSchema = correlation.outputSchema?.properties?.get("evidence")!!.jsonObject
         assertTrue(
             setOf(
@@ -1706,8 +1755,13 @@ class ToolsKtTest {
                 "cohortBoundaryEstablishesTime",
                 "exactCrossSourceIdentityEstablished",
                 "probableDuplicatesDeduplicated",
+                "selectedReferences",
+                "relatedReferences",
+                "timelineEvents",
                 "maxReferences",
                 "maxReferencesPerCohort",
+                "maxRelatedReferences",
+                "maxTimelineEvents",
                 "maxPathDepth",
                 "maxIndexedPathChars",
                 "limitations",
@@ -2076,6 +2130,7 @@ class ToolsKtTest {
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
             assertEquals(28, tools.size)
+            assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertNonNullOutputFieldsAreRequired)
             tools.forEach(::assertTruncatedStringsAdvertiseBounds)
@@ -2083,7 +2138,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "eb0415096841f806d4f93954126dcf46906b42aa75f130bb4075661690d04486",
+                "48fd062e6e524b6bb3bb24b6560b10cb8b09291cdd205144f50dc27a87b8185d",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
@@ -2133,17 +2188,33 @@ class ToolsKtTest {
             assertEquals(false, cancel.annotations?.openWorldHint)
 
             val issues = tools.single { it.name == "get_scanner_issues" }
-            assertTrue(issues.description.orEmpty().contains("captured project is rechecked and returned as projectId"))
-            assertTrue(issues.description.orEmpty().contains("Reached end of items"))
+            assertTrue(issues.description.orEmpty().contains("projectId is rechecked"))
+            assertTrue(issues.description.orEmpty().contains("does not prove regression, removal, or in-place change"))
+            assertTrue(issues.description.orEmpty().contains("nextDeltaCursor as sinceSnapshotCursor"))
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
+            assertNotNull(issues.inputSchema.properties?.get("sinceSnapshotCursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))
             assertNotNull(issues.outputSchema?.properties?.get("nextCursor"))
+            assertNotNull(issues.outputSchema?.properties?.get("snapshotCursor"))
+            assertNotNull(issues.outputSchema?.properties?.get("nextDeltaCursor"))
+            assertNotNull(issues.outputSchema?.properties?.get("delta"))
+            assertTrue(issues.outputSchema?.properties?.get("items").toString().contains("\"maxItems\":50"))
+            assertTrue(issues.outputSchema?.properties?.get("scanned").toString().contains("\"maximum\":10000"))
+            assertTrue(issues.outputSchema?.properties?.get("snapshotCursor").toString().contains("fully consumed"))
+            assertTrue(setOf("deltaMode", "delta", "snapshotCursor", "nextDeltaCursor").all {
+                it in issues.outputSchema?.required.orEmpty()
+            })
             val scannerCursorSchema = issues.outputSchema?.properties?.get("nextCursor")!!.jsonObject
             val scannerCursorVariant = scannerCursorSchema.takeIf { it["maxLength"] != null }
                 ?: scannerCursorSchema.getValue("anyOf").jsonArray.first {
                     it.jsonObject["type"]?.jsonPrimitive?.content == "string"
                 }.jsonObject
             assertEquals(16_384, scannerCursorVariant.getValue("maxLength").jsonPrimitive.int)
+            val deltaSchema = issues.outputSchema?.properties?.get("delta").toString()
+            assertTrue(deltaSchema.contains("append-only visibility basis"))
+            assertTrue(deltaSchema.contains("regressionEstablished"))
+            assertTrue(deltaSchema.contains("removedOrChangedEstablished"))
+            assertTrue(deltaSchema.contains("completeHistoryEstablished"))
             assertTrue("legacyTextTruncated" in issues.outputSchema?.required.orEmpty())
 
             val issueDetail = tools.single { it.name == "get_scanner_issue_by_id" }

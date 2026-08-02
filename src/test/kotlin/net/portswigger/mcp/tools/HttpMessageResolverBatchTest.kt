@@ -95,6 +95,60 @@ class HttpMessageResolverBatchTest {
     }
 
     @Test
+    fun `instance-bound authorization revalidates a later bounded source without another approval path`() = runBlocking {
+        val fixture = fixture(
+            proxyItems = listOf(proxyItem(1)),
+            organizerItems = listOf(organizerItem(2)),
+            projectIds = List(6) { "project-one" },
+        )
+        val initial = assertIs<HttpMessageBatchResolution.Found>(
+            fixture.resolver.resolveAll(
+                projectId = "project-one",
+                refs = listOf(HttpMessageReference(HttpMessageSource.PROXY, "1")),
+                additionalAuthorizationSources = listOf(HttpMessageSource.ORGANIZER),
+            ),
+        )
+
+        val revalidated = fixture.resolver.resolveAllAuthorized(
+            projectId = "project-one",
+            refs = listOf(HttpMessageReference(HttpMessageSource.ORGANIZER, "2")),
+            authorization = initial.authorization,
+        )
+
+        assertEquals(
+            listOf(HttpMessageReference(HttpMessageSource.ORGANIZER, "2")),
+            assertIs<HttpMessageBatchResolution.Found>(revalidated).messages.map { it.ref },
+        )
+        verify(exactly = 1) { fixture.proxy.history(any()) }
+        verify(exactly = 1) { fixture.organizer.items(any()) }
+    }
+
+    @Test
+    fun `authorization from another issuer fails before a second source lookup`() = runBlocking {
+        val fixture = fixture(proxyItems = listOf(proxyItem(1)))
+        val initial = assertIs<HttpMessageBatchResolution.Found>(
+            fixture.resolver.resolveAll(
+                "project-one",
+                listOf(HttpMessageReference(HttpMessageSource.PROXY, "1")),
+            ),
+        )
+        val forged = HttpMessageResolutionAuthorization(
+            projectId = initial.authorization.projectId,
+            sources = setOf(HttpMessageSource.PROXY),
+            issuer = Any(),
+        )
+
+        val result = fixture.resolver.resolveAllAuthorized(
+            projectId = "project-one",
+            refs = listOf(HttpMessageReference(HttpMessageSource.PROXY, "1")),
+            authorization = forged,
+        )
+
+        assertEquals(HttpMessageResolutionStatus.BURP_ERROR, assertIs<HttpMessageBatchResolution.Failed>(result).status)
+        verify(exactly = 1) { fixture.proxy.history(any()) }
+    }
+
+    @Test
     fun `missing early reference retains its exact failure index`() = runBlocking {
         val fixture = fixture(proxyItems = listOf(proxyItem(1)))
         val missing = HttpMessageReference(HttpMessageSource.PROXY, "99")
@@ -227,6 +281,46 @@ class HttpMessageResolverBatchTest {
         verify(exactly = 1) { fixture.siteMap.requestResponses() }
     }
 
+    @Test
+    fun `attributed resolution separates source acquisition from indexing and record processing`() = runBlocking {
+        var tick = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { tick++ }
+        val siteMapItem = siteMapItem("/site-map/3")
+        val fixture = fixture(
+            proxyItems = listOf(proxyItem(1)),
+            organizerItems = listOf(organizerItem(2)),
+            siteMapAnswer = { listOf(siteMapItem) },
+            performanceDiagnostics = diagnostics,
+        )
+        val attribution = HttpMessageResolutionPerformanceAttribution(
+            acquisitionMetric = HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION,
+            processingMetric = HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING,
+        )
+
+        val result = fixture.resolver.resolveAll(
+            projectId = "project-one",
+            refs = listOf(
+                HttpMessageReference(HttpMessageSource.PROXY, "1"),
+                HttpMessageReference(HttpMessageSource.ORGANIZER, "2"),
+                HttpMessageReference(HttpMessageSource.SITE_MAP, stableSiteMapId("project-one", 0, siteMapItem)),
+            ),
+            performanceAttribution = attribution,
+        )
+
+        assertIs<HttpMessageBatchResolution.Found>(result)
+        val acquisition = diagnostics.snapshot().metrics.single { it.metric == attribution.acquisitionMetric }
+        val processing = diagnostics.snapshot().metrics.single { it.metric == attribution.processingMetric }
+        assertEquals(3, acquisition.attempts)
+        assertEquals(3, acquisition.completed)
+        assertEquals(3, acquisition.totalNanos)
+        assertEquals(5, processing.attempts)
+        assertEquals(5, processing.completed)
+        assertEquals(5, processing.totalNanos)
+        verify(exactly = 1) { fixture.proxy.history(any()) }
+        verify(exactly = 1) { fixture.organizer.items(any()) }
+        verify(exactly = 1) { fixture.siteMap.requestResponses() }
+    }
+
     private fun fixture(
         proxyItems: List<ProxyHttpRequestResponse> = emptyList(),
         organizerItems: List<OrganizerItem> = emptyList(),
@@ -234,6 +328,7 @@ class HttpMessageResolverBatchTest {
         proxyAnswer: (() -> List<ProxyHttpRequestResponse>)? = null,
         organizerAnswer: (() -> List<OrganizerItem>)? = null,
         siteMapAnswer: (() -> List<HttpRequestResponse>)? = null,
+        performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
     ): Fixture {
         val api = mockk<MontoyaApi>()
         val project = mockk<Project>()
@@ -264,13 +359,35 @@ class HttpMessageResolverBatchTest {
         }
         every { siteMap.requestResponses() } answers { siteMapAnswer?.invoke() ?: emptyList() }
 
-        return Fixture(HttpMessageResolver(api, config), api, proxy, organizer, siteMap)
+        return Fixture(
+            HttpMessageResolver(api, config, performanceDiagnostics),
+            api,
+            proxy,
+            organizer,
+            siteMap,
+        )
     }
 
     private fun proxyItem(id: Int): ProxyHttpRequestResponse = mockk<ProxyHttpRequestResponse>().also { item ->
         every { item.id() } returns id
         every { item.request() } returns request("/proxy/$id")
         every { item.response() } returns null
+    }
+
+    private fun siteMapItem(path: String): HttpRequestResponse {
+        val body = mockk<burp.api.montoya.core.ByteArray>()
+        every { body.length() } returns 0
+        val request = mockk<HttpRequest>()
+        every { request.path() } returns path
+        every { request.method() } returns "GET"
+        every { request.url() } returns "https://example.test$path"
+        every { request.httpVersion() } returns "HTTP/1.1"
+        every { request.headers() } returns emptyList()
+        every { request.body() } returns body
+        return mockk<HttpRequestResponse>().also { item ->
+            every { item.request() } returns request
+            every { item.response() } returns null
+        }
     }
 
     private fun organizerItem(id: Int): OrganizerItem = mockk<OrganizerItem>().also { item ->

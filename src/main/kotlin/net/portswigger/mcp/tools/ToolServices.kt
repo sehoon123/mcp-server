@@ -6,8 +6,11 @@ import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.presets.WorkflowPresetStore
 
 /** Extension-lifetime state that must survive MCP HTTP server restarts. */
-internal class ToolServices(private val api: MontoyaApi, extensionStorage: PersistedObject) {
-    val workflowPresetStore = WorkflowPresetStore(extensionStorage)
+internal class ToolServices(
+    private val api: MontoyaApi,
+    extensionStorage: PersistedObject,
+    val workflowPresetStore: WorkflowPresetStore = WorkflowPresetStore(extensionStorage),
+) {
     val historyPerformanceDiagnostics = HistoryPerformanceDiagnostics()
     private val metadataChangeSignals = MetadataChangeSignals()
     private val metadataEventBridge = MontoyaMetadataEventBridge(api, metadataChangeSignals)
@@ -41,11 +44,14 @@ internal class ToolServices(private val api: MontoyaApi, extensionStorage: Persi
     }
 
     suspend fun resetForProjectBoundary() {
-        if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
-            scannerAuditsDelegate.value.resetForProjectBoundary()
-            collaboratorDelegate.value.resetForProjectBoundary()
+        if (
+            (scannerAuditsDelegate.isInitialized() || collaboratorDelegate.isInitialized()) &&
+            api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL
+        ) {
+            if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value.resetForProjectBoundary()
+            if (collaboratorDelegate.isInitialized()) collaboratorDelegate.value.resetForProjectBoundary()
         }
-        httpMetadataIndexDelegate.value.resetForProjectBoundary()
+        if (httpMetadataIndexDelegate.isInitialized()) httpMetadataIndexDelegate.value.resetForProjectBoundary()
     }
 
     fun close() {

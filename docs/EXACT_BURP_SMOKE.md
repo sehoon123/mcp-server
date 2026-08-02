@@ -49,6 +49,12 @@ fixed-cardinality diagnostics redaction, and session
 manager is constructed, off the UI thread, and the preflight requires that digest to equal the separately opened
 candidate file; version equality alone is not accepted.
 
+Catalog schema checks are release-line selected. Candidates through v4.11 retain the historical correlation-bound
+contract. An exact v4.12 identity additionally requires the bounded `relatedTraffic` and Scanner-delta input/output
+contracts; an unrecognized later release line is refused until its catalog contract is reviewed. Development suffixes
+such as `-dev.N` are also refused because exact smoke accepts only stable or `-rc.N` release identities. This additive
+check does not reinterpret or modify any v4.11 tag, asset, evidence record, or protected release workflow.
+
 ```bash
 scripts/run-exact-burp-preflight.py \
   --approved-disposable-project \

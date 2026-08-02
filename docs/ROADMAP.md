@@ -346,6 +346,28 @@ Implemented on the v4.11 development branch:
   transformation/random generators and focus-dependent active-editor read/write tools are no longer advertised. Prompts,
   resources, URI templates, cursors, and retained tool schemas remain unchanged; clients must reconnect and rediscover.
 
+In development for v4.12 milestones 1–3:
+
+- A native Client Setup Center renders bounded, token/path-free previews for exactly Claude Desktop, Claude Code,
+  VS Code / GitHub Copilot, Cursor, and OpenAI Codex. Only Claude Desktop reuses the existing atomic private installer;
+  manual proxy extraction remains separate and the other four clients are preview-and-copy only.
+- Connection Doctor performs one bounded authenticated numeric-loopback admission check off the EDT only while the
+  in-process listener is running. It follows no redirect, discards response content, creates no MCP session, and copies
+  only categorical evidence. It does not claim a full handshake or external-client correctness.
+- The native Workflow Preset Manager shares the existing synchronized project store with MCP save/list/delete/execute
+  adapters. Its structured editor manages HTTP metadata search, WebSocket metadata search, and HTTP comparison settings,
+  but exposes no execution action, traffic result, cursor, reference, credential, or new wire surface.
+- The existing `correlate_http_activity` input can optionally discover and append at most 16 metadata-ranked related
+  events from one to four explicit seed indices. Discovery is source-approved, project-bound, content-free, reports its
+  bounded/truncated envelope, leaves the explicit baseline/comparison delta unchanged, and does not claim probability,
+  confidence, identity, chronology, causality, semantic dependence, vulnerability evidence, or complete enumeration.
+- Professional `get_scanner_issues` cursor pages now issue a signed process-local snapshot cursor. Delta reads compare
+  only the bounded currently visible append-stable range and freeze their continuation snapshot; they expressly do not
+  establish regression, removal, in-place change, complete history, or causality.
+- These additions preserve the exact 21 Community / 28 Professional tool names and add no prompt, resource, template,
+  capability, route, alias, or tool. Persistence and native management remain independent of the current Kotlin MCP SDK
+  adapter so a future released SDK migration does not require a second store or UI implementation.
+
 Implemented incrementally through v4.3.2:
 
 - The MCP settings viewport tracks the available width instead of silently hiding horizontally oversized content.
@@ -360,11 +382,10 @@ Remaining work:
 
 - Validate the complete settings and approval surface in live supported Burp light/dark themes, keyboard-only navigation,
   and OS-level high-contrast modes on each release candidate.
-- Add installers and verified examples for Claude Desktop, Claude Code, VS Code/Copilot, Cursor, Codex, and MCP
-  Inspector.
+- Complete live version-pinned validation for the five v4.12 previews and Claude installer; evaluate additional
+  automatic installers and an MCP Inspector example only as separately reviewed future work.
 - Add named security-policy profiles such as read-only review, scoped active testing, and full local control.
 - Support selecting a Burp project or task context so multiple Burp instances cannot be confused.
-- Consider a native preset-management UI only after MCP-only usage demonstrates the need; do not duplicate traffic results.
 - Evaluate optional notifications only after bounded project-aware SDK lifecycle support exists.
 - Provide import/export of MCP settings with secrets excluded by default only as a separately reviewed future milestone.
 
@@ -379,7 +400,10 @@ The near-term order is gate-driven:
 3. Release v4.9 only after stable v4.8 plus exact 24/31 tool, 4/5 prompt, project save/reopen, no-mutation client, full
    regression, reproducibility, SBOM/legal, and Community/Professional gates pass.
 4. Keep v4.10 demand-driven and prefer measured scale/soak work or one separately reviewed client/operator UX problem.
-5. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
+5. Advance v4.12 on `main` in this order: five-client Setup Center and Connection Doctor, native local preset manager,
+   bounded related-traffic mode, bounded Scanner delta mode, then Burp-backed measured performance work. Keep the
+   catalog at 21/28 and do not merge these commits into protected `release/v4.11`.
+6. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
    approval entry gates are satisfied; require modern conformance and the supported-client matrix before beta/RC, as
    defined in [V5_READINESS.md](V5_READINESS.md) and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md).
 

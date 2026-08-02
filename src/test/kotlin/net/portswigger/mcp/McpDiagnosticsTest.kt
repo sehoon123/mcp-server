@@ -7,6 +7,7 @@ import net.portswigger.mcp.tools.HistoryPerformanceSnapshot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.time.Clock
 import java.time.Instant
@@ -85,12 +86,15 @@ class McpDiagnosticsTest {
         assertEquals(1, snapshot.sessionCapacityRejections)
         assertNull(snapshot.lastError)
 
-        val publicJson = Json.encodeToString(snapshot)
+        val publicJson = Json { encodeDefaults = true }.encodeToString(snapshot)
         assertFalse(publicJson.contains("projectBoundaryResets"))
         assertFalse(publicJson.contains("initializedWithProtocol"))
         assertFalse(publicJson.contains("initializedWithoutProtocolHeader"))
-        assertFalse(publicJson.contains("historyPerformance"))
-        assertFalse(publicJson.contains("latencyBuckets"))
+        assertTrue(publicJson.contains("historyPerformance"))
+        assertTrue(publicJson.contains("latencyBuckets"))
+        assertTrue(publicJson.contains("totalNanos"))
+        assertTrue(publicJson.contains("RELATED_CORRELATION_MONTOYA_ACQUISITION"))
+        assertTrue(publicJson.contains("SCANNER_DELTA_EXTENSION_PROCESSING"))
     }
 
     @Test

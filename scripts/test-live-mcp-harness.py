@@ -6,6 +6,7 @@ import http.server
 import importlib.util
 import json
 import pathlib
+import re
 import socket
 import stat
 import subprocess
@@ -39,6 +40,30 @@ def load_lifecycle_module():
 
 def load_cancellation_module():
     return load_script_module("live_cancellation", "run-live-cancellation-barrier.py")
+
+
+def load_v412_performance_module():
+    return load_script_module("live_v412_performance", "run-live-v412-performance-attribution.py")
+
+
+def history_diagnostics_text(overrides: dict[str, dict] | None = None) -> str:
+    overrides = overrides or {}
+    metrics = []
+    for name in harness.HISTORY_PERFORMANCE_METRICS:
+        value = {
+            "metric": name,
+            "active": 0,
+            "attempts": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "latencyBuckets": [0] * harness.HISTORY_PERFORMANCE_BUCKET_COUNT,
+            "totalNanos": 0,
+            "maxNanos": 0,
+        }
+        value.update(overrides.get(name, {}))
+        metrics.append(value)
+    return json.dumps({"diagnostics": {"historyPerformance": {"metrics": metrics}}})
 
 
 class LiveMcpHarnessContractTest(unittest.TestCase):
@@ -101,6 +126,38 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
                 with self.assertRaises(harness.HarnessError):
                     harness.read_private_token(token_file)
 
+    def test_private_json_input_rejects_links_permissions_duplicates_and_structure_abuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            private = root / "arguments.json"
+            private.write_text('{"operation":"bounded"}', encoding="utf-8")
+            private.chmod(0o600)
+            self.assertEqual({"operation": "bounded"}, harness.read_private_json_file(private))
+
+            private.chmod(0o644)
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_json_file(private)
+            private.chmod(0o600)
+
+            link = root / "link.json"
+            link.symlink_to(private)
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_json_file(link)
+
+            hardlink = root / "hardlink.json"
+            hardlink.hardlink_to(private)
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_json_file(private)
+            hardlink.unlink()
+
+            private.write_text('{"duplicate":1,"duplicate":2}', encoding="utf-8")
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_json_file(private)
+
+            private.write_text(json.dumps({"nested": [[[[["value"]]]]]}), encoding="utf-8")
+            with self.assertRaises(harness.HarnessError):
+                harness.read_private_json_file(private, max_bytes=8)
+
     def test_private_report_is_exclusive_redacted_and_mode_600(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "evidence" / "result.json"
@@ -114,6 +171,355 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
             with self.assertRaises(harness.HarnessError):
                 harness.write_private_json(leaked, {"value": "secret-value"}, forbidden_values=("secret-value",))
             self.assertFalse(leaked.exists())
+
+    def test_history_performance_metric_names_match_the_kotlin_wire_enum(self):
+        source = (
+            SCRIPTS.parent
+            / "src/main/kotlin/net/portswigger/mcp/tools/HistoryPerformanceDiagnostics.kt"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"enum class HistoryPerformanceMetric\s*\{(?P<body>.*?)\n\}",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        kotlin_names = tuple(
+            re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*,?\s*$", match.group("body"), flags=re.MULTILINE)
+        )
+        self.assertEqual(harness.HISTORY_PERFORMANCE_METRICS, kotlin_names)
+
+    def test_history_performance_parser_and_quiet_snapshot_difference_are_exact(self):
+        before_text = history_diagnostics_text()
+        acquisition_buckets = [0] * harness.HISTORY_PERFORMANCE_BUCKET_COUNT
+        acquisition_buckets[1] = 1
+        processing_buckets = [0] * harness.HISTORY_PERFORMANCE_BUCKET_COUNT
+        processing_buckets[2] = 2
+        after_text = history_diagnostics_text(
+            {
+                "RELATED_CORRELATION_MONTOYA_ACQUISITION": {
+                    "attempts": 1,
+                    "completed": 1,
+                    "latencyBuckets": acquisition_buckets,
+                    "totalNanos": 7,
+                    "maxNanos": 7,
+                },
+                "RELATED_CORRELATION_EXTENSION_PROCESSING": {
+                    "attempts": 2,
+                    "completed": 2,
+                    "latencyBuckets": processing_buckets,
+                    "totalNanos": 11,
+                    "maxNanos": 6,
+                },
+            }
+        )
+
+        before = harness.parse_history_performance_snapshot(before_text)
+        after = harness.parse_history_performance_snapshot(after_text)
+        delta = harness.diff_history_performance_snapshots(
+            before,
+            after,
+            frozenset(
+                {
+                    "RELATED_CORRELATION_MONTOYA_ACQUISITION",
+                    "RELATED_CORRELATION_EXTENSION_PROCESSING",
+                }
+            ),
+        )
+
+        self.assertEqual(1, delta["RELATED_CORRELATION_MONTOYA_ACQUISITION"]["attempts"])
+        self.assertEqual(7, delta["RELATED_CORRELATION_MONTOYA_ACQUISITION"]["totalNanos"])
+        self.assertEqual(2, delta["RELATED_CORRELATION_EXTENSION_PROCESSING"]["attempts"])
+        self.assertEqual(11, delta["RELATED_CORRELATION_EXTENSION_PROCESSING"]["totalNanos"])
+        self.assertEqual(6, delta["RELATED_CORRELATION_EXTENSION_PROCESSING"]["maxNanosAfter"])
+
+    def test_history_performance_parser_rejects_schema_counter_and_bucket_drift(self):
+        valid = json.loads(history_diagnostics_text())
+        mutations = []
+
+        missing_metric = json.loads(json.dumps(valid))
+        missing_metric["diagnostics"]["historyPerformance"]["metrics"].pop()
+        mutations.append(missing_metric)
+
+        reordered = json.loads(json.dumps(valid))
+        reordered_metrics = reordered["diagnostics"]["historyPerformance"]["metrics"]
+        reordered_metrics[0], reordered_metrics[1] = reordered_metrics[1], reordered_metrics[0]
+        mutations.append(reordered)
+
+        extra_field = json.loads(json.dumps(valid))
+        extra_field["diagnostics"]["historyPerformance"]["metrics"][0]["private"] = "value"
+        mutations.append(extra_field)
+
+        for field, value in (("attempts", True), ("completed", -1), ("totalNanos", (1 << 63) - 1)):
+            invalid = json.loads(json.dumps(valid))
+            invalid["diagnostics"]["historyPerformance"]["metrics"][0][field] = value
+            mutations.append(invalid)
+
+        wrong_buckets = json.loads(json.dumps(valid))
+        wrong_buckets["diagnostics"]["historyPerformance"]["metrics"][0]["latencyBuckets"].pop()
+        mutations.append(wrong_buckets)
+
+        inconsistent = json.loads(json.dumps(valid))
+        inconsistent_metric = inconsistent["diagnostics"]["historyPerformance"]["metrics"][0]
+        inconsistent_metric.update(attempts=1, completed=1, totalNanos=1, maxNanos=2)
+        inconsistent_metric["latencyBuckets"][0] = 1
+        mutations.append(inconsistent)
+
+        active_overflow = json.loads(json.dumps(valid))
+        active_overflow["diagnostics"]["historyPerformance"]["metrics"][0]["active"] = 65
+        mutations.append(active_overflow)
+
+        for value in mutations:
+            with self.subTest(value=value):
+                with self.assertRaises(harness.HarnessError):
+                    harness.parse_history_performance_snapshot(json.dumps(value))
+
+    def test_history_performance_difference_rejects_contamination_regression_and_active_boundaries(self):
+        before = harness.parse_history_performance_snapshot(history_diagnostics_text())
+        target_buckets = [1] + [0] * (harness.HISTORY_PERFORMANCE_BUCKET_COUNT - 1)
+        target_name = "SCANNER_DELTA_MONTOYA_ACQUISITION"
+        processing_name = "SCANNER_DELTA_EXTENSION_PROCESSING"
+        valid_after = harness.parse_history_performance_snapshot(
+            history_diagnostics_text(
+                {
+                    target_name: {
+                        "attempts": 1,
+                        "completed": 1,
+                        "latencyBuckets": target_buckets,
+                        "totalNanos": 1,
+                        "maxNanos": 1,
+                    },
+                    processing_name: {
+                        "attempts": 1,
+                        "completed": 1,
+                        "latencyBuckets": target_buckets,
+                        "totalNanos": 1,
+                        "maxNanos": 1,
+                    },
+                }
+            )
+        )
+        expected = frozenset({target_name, processing_name})
+
+        contaminated = json.loads(json.dumps(valid_after))
+        contaminated["HTTP_SEARCH_PROCESSING"].update(
+            attempts=1,
+            completed=1,
+            totalNanos=1,
+            maxNanos=1,
+            latencyBuckets=target_buckets,
+        )
+        with self.assertRaises(harness.HarnessError):
+            harness.diff_history_performance_snapshots(before, contaminated, expected)
+
+        active = json.loads(json.dumps(valid_after))
+        active[target_name]["active"] = 1
+        with self.assertRaises(harness.HarnessError):
+            harness.diff_history_performance_snapshots(before, active, expected)
+
+        regressed_before = json.loads(json.dumps(valid_after))
+        with self.assertRaises(harness.HarnessError):
+            harness.diff_history_performance_snapshots(regressed_before, before, expected)
+
+    def test_v412_performance_private_arguments_are_bounded_and_mode_specific(self):
+        runner = load_v412_performance_module()
+        related = {
+            "projectId": "private-project-binding",
+            "baselineRefs": [{"source": "proxy", "id": "private-ref-one"}],
+            "comparisonRefs": [{"source": "site_map", "id": "private-ref-two"}],
+            "pathDepth": 2,
+            "relatedTraffic": {
+                "seedEventIndices": [0],
+                "sources": ["proxy", "site_map"],
+                "inScopeOnly": True,
+                "limit": 8,
+            },
+        }
+        self.assertIs(related, runner.validate_related_arguments(related))
+        invalid_related = json.loads(json.dumps(related))
+        invalid_related["relatedTraffic"]["seedEventIndices"] = [0, 0]
+        with self.assertRaises(harness.HarnessError):
+            runner.validate_related_arguments(invalid_related)
+
+        scanner = {
+            "count": 50,
+            "sinceSnapshotCursor": "private-signed-cursor",
+            "summariesOnly": True,
+            "severities": ["high", "medium"],
+            "newestFirst": False,
+        }
+        self.assertIs(scanner, runner.validate_scanner_arguments(scanner))
+        for replacement in (
+            {"cursor": "mixed"},
+            {"offset": 1},
+            {"summariesOnly": False},
+            {"count": 51},
+        ):
+            invalid_scanner = dict(scanner)
+            invalid_scanner.update(replacement)
+            with self.assertRaises(harness.HarnessError):
+                runner.validate_scanner_arguments(invalid_scanner)
+
+    def test_v412_performance_summaries_retain_only_aggregate_invariants(self):
+        runner = load_v412_performance_module()
+        project = "private-project-binding"
+        arguments = {
+            "baselineRefs": [{"source": "proxy", "id": "private-one"}],
+            "comparisonRefs": [{"source": "proxy", "id": "private-two"}],
+            "relatedTraffic": {"seedEventIndices": [0], "limit": 1},
+        }
+        related_value = {
+            "status": "ok",
+            "projectId": project,
+            "timeline": [
+                {"cohort": "baseline", "ref": {"source": "proxy"}},
+                {"cohort": "comparison", "ref": {"source": "proxy"}},
+                {"cohort": "related", "ref": {"source": "proxy"}},
+            ],
+            "relatedTraffic": {
+                "seedEventIndices": [0],
+                "sources": ["proxy"],
+                "requestedLimit": 1,
+                "returned": 1,
+                "queryCount": 1,
+                "candidateSummariesExamined": 3,
+                "qualifiedCandidates": 2,
+                "basis": "same_service_and_bounded_metadata",
+                "identityEstablished": False,
+                "truncated": True,
+                "matches": [{}],
+            },
+            "evidence": {
+                "ordering": "caller_supplied_then_related_score",
+                "chronologyEstablished": False,
+                "cohortBoundaryEstablishesTime": False,
+                "exactCrossSourceIdentityEstablished": False,
+                "probableDuplicatesDeduplicated": False,
+                "selectedReferences": 2,
+                "relatedReferences": 1,
+                "timelineEvents": 3,
+                "maxReferences": 32,
+                "maxReferencesPerCohort": 16,
+                "maxRelatedReferences": 16,
+                "maxTimelineEvents": 48,
+            },
+            "delta": {"baselineRecords": 1, "comparisonRecords": 1},
+        }
+        related_summary = runner._related_summary(related_value, arguments, project)
+        self.assertEqual(1, related_summary["relatedReturned"])
+        self.assertEqual(3, related_summary["expectedAcquisitionAttemptsPerCall"])
+        self.assertEqual(16, related_summary["expectedProcessingAttemptsPerCall"])
+        self.assertNotIn(project, json.dumps(related_summary))
+        self.assertNotIn("private-one", json.dumps(related_summary))
+
+        mixed_arguments = json.loads(json.dumps(arguments))
+        mixed_arguments["comparisonRefs"][0]["source"] = "site_map"
+        mixed_arguments["relatedTraffic"]["sources"] = ["proxy", "site_map"]
+        mixed_value = json.loads(json.dumps(related_value))
+        mixed_value["timeline"][1]["ref"]["source"] = "site_map"
+        mixed_value["timeline"][2]["ref"]["source"] = "site_map"
+        mixed_value["relatedTraffic"]["sources"] = ["proxy", "site_map"]
+        mixed_summary = runner._related_summary(mixed_value, mixed_arguments, project)
+        self.assertEqual(5, mixed_summary["expectedAcquisitionAttemptsPerCall"])
+        self.assertEqual(15, mixed_summary["expectedProcessingAttemptsPerCall"])
+
+        invalid_related_value = json.loads(json.dumps(related_value))
+        invalid_related_value["relatedTraffic"]["returned"] = 2
+        with self.assertRaises(harness.HarnessError):
+            runner._related_summary(invalid_related_value, arguments, project)
+        changed_fixture_arguments = json.loads(json.dumps(arguments))
+        changed_fixture_arguments["relatedTraffic"]["limit"] = 2
+        changed_fixture_value = json.loads(json.dumps(related_value))
+        changed_fixture_value["relatedTraffic"]["requestedLimit"] = 2
+        with self.assertRaisesRegex(harness.HarnessError, "fixture changed"):
+            runner._related_summary(changed_fixture_value, changed_fixture_arguments, project)
+        zero_work_related = json.loads(json.dumps(related_value))
+        zero_work_related["timeline"] = zero_work_related["timeline"][:2]
+        zero_work_related["relatedTraffic"].update(
+            returned=0,
+            candidateSummariesExamined=0,
+            qualifiedCandidates=0,
+            matches=[],
+        )
+        zero_work_related["evidence"].update(relatedReferences=0, timelineEvents=2)
+        with self.assertRaises(harness.HarnessError):
+            runner._related_summary(zero_work_related, arguments, project)
+
+        scanner_value = {
+            "status": "ok",
+            "projectId": project,
+            "deltaMode": True,
+            "legacyMode": False,
+            "legacyTextTruncated": False,
+            "scanLimitReached": True,
+            "items": [],
+            "returned": 0,
+            "scanned": 10_000,
+            "snapshotSize": 50_000,
+            "hasMore": True,
+            "nextDeltaCursor": "private-next-cursor",
+            "snapshotCursor": None,
+            "delta": {
+                "basis": "append_stable_currently_visible_range",
+                "baselineSnapshotSize": 40_000,
+                "currentSnapshotSize": 50_000,
+                "appendedRangeSize": 10_000,
+                "regressionEstablished": False,
+                "removedOrChangedEstablished": False,
+                "completeHistoryEstablished": False,
+            },
+        }
+        scanner_summary = runner._scanner_summary(scanner_value, 50_000, project)
+        self.assertEqual(50_000, scanner_summary["snapshotSize"])
+        self.assertEqual(1, scanner_summary["expectedAcquisitionAttemptsPerCall"])
+        self.assertEqual(1, scanner_summary["expectedProcessingAttemptsPerCall"])
+        self.assertNotIn("private-next-cursor", json.dumps(scanner_summary))
+        empty_delta = json.loads(json.dumps(scanner_value))
+        empty_delta["delta"]["baselineSnapshotSize"] = 50_000
+        empty_delta["delta"]["appendedRangeSize"] = 0
+        with self.assertRaises(harness.HarnessError):
+            runner._scanner_summary(empty_delta, 50_000, project)
+
+        with self.assertRaises(harness.HarnessError):
+            runner._assert_report_omits_private_values(
+                {"safe": "private-next-cursor"},
+                {"private-next-cursor"},
+            )
+
+    def test_v412_attributed_phase_time_must_fit_serial_client_wall_time(self):
+        runner = load_v412_performance_module()
+        phase_deltas = {
+            "acquisition": {"totalNanos": 100_000_000},
+            "processing": {"totalNanos": 200_000_000},
+        }
+
+        self.assertEqual(0.3, runner._attributed_wall_ratio(phase_deltas, [1.0]))
+        with self.assertRaises(harness.HarnessError):
+            runner._attributed_wall_ratio(phase_deltas, [0.1])
+
+    def test_v412_evidence_retains_only_aggregate_wall_attribution(self):
+        runner = load_v412_performance_module()
+        evidence = runner._aggregate_measurement_evidence(
+            {"returned": 1},
+            {"acquisition": {"totalNanos": 1}, "processing": {"totalNanos": 2}},
+            0.5,
+            100,
+            101,
+        )
+
+        self.assertEqual(
+            {
+                "invariants",
+                "phaseDeltas",
+                "attributedPhaseToClientWallRatio",
+                "rssBeforeKiB",
+                "rssAfterKiB",
+            },
+            set(evidence),
+        )
+        self.assertNotIn(
+            '"clientWallSeconds"',
+            (SCRIPTS / "run-live-v412-performance-attribution.py").read_text(encoding="utf-8"),
+        )
 
     def test_interruptible_call_reports_socket_abort_without_response_content(self):
         request_received = threading.Event()

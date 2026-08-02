@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class HttpMessageIndexedSearchTest {
@@ -513,6 +514,58 @@ class HttpMessageIndexedSearchTest {
         assertEquals(HttpMessageSearchStatus.PROJECT_MISMATCH, result.status)
         assertEquals("project-456", result.projectId)
         assertTrue(result.items.isEmpty())
+    }
+
+    @Test
+    fun `reference metadata projection ignores a warm adaptive index and keeps related phases fixed`() = runBlocking {
+        proxyHistory += fixture(
+            id = 1,
+            host = { "example.test" },
+            method = "GET",
+            path = "/related",
+            status = 200,
+        ).item
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            proxyHistory.filter(filter::matches)
+        }
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val index = newIndex(maxRecords = 10, performanceDiagnostics = diagnostics)
+        index.snapshot(currentProjectId, listOf(HttpMessageSource.PROXY))
+        val resolver = HttpMessageResolver(api, config, diagnostics)
+        val authorization = assertIs<HttpMessageBatchResolution.Found>(
+            resolver.resolveAll(
+                currentProjectId,
+                listOf(HttpMessageReference(HttpMessageSource.PROXY, "1")),
+            ),
+        ).authorization
+        val before = diagnostics.snapshot()
+
+        val result = service(index, diagnostics).searchReferenceMetadata(
+            input = SearchHttpMessages(host = "example.test", pathContains = "/related"),
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+
+        assertEquals(HttpMessageSearchStatus.OK, result.status)
+        assertEquals(1, result.returned)
+        val after = diagnostics.snapshot()
+        fun attempts(snapshot: HistoryPerformanceSnapshot, metric: HistoryPerformanceMetric): Long =
+            snapshot.metrics.single { it.metric == metric }.attempts
+        assertEquals(
+            attempts(before, HistoryPerformanceMetric.INDEX_PROXY_PROCESSING),
+            attempts(after, HistoryPerformanceMetric.INDEX_PROXY_PROCESSING),
+        )
+        assertEquals(
+            1,
+            attempts(after, HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION) -
+                attempts(before, HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION),
+        )
+        assertEquals(
+            1,
+            attempts(after, HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING) -
+                attempts(before, HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING),
+        )
     }
 
     private fun service(

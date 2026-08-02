@@ -56,10 +56,12 @@ class HttpActivityCorrelationTest {
         every { api.organizer() } returns organizer
         every { api.siteMap() } returns siteMap
         every { api.logging() } returns logging
+        every { proxy.history() } answers { proxyItems.toList() }
         every { proxy.history(any()) } answers {
             val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
             proxyItems.filter(filter::matches)
         }
+        every { organizer.items() } answers { organizerItems.toList() }
         every { organizer.items(any()) } answers {
             val filter = firstArg<burp.api.montoya.organizer.OrganizerItemFilter>()
             organizerItems.filter(filter::matches)
@@ -253,6 +255,313 @@ class HttpActivityCorrelationTest {
     }
 
     @Test
+    fun `related discovery appends one ranked metadata match without changing the explicit delta`() = runBlocking {
+        val seed = proxyItem(1, "GET", "/api/users/123?seed-token=alpha", 200, MimeType.JSON)
+        val comparison = proxyItem(2, "POST", "/admin/9?comparison-secret=bravo", 404, MimeType.HTML)
+        val best = proxyItem(3, "GET", "/api/users/456?candidate-secret=charlie", 201, MimeType.JSON)
+        val secondary = proxyItem(4, "GET", "/api/orders/1?candidate-secret=delta", 202, MimeType.JSON)
+        val pathOnly = proxyItem(5, "DELETE", "/api/users/777?candidate-secret=echo", 500, MimeType.XML)
+        proxyItems += listOf(seed.item, comparison.item, best.item, secondary.item, pathOnly.item)
+        val approvals = mutableListOf<DataAccessType>()
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                approvals += accessType
+                return true
+            }
+        }
+        var metricTick = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { metricTick++ }
+
+        val result = service(requireDataApproval = true, performanceDiagnostics = diagnostics).correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                pathDepth = 3,
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    limit = 1,
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status, result.error)
+        assertEquals(listOf("1", "2", "3"), result.timeline.map { it.ref.id })
+        assertEquals(
+            listOf(HttpActivityCohort.BASELINE, HttpActivityCohort.COMPARISON, HttpActivityCohort.RELATED),
+            result.timeline.map { it.cohort },
+        )
+        assertEquals(0, result.timeline.last().cohortIndex)
+        assertEquals("/api/users/{number}", result.timeline.last().pathPrefix)
+        assertEquals(1_767_323_045_003L, result.timeline.last().observedAtEpochMillis)
+        assertEquals(HttpActivityTimestampKind.PROXY_CAPTURED, result.timeline.last().timestampKind)
+        assertEquals(1, result.delta?.baselineRecords)
+        assertEquals(1, result.delta?.comparisonRecords)
+        assertEquals(listOf("GET", "POST"), result.delta?.methods?.map(ValueCountDelta::value))
+        assertEquals(listOf(-1, 1), result.delta?.methods?.map(ValueCountDelta::delta))
+        val related = requireNotNull(result.relatedTraffic)
+        assertEquals(listOf(0), related.seedEventIndices)
+        assertEquals(listOf(HttpMessageSource.PROXY), related.sources)
+        assertEquals(1, related.queryCount)
+        assertEquals(3, related.qualifiedCandidates)
+        assertEquals(1, related.returned)
+        assertTrue(related.truncated)
+        assertFalse(related.identityEstablished)
+        assertEquals(2, related.matches.single().eventIndex)
+        assertEquals(12, related.matches.single().score)
+        assertEquals(
+            RelatedHttpTrafficSignal.entries,
+            related.matches.single().seedMatches.single().signals,
+        )
+        assertEquals("caller_supplied_then_related_score", result.evidence.ordering)
+        assertEquals(2, result.evidence.selectedReferences)
+        assertEquals(1, result.evidence.relatedReferences)
+        assertEquals(3, result.evidence.timelineEvents)
+        assertEquals(32, result.evidence.maxReferences)
+        assertEquals(16, result.evidence.maxRelatedReferences)
+        assertEquals(48, result.evidence.maxTimelineEvents)
+        assertEquals(listOf(DataAccessType.HTTP_HISTORY), approvals)
+        assertFalse(result.toString().contains("seed-token"))
+        assertFalse(result.toString().contains("comparison-secret"))
+        assertFalse(result.toString().contains("candidate-secret"))
+        listOf(seed, comparison, best, secondary, pathOnly).forEach { fixture ->
+            verify(exactly = 0) { fixture.request.body() }
+            verify(exactly = 0) { fixture.request.headers() }
+            verify(exactly = 0) { fixture.item.annotations() }
+        }
+        verify(exactly = 1) { proxy.history() }
+        verify(exactly = 2) { proxy.history(any()) }
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION
+        }
+        val processing = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING
+        }
+        assertEquals(3, acquisition.attempts)
+        assertEquals(3, acquisition.completed)
+        assertEquals(3, acquisition.totalNanos)
+        assertEquals(16, processing.attempts)
+        assertEquals(16, processing.completed)
+        assertEquals(16, processing.totalNanos)
+        assertEquals(0, diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING
+        }.attempts)
+    }
+
+    @Test
+    fun `mixed Proxy and Site Map related attribution matches resolver and search phase boundaries`() = runBlocking {
+        val seed = proxyItem(1, "GET", "/api/items/1", 200, MimeType.JSON)
+        val comparison = siteMapItem("POST", "/other", 404, MimeType.HTML)
+        val candidate = siteMapItem("GET", "/api/items/2?site-map-private=value", 201, MimeType.JSON)
+        proxyItems += seed.item
+        siteMapItems += listOf(comparison.item, candidate.item)
+        val comparisonId = stableSiteMapId(currentProjectId, 0, comparison.item)
+        val candidateId = stableSiteMapId(currentProjectId, 1, candidate.item)
+        var metricTick = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { metricTick++ }
+
+        val result = service(performanceDiagnostics = diagnostics).correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.SITE_MAP, comparisonId)),
+                pathDepth = 3,
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    sources = listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP),
+                    limit = 1,
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status, result.error)
+        assertEquals(
+            listOf(HttpMessageSource.PROXY, HttpMessageSource.SITE_MAP, HttpMessageSource.SITE_MAP),
+            result.timeline.map { it.ref.source },
+        )
+        assertEquals(candidateId, result.timeline.last().ref.id)
+        assertEquals(1, result.relatedTraffic?.queryCount)
+        assertEquals(1, result.relatedTraffic?.returned)
+        assertFalse(result.toString().contains("site-map-private"))
+        val snapshots = diagnostics.snapshot().metrics.associateBy { it.metric }
+        // Acquisition: two explicit sources + two searched sources + one selected Site Map reacquisition.
+        // Processing: 3 explicit resolver + 8 correlation/search/assembly + 4 selected Site Map segments. A Proxy
+        // selection would add its resolver index segment and produce 16, so 15 pins the source-specific boundary.
+        assertEquals(5, snapshots.getValue(HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION).attempts)
+        assertEquals(15, snapshots.getValue(HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING).attempts)
+        assertEquals(0, snapshots.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION).attempts)
+        assertEquals(0, snapshots.getValue(HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION).attempts)
+        assertEquals(0, snapshots.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING).attempts)
+    }
+
+    @Test
+    fun `explicit-only correlation does not record related phase metrics`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/one", 200, MimeType.JSON).item
+        proxyItems += proxyItem(2, "GET", "/two", 200, MimeType.JSON).item
+        var metricTick = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { metricTick++ }
+
+        val result = service(performanceDiagnostics = diagnostics).correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status)
+        HistoryPerformanceMetric.entries.filter { it.name.startsWith("RELATED_CORRELATION_") }.forEach { metric ->
+            assertEquals(0, diagnostics.snapshot().metrics.single { it.metric == metric }.attempts)
+        }
+    }
+
+    @Test
+    fun `related discovery can search an additionally authorized source without reapproving it`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/api/items/1", 200, MimeType.JSON).item
+        proxyItems += proxyItem(2, "POST", "/other", 404, MimeType.HTML).item
+        val candidate = organizerItem(7, "GET", "/api/items/2?private=value", 204, MimeType.JSON)
+        organizerItems += candidate.item
+        val approvals = mutableListOf<DataAccessType>()
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                approvals += accessType
+                return true
+            }
+        }
+
+        val result = service(requireDataApproval = true).correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    sources = listOf(HttpMessageSource.ORGANIZER),
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status, result.error)
+        assertEquals(listOf("1", "2", "7"), result.timeline.map { it.ref.id })
+        assertEquals(HttpMessageSource.ORGANIZER, result.timeline.last().ref.source)
+        assertEquals(HttpActivityTimestampKind.UNAVAILABLE, result.timeline.last().timestampKind)
+        assertEquals(
+            listOf(DataAccessType.HTTP_HISTORY, DataAccessType.ORGANIZER),
+            approvals,
+        )
+        assertFalse(result.toString().contains("private=value"))
+        verify(exactly = 0) { candidate.request.body() }
+        verify(exactly = 0) { candidate.request.headers() }
+        verify(exactly = 0) { candidate.item.annotations() }
+        verify(exactly = 1) { organizer.items() }
+        verify(exactly = 1) { organizer.items(any()) }
+    }
+
+    @Test
+    fun `related discovery leaves explicit similarity groups unchanged`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/same", 200, MimeType.JSON).item
+        organizerItems += organizerItem(2, "GET", "/same", 200, MimeType.JSON).item
+        val candidate = siteMapItem("GET", "/same", 200, MimeType.JSON)
+        siteMapItems += candidate.item
+        val explicitInput = CorrelateHttpActivity(
+            projectId = currentProjectId,
+            baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+            comparisonRefs = listOf(ref(HttpMessageSource.ORGANIZER, "2")),
+        )
+        val explicit = service().correlate(explicitInput)
+
+        val withRelated = service().correlate(
+            explicitInput.copy(
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    sources = listOf(HttpMessageSource.SITE_MAP),
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, explicit.status, explicit.error)
+        assertEquals(HttpActivityCorrelationStatus.OK, withRelated.status, withRelated.error)
+        assertEquals(explicit.timeline, withRelated.timeline.take(2))
+        assertEquals(explicit.similarityGroups, withRelated.similarityGroups)
+        assertEquals(explicit.evidence.similarityGroupCount, withRelated.evidence.similarityGroupCount)
+        assertEquals(1, withRelated.relatedTraffic?.returned)
+        assertNull(withRelated.timeline.last().similarityGroupId)
+    }
+
+    @Test
+    fun `related discovery fails closed when a selected stable reference disappears`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/api/items/1", 200, MimeType.JSON).item
+        proxyItems += proxyItem(2, "POST", "/other", 404, MimeType.HTML).item
+        proxyItems += proxyItem(3, "GET", "/api/items/2", 200, MimeType.JSON).item
+        var filteredReads = 0
+        every { proxy.history(any()) } answers {
+            filteredReads++
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            if (filteredReads == 1) proxyItems.filter(filter::matches) else emptyList()
+        }
+
+        val result = service().correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(seedEventIndices = listOf(0)),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.NOT_FOUND, result.status)
+        assertEquals("A related HTTP candidate was no longer available", result.error)
+        assertTrue(result.timeline.isEmpty())
+        assertNull(result.relatedTraffic)
+    }
+
+    @Test
+    fun `related discovery drops a selected candidate that fails materialized metadata revalidation`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/api/items/1", 200, MimeType.JSON).item
+        proxyItems += proxyItem(2, "POST", "/other", 404, MimeType.HTML).item
+        val candidate = proxyItem(3, "GET", "/api/items/2?private=value", 200, MimeType.JSON)
+        var pathReads = 0
+        every { candidate.request.path() } answers {
+            pathReads++
+            if (pathReads <= 2) "/api/items/2?private=value" else "/unrelated"
+        }
+        var methodReads = 0
+        every { candidate.request.method() } answers {
+            methodReads++
+            if (methodReads == 1) "GET" else "DELETE"
+        }
+        val response = requireNotNull(candidate.item.response())
+        var statusReads = 0
+        every { response.statusCode() } answers {
+            statusReads++
+            if (statusReads == 1) 200.toShort() else 500.toShort()
+        }
+        var mimeReads = 0
+        every { response.mimeType() } answers {
+            mimeReads++
+            if (mimeReads == 1) MimeType.JSON else MimeType.XML
+        }
+        proxyItems += candidate.item
+
+        val result = service().correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(seedEventIndices = listOf(0)),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status, result.error)
+        assertEquals(listOf("1", "2"), result.timeline.map { it.ref.id })
+        val related = requireNotNull(result.relatedTraffic)
+        assertEquals(1, related.qualifiedCandidates)
+        assertEquals(0, related.returned)
+        assertTrue(related.matches.isEmpty())
+        assertFalse(result.toString().contains("private=value"))
+    }
+
+    @Test
     fun `maximum 16 plus 16 request remains bounded and caller ordered`() = runBlocking {
         proxyItems += (1..32).map { id -> proxyItem(id, "GET", "/item/$id", 200, MimeType.JSON).item }
         val baseline = (1..16).map { ref(HttpMessageSource.PROXY, it.toString()) }
@@ -295,6 +604,25 @@ class HttpActivityCorrelationTest {
         val invalidDepth = service.correlate(
             CorrelateHttpActivity(currentProjectId, listOf(ref(HttpMessageSource.PROXY, "1")), listOf(ref(HttpMessageSource.PROXY, "2")), 5)
         )
+        val invalidRelatedSeed = service.correlate(
+            CorrelateHttpActivity(
+                currentProjectId,
+                listOf(ref(HttpMessageSource.PROXY, "1")),
+                listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(seedEventIndices = listOf(2)),
+            ),
+        )
+        val duplicateRelatedSources = service.correlate(
+            CorrelateHttpActivity(
+                currentProjectId,
+                listOf(ref(HttpMessageSource.PROXY, "1")),
+                listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    sources = listOf(HttpMessageSource.PROXY, HttpMessageSource.PROXY),
+                ),
+            ),
+        )
 
         assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, empty.status)
         assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, invalidProject.status)
@@ -304,13 +632,43 @@ class HttpActivityCorrelationTest {
         assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, duplicateAlias.status)
         assertEquals(1, duplicateAlias.errorRefIndex)
         assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, invalidDepth.status)
-        listOf(empty, invalidProject, tooMany, invalidId, duplicateAlias, invalidDepth).forEach {
+        assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, invalidRelatedSeed.status)
+        assertEquals(HttpActivityCorrelationStatus.INVALID_ARGUMENT, duplicateRelatedSources.status)
+        listOf(
+            empty,
+            invalidProject,
+            tooMany,
+            invalidId,
+            duplicateAlias,
+            invalidDepth,
+            invalidRelatedSeed,
+            duplicateRelatedSources,
+        ).forEach {
             assertNull(it.projectId, "pre-capture validation must not echo the caller project")
             assertTrue(it.timeline.isEmpty())
             assertNull(it.delta)
             assertEquals(0, it.evidence.selectedReferences)
         }
         verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { proxy.history(any()) }
+    }
+
+    @Test
+    fun `unavailable related search fails before project or source access`() = runBlocking {
+        val result = HttpActivityCorrelationService(api, config(false)).correlate(
+            CorrelateHttpActivity(
+                currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(seedEventIndices = listOf(0)),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.BURP_ERROR, result.status)
+        assertNull(result.projectId)
+        assertTrue(result.timeline.isEmpty())
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { proxy.history() }
         verify(exactly = 0) { proxy.history(any()) }
     }
 
@@ -335,6 +693,42 @@ class HttpActivityCorrelationTest {
         assertTrue(result.timeline.isEmpty())
         assertNull(result.delta)
         verify(exactly = 0) { proxy.history(any()) }
+        verify(exactly = 0) { organizer.items(any()) }
+    }
+
+    @Test
+    fun `denied additional discovery source fails before any explicit or discovery source acquisition`() = runBlocking {
+        proxyItems += proxyItem(1, "GET", "/api", 200, MimeType.JSON).item
+        proxyItems += proxyItem(2, "POST", "/other", 404, MimeType.HTML).item
+        organizerItems += organizerItem(3, "GET", "/api", 200, MimeType.JSON).item
+        val approvals = mutableListOf<DataAccessType>()
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                approvals += accessType
+                return accessType != DataAccessType.ORGANIZER
+            }
+        }
+
+        val result = service(requireDataApproval = true).correlate(
+            CorrelateHttpActivity(
+                currentProjectId,
+                baselineRefs = listOf(ref(HttpMessageSource.PROXY, "1")),
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "2")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0),
+                    sources = listOf(HttpMessageSource.ORGANIZER),
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.ACCESS_DENIED, result.status)
+        assertNull(result.errorRefIndex)
+        assertTrue(result.timeline.isEmpty())
+        assertNull(result.relatedTraffic)
+        assertEquals(listOf(DataAccessType.HTTP_HISTORY, DataAccessType.ORGANIZER), approvals)
+        verify(exactly = 0) { proxy.history() }
+        verify(exactly = 0) { proxy.history(any()) }
+        verify(exactly = 0) { organizer.items() }
         verify(exactly = 0) { organizer.items(any()) }
     }
 
@@ -427,8 +821,23 @@ class HttpActivityCorrelationTest {
         Unit
     }
 
-    private fun service(requireDataApproval: Boolean = false): HttpActivityCorrelationService =
-        HttpActivityCorrelationService(api, config(requireDataApproval))
+    private fun service(
+        requireDataApproval: Boolean = false,
+        performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
+    ): HttpActivityCorrelationService {
+        val config = config(requireDataApproval)
+        return HttpActivityCorrelationService(
+            api,
+            config,
+            HttpMessageSearchService(
+                api,
+                config,
+                cursorSecret = ByteArray(32) { 7 },
+                performanceDiagnostics = performanceDiagnostics,
+            ),
+            performanceDiagnostics,
+        )
+    }
 
     private fun config(requireDataApproval: Boolean): McpConfig {
         val storage = mockk<PersistedObject>(relaxed = true)
@@ -452,6 +861,7 @@ class HttpActivityCorrelationTest {
         every { item.id() } returns id
         every { item.request() } returns message.request
         every { item.response() } returns message.response
+        every { item.httpService() } returns message.service
         every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z").plusNanos(id * 1_000_000L)
         return ProxyFixture(item, message.request)
     }
@@ -466,6 +876,7 @@ class HttpActivityCorrelationTest {
         val message = message(method, path, status, mimeType)
         every { item.request() } returns message.request
         every { item.response() } returns message.response
+        every { item.httpService() } returns message.service
         return SiteMapFixture(item, message.request)
     }
 
@@ -481,6 +892,7 @@ class HttpActivityCorrelationTest {
         every { item.id() } returns id
         every { item.request() } returns message.request
         every { item.response() } returns message.response
+        every { item.httpService() } returns message.service
         return OrganizerFixture(item, message.request)
     }
 
@@ -512,12 +924,16 @@ class HttpActivityCorrelationTest {
         every { response.httpVersion() } returns "HTTP/1.1"
         every { response.headers() } returns emptyList()
         every { response.body() } returns emptyBytes
-        return MessageFixture(request, response)
+        return MessageFixture(request, response, service)
     }
 
     private fun ref(source: HttpMessageSource, id: String) = HttpMessageReference(source, id)
 
-    private data class MessageFixture(val request: HttpRequest, val response: HttpResponse)
+    private data class MessageFixture(
+        val request: HttpRequest,
+        val response: HttpResponse,
+        val service: HttpService,
+    )
     private data class ProxyFixture(val item: ProxyHttpRequestResponse, val request: HttpRequest)
     private data class SiteMapFixture(val item: HttpRequestResponse, val request: HttpRequest)
     private data class OrganizerFixture(val item: OrganizerItem, val request: HttpRequest)

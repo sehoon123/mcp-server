@@ -384,7 +384,12 @@ internal fun Server.registerTools(
         performanceDiagnostics = services.historyPerformanceDiagnostics,
     )
     val httpAttackSurfaceService = HttpAttackSurfaceService(api, config, services.httpMetadataIndex)
-    val httpActivityCorrelationService = HttpActivityCorrelationService(api, config)
+    val httpActivityCorrelationService = HttpActivityCorrelationService(
+        api,
+        config,
+        httpMessageSearchService,
+        services.historyPerformanceDiagnostics,
+    )
     val httpMessageActionService = HttpMessageActionService(api, config, services::markOrganizerChanged)
     val rawHttpActionService = RawHttpActionService(api, config, services::markOrganizerChanged)
     val httpMessageReadService = HttpMessageReadService(api, config)
@@ -913,11 +918,15 @@ internal fun Server.registerTools(
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
-        val scannerIssueSearchService = ScannerIssueSearchService(api, config)
+        val scannerIssueSearchService = ScannerIssueSearchService(
+            api,
+            config,
+            performanceDiagnostics = services.historyPerformanceDiagnostics,
+        )
         val scannerIssueReadService = ScannerIssueReadService(api, config)
         val collaboratorToolService = services.collaborator
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
-            description = "List or filter Scanner issues in the project current at call start; the captured project is rechecked and returned as projectId. Scanner-issue access policy applies. Legacy offset mode returns blank-line-separated JSON records, or exactly 'Reached end of items' for an empty page. Signed-cursor mode returns compact summaries; continue whenever hasMore=true by passing nextCursor as cursor. Use get_scanner_issue_by_id for bounded detail or evidence.",
+            description = "List/filter Scanner issues; access policy applies and projectId is rechecked. Legacy mode returns JSON records, or 'Reached end of items' when empty. Cursor mode returns summaries and snapshotCursor. Pass snapshotCursor or nextDeltaCursor as sinceSnapshotCursor for a bounded append-stable range; this does not prove regression, removal, or in-place change. When hasMore=true, continue with nextCursor as cursor or nextDeltaCursor as sinceSnapshotCursor. Use get_scanner_issue_by_id for detail.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             scannerIssueSearchService.get(input)
@@ -1005,7 +1014,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CorrelateHttpActivity, CorrelateHttpActivityResult>(
-        description = "Correlate two caller-selected cohorts of up to 16 stored HTTP references each. Source-access policy applies; no traffic or mutation occurs. Results keep caller order, expose Proxy capture times only, report bounded metadata similarity without identity or deduplication, and return a complete bounded attack-surface delta. Results do not retain or return query strings, headers, bodies, notes, or raw bytes; Site Map stable-ID validation may privately inspect bounded identity samples.",
+        description = "Compare two caller-selected cohorts of 1–16 HTTP references each. Optionally append up to 16 ranked related events from 1–4 seeds; selected references are revalidated and never change the explicit delta. Source policy applies; no traffic or mutation occurs. Results expose only Proxy times and establish no identity, chronology, causality, vulnerability evidence, or complete enumeration. Query strings, headers, bodies, notes, and raw bytes are omitted; Site Map ID checks may inspect bounded private samples.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val result = httpActivityCorrelationService.correlate(input) { progress, total, message ->

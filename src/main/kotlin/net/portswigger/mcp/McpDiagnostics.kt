@@ -83,7 +83,7 @@ data class McpDiagnosticsSnapshot(
     @Transient val initializedWithProtocol20251125: Long = 0,
     @Transient val initializedWithOtherProtocol: Long = 0,
     @Transient val initializedWithoutProtocolHeader: Long = 0,
-    @Transient val historyPerformance: HistoryPerformanceSnapshot = HistoryPerformanceSnapshot.empty(),
+    val historyPerformance: HistoryPerformanceSnapshot = HistoryPerformanceSnapshot.empty(),
 )
 
 internal fun unavailableMcpDiagnosticsSnapshot(): McpDiagnosticsSnapshot =

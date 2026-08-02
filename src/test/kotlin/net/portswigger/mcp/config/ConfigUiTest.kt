@@ -2,19 +2,37 @@ package net.portswigger.mcp.config
 
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
+import burp.api.montoya.persistence.Preferences
 import io.mockk.*
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
+import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
+import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
+import net.portswigger.mcp.presets.WorkflowPreset
+import net.portswigger.mcp.presets.WorkflowPresetManagement
+import net.portswigger.mcp.providers.ClaudeDesktopProvider
+import net.portswigger.mcp.providers.ConnectionDoctor
+import net.portswigger.mcp.providers.DoctorExchange
+import net.portswigger.mcp.providers.ManualProxyInstallerProvider
+import net.portswigger.mcp.providers.ProxyJarManager
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.awt.Container
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JButton
 import javax.swing.JCheckBox
+import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JOptionPane
+import javax.swing.JTextArea
+import javax.swing.JTextField
 import javax.swing.SwingUtilities
 
 class ConfigUiTest {
@@ -36,6 +54,206 @@ class ConfigUiTest {
             assertTrue(ProductIdentity.PRODUCT_NAME in labels)
             assertTrue(ProductIdentity.UNOFFICIAL_NOTICE in labels)
         } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `MCP tab integrates local preset management without an execution action`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        val management = object : WorkflowPresetManagement {
+            override fun list() = LocalWorkflowPresetListResult(LocalWorkflowPresetStatus.OK)
+            override fun save(preset: WorkflowPreset, overwrite: Boolean) =
+                LocalWorkflowPresetMutationResult(LocalWorkflowPresetStatus.OK, preset = preset)
+            override fun delete(name: String) =
+                LocalWorkflowPresetMutationResult(LocalWorkflowPresetStatus.OK, deleted = false)
+        }
+        val ui = ConfigUi(
+            config = config,
+            providers = emptyList(),
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = NoOpMcpAuditSink,
+            proxyProvenance = null,
+            proxyVerified = false,
+            clearSessionApprovals = { 0 },
+            workflowPresetManager = management,
+        )
+
+        try {
+            val labels = ui.component.descendants().filterIsInstance<JLabel>().map { it.text }.toSet()
+            assertTrue("Workflow Preset Manager" in labels)
+            val buttons = ui.component.descendants().filterIsInstance<JButton>().map { it.text }.toSet()
+            assertTrue("Refresh presets" in buttons)
+            assertTrue("New preset..." in buttons)
+            assertTrue(buttons.none { it.contains("execute", ignoreCase = true) })
+        } finally {
+            ui.cancelBackgroundWork()
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `MCP tab exposes exactly five setup clients and keeps proxy extraction separate`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val logging = mockk<Logging>(relaxed = true)
+        val config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
+        val proxyJarManager = ProxyJarManager(logging, proxyDirectory = Path.of("build", "config-ui-test-proxy"))
+        val ui = ConfigUi(
+            config,
+            listOf(
+                ClaudeDesktopProvider(logging, proxyJarManager),
+                ManualProxyInstallerProvider(logging, proxyJarManager),
+            ),
+        )
+        try {
+            val selector = ui.component.descendants().filterIsInstance<JComboBox<*>>()
+                .single { it.name == "clientSetupSelector" }
+            assertEquals(5, selector.itemCount)
+            assertEquals(
+                listOf(
+                    "Claude Desktop",
+                    "Claude Code",
+                    "VS Code / GitHub Copilot",
+                    "Cursor",
+                    "OpenAI Codex",
+                ),
+                (0 until selector.itemCount).map { selector.getItemAt(it).toString() },
+            )
+            val buttons = ui.component.descendants().filterIsInstance<JButton>().map { it.text }.toSet()
+            assertTrue("Install to Claude Desktop" in buttons)
+            assertTrue("Extract proxy jar..." in buttons)
+            assertTrue("Run Connection Doctor" in buttons)
+        } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `setup preview and Doctor read bearer only for the matching running listener`() {
+        val token = "t".repeat(43)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val preferences = mockk<Preferences>(relaxed = true)
+        every { preferences.getString(any()) } returns token
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), preferences)
+        val diagnostics = AtomicReference(unavailableMcpDiagnosticsSnapshot().copy(state = "stopped"))
+        val exchanges = AtomicInteger()
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(
+                config = config,
+                providers = emptyList(),
+                diagnosticsProvider = diagnostics::get,
+                auditLog = NoOpMcpAuditSink,
+                proxyProvenance = null,
+                proxyVerified = false,
+                clearSessionApprovals = { 0 },
+                connectionDoctor = ConnectionDoctor(DoctorExchange {
+                    exchanges.incrementAndGet()
+                    400
+                }),
+            )
+        }
+
+        try {
+            val buttons = ui.component.descendants().filterIsInstance<JButton>().associateBy { it.name }
+            val refresh = buttons.getValue("refreshSetupPreviewButton")
+            val copyPreview = buttons.getValue("copySetupPreviewButton")
+            val runDoctor = buttons.getValue("runConnectionDoctorButton")
+            val hostField = ui.component.descendants().filterIsInstance<JTextField>()
+                .single { it.name == "serverHostField" }
+            val portField = ui.component.descendants().filterIsInstance<JTextField>()
+                .single { it.name == "serverPortField" }
+            val preview = ui.component.descendants().filterIsInstance<JTextArea>()
+                .single { it.name == "clientSetupPreview" }
+
+            SwingUtilities.invokeAndWait { refresh.doClick() }
+            assertTrue(copyPreview.isEnabled)
+            verify(exactly = 0) { preferences.getString(any()) }
+            val initialPreview = preview.text
+            SwingUtilities.invokeAndWait { ui.getConfig() }
+            assertTrue(copyPreview.isEnabled)
+            assertEquals(initialPreview, preview.text)
+
+            SwingUtilities.invokeAndWait { portField.text = "9877" }
+            assertFalse(copyPreview.isEnabled)
+            assertTrue(preview.text.contains("preview unavailable"))
+            SwingUtilities.invokeAndWait { refresh.doClick() }
+            assertTrue(copyPreview.isEnabled)
+            verify(exactly = 0) { preferences.getString(any()) }
+
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            verify(exactly = 0) { preferences.getString(any()) }
+            assertEquals(0, exchanges.get())
+
+            diagnostics.set(
+                unavailableMcpDiagnosticsSnapshot().copy(
+                    state = "running",
+                    endpoint = "http://127.0.0.1:9876/mcp",
+                ),
+            )
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            verify(exactly = 0) { preferences.getString(any()) }
+            assertEquals(0, exchanges.get())
+
+            diagnostics.set(
+                unavailableMcpDiagnosticsSnapshot().copy(
+                    state = "running",
+                    endpoint = "http://127.0.0.1:9877/mcp",
+                ),
+            )
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            verify(exactly = 1) { preferences.getString(any()) }
+            assertEquals(1, exchanges.get())
+
+            SwingUtilities.invokeAndWait { hostField.text = "::1" }
+            diagnostics.set(
+                unavailableMcpDiagnosticsSnapshot().copy(
+                    state = "running",
+                    endpoint = "http://[::1]:9877/mcp",
+                ),
+            )
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            verify(exactly = 2) { preferences.getString(any()) }
+            assertEquals(2, exchanges.get())
+
+            diagnostics.set(
+                unavailableMcpDiagnosticsSnapshot().copy(
+                    state = "running",
+                    endpoint = "http://::1:9877/mcp",
+                ),
+            )
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            verify(exactly = 2) { preferences.getString(any()) }
+            assertEquals(2, exchanges.get())
+
+            ui.cancelBackgroundWork()
+            ui.cancelBackgroundWork()
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            verify(exactly = 2) { preferences.getString(any()) }
+            assertEquals(2, exchanges.get())
+        } finally {
+            ui.cancelBackgroundWork()
+            ui.cancelBackgroundWork()
+            ui.cleanup()
             ui.cleanup()
         }
     }
@@ -213,6 +431,17 @@ class ConfigUiTest {
             ui.cleanup()
         }
     }
+}
+
+private fun awaitButtonEnabled(button: JButton) {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (System.nanoTime() < deadline) {
+        val enabled = AtomicReference(false)
+        SwingUtilities.invokeAndWait { enabled.set(button.isEnabled) }
+        if (enabled.get()) return
+        Thread.sleep(10)
+    }
+    assertTrue(button.isEnabled, "button did not become enabled before the deadline")
 }
 
 private fun Container.descendants(): Sequence<java.awt.Component> = sequence {

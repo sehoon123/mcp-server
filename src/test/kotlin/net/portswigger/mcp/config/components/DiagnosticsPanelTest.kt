@@ -73,6 +73,7 @@ class DiagnosticsPanelTest {
                             latencyBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT) { bucket ->
                                 (index + bucket).toLong()
                             },
+                            totalNanos = 2_000_000L + index,
                             maxNanos = 1_000_000L + index,
                         )
                     },
@@ -103,9 +104,14 @@ class DiagnosticsPanelTest {
         assertTrue(text.contains("Loaded artifact SHA-256: ${"a".repeat(64)}"))
         assertTrue(text.contains("WebSocket search outcomes: active=1, completed=11, cancelled=2"))
         assertTrue(text.contains("HTTP calls: 1/64 active, peak 4"))
-        assertEquals(12, text.lineSequence().count { it.startsWith("History ") })
+        assertEquals(HistoryPerformanceMetric.entries.size, text.lineSequence().count { it.startsWith("History ") })
         assertTrue(text.contains("History index Proxy acquisition: active=0, attempts=1"))
         assertTrue(text.contains("History WebSocket search processing: active=1, attempts=12"))
+        assertTrue(text.contains("History related correlation Montoya acquisition:"))
+        assertTrue(text.contains("History related correlation extension processing:"))
+        assertTrue(text.contains("History Scanner delta Montoya acquisition:"))
+        assertTrue(text.contains("History Scanner delta extension processing:"))
+        assertTrue(text.contains("total=2000000ns, max=1000000ns"))
         assertTrue(text.contains("<1ms=0,<5ms=1"))
         assertTrue(text.contains(">=5000ms=10"))
         assertTrue(text.contains("Sessions: 3 active + 2 pending / 32"))

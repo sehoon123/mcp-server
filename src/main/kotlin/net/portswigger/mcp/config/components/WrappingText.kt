@@ -11,6 +11,7 @@ import kotlin.math.ceil
 
 internal enum class WrappingTextStyle {
     BODY_MEDIUM,
+    PRIMARY_BODY_MEDIUM,
     BODY_LARGE,
     PRIMARY_BODY_LARGE,
     LABEL_MEDIUM,
@@ -99,12 +100,16 @@ internal class WrappingText(
 
     private fun applyStyle() {
         font = when (style) {
-            WrappingTextStyle.BODY_MEDIUM -> Design.Typography.bodyMedium
+            WrappingTextStyle.BODY_MEDIUM,
+            WrappingTextStyle.PRIMARY_BODY_MEDIUM -> Design.Typography.bodyMedium
             WrappingTextStyle.BODY_LARGE,
             WrappingTextStyle.PRIMARY_BODY_LARGE -> Design.Typography.bodyLarge
             WrappingTextStyle.LABEL_MEDIUM -> Design.Typography.labelMedium
         }
-        foreground = if (style == WrappingTextStyle.PRIMARY_BODY_LARGE) {
+        foreground = if (
+            style == WrappingTextStyle.PRIMARY_BODY_MEDIUM ||
+            style == WrappingTextStyle.PRIMARY_BODY_LARGE
+        ) {
             Design.Colors.onSurface
         } else {
             Design.Colors.onSurfaceVariant

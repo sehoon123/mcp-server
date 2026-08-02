@@ -22,6 +22,7 @@ import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.presets.WorkflowPresetStoreException
 import net.portswigger.mcp.presets.WorkflowPresetStoreFailure
 import net.portswigger.mcp.presets.WorkflowPresetType
+import net.portswigger.mcp.presets.validateWorkflowPreset
 import net.portswigger.mcp.presets.workflowPresetNameKey
 
 internal val WORKFLOW_PRESET_SAVE_ANNOTATIONS = io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations(
@@ -66,7 +67,7 @@ internal class WorkflowPresetService(
             )
         }
         val preset = try {
-            normalizePreset(input.name, input.description, input.definition).also(::validatePresetDefinition)
+            normalizePreset(input.name, input.description, input.definition).also(::validateWorkflowPreset)
         } catch (_: IllegalArgumentException) {
             return saveFailure(WorkflowPresetStatus.INVALID_ARGUMENT, project, "The workflow preset is invalid")
         }
@@ -340,18 +341,6 @@ private fun normalizePreset(
 
 private fun normalizeName(name: String): String = name.trim().also {
     require(it.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS && it.none(Char::isISOControl))
-}
-
-private fun validatePresetDefinition(preset: WorkflowPreset) {
-    preset.definition.httpSearch?.let {
-        validateHttpMetadataSearchSettings(it.toInput(null, null))
-    }
-    preset.definition.webSocketSearch?.let {
-        validateWebSocketMetadataSearchSettings(it.toInput("validation", null, null))
-    }
-    preset.definition.httpComparison?.let {
-        validateHttpComparisonSettings(it.toInput("validation", emptyList()))
-    }
 }
 
 private fun SavedHttpSearch.toInput(limit: Int?, cursor: String?) = SearchHttpMessages(

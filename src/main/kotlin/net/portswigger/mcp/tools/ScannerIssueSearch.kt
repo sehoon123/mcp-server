@@ -42,6 +42,7 @@ private const val MAX_LEGACY_SCANNER_MESSAGE_BYTES = 16 * 1024
 private const val MAX_LEGACY_SCANNER_EVIDENCE = 8
 private const val MAX_LEGACY_SCANNER_INTERACTIONS = 16
 private const val SCANNER_CURSOR_VERSION = 1
+private const val SCANNER_SNAPSHOT_CURSOR_VERSION = 1
 private const val SCANNER_CURSOR_HMAC = "HmacSHA256"
 private const val LEGACY_SCANNER_TRUNCATION_MARKER =
     "\n\n<Scanner issue output truncated; use summariesOnly or get_scanner_issue_by_id>"
@@ -56,8 +57,10 @@ data class GetScannerIssues(
     val summariesOnly: Boolean? = null,
     @JsonSchemaMetadata(description = "Use signed snapshot cursor pagination; query filters also select this mode.", defaultJson = "false")
     val cursorMode: Boolean? = null,
-    @JsonSchemaMetadata(description = "Returned nextCursor from the previous page. Omit filters to reuse its query, or repeat the exact same filters.", maxLength = 16384)
+    @JsonSchemaMetadata(description = "Returned nextCursor from the previous ordinary cursor page. Omit filters to reuse its query, or repeat the exact same filters. Cannot be combined with sinceSnapshotCursor.", maxLength = 16384)
     val cursor: String? = null,
+    @JsonSchemaMetadata(description = "snapshotCursor or nextDeltaCursor from a prior response. Returns only the bounded append-stable range after that baseline; cannot be combined with cursor.", maxLength = 16384)
+    val sinceSnapshotCursor: String? = null,
     @JsonSchemaMetadata(description = "Severity filters.", minItems = 1, maxItems = 8)
     val severities: List<ScannerIssueSeverityFilter>? = null,
     @JsonSchemaMetadata(description = "Confidence filters.", minItems = 1, maxItems = 8)
@@ -127,24 +130,61 @@ enum class ScannerIssuePageStatus {
 }
 
 @Serializable
+data class ScannerIssueDeltaEvidence(
+    @JsonSchemaMetadata(description = "Fixed append-only visibility basis; not a full regression comparison.")
+    val basis: String,
+    @JsonSchemaMetadata(minimum = 0)
+    val baselineSnapshotSize: Int,
+    @JsonSchemaMetadata(minimum = 0)
+    val currentSnapshotSize: Int,
+    @JsonSchemaMetadata(minimum = 0)
+    val appendedRangeSize: Int,
+    @JsonSchemaMetadata(description = "Always false: this mode does not establish a vulnerability regression.")
+    val regressionEstablished: Boolean,
+    @JsonSchemaMetadata(description = "Always false: removal or in-place change is not established.")
+    val removedOrChangedEstablished: Boolean,
+    @JsonSchemaMetadata(description = "Always false: first/last anchors do not establish complete project history identity.")
+    val completeHistoryEstablished: Boolean,
+)
+
+@Serializable
 data class ScannerIssuePageResult(
     @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: ScannerIssuePageStatus,
     @JsonSchemaMetadata(description = "Captured current project ID; null only when capture did not complete safely.")
     val projectId: String?,
+    @JsonSchemaMetadata(maxItems = MAX_SCANNER_ISSUE_LIMIT)
     val items: List<ScannerIssueSummary>,
+    @JsonSchemaMetadata(minimum = 0, maximum = 50)
     val returned: Int,
+    @JsonSchemaMetadata(minimum = 0, maximum = 10_000)
     val scanned: Int,
+    @JsonSchemaMetadata(
+        description = "Visible list size in legacy mode, frozen ordinary snapshot size in cursor mode, or frozen comparison size in delta mode; null on error.",
+        minimum = 0,
+    )
     val snapshotSize: Int?,
     val scanLimitReached: Boolean,
-    @JsonSchemaMetadata(description = "True when more issues remain; in cursor mode continue even when items is empty.")
+    @JsonSchemaMetadata(description = "True when more issues remain; continue even when items is empty using nextCursor in ordinary mode or nextDeltaCursor in delta mode.")
     val hasMore: Boolean,
     @JsonSchemaMetadata(
         description = "Opaque continuation cursor when hasMore is true in cursor mode; null otherwise.",
         maxLength = MAX_SCANNER_CURSOR_CHARS,
     )
     val nextCursor: String?,
+    @JsonSchemaMetadata(
+        description = "Signed process-local baseline for a later sinceSnapshotCursor call; present on successful ordinary cursor pages and only after a delta range is fully consumed.",
+        maxLength = MAX_SCANNER_CURSOR_CHARS,
+    )
+    val snapshotCursor: String?,
+    @JsonSchemaMetadata(
+        description = "Signed continuation for the frozen append-stable range when hasMore is true in delta mode; pass it as sinceSnapshotCursor.",
+        maxLength = MAX_SCANNER_CURSOR_CHARS,
+    )
+    val nextDeltaCursor: String?,
     val legacyMode: Boolean,
+    val deltaMode: Boolean,
+    val delta: ScannerIssueDeltaEvidence?,
     @JsonSchemaMetadata(description = "True when the compatibility text page was truncated; always present.")
     val legacyTextTruncated: Boolean,
     @JsonSchemaMetadata(maxLength = MAX_STRUCTURED_TOOL_ERROR_CHARS)
@@ -171,6 +211,7 @@ private data class ScannerIssueCursorSnapshot(
 @Serializable
 private data class ScannerIssueCursor(
     val version: Int,
+    val kind: ScannerIssueSnapshotCursorKind,
     val projectId: String,
     val query: NormalizedScannerIssueQuery,
     val snapshot: ScannerIssueCursorSnapshot,
@@ -182,6 +223,46 @@ private data class PreparedScannerIssueCursor(
     val query: NormalizedScannerIssueQuery,
 )
 
+@Serializable
+private enum class ScannerIssueSnapshotCursorKind {
+    @SerialName("page")
+    PAGE,
+
+    @SerialName("snapshot")
+    SNAPSHOT,
+
+    @SerialName("delta")
+    DELTA,
+}
+
+@Serializable
+private data class ScannerIssueSnapshotCursor(
+    val version: Int,
+    val kind: ScannerIssueSnapshotCursorKind,
+    val projectId: String,
+    val query: NormalizedScannerIssueQuery,
+    val snapshot: ScannerIssueCursorSnapshot,
+)
+
+@Serializable
+private data class ScannerIssueDeltaCursor(
+    val version: Int,
+    val kind: ScannerIssueSnapshotCursorKind,
+    val projectId: String,
+    val query: NormalizedScannerIssueQuery,
+    val baseline: ScannerIssueCursorSnapshot,
+    val current: ScannerIssueCursorSnapshot,
+    val nextIndex: Int,
+)
+
+private data class PreparedScannerIssueDelta(
+    val projectId: String,
+    val query: NormalizedScannerIssueQuery,
+    val baseline: ScannerIssueCursorSnapshot,
+    val current: ScannerIssueCursorSnapshot?,
+    val nextIndex: Int?,
+)
+
 private class ScannerIssueSearchError(
     val status: ScannerIssuePageStatus,
     override val message: String,
@@ -191,6 +272,7 @@ internal class ScannerIssueSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
     cursorSecret: ByteArray = ByteArray(32).also(SecureRandom()::nextBytes),
+    private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
 ) {
     private val key = SecretKeySpec(
         cursorSecret.copyOf().also { require(it.size >= 32) { "cursorSecret must contain at least 32 bytes" } },
@@ -214,8 +296,31 @@ internal class ScannerIssueSearchService(
             )
         }
 
-        val preparedCursor = if (input.usesCursorMode()) {
-            try {
+        if (input.cursor != null && input.sinceSnapshotCursor != null) {
+            return responseError(
+                ScannerIssuePageStatus.INVALID_ARGUMENT,
+                "cursor and sinceSnapshotCursor cannot be combined",
+                legacyMode = false,
+            )
+        }
+
+        val preparedModes = try {
+            if (input.sinceSnapshotCursor != null) {
+                val decoded = decodeSinceCursor(input.sinceSnapshotCursor)
+                val query = if (input.hasExplicitCursorQuery()) {
+                    normalizeQuery(input).also {
+                        if (it != decoded.query) {
+                            throw ScannerIssueSearchError(
+                                ScannerIssuePageStatus.INVALID_CURSOR,
+                                "snapshot cursor does not match the supplied Scanner issue filters",
+                            )
+                        }
+                    }
+                } else {
+                    decoded.query
+                }
+                null to decoded.copy(query = query)
+            } else if (input.usesCursorMode()) {
                 val cursor = input.cursor?.let(::decodeCursor)
                 val query = when {
                     cursor == null -> normalizeQuery(input)
@@ -229,18 +334,42 @@ internal class ScannerIssueSearchService(
                     }
                     else -> cursor.query
                 }
-                PreparedScannerIssueCursor(cursor, query)
-            } catch (e: IllegalArgumentException) {
-                return responseError(
-                    ScannerIssuePageStatus.INVALID_ARGUMENT,
-                    e.message ?: "invalid Scanner issue filters",
-                    legacyMode = false,
-                )
-            } catch (e: ScannerIssueSearchError) {
-                return responseError(e.status, e.message, legacyMode = false)
+                PreparedScannerIssueCursor(cursor, query) to null
+            } else {
+                null to null
             }
-        } else {
-            null
+        } catch (e: IllegalArgumentException) {
+            return responseError(
+                ScannerIssuePageStatus.INVALID_ARGUMENT,
+                e.message ?: "invalid Scanner issue filters",
+                legacyMode = false,
+            )
+        } catch (e: ScannerIssueSearchError) {
+            return responseError(e.status, e.message, legacyMode = false)
+        }
+        val preparedCursor = preparedModes.first
+        val preparedDelta = preparedModes.second
+        if ((preparedCursor != null || preparedDelta != null) && input.offset != 0) {
+            return responseError(
+                ScannerIssuePageStatus.INVALID_ARGUMENT,
+                if (preparedDelta == null) {
+                    "offset is only supported in legacy mode; use cursor for cursor mode"
+                } else {
+                    "offset is not supported in Scanner delta mode"
+                },
+                legacyMode = false,
+            )
+        }
+        if ((preparedCursor != null || preparedDelta != null) && input.summariesOnly == false) {
+            return responseError(
+                ScannerIssuePageStatus.INVALID_ARGUMENT,
+                if (preparedDelta == null) {
+                    "cursor mode returns compact summaries; omit summariesOnly or set it to true"
+                } else {
+                    "Scanner delta mode returns compact summaries; omit summariesOnly or set it to true"
+                },
+                legacyMode = false,
+            )
         }
 
         val projectId = try {
@@ -252,6 +381,22 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp could not read the current project: ${safeScannerSearchException(e)}",
                 legacyMode = !input.usesCursorMode(),
+            )
+        }
+        if (preparedCursor?.cursor != null && preparedCursor.cursor.projectId != projectId) {
+            return responseError(
+                ScannerIssuePageStatus.PROJECT_MISMATCH,
+                "cursor belongs to a different Burp project",
+                projectId,
+                legacyMode = false,
+            )
+        }
+        if (preparedDelta != null && preparedDelta.projectId != projectId) {
+            return responseError(
+                ScannerIssuePageStatus.PROJECT_MISMATCH,
+                "snapshot cursor belongs to a different Burp project",
+                projectId,
+                legacyMode = false,
             )
         }
         val allowed = try {
@@ -275,7 +420,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp could not recheck the project after Scanner approval: ${safeScannerSearchException(e)}",
                 projectId,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         if (projectAfterApproval != projectId) {
@@ -283,7 +428,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.PROJECT_MISMATCH,
                 "Burp project changed during Scanner issue approval",
                 projectAfterApproval,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         if (!allowed) {
@@ -297,16 +442,14 @@ internal class ScannerIssueSearchService(
                 text = "Scanner issue access denied by Burp Suite",
             )
         }
-        if (preparedCursor?.cursor != null && preparedCursor.cursor.projectId != projectId) {
-            return responseError(
-                ScannerIssuePageStatus.PROJECT_MISMATCH,
-                "cursor belongs to a different Burp project",
-                projectId,
-                legacyMode = false,
-            )
-        }
         val issues = try {
-            api.siteMap().issues()
+            if (preparedDelta == null) {
+                api.siteMap().issues()
+            } else {
+                performanceDiagnostics.measure(HistoryPerformanceMetric.SCANNER_DELTA_MONTOYA_ACQUISITION) {
+                    api.siteMap().issues()
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -327,7 +470,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp could not recheck the project after reading Scanner issues: ${safeScannerSearchException(e)}",
                 projectId,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         if (projectAfterSnapshot != projectId) {
@@ -335,15 +478,26 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.PROJECT_MISMATCH,
                 "Burp project changed while reading Scanner issues",
                 projectAfterSnapshot,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
 
         val response = try {
-            if (preparedCursor != null) {
-                cursorPage(input, projectId, issues, preparedCursor)
-            } else {
-                legacyPage(input, projectId, issues)
+            when {
+                preparedDelta != null -> performanceDiagnostics.measure(
+                    metric = HistoryPerformanceMetric.SCANNER_DELTA_EXTENSION_PROCESSING,
+                    outcomeForResult = { result ->
+                        if (result.output.status == ScannerIssuePageStatus.OK) {
+                            HistoryPerformanceOutcome.COMPLETED
+                        } else {
+                            HistoryPerformanceOutcome.FAILED
+                        }
+                    },
+                ) {
+                    deltaPage(input, projectId, issues, preparedDelta)
+                }
+                preparedCursor != null -> cursorPage(input, projectId, issues, preparedCursor)
+                else -> legacyPage(input, projectId, issues)
             }
         } catch (e: CancellationException) {
             throw e
@@ -352,7 +506,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp returned an invalid Scanner issue: ${safeScannerSearchException(e)}",
                 projectId,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         val finalProjectId = try {
@@ -364,7 +518,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.BURP_ERROR,
                 "Burp could not recheck the project after materializing Scanner issues: ${safeScannerSearchException(e)}",
                 projectId,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         if (finalProjectId != projectId) {
@@ -372,7 +526,7 @@ internal class ScannerIssueSearchService(
                 ScannerIssuePageStatus.PROJECT_MISMATCH,
                 "Burp project changed while Scanner issues were materialized",
                 finalProjectId,
-                legacyMode = preparedCursor == null,
+                legacyMode = preparedCursor == null && preparedDelta == null,
             )
         }
         return response
@@ -396,7 +550,11 @@ internal class ScannerIssueSearchService(
                 scanLimitReached = false,
                 hasMore = input.offset.toLong() + page.summaries.size.toLong() < issues.size.toLong(),
                 nextCursor = null,
+                snapshotCursor = null,
+                nextDeltaCursor = null,
                 legacyMode = true,
+                deltaMode = false,
+                delta = null,
                 legacyTextTruncated = page.truncated,
             ),
             text = page.text,
@@ -409,33 +567,8 @@ internal class ScannerIssueSearchService(
         issues: List<AuditIssue>,
         prepared: PreparedScannerIssueCursor,
     ): StructuredToolResponse<ScannerIssuePageResult> {
-        if (input.offset != 0) {
-            return responseError(
-                ScannerIssuePageStatus.INVALID_ARGUMENT,
-                "offset is only supported in legacy mode; use cursor for cursor mode",
-                projectId,
-                legacyMode = false,
-            )
-        }
-        if (input.summariesOnly == false) {
-            return responseError(
-                ScannerIssuePageStatus.INVALID_ARGUMENT,
-                "cursor mode returns compact summaries; omit summariesOnly or set it to true",
-                projectId,
-                legacyMode = false,
-            )
-        }
-
         val cursor = prepared.cursor
         val query = prepared.query
-        if (cursor != null && cursor.projectId != projectId) {
-            return responseError(
-                ScannerIssuePageStatus.PROJECT_MISMATCH,
-                "cursor belongs to a different Burp project",
-                projectId,
-                legacyMode = false,
-            )
-        }
         val snapshot = if (cursor == null) {
             ScannerIssueCursorSnapshot(
                 size = issues.size,
@@ -469,6 +602,7 @@ internal class ScannerIssueSearchService(
             encodeCursor(
                 ScannerIssueCursor(
                     version = SCANNER_CURSOR_VERSION,
+                    kind = ScannerIssueSnapshotCursorKind.PAGE,
                     projectId = projectId,
                     query = query,
                     snapshot = snapshot,
@@ -488,38 +622,183 @@ internal class ScannerIssueSearchService(
             scanLimitReached = scanLimitReached,
             hasMore = hasMore,
             nextCursor = nextCursor,
+            snapshotCursor = encodeSnapshotCursor(projectId, query, snapshot),
+            nextDeltaCursor = null,
             legacyMode = false,
+            deltaMode = false,
+            delta = null,
             legacyTextTruncated = false,
         )
         return StructuredToolResponse(result)
+    }
+
+    private suspend fun deltaPage(
+        input: GetScannerIssues,
+        projectId: String,
+        issues: List<AuditIssue>,
+        prepared: PreparedScannerIssueDelta,
+    ): StructuredToolResponse<ScannerIssuePageResult> {
+        val baseline = prepared.baseline
+        try {
+            validateAppendStableSnapshot(
+                snapshot = baseline,
+                issues = issues,
+                changedMessage = "Scanner issue list changed since the baseline; capture a new snapshot",
+                orderingMessage = "Scanner issue ordering changed since the baseline; capture a new snapshot",
+            )
+        } catch (e: ScannerIssueSearchError) {
+            return responseError(e.status, e.message, projectId, legacyMode = false)
+        }
+        val current = prepared.current ?: ScannerIssueCursorSnapshot(
+            size = issues.size,
+            firstAnchor = issues.firstOrNull()?.stableHistoryId(0),
+            lastAnchor = issues.lastOrNull()?.stableHistoryId(issues.lastIndex),
+        )
+        if (prepared.current != null) {
+            try {
+                validateAppendStableSnapshot(
+                    snapshot = current,
+                    issues = issues,
+                    changedMessage = "Scanner issue list changed while paging the delta; start a new delta read",
+                    orderingMessage = "Scanner issue ordering changed while paging the delta; start a new delta read",
+                )
+            } catch (e: ScannerIssueSearchError) {
+                return responseError(e.status, e.message, projectId, legacyMode = false)
+            }
+        }
+        if (baseline.size > current.size) {
+            return responseError(
+                ScannerIssuePageStatus.STALE_CURSOR,
+                "Scanner delta baseline is newer than its comparison snapshot",
+                projectId,
+                legacyMode = false,
+            )
+        }
+
+        val query = prepared.query
+        val direction = if (query.newestFirst) -1 else 1
+        var index = prepared.nextIndex ?: if (query.newestFirst) current.size - 1 else baseline.size
+        if (prepared.nextIndex != null && index !in baseline.size until current.size) {
+            return responseError(
+                ScannerIssuePageStatus.INVALID_CURSOR,
+                "Scanner delta cursor position is invalid",
+                projectId,
+                legacyMode = false,
+            )
+        }
+        val compiledQuery = CompiledScannerIssueQuery(query)
+        val results = ArrayList<ScannerIssueSummary>(input.count)
+        var scanned = 0
+        while (index in baseline.size until current.size && results.size < input.count && scanned < MAX_SCANNER_ISSUE_SCAN) {
+            if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
+            val issue = issues[index]
+            scanned++
+            if (issue.matches(compiledQuery)) results += issue.toHistorySummary(issue.stableHistoryId(index))
+            index += direction
+        }
+        val hasMore = index in baseline.size until current.size
+        val scanLimitReached = scanned >= MAX_SCANNER_ISSUE_SCAN && hasMore
+        val nextDeltaCursor = if (hasMore) {
+            encodeDeltaCursor(
+                ScannerIssueDeltaCursor(
+                    version = SCANNER_SNAPSHOT_CURSOR_VERSION,
+                    kind = ScannerIssueSnapshotCursorKind.DELTA,
+                    projectId = projectId,
+                    query = query,
+                    baseline = baseline,
+                    current = current,
+                    nextIndex = index,
+                ),
+            )
+        } else {
+            null
+        }
+        return StructuredToolResponse(
+            ScannerIssuePageResult(
+                status = ScannerIssuePageStatus.OK,
+                projectId = projectId,
+                items = results,
+                returned = results.size,
+                scanned = scanned,
+                snapshotSize = current.size,
+                scanLimitReached = scanLimitReached,
+                hasMore = hasMore,
+                nextCursor = null,
+                snapshotCursor = if (hasMore) null else encodeSnapshotCursor(projectId, query, current),
+                nextDeltaCursor = nextDeltaCursor,
+                legacyMode = false,
+                deltaMode = true,
+                delta = ScannerIssueDeltaEvidence(
+                    basis = "append_stable_currently_visible_range",
+                    baselineSnapshotSize = baseline.size,
+                    currentSnapshotSize = current.size,
+                    appendedRangeSize = current.size - baseline.size,
+                    regressionEstablished = false,
+                    removedOrChangedEstablished = false,
+                    completeHistoryEstablished = false,
+                ),
+                legacyTextTruncated = false,
+            ),
+        )
     }
 
     private fun validateSnapshot(cursor: ScannerIssueCursor, issues: List<AuditIssue>) {
         if (cursor.version != SCANNER_CURSOR_VERSION) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "unsupported cursor version")
         }
-        if (cursor.snapshot.size < 0 || cursor.snapshot.size > issues.size) {
-            throw ScannerIssueSearchError(
-                ScannerIssuePageStatus.STALE_CURSOR,
-                "Scanner issue list changed while paging; start a new query",
-            )
-        }
         if (cursor.nextIndex !in -1..cursor.snapshot.size) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor position is invalid")
         }
-        if (cursor.snapshot.size > 0 &&
-            (issues.first().stableHistoryId(0) != cursor.snapshot.firstAnchor ||
-                issues[cursor.snapshot.size - 1].stableHistoryId(cursor.snapshot.size - 1) != cursor.snapshot.lastAnchor)
+        validateAppendStableSnapshot(
+            snapshot = cursor.snapshot,
+            issues = issues,
+            changedMessage = "Scanner issue list changed while paging; start a new query",
+            orderingMessage = "Scanner issue ordering changed while paging; start a new query",
+        )
+    }
+
+    private fun validateAppendStableSnapshot(
+        snapshot: ScannerIssueCursorSnapshot,
+        issues: List<AuditIssue>,
+        changedMessage: String,
+        orderingMessage: String,
+    ) {
+        if (snapshot.size < 0 || snapshot.size > issues.size) {
+            throw ScannerIssueSearchError(ScannerIssuePageStatus.STALE_CURSOR, changedMessage)
+        }
+        if (snapshot.size > 0 &&
+            (issues.first().stableHistoryId(0) != snapshot.firstAnchor ||
+                issues[snapshot.size - 1].stableHistoryId(snapshot.size - 1) != snapshot.lastAnchor)
         ) {
-            throw ScannerIssueSearchError(
-                ScannerIssuePageStatus.STALE_CURSOR,
-                "Scanner issue ordering changed while paging; start a new query",
-            )
+            throw ScannerIssueSearchError(ScannerIssuePageStatus.STALE_CURSOR, orderingMessage)
         }
     }
 
-    private fun encodeCursor(cursor: ScannerIssueCursor): String {
-        val payload = cursorJson.encodeToString(cursor).toByteArray(StandardCharsets.UTF_8)
+    private fun encodeCursor(cursor: ScannerIssueCursor): String = encodeSignedCursor(
+        cursorJson.encodeToString(cursor).toByteArray(StandardCharsets.UTF_8),
+    )
+
+    private fun encodeSnapshotCursor(
+        projectId: String,
+        query: NormalizedScannerIssueQuery,
+        snapshot: ScannerIssueCursorSnapshot,
+    ): String = encodeSignedCursor(
+        cursorJson.encodeToString(
+            ScannerIssueSnapshotCursor(
+                version = SCANNER_SNAPSHOT_CURSOR_VERSION,
+                kind = ScannerIssueSnapshotCursorKind.SNAPSHOT,
+                projectId = projectId,
+                query = query,
+                snapshot = snapshot,
+            ),
+        ).toByteArray(StandardCharsets.UTF_8),
+    )
+
+    private fun encodeDeltaCursor(cursor: ScannerIssueDeltaCursor): String = encodeSignedCursor(
+        cursorJson.encodeToString(cursor).toByteArray(StandardCharsets.UTF_8),
+    )
+
+    private fun encodeSignedCursor(payload: ByteArray): String {
         val value = Base64.getUrlEncoder().withoutPadding().encodeToString(payload) + "." +
             Base64.getUrlEncoder().withoutPadding().encodeToString(hmac(payload))
         check(value.length <= MAX_SCANNER_CURSOR_CHARS) { "generated Scanner cursor exceeded its size bound" }
@@ -527,6 +806,58 @@ internal class ScannerIssueSearchService(
     }
 
     private fun decodeCursor(value: String): ScannerIssueCursor {
+        val payload = decodeSignedCursor(value)
+        val cursor = try {
+            cursorJson.decodeFromString<ScannerIssueCursor>(payload.toString(StandardCharsets.UTF_8))
+        } catch (_: Exception) {
+            throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor payload is invalid")
+        }
+        if (cursor.version != SCANNER_CURSOR_VERSION || cursor.kind != ScannerIssueSnapshotCursorKind.PAGE) {
+            throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "unsupported cursor kind or version")
+        }
+        return cursor
+    }
+
+    private fun decodeSinceCursor(value: String): PreparedScannerIssueDelta {
+        val payload = decodeSignedCursor(value).toString(StandardCharsets.UTF_8)
+        val snapshot = try {
+            cursorJson.decodeFromString<ScannerIssueSnapshotCursor>(payload)
+        } catch (_: Exception) {
+            null
+        }
+        if (snapshot != null && snapshot.kind == ScannerIssueSnapshotCursorKind.SNAPSHOT) {
+            if (snapshot.version != SCANNER_SNAPSHOT_CURSOR_VERSION) {
+                throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "unsupported snapshot cursor version")
+            }
+            return PreparedScannerIssueDelta(
+                projectId = snapshot.projectId,
+                query = snapshot.query,
+                baseline = snapshot.snapshot,
+                current = null,
+                nextIndex = null,
+            )
+        }
+        val delta = try {
+            cursorJson.decodeFromString<ScannerIssueDeltaCursor>(payload)
+        } catch (_: Exception) {
+            null
+        }
+        if (delta != null && delta.kind == ScannerIssueSnapshotCursorKind.DELTA) {
+            if (delta.version != SCANNER_SNAPSHOT_CURSOR_VERSION) {
+                throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "unsupported delta cursor version")
+            }
+            return PreparedScannerIssueDelta(
+                projectId = delta.projectId,
+                query = delta.query,
+                baseline = delta.baseline,
+                current = delta.current,
+                nextIndex = delta.nextIndex,
+            )
+        }
+        throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "snapshot cursor payload is invalid")
+    }
+
+    private fun decodeSignedCursor(value: String): ByteArray {
         if (value.length !in 1..MAX_SCANNER_CURSOR_CHARS) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor is too large or empty")
         }
@@ -545,11 +876,7 @@ internal class ScannerIssueSearchService(
         if (!MessageDigest.isEqual(hmac(payload), signature)) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor signature is invalid")
         }
-        return try {
-            cursorJson.decodeFromString<ScannerIssueCursor>(payload.toString(StandardCharsets.UTF_8))
-        } catch (_: Exception) {
-            throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "cursor payload is invalid")
-        }
+        return payload
     }
 
     private fun hmac(payload: ByteArray): ByteArray = Mac.getInstance(SCANNER_CURSOR_HMAC).run {
@@ -722,8 +1049,8 @@ private class LegacyScannerIssueBudget {
 }
 
 private fun GetScannerIssues.usesCursorMode(): Boolean =
-    cursorMode == true || cursor != null || severities != null || confidences != null || host != null ||
-        nameContains != null || caseSensitive != null || newestFirst != null
+    cursorMode == true || cursor != null || sinceSnapshotCursor != null || severities != null || confidences != null ||
+        host != null || nameContains != null || caseSensitive != null || newestFirst != null
 
 private fun GetScannerIssues.hasExplicitCursorQuery(): Boolean =
     severities != null || confidences != null || host != null || nameContains != null || caseSensitive != null ||
@@ -811,7 +1138,11 @@ private fun scannerIssuePageError(
     scanLimitReached = false,
     hasMore = false,
     nextCursor = null,
+    snapshotCursor = null,
+    nextDeltaCursor = null,
     legacyMode = legacyMode,
+    deltaMode = false,
+    delta = null,
     legacyTextTruncated = false,
     error = error.take(MAX_STRUCTURED_TOOL_ERROR_CHARS),
 )

@@ -15,6 +15,7 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import burp.api.montoya.sitemap.SiteMap
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
@@ -25,7 +26,10 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ScannerIssueSearchTest {
@@ -149,6 +153,392 @@ class ScannerIssueSearchTest {
             .get(GetScannerIssues(cursor = page1.nextCursor)).output
         assertEquals(ScannerIssuePageStatus.INVALID_CURSOR, restarted.status)
         verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `snapshot delta returns only matching issues in the append-stable visible range`() = runBlocking {
+        val baseline = mutableListOf(
+            issue(1, "Baseline one", "example.test", AuditIssueSeverity.HIGH),
+            issue(2, "Baseline two", "example.test", AuditIssueSeverity.HIGH),
+        )
+        every { siteMap.issues() } answers { baseline.toList() }
+        val snapshotPage = service.get(
+            GetScannerIssues(
+                count = 50,
+                cursorMode = true,
+                severities = listOf(ScannerIssueSeverityFilter.HIGH),
+                newestFirst = false,
+            ),
+        ).output
+        val snapshotCursor = assertNotNull(snapshotPage.snapshotCursor)
+        assertFalse(snapshotPage.deltaMode)
+        assertNull(snapshotPage.delta)
+
+        val low = issue(3, "New low", "example.test", AuditIssueSeverity.LOW)
+        val high = issue(4, "New high", "example.test", AuditIssueSeverity.HIGH)
+        baseline += listOf(low, high)
+        val deltaPage = service.get(
+            GetScannerIssues(
+                count = 50,
+                sinceSnapshotCursor = snapshotCursor,
+            ),
+        ).output
+
+        assertEquals(ScannerIssuePageStatus.OK, deltaPage.status)
+        assertTrue(deltaPage.deltaMode)
+        assertFalse(deltaPage.legacyMode)
+        assertEquals(listOf("New high"), deltaPage.items.map { it.name })
+        assertEquals(2, deltaPage.scanned)
+        assertEquals(4, deltaPage.snapshotSize)
+        assertFalse(deltaPage.hasMore)
+        assertNull(deltaPage.nextCursor)
+        assertNull(deltaPage.nextDeltaCursor)
+        assertNotNull(deltaPage.snapshotCursor)
+        val evidence = assertNotNull(deltaPage.delta)
+        assertEquals("append_stable_currently_visible_range", evidence.basis)
+        assertEquals(2, evidence.baselineSnapshotSize)
+        assertEquals(4, evidence.currentSnapshotSize)
+        assertEquals(2, evidence.appendedRangeSize)
+        assertFalse(evidence.regressionEstablished)
+        assertFalse(evidence.removedOrChangedEstablished)
+        assertFalse(evidence.completeHistoryEstablished)
+        verify(exactly = 0) { low.detail() }
+        verify(exactly = 0) { low.requestResponses() }
+        verify(exactly = 0) { high.detail() }
+        verify(exactly = 0) { high.requestResponses() }
+    }
+
+    @Test
+    fun `only Scanner delta records fixed acquisition and processing phase metrics`() = runBlocking {
+        var tick = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { tick++ }
+        service = ScannerIssueSearchService(
+            api,
+            config,
+            ByteArray(32) { it.toByte() },
+            diagnostics,
+        )
+        val current = mutableListOf(issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH))
+        every { siteMap.issues() } answers { current.toList() }
+
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+        HistoryPerformanceMetric.entries.filter { it.name.startsWith("SCANNER_DELTA_") }.forEach { metric ->
+            assertEquals(0, diagnostics.snapshot().metrics.single { it.metric == metric }.attempts)
+        }
+
+        current += issue(2, "Appended", "example.test", AuditIssueSeverity.HIGH)
+        val result = service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.SCANNER_DELTA_MONTOYA_ACQUISITION
+        }
+        val processing = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.SCANNER_DELTA_EXTENSION_PROCESSING
+        }
+        assertEquals(1, acquisition.attempts)
+        assertEquals(1, acquisition.completed)
+        assertEquals(1, acquisition.totalNanos)
+        assertEquals(1, processing.attempts)
+        assertEquals(1, processing.completed)
+        assertEquals(1, processing.totalNanos)
+    }
+
+    @Test
+    fun `default newest-first delta returns the appended range in reverse order across continuations`() = runBlocking {
+        val current = mutableListOf(
+            issue(1, "Baseline one", "example.test", AuditIssueSeverity.HIGH),
+            issue(2, "Baseline two", "example.test", AuditIssueSeverity.HIGH),
+        )
+        every { siteMap.issues() } answers { current.toList() }
+        val baselineCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true)).output.snapshotCursor,
+        )
+        current += listOf(
+            issue(3, "New three", "example.test", AuditIssueSeverity.HIGH),
+            issue(4, "New four", "example.test", AuditIssueSeverity.HIGH),
+            issue(5, "New five", "example.test", AuditIssueSeverity.HIGH),
+        )
+
+        val first = service.get(
+            GetScannerIssues(count = 2, sinceSnapshotCursor = baselineCursor),
+        ).output
+        assertEquals(listOf("New five", "New four"), first.items.map { it.name })
+        assertTrue(first.hasMore)
+        assertNull(first.snapshotCursor)
+
+        val second = service.get(
+            GetScannerIssues(count = 2, sinceSnapshotCursor = assertNotNull(first.nextDeltaCursor)),
+        ).output
+        assertEquals(listOf("New three"), second.items.map { it.name })
+        assertFalse(second.hasMore)
+        assertNull(second.nextDeltaCursor)
+        assertNotNull(second.snapshotCursor)
+        Unit
+    }
+
+    @Test
+    fun `delta continuation freezes its comparison snapshot and chains through sinceSnapshotCursor`() = runBlocking {
+        val current = mutableListOf(issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH))
+        every { siteMap.issues() } answers { current.toList() }
+        val baselineCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+        current += listOf(
+            issue(2, "New two", "example.test", AuditIssueSeverity.HIGH),
+            issue(3, "New three", "example.test", AuditIssueSeverity.HIGH),
+            issue(4, "New four", "example.test", AuditIssueSeverity.HIGH),
+        )
+
+        val first = service.get(
+            GetScannerIssues(count = 1, sinceSnapshotCursor = baselineCursor),
+        ).output
+        assertEquals(listOf("New two"), first.items.map { it.name })
+        val continuation = assertNotNull(first.nextDeltaCursor)
+        assertTrue(first.hasMore)
+        assertNull(first.nextCursor)
+        assertNull(first.snapshotCursor)
+
+        current += issue(5, "Late append", "example.test", AuditIssueSeverity.HIGH)
+        val second = service.get(
+            GetScannerIssues(count = 10, sinceSnapshotCursor = continuation),
+        ).output
+        assertEquals(listOf("New three", "New four"), second.items.map { it.name })
+        assertEquals(4, second.snapshotSize)
+        assertFalse(second.hasMore)
+        assertNull(second.nextDeltaCursor)
+
+        val nextBaseline = assertNotNull(second.snapshotCursor)
+        val late = service.get(GetScannerIssues(sinceSnapshotCursor = nextBaseline)).output
+        assertEquals(listOf("Late append"), late.items.map { it.name })
+        assertEquals(1, late.delta?.appendedRangeSize)
+    }
+
+    @Test
+    fun `delta rejects tampering restart query mismatch and mixed cursor inputs before issue acquisition`() = runBlocking {
+        every { siteMap.issues() } returns listOf(
+            issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH),
+            issue(2, "Second", "example.test", AuditIssueSeverity.HIGH),
+        )
+        val baselinePage = service.get(
+            GetScannerIssues(
+                count = 1,
+                severities = listOf(ScannerIssueSeverityFilter.HIGH),
+            ),
+        ).output
+        val snapshotCursor = assertNotNull(baselinePage.snapshotCursor)
+        val ordinaryCursor = assertNotNull(baselinePage.nextCursor)
+        clearMocks(siteMap, answers = false, recordedCalls = true)
+
+        val tampered = (if (snapshotCursor.first() == 'A') "B" else "A") + snapshotCursor.drop(1)
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_CURSOR,
+            service.get(GetScannerIssues(sinceSnapshotCursor = tampered)).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_CURSOR,
+            ScannerIssueSearchService(api, config, ByteArray(32) { 99 })
+                .get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_CURSOR,
+            service.get(
+                GetScannerIssues(
+                    sinceSnapshotCursor = snapshotCursor,
+                    severities = listOf(ScannerIssueSeverityFilter.LOW),
+                ),
+            ).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_CURSOR,
+            service.get(GetScannerIssues(sinceSnapshotCursor = ordinaryCursor)).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_CURSOR,
+            service.get(GetScannerIssues(cursor = snapshotCursor)).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_ARGUMENT,
+            service.get(
+                GetScannerIssues(cursor = ordinaryCursor, sinceSnapshotCursor = snapshotCursor),
+            ).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_ARGUMENT,
+            service.get(GetScannerIssues(offset = 1, sinceSnapshotCursor = snapshotCursor)).output.status,
+        )
+        assertEquals(
+            ScannerIssuePageStatus.INVALID_ARGUMENT,
+            service.get(
+                GetScannerIssues(summariesOnly = false, sinceSnapshotCursor = snapshotCursor),
+            ).output.status,
+        )
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `delta project binding is rejected before approval or issue acquisition`() = runBlocking {
+        every { siteMap.issues() } returns listOf(issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH))
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true)).output.snapshotCursor,
+        )
+        every { project.id() } returns "other-project"
+        config = config(true)
+        service = ScannerIssueSearchService(api, config, ByteArray(32) { it.toByte() })
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                error("project-mismatched snapshot must not request approval")
+            }
+        }
+        clearMocks(siteMap, answers = false, recordedCalls = true)
+
+        val result = service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output
+
+        assertEquals(ScannerIssuePageStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `delta continuation rejects a changed frozen comparison snapshot`() = runBlocking {
+        val current = mutableListOf(issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH))
+        every { siteMap.issues() } answers { current.toList() }
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+        current += listOf(
+            issue(2, "New two", "example.test", AuditIssueSeverity.HIGH),
+            issue(3, "New three", "example.test", AuditIssueSeverity.HIGH),
+        )
+        val continuation = assertNotNull(
+            service.get(GetScannerIssues(count = 1, sinceSnapshotCursor = snapshotCursor)).output.nextDeltaCursor,
+        )
+        current.removeLast()
+
+        val result = service.get(GetScannerIssues(sinceSnapshotCursor = continuation)).output
+
+        assertEquals(ScannerIssuePageStatus.STALE_CURSOR, result.status)
+        assertTrue(result.items.isEmpty())
+        assertNull(result.nextDeltaCursor)
+        assertNull(result.snapshotCursor)
+    }
+
+    @Test
+    fun `delta rejects shrink and boundary reorder as stale`() = runBlocking {
+        val first = issue(1, "First", "example.test", AuditIssueSeverity.HIGH)
+        val second = issue(2, "Second", "example.test", AuditIssueSeverity.HIGH)
+        var current = listOf(first, second)
+        every { siteMap.issues() } answers { current }
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+
+        current = listOf(first)
+        assertEquals(
+            ScannerIssuePageStatus.STALE_CURSOR,
+            service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output.status,
+        )
+        current = listOf(second, first, issue(3, "Appended", "example.test", AuditIssueSeverity.HIGH))
+        assertEquals(
+            ScannerIssuePageStatus.STALE_CURSOR,
+            service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output.status,
+        )
+    }
+
+    @Test
+    fun `same-size middle replacement cannot be promoted to a complete regression claim`() = runBlocking {
+        val first = issue(1, "First", "example.test", AuditIssueSeverity.HIGH)
+        val middle = issue(2, "Middle", "example.test", AuditIssueSeverity.HIGH)
+        val last = issue(3, "Last", "example.test", AuditIssueSeverity.HIGH)
+        var current = listOf(first, middle, last)
+        every { siteMap.issues() } answers { current }
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true)).output.snapshotCursor,
+        )
+
+        current = listOf(first, issue(9, "Replacement", "example.test", AuditIssueSeverity.HIGH), last)
+        val delta = service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output
+
+        assertEquals(ScannerIssuePageStatus.OK, delta.status)
+        assertTrue(delta.items.isEmpty())
+        assertEquals(0, delta.delta?.appendedRangeSize)
+        assertFalse(requireNotNull(delta.delta).regressionEstablished)
+        assertFalse(requireNotNull(delta.delta).removedOrChangedEstablished)
+        assertFalse(requireNotNull(delta.delta).completeHistoryEstablished)
+    }
+
+    @Test
+    fun `delta scan limit returns a resumable continuation without reading issue content`() = runBlocking {
+        var current: List<AuditIssue> = emptyList()
+        every { siteMap.issues() } answers { current }
+        val snapshotCursor = assertNotNull(
+            service.get(
+                GetScannerIssues(
+                    cursorMode = true,
+                    severities = listOf(ScannerIssueSeverityFilter.HIGH),
+                    newestFirst = false,
+                ),
+            ).output.snapshotCursor,
+        )
+        val low = issue(1, "Low", "example.test", AuditIssueSeverity.LOW)
+        current = List(MAX_SCANNER_ISSUE_SCAN + 1) { low }
+
+        val delta = service.get(GetScannerIssues(count = 1, sinceSnapshotCursor = snapshotCursor)).output
+
+        assertEquals(ScannerIssuePageStatus.OK, delta.status)
+        assertEquals(MAX_SCANNER_ISSUE_SCAN, delta.scanned)
+        assertTrue(delta.scanLimitReached)
+        assertTrue(delta.hasMore)
+        assertNotNull(delta.nextDeltaCursor)
+        assertTrue(delta.items.isEmpty())
+        verify(exactly = 0) { low.detail() }
+        verify(exactly = 0) { low.requestResponses() }
+    }
+
+    @Test
+    fun `delta scanning propagates cancellation without partial output`() = runBlocking {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        service = ScannerIssueSearchService(
+            api,
+            config,
+            ByteArray(32) { it.toByte() },
+            diagnostics,
+        )
+        var current: List<AuditIssue> = emptyList()
+        every { siteMap.issues() } answers { current }
+        val snapshotCursor = assertNotNull(
+            service.get(
+                GetScannerIssues(
+                    cursorMode = true,
+                    severities = listOf(ScannerIssueSeverityFilter.HIGH),
+                    newestFirst = false,
+                ),
+            ).output.snapshotCursor,
+        )
+        val cancelling = issue(1, "Cancel", "example.test", AuditIssueSeverity.LOW)
+        var severityReads = 0
+        every { cancelling.severity() } answers {
+            severityReads++
+            if (severityReads == 67) throw CancellationException("client cancelled")
+            AuditIssueSeverity.LOW
+        }
+        current = List(100) { cancelling }
+
+        assertFailsWith<CancellationException> {
+            service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor))
+        }
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.SCANNER_DELTA_MONTOYA_ACQUISITION
+        }
+        val processing = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.SCANNER_DELTA_EXTENSION_PROCESSING
+        }
+        assertEquals(1, acquisition.completed)
+        assertEquals(1, processing.cancelled)
+        assertEquals(0, processing.completed)
+        Unit
     }
 
     @Test
