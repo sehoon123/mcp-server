@@ -11,7 +11,7 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 
 private const val MAX_CORRELATION_REFS_PER_COHORT = 16
 private const val MAX_CORRELATION_REFS = 32
-private const val MAX_RELATED_TRAFFIC_SEEDS = 4
+internal const val MAX_RELATED_TRAFFIC_SEEDS = 4
 private const val MAX_RELATED_TRAFFIC_SOURCES = 3
 private const val MAX_RELATED_TRAFFIC_REFS = 16
 private const val MAX_RELATED_TRAFFIC_QUERY_RESULTS = 50
@@ -717,20 +717,22 @@ internal class HttpActivityCorrelationService(
         var encounterIndex = 0
         var searchTruncated = false
 
-        for (query in queryKeys) {
-            currentCoroutineContext().ensureActive()
-            val result = search.searchReferenceMetadata(
-                input = SearchHttpMessages(
+        val searchResults = search.searchReferenceMetadataBatch(
+            inputs = queryKeys.map { query ->
+                SearchHttpMessages(
                     sources = sources,
                     host = query.host,
                     pathContains = query.pathContains,
                     inScopeOnly = discovery.inScopeOnly,
                     newestFirst = true,
                     limit = MAX_RELATED_TRAFFIC_QUERY_RESULTS,
-                ),
-                authorization = authorization,
-                authorizationVerifier = resolver,
-            )
+                )
+            },
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+        for (result in searchResults) {
+            currentCoroutineContext().ensureActive()
             if (result.status != HttpMessageSearchStatus.OK) {
                 return RelatedCandidateSearchOutcome.Failed(
                     result.status.toCorrelationStatus(),

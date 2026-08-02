@@ -549,7 +549,14 @@ strings. Existing Site Map stable-ID generation may still inspect its already-do
 samples. The bounded selected references are reacquired through an instance-bound authorization handle and scored
 again from current materialized metadata; missing references fail closed and no-longer-qualifying candidates are omitted.
 Source approval is performed once over the explicit/discovery union, and project transition, denial, accessor failure, or
-cancellation returns no partial timeline.
+cancellation returns no partial timeline. A later runtime-focused slice keeps the four query evaluations independent but
+acquires each authorized discovery source list once per correlation invocation. It also places typed tool decoding,
+execution, and result encoding behind one bounded dispatcher boundary, removes per-entry WebSocket scan-window wrappers,
+and avoids duplicate HTTP-body access and resource-size byte-array copies. Detached session cleanup also reuses one
+all-slots-first, concurrent, total-deadline path, and the lifecycle worker is daemonized so an interrupt-insensitive
+third-party startup call cannot retain the process after bounded shutdown returns. These are code-level work/cardinality
+changes, not live Burp latency or throughput evidence; the 10k/50k/100k gate and prohibition on Montoya parallelization
+and performance claims remain unchanged.
 
 ### v4.12.0 milestone 3 correlation gate
 

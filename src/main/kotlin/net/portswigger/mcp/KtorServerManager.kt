@@ -143,6 +143,7 @@ internal fun Application.configureMcpHttpEndpoint(
             "local MCP bearer token is invalid"
         }
     }
+    val expectedBearerTokenBytes = bearerToken?.toByteArray(Charsets.UTF_8)
 
     install(CORS) {
         allowHost("localhost:$port")
@@ -264,7 +265,8 @@ internal fun Application.configureMcpHttpEndpoint(
         runtimeMetrics?.markStopping()
         mcpServer.cancelAllToolExecutions()
         runBlocking {
-            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { sessions.closeAll() }
+            // closeAll owns the aggregate non-cancellable transport-close deadline.
+            sessions.closeAll()
         }
     }
     monitor.subscribe(ApplicationStopped) {
@@ -287,7 +289,7 @@ internal fun Application.configureMcpHttpEndpoint(
             intercept(ApplicationCallPipeline.Plugins) {
                 if (context.request.path() == MCP_PATH &&
                     context.request.httpMethod != HttpMethod.Options &&
-                    bearerToken != null && !hasValidBearerToken(context, bearerToken)
+                    expectedBearerTokenBytes != null && !hasValidBearerToken(context, expectedBearerTokenBytes)
                 ) {
                     runtimeMetrics?.onAuthenticationRejected()
                     context.response.header(HttpHeaders.WWWAuthenticate, "Bearer")
@@ -430,13 +432,7 @@ internal fun Application.configureMcpHttpEndpoint(
 
                 var completedNormally = false
                 try {
-                    reservation.displaced?.let { displaced ->
-                        withContext(NonCancellable) {
-                            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) {
-                                runCatching { displaced.closeTransport() }
-                            }
-                        }
-                    }
+                    reservation.displaced?.let { displaced -> sessions.closeDetached(displaced) }
                     val serverSession = mcpServer.createSession(transport)
                     pending.attachServerSession(serverSession)
                     transport.handleRequest(null, call)
@@ -444,10 +440,10 @@ internal fun Application.configureMcpHttpEndpoint(
                 } finally {
                     if (!completedNormally) {
                         sessions.remove(pending)
-                        pending.closeTransport()
+                        sessions.closeDetached(pending)
                     } else if (!pending.isActive()) {
                         sessions.abandon(pending)
-                        pending.closeTransport()
+                        sessions.closeDetached(pending)
                     }
                 }
             }
@@ -545,15 +541,15 @@ private fun String.utf8Length(): Long {
     return bytes
 }
 
-private fun hasValidBearerToken(call: ApplicationCall, expected: String): Boolean {
+private fun hasValidBearerToken(call: ApplicationCall, expected: ByteArray): Boolean {
     val values = call.request.headers.getAll(HttpHeaders.Authorization) ?: return false
     if (values.size != 1) return false
     val value = values.single()
     val separator = value.indexOf(' ')
-    if (separator <= 0 || !value.substring(0, separator).equals("Bearer", ignoreCase = true)) return false
+    if (separator != 6 || !value.regionMatches(0, "Bearer", 0, separator, ignoreCase = true)) return false
     val supplied = value.substring(separator + 1)
     if (supplied.isEmpty() || supplied.any { it.isWhitespace() || it.isISOControl() }) return false
-    return MessageDigest.isEqual(supplied.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
+    return MessageDigest.isEqual(supplied.toByteArray(Charsets.UTF_8), expected)
 }
 
 private fun isLoopbackHostHeader(value: String, port: Int): Boolean {
@@ -615,6 +611,8 @@ internal class McpProjectEpochGuard(
     private val resetSessions: suspend (Long) -> Unit,
 ) {
     private val lock = Mutex()
+    // MessageDigest is mutable and not thread-safe; every use remains inside alignRequest's lock.withLock block.
+    private val fingerprintDigest = MessageDigest.getInstance("SHA-256")
     private var projectFingerprint: ByteArray? = null
     private var generation = 0L
     private var pendingGeneration: Long? = null
@@ -626,7 +624,7 @@ internal class McpProjectEpochGuard(
             projectIdProvider()
                 .takeIf(::validMcpProjectId)
                 ?.toByteArray(Charsets.UTF_8)
-                ?.let { MessageDigest.getInstance("SHA-256").digest(it) }
+                ?.let(fingerprintDigest::digest)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -853,16 +851,7 @@ internal class BoundedMcpSessionRegistry(
             stale
         }
         runtimeMetrics?.onIdleEvicted(expired.size)
-        expired.forEach { entry ->
-            entry.releaseSlot()
-            try {
-                entry.closeTransport()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Idle cleanup is best-effort; the slot is already reclaimed and no request can reacquire this entry.
-            }
-        }
+        closeDetachedEntries(expired)
     }
 
     /**
@@ -888,28 +877,7 @@ internal class BoundedMcpSessionRegistry(
             updateMetricsLocked()
             snapshot
         }
-        stale.forEach { entry ->
-            entry.cancelExecutions()
-            entry.cancelStreams()
-            entry.releaseSlot()
-        }
-        withContext(NonCancellable) {
-            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) {
-                supervisorScope {
-                    stale.map { entry ->
-                        launch {
-                            try {
-                                entry.closeTransport()
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Exception) {
-                                // Entries are detached and streams are closed; transport cleanup is best-effort.
-                            }
-                        }
-                    }.joinAll()
-                }
-            }
-        }
+        closeDetachedEntries(stale)
     }
 
     suspend fun closeAll() {
@@ -923,9 +891,36 @@ internal class BoundedMcpSessionRegistry(
             updateMetricsLocked()
             snapshot
         }
-        abandoned.forEach { entry ->
+        closeDetachedEntries(abandoned)
+    }
+
+    suspend fun closeDetached(entry: ManagedMcpSession) {
+        closeDetachedEntries(listOf(entry))
+    }
+
+    private suspend fun closeDetachedEntries(detached: List<ManagedMcpSession>) {
+        if (detached.isEmpty()) return
+        detached.forEach { entry ->
+            entry.cancelExecutions()
+            entry.cancelStreams()
             entry.releaseSlot()
-            runCatching { entry.closeTransport() }
+        }
+        withContext(NonCancellable) {
+            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) {
+                supervisorScope {
+                    detached.map { entry ->
+                        launch {
+                            try {
+                                entry.closeTransport()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                // Detached entries cannot be reacquired; transport cleanup is bounded and best-effort.
+                            }
+                        }
+                    }.joinAll()
+                }
+            }
         }
     }
 
@@ -1113,7 +1108,7 @@ class KtorServerManager internal constructor(
     private val lifecycleThread = AtomicReference<Thread?>()
     private val lifecycleSubmissionLock = Any()
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "independent-mcp-lifecycle").also(lifecycleThread::set)
+        Thread(task, "independent-mcp-lifecycle").apply { isDaemon = true }.also(lifecycleThread::set)
     }
     private val shutdownStarted = AtomicBoolean()
     private val loadedArtifactSha256 = executor.submit<String?> {

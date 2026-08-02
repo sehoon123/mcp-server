@@ -119,6 +119,7 @@ class HttpMessageReadTest {
         assertTrue(beyond.error.orEmpty().contains("totalBytes (0)"))
         assertNull(beyond.metadata)
         assertNull(beyond.content)
+        verify(exactly = 2) { fixture.request.body() }
     }
 
     @Test

@@ -239,9 +239,9 @@ private enum class HttpSearchSummaryProjection {
     REFERENCE_METADATA,
 }
 
-private data class HttpSearchPreauthorization(
-    val authorization: HttpMessageResolutionAuthorization,
-    val verifier: HttpMessageResolver,
+private data class PreparedReferenceMetadataSearch(
+    val query: NormalizedHttpSearchQuery,
+    val limit: Int,
 )
 
 internal class HttpMessageSearchService(
@@ -267,35 +267,210 @@ internal class HttpMessageSearchService(
     suspend fun search(
         input: SearchHttpMessages,
         reportProgress: ToolProgressReporter = NO_TOOL_PROGRESS_REPORTER,
-    ): SearchHttpMessagesResult = searchInternal(
-        input,
-        reportProgress,
-        HttpSearchSummaryProjection.FULL,
-        preauthorization = null,
-    )
+    ): SearchHttpMessagesResult = searchInternal(input, reportProgress)
 
     /**
      * Internal compound-read projection used only with the resolver-issued authorization for this project/source set.
      * It emits bounded relation metadata with path-only URLs, bypasses adaptive index hints for fixed phase attribution,
      * and does not materialize notes, body lengths, complete URLs, or auxiliary Proxy/Organizer fields. Site Map
-     * references retain the existing bounded private stable-ID check.
+     * references retain the existing bounded private stable-ID check. This first-page relation projection does not
+     * accept cursors.
      */
     suspend fun searchReferenceMetadata(
         input: SearchHttpMessages,
         authorization: HttpMessageResolutionAuthorization,
         authorizationVerifier: HttpMessageResolver,
-    ): SearchHttpMessagesResult = searchInternal(
-        input,
-        NO_TOOL_PROGRESS_REPORTER,
-        HttpSearchSummaryProjection.REFERENCE_METADATA,
-        HttpSearchPreauthorization(authorization, authorizationVerifier),
-    )
+    ): SearchHttpMessagesResult = searchReferenceMetadataBatch(
+        inputs = listOf(input),
+        authorization = authorization,
+        authorizationVerifier = authorizationVerifier,
+    ).single()
+
+    /**
+     * Executes the bounded first page of multiple internal relation queries against one request-scoped source view.
+     * Query matching, encounter order, result limits, scan accounting, and cursor snapshots remain independent; only
+     * authorization verification and Montoya source-list acquisition are shared. Public search calls never use this
+     * path, and cursors are deliberately rejected because a continuation belongs to one independently acquired page.
+     */
+    suspend fun searchReferenceMetadataBatch(
+        inputs: List<SearchHttpMessages>,
+        authorization: HttpMessageResolutionAuthorization,
+        authorizationVerifier: HttpMessageResolver,
+    ): List<SearchHttpMessagesResult> {
+        if (inputs.isEmpty()) return emptyList()
+
+        // Authorization, project, and argument failures are batch-wide; callers must reject the first non-OK result.
+        fun repeated(result: SearchHttpMessagesResult): List<SearchHttpMessagesResult> =
+            List(inputs.size) { result }
+
+        if (inputs.size > MAX_RELATED_TRAFFIC_SEEDS) {
+            return repeated(
+                searchError(
+                    HttpMessageSearchStatus.INVALID_ARGUMENT,
+                    "reference metadata batch exceeds its query limit",
+                )
+            )
+        }
+
+        val prepared = ArrayList<PreparedReferenceMetadataSearch>(inputs.size)
+        for (input in inputs) {
+            if (input.cursor != null) {
+                return repeated(
+                    searchError(
+                        HttpMessageSearchStatus.INVALID_CURSOR,
+                        "batched reference metadata searches do not accept cursors",
+                    )
+                )
+            }
+            val query = try {
+                normalizeQuery(input)
+            } catch (e: IllegalArgumentException) {
+                return repeated(
+                    searchError(
+                        HttpMessageSearchStatus.INVALID_ARGUMENT,
+                        e.message ?: "invalid search arguments",
+                    )
+                )
+            }
+            val limit = input.limit ?: DEFAULT_HTTP_SEARCH_LIMIT
+            if (limit !in 1..MAX_HTTP_SEARCH_LIMIT) {
+                return repeated(
+                    searchError(
+                        HttpMessageSearchStatus.INVALID_ARGUMENT,
+                        "limit must be between 1 and $MAX_HTTP_SEARCH_LIMIT",
+                    )
+                )
+            }
+            prepared += PreparedReferenceMetadataSearch(query, limit)
+        }
+
+        val projectId = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return repeated(searchBurpError(null, "capture the current project", e))
+        }
+        val requestedSources = prepared
+            .flatMap { it.query.sources }
+            .distinct()
+            .sortedBy(HttpMessageSource::ordinal)
+        if (authorization.projectId != projectId) {
+            return repeated(
+                searchError(
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed after HTTP source authorization",
+                    projectId,
+                )
+            )
+        }
+        if (!authorizationVerifier.authorizes(authorization, projectId, requestedSources)) {
+            return repeated(
+                searchError(
+                    HttpMessageSearchStatus.BURP_ERROR,
+                    "Related HTTP source authorization was incomplete",
+                    projectId,
+                )
+            )
+        }
+        val projectAfterAuthorization = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return repeated(searchBurpError(projectId, "recheck the project after HTTP source authorization", e))
+        }
+        if (projectAfterAuthorization != projectId) {
+            return repeated(
+                searchError(
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed during HTTP source authorization",
+                    projectAfterAuthorization,
+                )
+            )
+        }
+
+        val viewsBySource = try {
+            loadRecords(requestedSources, HttpSearchSummaryProjection.REFERENCE_METADATA)
+                .associate { records -> records.source to records.toSearchView() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return repeated(searchBurpError(projectId, "read HTTP history", e))
+        }
+        val projectAfterAcquisition = try {
+            currentProjectId()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return repeated(searchBurpError(projectId, "recheck the project after reading HTTP history", e))
+        }
+        if (projectAfterAcquisition != projectId) {
+            return repeated(
+                searchError(
+                    HttpMessageSearchStatus.PROJECT_MISMATCH,
+                    "Burp project changed while reading HTTP history",
+                    projectAfterAcquisition,
+                )
+            )
+        }
+
+        val results = ArrayList<SearchHttpMessagesResult>(prepared.size)
+        for (request in prepared) {
+            currentCoroutineContext().ensureActive()
+            val views = ArrayList<SourceView>(request.query.sources.size)
+            for (source in request.query.sources) {
+                val view = viewsBySource[source] ?: return repeated(
+                    searchError(
+                        HttpMessageSearchStatus.BURP_ERROR,
+                        "Related HTTP source view was incomplete",
+                        projectId,
+                    )
+                )
+                views += view
+            }
+            val result = try {
+                executeSearch(
+                    query = request.query,
+                    cursor = null,
+                    limit = request.limit,
+                    projectId = projectId,
+                    hints = null,
+                    views = views,
+                    summaryProjection = HttpSearchSummaryProjection.REFERENCE_METADATA,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ExpectedSearchError) {
+                return repeated(searchError(e.status, e.message, projectId))
+            } catch (e: Exception) {
+                return repeated(searchBurpError(projectId, "search HTTP history", e))
+            }
+            results += result
+
+            val currentProject = try {
+                currentProjectId()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return repeated(searchBurpError(projectId, "recheck the project after HTTP search", e))
+            }
+            if (currentProject != projectId) {
+                return repeated(
+                    searchError(
+                        HttpMessageSearchStatus.PROJECT_MISMATCH,
+                        "Burp project changed while searching HTTP messages",
+                        currentProject,
+                    )
+                )
+            }
+        }
+        return results
+    }
 
     private suspend fun searchInternal(
         input: SearchHttpMessages,
         reportProgress: ToolProgressReporter,
-        summaryProjection: HttpSearchSummaryProjection,
-        preauthorization: HttpSearchPreauthorization?,
     ): SearchHttpMessagesResult {
         val progress = FixedStageProgress(HTTP_SEARCH_PROGRESS_MESSAGES, reportProgress)
         progress.report(HttpSearchProgressStage.VALIDATING.ordinal)
@@ -346,49 +521,32 @@ internal class HttpMessageSearchService(
             return searchBurpError(null, "capture the current project", e)
         }
         progress.report(HttpSearchProgressStage.AUTHORIZING.ordinal)
-        if (preauthorization == null) {
-            for (source in query.sources) {
-                val allowed = try {
-                    checkAccess(source)
+        for (source in query.sources) {
+            val allowed = try {
+                checkAccess(source)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return searchBurpError(projectId, "check ${source.displayName()} access", e)
+            }
+            if (!allowed) {
+                val projectAfterDenial = try {
+                    currentProjectId()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    return searchBurpError(projectId, "check ${source.displayName()} access", e)
+                    return searchBurpError(projectId, "recheck the project after HTTP history denial", e)
                 }
-                if (!allowed) {
-                    val projectAfterDenial = try {
-                        currentProjectId()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        return searchBurpError(projectId, "recheck the project after HTTP history denial", e)
-                    }
-                    if (projectAfterDenial != projectId) {
-                        return searchError(
-                            HttpMessageSearchStatus.PROJECT_MISMATCH,
-                            "Burp project changed during HTTP history approval",
-                            projectAfterDenial,
-                        )
-                    }
+                if (projectAfterDenial != projectId) {
                     return searchError(
-                        HttpMessageSearchStatus.ACCESS_DENIED,
-                        "${source.displayName()} access denied by Burp Suite",
-                        projectId,
+                        HttpMessageSearchStatus.PROJECT_MISMATCH,
+                        "Burp project changed during HTTP history approval",
+                        projectAfterDenial,
                     )
                 }
-            }
-        } else {
-            if (preauthorization.authorization.projectId != projectId) {
                 return searchError(
-                    HttpMessageSearchStatus.PROJECT_MISMATCH,
-                    "Burp project changed after HTTP source authorization",
-                    projectId,
-                )
-            }
-            if (!preauthorization.verifier.authorizes(preauthorization.authorization, projectId, query.sources)) {
-                return searchError(
-                    HttpMessageSearchStatus.BURP_ERROR,
-                    "Related HTTP source authorization was incomplete",
+                    HttpMessageSearchStatus.ACCESS_DENIED,
+                    "${source.displayName()} access denied by Burp Suite",
                     projectId,
                 )
             }
@@ -419,7 +577,7 @@ internal class HttpMessageSearchService(
 
         progress.report(HttpSearchProgressStage.SCANNING.ordinal)
         val initialRecords = try {
-            loadRecords(query.sources, summaryProjection)
+            loadRecords(query.sources, HttpSearchSummaryProjection.FULL)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -432,12 +590,7 @@ internal class HttpMessageSearchService(
         } catch (e: Exception) {
             return searchBurpError(projectId, "prepare HTTP history", e)
         }
-        // The internal relation projection keeps fixed phase attribution and never mutates or validates the adaptive index.
-        val indexSources = if (summaryProjection == HttpSearchSummaryProjection.FULL) {
-            query.metadataIndexSources()
-        } else {
-            emptyList()
-        }
+        val indexSources = query.metadataIndexSources()
         val indexSnapshot = if (metadataIndex != null && indexSources.isNotEmpty()) {
             val recordsBySource = initialRecords.associateBy(HttpSourceRecords::source)
             try {
@@ -467,7 +620,7 @@ internal class HttpMessageSearchService(
                 projectId,
                 indexSnapshot?.let(::IndexedSearchHints),
                 initialViews,
-                summaryProjection,
+                HttpSearchSummaryProjection.FULL,
             )
         } catch (e: CancellationException) {
             throw e
@@ -495,7 +648,7 @@ internal class HttpMessageSearchService(
             }
             if (!indexStillCurrent) {
                 val retryViews = try {
-                    loadRecords(query.sources, summaryProjection).map(HttpSourceRecords::toSearchView)
+                    loadRecords(query.sources, HttpSearchSummaryProjection.FULL).map(HttpSourceRecords::toSearchView)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -509,7 +662,7 @@ internal class HttpMessageSearchService(
                         projectId,
                         hints = null,
                         views = retryViews,
-                        summaryProjection = summaryProjection,
+                        summaryProjection = HttpSearchSummaryProjection.FULL,
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -1116,7 +1269,33 @@ private data class SearchCandidate(
     val siteMapItem: MontoyaHttpRequestResponse? = null,
     val organizerItem: OrganizerItem? = null,
 ) {
-    fun approximateContentBytes(): Long = messageBytes(request) + (response?.let(::messageBytes) ?: 0L)
+    private var requestBodyBytesRead = false
+    private var cachedRequestBodyBytes = 0
+    private var responseBodyBytesRead = false
+    private var cachedResponseBodyBytes = 0
+
+    fun approximateContentBytes(): Long =
+        request.bodyOffset().toLong().coerceAtLeast(0) +
+            requestBodyBytes().toLong().coerceAtLeast(0) +
+            (response?.bodyOffset()?.toLong()?.coerceAtLeast(0) ?: 0L) +
+            (responseBodyBytes()?.toLong()?.coerceAtLeast(0) ?: 0L)
+
+    private fun requestBodyBytes(): Int {
+        if (!requestBodyBytesRead) {
+            cachedRequestBodyBytes = request.body().length()
+            requestBodyBytesRead = true
+        }
+        return cachedRequestBodyBytes
+    }
+
+    private fun responseBodyBytes(): Int? {
+        val currentResponse = response ?: return null
+        if (!responseBodyBytesRead) {
+            cachedResponseBodyBytes = currentResponse.body().length()
+            responseBodyBytesRead = true
+        }
+        return cachedResponseBodyBytes
+    }
 
     fun hasValidReferenceMetadata(): Boolean {
         val host = service.host().trim().trimEnd('.')
@@ -1206,8 +1385,8 @@ private data class SearchCandidate(
             mimeType = response?.mimeType()?.name,
             hasResponse = response != null,
             inScope = request.isInScope(),
-            requestBodyBytes = request.body().length(),
-            responseBodyBytes = response?.body()?.length(),
+            requestBodyBytes = requestBodyBytes(),
+            responseBodyBytes = responseBodyBytes(),
             time = proxyItem?.time()?.toString(),
             listenerPort = proxyItem?.listenerPort(),
             edited = proxyItem?.edited(),
@@ -1413,12 +1592,6 @@ private fun HttpMessageSource.httpSearchAcquisitionMetric(): HistoryPerformanceM
     HttpMessageSource.SITE_MAP -> HistoryPerformanceMetric.HTTP_SEARCH_SITE_MAP_ACQUISITION
     HttpMessageSource.ORGANIZER -> HistoryPerformanceMetric.HTTP_SEARCH_ORGANIZER_ACQUISITION
 }
-
-private fun messageBytes(request: HttpRequest): Long =
-    request.bodyOffset().toLong().coerceAtLeast(0) + request.body().length().toLong().coerceAtLeast(0)
-
-private fun messageBytes(response: HttpResponse): Long =
-    response.bodyOffset().toLong().coerceAtLeast(0) + response.body().length().toLong().coerceAtLeast(0)
 
 private fun String?.bounded(maxChars: Int): Pair<String?, Boolean> {
     if (this == null || length <= maxChars) return this to false

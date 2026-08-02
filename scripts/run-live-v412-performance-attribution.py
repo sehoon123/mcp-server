@@ -278,7 +278,7 @@ def _related_summary(value: dict[str, Any], arguments: dict[str, Any], project_i
     ):
         raise HarnessError("related correlation explicit cohort invariants changed")
     selected_processing_attempts = len(related_sources & RESOLVER_INDEXED_SOURCES) + returned + 2
-    expected_acquisition_attempts = len(explicit_sources) + query_count * len(expected_sources) + len(related_sources)
+    expected_acquisition_attempts = len(explicit_sources) + len(expected_sources) + len(related_sources)
     expected_processing_attempts = (
         len(explicit_sources & RESOLVER_INDEXED_SOURCES)
         + baseline_count

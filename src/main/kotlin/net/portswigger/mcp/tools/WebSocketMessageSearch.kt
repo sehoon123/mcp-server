@@ -144,10 +144,17 @@ private data class WebSocketHistorySource(
     val revalidateScanWindow: Boolean,
 )
 
-private data class ObservedWebSocketRecord(
-    val sourceIndex: Int,
-    val message: ProxyWebSocketMessage,
-)
+private class WebSocketScanWindow(
+    private val firstSourceIndex: Int,
+    private val newestFirst: Boolean,
+    private val messages: Array<ProxyWebSocketMessage?>,
+) {
+    val size: Int get() = messages.size
+
+    fun sourceIndexAt(offset: Int): Int = firstSourceIndex + if (newestFirst) -offset else offset
+
+    operator fun get(offset: Int): ProxyWebSocketMessage = requireNotNull(messages[offset])
+}
 
 private enum class WebSocketSearchProgressStage(val message: String) {
     VALIDATING("Validating WebSocket search"),
@@ -353,14 +360,16 @@ internal class WebSocketMessageSearchService(
         var scanLimitReached = false
         var contentLimitReached = false
         try {
-            for (observed in scanWindow) {
+            for (windowIndex in 0 until scanWindow.size) {
                 if (items.size >= limit) break
                 if (scanned and 63 == 0) {
                     currentCoroutineContext().ensureActive()
                     yield()
                 }
-                check(observed.sourceIndex == itemIndex) { "WebSocket scan window is inconsistent" }
-                val item = observed.message
+                check(scanWindow.sourceIndexAt(windowIndex) == itemIndex) {
+                    "WebSocket scan window is inconsistent"
+                }
+                val item = scanWindow[windowIndex]
                 scanned++
                 if (!item.matchesMetadata(query)) {
                     itemIndex = advance(itemIndex, query.newestFirst)
@@ -448,31 +457,33 @@ internal class WebSocketMessageSearchService(
         records: List<ProxyWebSocketMessage>,
         query: NormalizedWebSocketQuery,
         limit: Int,
-    ): List<ObservedWebSocketRecord> {
+    ): WebSocketScanWindow {
         val maximumWindowSize = if (query.hasSearchPredicate()) maxScannedItems else minOf(limit, maxScannedItems)
-        val window = ArrayList<ObservedWebSocketRecord>(
-            minOf(maximumWindowSize, snapshot.snapshotSize.coerceAtLeast(0)),
-        )
+        val availableRecords = if (query.newestFirst) {
+            snapshot.itemIndex + 1
+        } else {
+            snapshot.snapshotSize - snapshot.itemIndex
+        }.coerceAtLeast(0)
+        val messages = arrayOfNulls<ProxyWebSocketMessage>(minOf(maximumWindowSize, availableRecords))
         var sourceIndex = snapshot.itemIndex
-        while (window.size < maximumWindowSize && inSnapshot(sourceIndex, snapshot.snapshotSize)) {
-            if (window.size and 63 == 0) {
+        for (windowIndex in messages.indices) {
+            if (windowIndex and 63 == 0) {
                 currentCoroutineContext().ensureActive()
                 yield()
             }
-            window += ObservedWebSocketRecord(sourceIndex, records[sourceIndex])
+            messages[windowIndex] = records[sourceIndex]
             sourceIndex = advance(sourceIndex, query.newestFirst)
         }
-        return window
+        return WebSocketScanWindow(snapshot.itemIndex, query.newestFirst, messages)
     }
 
     private fun validateScanWindow(
-        window: List<ObservedWebSocketRecord>,
+        window: WebSocketScanWindow,
         inspected: Int,
         records: List<ProxyWebSocketMessage>,
     ) {
         for (index in 0 until inspected) {
-            val observed = window[index]
-            if (records[observed.sourceIndex] !== observed.message) {
+            if (records[window.sourceIndexAt(index)] !== window[index]) {
                 throw StaleWebSocketCursorException(
                     "WebSocket history was cleared, reordered, or replaced while the page was prepared",
                 )

@@ -422,6 +422,32 @@ class LiveMcpHarnessContractTest(unittest.TestCase):
         self.assertEqual(5, mixed_summary["expectedAcquisitionAttemptsPerCall"])
         self.assertEqual(15, mixed_summary["expectedProcessingAttemptsPerCall"])
 
+        batched_arguments = json.loads(json.dumps(arguments))
+        batched_arguments["baselineRefs"] = [
+            {"source": "proxy", "id": f"private-seed-{index}"} for index in range(4)
+        ]
+        batched_arguments["relatedTraffic"].update(
+            seedEventIndices=[0, 1, 2, 3],
+            sources=["proxy", "site_map"],
+        )
+        batched_value = json.loads(json.dumps(related_value))
+        batched_value["timeline"] = [
+            *({"cohort": "baseline", "ref": {"source": "proxy"}} for _ in range(4)),
+            {"cohort": "comparison", "ref": {"source": "proxy"}},
+            {"cohort": "related", "ref": {"source": "site_map"}},
+        ]
+        batched_value["relatedTraffic"].update(
+            seedEventIndices=[0, 1, 2, 3],
+            sources=["proxy", "site_map"],
+            queryCount=4,
+            candidateSummariesExamined=8,
+        )
+        batched_value["evidence"].update(selectedReferences=5, timelineEvents=6)
+        batched_value["delta"].update(baselineRecords=4)
+        batched_summary = runner._related_summary(batched_value, batched_arguments, project)
+        self.assertEqual(4, batched_summary["expectedAcquisitionAttemptsPerCall"])
+        self.assertEqual(24, batched_summary["expectedProcessingAttemptsPerCall"])
+
         invalid_related_value = json.loads(json.dumps(related_value))
         invalid_related_value["relatedTraffic"]["returned"] = 2
         with self.assertRaises(harness.HarnessError):
