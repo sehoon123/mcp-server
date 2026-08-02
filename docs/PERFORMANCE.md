@@ -483,9 +483,11 @@ no message body, header or note values, complete URL, or Montoya object. The thr
 15,000, independent of Burp history size; omitted and unavailable counts are explicit.
 
 A refresh still requests the selected Montoya source list, because the current API has no native metadata cursor. For a
-warm same-size source, up to 16 evenly distributed metadata-only anchors are re-read. Valid append-only growth reuses
-retained slots and extracts only new entries while dropping old slots above the cap, but it does not reset the last
-bounded-rebuild time. A size decrease, sampled-anchor change, project change, explicit Scope/project-option mutation, or
+warm same-size source, up to 16 evenly distributed metadata-only anchors are re-read. Cold rebuild and append paths
+reuse a retained slot's already-computed fingerprint when that slot is also an anchor; on append, that may be a
+cached fingerprint already validated in the current refresh. A retained null slot keeps the prior defensive re-read,
+and anchor positions outside the retained range are materialized separately. Valid append-only growth extracts only
+new entries while dropping old slots above the cap, but it does not reset the last bounded-rebuild time. A size decrease, sampled-anchor change, project change, explicit Scope/project-option mutation, or
 30 seconds since the last rebuild forces another rebuild even under continuous append traffic. A project transition
 clears all source entries before mismatch or current-project output is returned. This is conservative
 cache freshness, not a claim that Montoya provides a complete same-size mutation event stream.
@@ -501,9 +503,12 @@ closed, while a raced hint uses the existing raw-search fallback. Extension shut
 drains the refresh, hint-validation, and project/Scope-mutation coordinators, so a synchronous Montoya call may delay
 shutdown but no candidate or coordinated mutation remains active after close returns.
 
-A synthetic 100,000-record list regression verifies that a cold source build dereferences no more than the 5,000
-retained records plus 16 anchors; it does not treat that synthetic test as a Burp latency or allocation benchmark.
-Search's hint-only path reads only the current source list and at most 16 anchor records per warm source while acquiring
+For the fixed synthetic 100,000-record/5,000-retained/16-anchor fixture, a regression verifies that a cold source build
+dereferences exactly the 5,000 retained records plus 15 omitted-range anchors; the final evenly distributed anchor
+reuses the retained final slot. This exact count is fixture-specific rather than a claim for every source size. A
+rebuild whose source fits completely inside the retained cap performs no anchor-only dereference, and append/follow-up-
+replacement regressions pin retained-slot reuse and current anchor validation. These are accessor-cardinality
+contracts, not Burp latency or allocation benchmarks. Search's hint-only path reads only the current source list and at most 16 anchor records per warm source while acquiring
 a recent warm snapshot. It uses a non-blocking lock attempt so a concurrent index build cannot add latency to the raw
 fallback; every predicted rejection is then independently checked on the current source record.
 
@@ -516,6 +521,9 @@ Both comparison runs used the same JFR allocation-profiling configuration:
 |---|---:|---:|---:|
 | Cold 5,000-record index rebuild | 26.298 ms | 14.827 ms | 105.86 MiB → 41.45 MiB |
 | Warm 5,000-key attack-surface aggregate | 11.937 ms | 5.001 ms | 60.93 MiB → 9.40 MiB |
+
+This table records the earlier measured implementation; the retained-slot anchor reuse above is covered only by
+accessor-cardinality regressions and does not revise these timings.
 
 Weighted JFR samples are estimates, not exact retained-heap measurements, and include allocation noise from the dynamic
 interface fixture. Across the complete probe, allocation-sample events fell from 1,389 to 668 and young collections
