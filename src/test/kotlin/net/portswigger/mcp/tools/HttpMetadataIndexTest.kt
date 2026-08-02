@@ -112,11 +112,47 @@ class HttpMetadataIndexTest {
         assertEquals(MAX_METADATA_INDEX_RECORDS_PER_SOURCE, snapshot.slots.size)
         assertEquals(95_000, snapshot.omittedRecords)
         assertEquals(MAX_METADATA_INDEX_RECORDS_PER_SOURCE, snapshot.availableRecords.size)
-        assertTrue(getCalls <= MAX_METADATA_INDEX_RECORDS_PER_SOURCE + 16)
+        // Fifteen anchors fall outside the retained 5,000-record window; the final anchor reuses its slot fingerprint.
+        assertEquals(MAX_METADATA_INDEX_RECORDS_PER_SOURCE + 15, getCalls)
         val metrics = diagnostics.snapshot().metrics.associateBy { it.metric }
         assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_ACQUISITION).attempts)
         assertEquals(1, metrics.getValue(HistoryPerformanceMetric.INDEX_PROXY_PROCESSING).attempts)
         verify(exactly = 0) { fixture.request.body() }
+    }
+
+    @Test
+    fun `anchor creation reuses retained slot fingerprints during rebuild and append`() = runBlocking {
+        val backing = mutableListOf(
+            proxyItem(1, "/one").item,
+            proxyItem(2, "/two").item,
+        )
+        var getCalls = 0
+        val countedHistory = object : AbstractList<ProxyHttpRequestResponse>() {
+            override val size: Int get() = backing.size
+
+            override fun get(index: Int): ProxyHttpRequestResponse {
+                getCalls++
+                return backing[index]
+            }
+        }
+        every { proxy.history() } returns countedHistory
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+
+        val rebuilt = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+
+        assertEquals(MetadataIndexRefresh.REBUILT, rebuilt.refresh)
+        assertEquals(listOf("1", "2"), rebuilt.availableRecords.map { it.sourceId })
+        assertEquals(2, getCalls)
+
+        backing += proxyItem(3, "/three").item
+        getCalls = 0
+        nowNanos++
+        val appended = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+
+        assertEquals(MetadataIndexRefresh.UPDATED, appended.refresh)
+        assertEquals(listOf("2", "3"), appended.availableRecords.map { it.sourceId })
+        // Two old-anchor validations, one appended slot, and one omitted-range anchor.
+        assertEquals(4, getCalls)
     }
 
     @Test
@@ -902,6 +938,27 @@ class HttpMetadataIndexTest {
         assertEquals(MetadataIndexRefresh.UPDATED, updated.refresh)
         assertEquals(1, updated.indexedFrom)
         assertEquals(listOf("2", "3"), updated.availableRecords.map { it.sourceId })
+    }
+
+    @Test
+    fun `retained anchor replacement after append forces a current rebuild`() = runBlocking {
+        history += proxyItem(1, "/one").item
+        history += proxyItem(2, "/two").item
+        val index = HttpMetadataIndex(api, maxRecordsPerSource = 2, nanoTime = { nowNanos })
+        index.snapshot("project-one", listOf(HttpMessageSource.PROXY))
+
+        history += proxyItem(3, "/three").item
+        nowNanos++
+        val appended = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+        assertEquals(MetadataIndexRefresh.UPDATED, appended.refresh)
+        assertEquals(listOf("2", "3"), appended.availableRecords.map { it.sourceId })
+
+        history[1] = proxyItem(20, "/replacement").item
+        nowNanos++
+        val rebuilt = index.snapshot("project-one", listOf(HttpMessageSource.PROXY)).sources.single()
+
+        assertEquals(MetadataIndexRefresh.REBUILT, rebuilt.refresh)
+        assertEquals(listOf("20", "3"), rebuilt.availableRecords.map { it.sourceId })
     }
 
     @Test

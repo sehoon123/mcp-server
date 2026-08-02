@@ -558,7 +558,7 @@ internal class HttpMetadataIndex(
             totalRecords = view.size,
             indexedFrom = indexedFrom,
             slots = slots,
-            anchors = createAnchors(view),
+            anchors = createAnchors(view, indexedFrom, slots),
             rebuiltAtNanos = existing.rebuiltAtNanos,
         )
     }
@@ -581,13 +581,31 @@ internal class HttpMetadataIndex(
             totalRecords = view.size,
             indexedFrom = indexedFrom,
             slots = slots,
-            anchors = createAnchors(view),
+            anchors = createAnchors(view, indexedFrom, slots),
             rebuiltAtNanos = rebuiltAtNanos,
         )
     }
 
-    private fun createAnchors(view: MetadataSourceView): List<MetadataAnchor> =
-        anchorIndexes(view.size).map { index -> MetadataAnchor(index, view.anchor(index)) }
+    private fun createAnchors(
+        view: MetadataSourceView,
+        indexedFrom: Int,
+        slots: List<HttpMetadataRecord?>,
+    ): List<MetadataAnchor> {
+        val sourceSize = view.size
+        check(indexedFrom in 0..sourceSize && slots.size == sourceSize - indexedFrom) {
+            "metadata slots do not align with the source view"
+        }
+        return anchorIndexes(sourceSize).map { index ->
+            val slotOffset = index - indexedFrom
+            val fingerprint = if (slotOffset in slots.indices) {
+                // Preserve the prior defensive retry when metadata materialization returned no record.
+                slots[slotOffset]?.fingerprint ?: view.anchor(index)
+            } else {
+                view.anchor(index)
+            }
+            MetadataAnchor(index, fingerprint)
+        }
+    }
 
     private fun validateAnchors(view: MetadataSourceView, anchors: List<MetadataAnchor>): Boolean {
         if (anchors.isEmpty()) return view.size == 0
