@@ -340,6 +340,53 @@ class BoundedMcpSessionRegistryTest {
     }
 
     @Test
+    fun `idle eviction releases every slot before closing transports concurrently`() = runBlocking {
+        val cleanupStarted = AtomicInteger()
+        val allCleanupStarted = CompletableDeferred<Unit>()
+        fun blockingTransport() = mockk<StreamableHttpServerTransport>().also { transport ->
+            coEvery { transport.close() } coAnswers {
+                if (cleanupStarted.incrementAndGet() == 2) allCleanupStarted.complete(Unit)
+                allCleanupStarted.await()
+            }
+        }
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 0)
+        val first = assertNotNull(registry.reserve(blockingTransport())).pending
+        val second = assertNotNull(registry.reserve(blockingTransport())).pending
+        registry.activate(first, "idle-one")
+        registry.activate(second, "idle-two")
+
+        withTimeout(1_000) { registry.evictIdle() }
+
+        assertEquals(2, cleanupStarted.get())
+        assertNotNull(registry.reserve(transport()))
+        assertNotNull(registry.reserve(transport()))
+        registry.closeAll()
+    }
+
+    @Test
+    fun `shutdown attempts every detached transport without head of line blocking`() = runBlocking {
+        val cleanupStarted = AtomicInteger()
+        val allCleanupStarted = CompletableDeferred<Unit>()
+        fun blockingTransport() = mockk<StreamableHttpServerTransport>().also { transport ->
+            coEvery { transport.close() } coAnswers {
+                if (cleanupStarted.incrementAndGet() == 2) allCleanupStarted.complete(Unit)
+                allCleanupStarted.await()
+            }
+        }
+        val first = blockingTransport()
+        val second = blockingTransport()
+        val registry = BoundedMcpSessionRegistry(maxSessions = 2, idleMillis = 60_000)
+        assertNotNull(registry.reserve(first))
+        assertNotNull(registry.reserve(second))
+
+        withTimeout(1_000) { registry.closeAll() }
+
+        assertEquals(2, cleanupStarted.get())
+        coVerify(exactly = 1) { first.close() }
+        coVerify(exactly = 1) { second.close() }
+    }
+
+    @Test
     fun `session activation aliases are published before concurrent termination`() {
         val activationEntered = CountDownLatch(1)
         val releaseActivation = CountDownLatch(1)

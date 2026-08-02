@@ -74,7 +74,7 @@ class McpStructuredToolSchedulingTest {
         )
         assertEquals("fallback", result.structuredContent?.get("value")?.toString()?.trim('"'))
         assertEquals("7", result.structuredContent?.get("count")?.toString())
-        assertSameBoundedWorker()
+        assertSameBoundedWorker(assertDeserialization = true)
     }
 
     @Test
@@ -108,19 +108,42 @@ class McpStructuredToolSchedulingTest {
         )
         assertEquals("expected-error", result.structuredContent?.get("value")?.toString()?.trim('"'))
         assertEquals("9", result.structuredContent?.get("count")?.toString())
-        assertSameBoundedWorker()
+        assertSameBoundedWorker(assertDeserialization = false)
     }
 
-    private fun assertSameBoundedWorker() {
+    private fun assertSameBoundedWorker(assertDeserialization: Boolean) {
         val executionThread = assertNotNull(SchedulingThreadProbe.executionThread.get())
         val serializationThread = assertNotNull(SchedulingThreadProbe.serializationThread.get())
         assertEquals(executionThread, serializationThread)
+        if (assertDeserialization) {
+            assertEquals(executionThread, assertNotNull(SchedulingThreadProbe.deserializationThread.get()))
+        }
         assertNotEquals(Thread.currentThread(), serializationThread)
     }
 }
 
-@Serializable
+@Serializable(with = StructuredSchedulingProbeSerializer::class)
 private data class StructuredSchedulingProbe(val value: String)
+
+@Serializable
+private data class StructuredSchedulingProbeSurrogate(val value: String)
+
+private object StructuredSchedulingProbeSerializer : KSerializer<StructuredSchedulingProbe> {
+    override val descriptor: SerialDescriptor = StructuredSchedulingProbeSurrogate.serializer().descriptor
+
+    override fun serialize(encoder: Encoder, value: StructuredSchedulingProbe) {
+        encoder.encodeSerializableValue(
+            StructuredSchedulingProbeSurrogate.serializer(),
+            StructuredSchedulingProbeSurrogate(value.value),
+        )
+    }
+
+    override fun deserialize(decoder: Decoder): StructuredSchedulingProbe {
+        SchedulingThreadProbe.deserializationThread.set(Thread.currentThread())
+        val value = decoder.decodeSerializableValue(StructuredSchedulingProbeSurrogate.serializer())
+        return StructuredSchedulingProbe(value.value)
+    }
+}
 
 @Serializable
 private data class StructuredContextSchedulingProbe(val value: String)
@@ -155,10 +178,12 @@ private object SchedulingProbeResultSerializer : KSerializer<SchedulingProbeResu
 }
 
 private object SchedulingThreadProbe {
+    val deserializationThread = AtomicReference<Thread?>()
     val executionThread = AtomicReference<Thread?>()
     val serializationThread = AtomicReference<Thread?>()
 
     fun reset() {
+        deserializationThread.set(null)
         executionThread.set(null)
         serializationThread.set(null)
     }

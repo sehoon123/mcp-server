@@ -182,6 +182,38 @@ class HttpMessageSearchTest {
     }
 
     @Test
+    fun `reference metadata batch rejects defensive argument failures before source access`() = runBlocking {
+        val authorization = HttpMessageResolutionAuthorization(
+            projectId = "project-123",
+            sources = setOf(HttpMessageSource.PROXY),
+            issuer = resolver,
+        )
+
+        val oversized = service.searchReferenceMetadataBatch(
+            inputs = List(MAX_RELATED_TRAFFIC_SEEDS + 1) { SearchHttpMessages() },
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+        val cursor = service.searchReferenceMetadataBatch(
+            inputs = listOf(SearchHttpMessages(cursor = "not-a-batch-cursor")),
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+        val invalidLimit = service.searchReferenceMetadataBatch(
+            inputs = listOf(SearchHttpMessages(limit = 0)),
+            authorization = authorization,
+            authorizationVerifier = resolver,
+        )
+
+        assertEquals(MAX_RELATED_TRAFFIC_SEEDS + 1, oversized.size)
+        assertTrue(oversized.all { it.status == HttpMessageSearchStatus.INVALID_ARGUMENT })
+        assertEquals(HttpMessageSearchStatus.INVALID_CURSOR, cursor.single().status)
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, invalidLimit.single().status)
+        verify(exactly = 0) { proxy.history() }
+        verify(exactly = 0) { proxy.history(any()) }
+    }
+
+    @Test
     fun `search reports only fixed monotonic stages without project or filter values`() = runBlocking {
         val events = mutableListOf<Triple<Double, Double?, String?>>()
 
@@ -551,6 +583,7 @@ class HttpMessageSearchTest {
             url = "https://example.test/selected",
             status = 201,
         )
+        val selectedResponse = requireNotNull(selected.item.response())
         every { selected.request.contains("needle", false) } returns true
         proxyHistory += metadataMismatch.item
         proxyHistory += selected.item
@@ -572,6 +605,8 @@ class HttpMessageSearchTest {
         assertEquals("9", result.items.single().ref.id)
         verify(exactly = 0) { metadataMismatch.request.bodyOffset() }
         verify(exactly = 0) { metadataMismatch.request.contains(any<String>(), any<Boolean>()) }
+        verify(exactly = 1) { selected.request.body() }
+        verify(exactly = 1) { selectedResponse.body() }
         verify(exactly = 1) { selected.request.contains("needle", false) }
     }
 

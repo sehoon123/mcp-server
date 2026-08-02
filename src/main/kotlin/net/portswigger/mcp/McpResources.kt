@@ -624,10 +624,33 @@ private fun currentScopeSummary(api: MontoyaApi, config: McpConfig): ScopeSummar
 
 private inline fun <reified T> jsonResource(uri: String, value: T): ReadResourceResult {
     val text = resourceJson.encodeToString(value)
-    if (text.toByteArray(Charsets.UTF_8).size > MAX_RESOURCE_TEXT_BYTES) {
+    if (text.exceedsUtf8ByteLimit(MAX_RESOURCE_TEXT_BYTES.toLong())) {
         return resourceError(uri, NativeResourceStatus.BURP_ERROR, "Resource output exceeds its safety limit")
     }
     return ReadResourceResult(listOf(TextResourceContents(text, uri, RESOURCE_MIME_TYPE)))
+}
+
+/** Allocation-free equivalent of `toByteArray(UTF_8).size > maxBytes`, including malformed surrogates. */
+internal fun String.exceedsUtf8ByteLimit(maxBytes: Long): Boolean {
+    require(maxBytes >= 0) { "maxBytes must be non-negative" }
+    var byteCount = 0L
+    var index = 0
+    while (index < length) {
+        val character = this[index]
+        byteCount += when {
+            character.code <= 0x7f -> 1
+            character.code <= 0x7ff -> 2
+            character.isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate() -> {
+                index++
+                4
+            }
+            character.isHighSurrogate() || character.isLowSurrogate() -> 1
+            else -> 3
+        }
+        if (byteCount > maxBytes) return true
+        index++
+    }
+    return false
 }
 
 private fun invalidResource(uri: String, message: String): ReadResourceResult =

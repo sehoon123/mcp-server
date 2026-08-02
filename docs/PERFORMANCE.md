@@ -20,6 +20,9 @@ intended to expose algorithmic behavior; they are not Burp Suite product benchma
 | P1 | Proxy launched one coroutine per incoming stdio message without an admission limit | A burst could accumulate suspended request coroutines during reconnect | Use bounded request/control/lifecycle queues and a fixed request worker pool |
 | P1 | Build metadata and post-build `jar uf` mutation made extension bytes change on every build | Identical sources produced artifacts with different timestamps and manifest values | Package the proxy through Gradle's reproducible archive pipeline and verify embedded provenance |
 | P1 | Cross-source HTTP discovery could require full-message output or unbounded regex scans | Existing list tools expose raw offset pagination and legacy regex filters | Add compact literal/field search with signed cursors, a 50-result cap, a 10,000-record scan budget, and a 32 MiB content budget |
+| P1 | Related-traffic discovery reacquired every selected source for each of up to four seed-derived queries | Static pre-change call-path count was 4 queries × 3 sources = 12 possible discovery list acquisitions; a post-change regression pins one acquisition per source | Acquire each authorized source once per correlation call, then preserve independent query matching, scan budgets, ordering, and cursors over that request-scoped view |
+| P1 | Tool input decoding remained outside the bounded execution dispatcher | Registration wrappers decoded typed arguments before entering their per-handler dispatcher blocks | Centralize decode, execution, output encoding, and result construction behind one dispatcher boundary |
+| P1 | Idle and shutdown session cleanup closed detached transports serially | A stalled first SDK close could delay later close attempts and, during idle eviction, later capacity-slot release | Reclaim all slots first and reuse one concurrent, total-deadline best-effort close path for project reset, idle eviction, shutdown, displacement, and failed initialization |
 | P1 | Repeated attack-surface discovery re-read source metadata and encouraged model-side aggregation | Montoya exposes source lists but no project-wide metadata index | Retain at most 5,000 body-free records per source, validate bounded anchors, discard on project changes, and build exact top summaries without per-key detail maps |
 | P1 | Content-search accounting ran before cheaper metadata filters | Host/method/status mismatches still queried message sizes and consumed the 32 MiB budget | Compile membership filters once and apply all metadata predicates before content sizing or scanning |
 | P1 | Stable-ID reads constructed complete Proxy/WebSocket/Organizer snapshots | A one-record lookup called the unfiltered list API and then searched locally | Use Montoya's filtered lookup overloads and return at most matching records |
@@ -86,8 +89,10 @@ sessions after 20 Client.close() calls: 20
 additional sessions retained after 20 terminateSession()+close(): 0
 ```
 
-Each retained server session also owns notification bookkeeping. The packaged proxy calls `terminateSession()` during
-graceful stdio EOF or process shutdown. Termination treats an already-absent session as success and retries one
+Each retained server session also owns notification bookkeeping. Detached sessions now release every capacity slot and
+cancel registered work/streams before a shared concurrent close phase; one stalled transport therefore cannot prevent
+another detached transport from receiving its close attempt, and all cleanup paths retain one aggregate two-second
+deadline. The packaged proxy calls `terminateSession()` during graceful stdio EOF or process shutdown. Termination treats an already-absent session as success and retries one
 transient HTTP/connection failure within a two-second total budget; it never sends DELETE for an ambiguous in-flight
 call. `KtorServerManager` explicitly closes the MCP `Server` whenever it stops or replaces the Ktor engine.
 
@@ -448,8 +453,8 @@ The committed contract tests run with `python3 scripts/test-live-mcp-harness.py`
 `search_websocket_messages` acquires one Montoya WebSocket history list per call and uses it directly when the returned
 list advertises constant-time random access. A non-random-access implementation receives one defensive reference copy
 to avoid quadratic indexed scanning. The normal random-access path creates no second extension-owned full-history
-container: it captures only the bounded source window that the call can inspect, then identity-revalidates every inspected
-slot before returning. An unfiltered page needs only its requested result count; a filtered page retains the existing
+container: it captures only the bounded source window that the call can inspect in one raw-reference array, without a
+per-record wrapper allocation, then identity-revalidates every inspected slot before returning. An unfiltered page needs only its requested result count; a filtered page retains the existing
 10,000-record scan cap. It advances a raw source index inside an HMAC-signed project/query/snapshot cursor. Connection ID,
 direction, and listener-port predicates run before payload length or
 pattern access. Each page returns at most 50 summaries and scans at most 10,000 raw records. Safe-regex calls account
@@ -791,8 +796,8 @@ The existing extension-lifetime history recorder adds four fixed, value-free met
 
 Every metric retains only an active gauge, attempt/outcome counters, 11 fixed elapsed-time buckets, a saturating total,
 and a maximum monotonic duration. It accepts no project, client, source, query, filter, reference, cursor, issue, traffic,
-exception, or credential value. Related-correlation acquisition measures serial internal-search and selected-reference
-Montoya calls; its processing metric covers private metadata projection, resolver indexing, selected metadata
+exception, or credential value. Related-correlation acquisition measures one serial request-scoped list call per authorized discovery source, plus explicit
+and selected-reference resolver calls; its processing metric covers private metadata projection, resolver indexing, selected metadata
 materialization, ranking, and result assembly as separate non-overlapping segments. A completed related segment remains
 `completed` if a later segment makes the enclosing call fail closed; the live collector independently requires an overall
 `ok` result and clean measured segment outcomes. Scanner metrics apply only to delta mode:
@@ -882,18 +887,22 @@ parallelization.
 
 ## Logical related-traffic bounds
 
-Optional `correlate_http_activity.relatedTraffic` runs at most four serial internal HTTP searches. Each search returns at
-most 50 reference/metadata summaries and inherits the existing 10,000-record metadata-scan bound. The private relation
-projection deliberately bypasses adaptive metadata-index hints, so its phase cardinality does not depend on a warm index
-or a one-time hint retry. This fixed-attribution choice can be slower than the ordinary full-projection search when a
-current warm index exists; no performance improvement is claimed. The reported 200-invocation bound is therefore a bound
-on returned candidate summaries, not on all source records inspected. At most 16 selected stable references are
-reacquired through source-specific stable-reference resolution and scored again before they can be appended.
+Optional `correlate_http_activity.relatedTraffic` evaluates at most four serial internal HTTP queries. Each query returns
+at most 50 reference/metadata summaries and independently inherits the existing 10,000-record metadata-scan bound. The
+private relation projection deliberately bypasses adaptive metadata-index hints, so its phase cardinality does not depend
+on a warm index or a one-time hint retry. It can therefore remain slower than the ordinary full-projection search when a
+current warm index exists. The reported 200-invocation bound is a bound on returned candidate
+summaries, not on all source records inspected. At most 16 selected stable references are reacquired through
+source-specific stable-reference resolution and scored again before they can be appended.
 
-These limits bound extension processing and output; they do not reduce the cost of Montoya source acquisition. Each
-internal search may obtain complete source views, and selected Site Map revalidation may snapshot that source. No
-discovery search is parallelized, and no latency or throughput
-improvement is claimed. Live 10k/50k/100k measurements must precede any acquisition redesign or performance claim.
+After the union source authorization succeeds, discovery obtains each requested Proxy, Site Map, or Organizer list once
+and evaluates every seed-derived query over that same request-scoped view. Query normalization, encounter order,
+50-result limits, 10,000-record scan accounting, truncation, and signed cursor snapshots remain independent. Deterministic
+regression coverage pins one unfiltered list acquisition per requested source for four distinct query keys; this is code-
+level call-cardinality evidence, not live Burp latency evidence. Explicit-reference resolution and selected-reference
+revalidation remain separate acquisitions, selected Site Map revalidation may still snapshot that source, and no source
+call is parallelized. No latency, throughput, or Burp-product improvement is claimed; Community and Professional
+10k/50k/100k live attribution remains required.
 
 ## Logical Scanner delta bounds
 

@@ -212,6 +212,8 @@ private fun readResolved(
     val response = resolved.response
     val service = request.httpService()
     val rawUrl = request.url()
+    val requestBody = request.body()
+    val responseBody = response?.body()
     val sourceMetadata = resolved.sourceMetadata
     val metadata = UnifiedHttpMessageMetadata(
         projectId = projectId,
@@ -225,8 +227,8 @@ private fun readResolved(
         statusCode = response?.statusCode()?.toInt(),
         mimeType = response?.mimeType()?.name,
         hasResponse = response != null,
-        requestBodyBytes = request.body().length(),
-        responseBodyBytes = response?.body()?.length(),
+        requestBodyBytes = requestBody.length(),
+        responseBodyBytes = responseBody?.length(),
         time = sourceMetadata?.time,
         listenerPort = sourceMetadata?.listenerPort,
         edited = sourceMetadata?.edited,
@@ -247,10 +249,10 @@ private fun readResolved(
     val bytes: MontoyaByteArray? = when (part) {
         "request" -> request.toByteArray()
         "request_headers" -> request.toByteArray().subArray(0, request.bodyOffset())
-        "request_body" -> request.body()
+        "request_body" -> requestBody
         "response" -> response?.toByteArray()
         "response_headers" -> response?.let { it.toByteArray().subArray(0, it.bodyOffset()) }
-        "response_body" -> response?.body()
+        "response_body" -> responseBody
         else -> error("Unsupported HTTP message part: $part")
     }
     if (bytes == null) {

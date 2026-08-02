@@ -240,9 +240,7 @@ internal suspend fun Server.executeRegisteredResource(
     return try {
         executionLease = sessionId?.let { executionRegistry().register(it, currentCoroutineContext()[Job]!!) }
         val executionContext = sessionApprovalContext?.let { invocation + it } ?: invocation
-        val result = withContext(executionContext) {
-            withContext(toolExecutionDispatcher) { execute() }
-        }
+        val result = withContext(executionContext + toolExecutionDispatcher) { execute() }
         invocation.complete("completed")
         result
     } catch (e: CancellationException) {
@@ -288,7 +286,7 @@ internal suspend fun Server.executeRegisteredTool(
             )
         } else {
             val executionContext = sessionApprovalContext?.let { invocation + it } ?: invocation
-            val result = withContext(executionContext) { execute() }
+            val result = withContext(executionContext + toolExecutionDispatcher) { execute() }
             invocation.complete(if (result.isError == true) "error" else "completed")
             result
         }
@@ -331,7 +329,7 @@ inline fun <reified I : Any> Server.mcpTool(
                 request.params.arguments ?: JsonObject(emptyMap())
             )
             CallToolResult(
-                content = withContext(toolExecutionDispatcher) { execute(input) },
+                content = execute(input),
                 isError = false
             )
         }
@@ -463,7 +461,7 @@ inline fun Server.mcpTool(
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
         toolServer.executeRegisteredTool(connection, request, name, annotations) {
             CallToolResult(
-                content = withContext(toolExecutionDispatcher) { execute() },
+                content = execute(),
                 isError = false
             )
         }
@@ -487,7 +485,7 @@ inline fun Server.mcpTool(
     val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
         toolServer.executeRegisteredTool(connection, request, name, annotations) {
             CallToolResult(
-                content = listOf(TextContent(withContext(toolExecutionDispatcher) { execute() })),
+                content = listOf(TextContent(execute())),
                 isError = false
             )
         }
@@ -565,15 +563,13 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
                 request.params.arguments ?: JsonObject(emptyMap()),
             )
             val context = ToolCallContext(connection, request.params.meta?.progressToken)
-            withContext(toolExecutionDispatcher) {
-                val response = context.execute(input)
-                val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
-                CallToolResult(
-                    content = listOf(TextContent(response.text ?: structuredContent.toString())),
-                    isError = response.isError,
-                    structuredContent = structuredContent,
-                )
-            }
+            val response = context.execute(input)
+            val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject
+            CallToolResult(
+                content = listOf(TextContent(response.text ?: structuredContent.toString())),
+                isError = response.isError,
+                structuredContent = structuredContent,
+            )
         }
     }
 
@@ -612,15 +608,13 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
                 inputSerializer,
                 request.params.arguments ?: JsonObject(emptyMap()),
             )
-            withContext(toolExecutionDispatcher) {
-                val output = execute(input)
-                val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
-                CallToolResult(
-                    content = listOf(TextContent(structuredContent.toString())),
-                    isError = false,
-                    structuredContent = structuredContent,
-                )
-            }
+            val output = execute(input)
+            val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
+            CallToolResult(
+                content = listOf(TextContent(structuredContent.toString())),
+                isError = false,
+                structuredContent = structuredContent,
+            )
         }
     }
 

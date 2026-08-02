@@ -349,6 +349,65 @@ class HttpActivityCorrelationTest {
     }
 
     @Test
+    fun `distinct related queries share one source snapshot without changing per-query accounting`() = runBlocking {
+        val seeds = listOf(
+            proxyItem(1, "GET", "/alpha/1", 200, MimeType.JSON, host = "alpha.test"),
+            proxyItem(2, "GET", "/bravo/1", 200, MimeType.JSON, host = "bravo.test"),
+            proxyItem(3, "GET", "/charlie/1", 200, MimeType.JSON, host = "charlie.test"),
+            proxyItem(4, "GET", "/delta/1", 200, MimeType.JSON, host = "delta.test"),
+        )
+        val candidates = listOf(
+            proxyItem(6, "GET", "/alpha/2", 200, MimeType.JSON, host = "alpha.test"),
+            proxyItem(7, "GET", "/bravo/2", 200, MimeType.JSON, host = "bravo.test"),
+            proxyItem(8, "GET", "/charlie/2", 200, MimeType.JSON, host = "charlie.test"),
+            proxyItem(9, "GET", "/delta/2", 200, MimeType.JSON, host = "delta.test"),
+        )
+        proxyItems += seeds.map { it.item }
+        proxyItems += proxyItem(5, "POST", "/comparison", 204, MimeType.HTML, host = "comparison.test").item
+        proxyItems += candidates.map { it.item }
+        val diagnostics = HistoryPerformanceDiagnostics()
+
+        val result = service(performanceDiagnostics = diagnostics).correlate(
+            CorrelateHttpActivity(
+                projectId = currentProjectId,
+                baselineRefs = (1..4).map { ref(HttpMessageSource.PROXY, it.toString()) },
+                comparisonRefs = listOf(ref(HttpMessageSource.PROXY, "5")),
+                relatedTraffic = RelatedHttpTrafficDiscovery(
+                    seedEventIndices = listOf(0, 1, 2, 3),
+                    sources = listOf(
+                        HttpMessageSource.PROXY,
+                        HttpMessageSource.SITE_MAP,
+                        HttpMessageSource.ORGANIZER,
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(HttpActivityCorrelationStatus.OK, result.status, result.error)
+        assertEquals(
+            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+            result.timeline.map { it.ref.id },
+        )
+        val related = requireNotNull(result.relatedTraffic)
+        assertEquals(4, related.queryCount)
+        assertEquals(8, related.candidateSummariesExamined)
+        assertEquals(4, related.qualifiedCandidates)
+        assertEquals(4, related.returned)
+        assertEquals(listOf(5, 6, 7, 8), related.matches.map { it.eventIndex })
+        assertFalse(related.truncated)
+        verify(exactly = 1) { proxy.history() }
+        verify(exactly = 1) { siteMap.requestResponses() }
+        verify(exactly = 1) { organizer.items() }
+        verify(exactly = 2) { proxy.history(any()) }
+        verify(exactly = 0) { organizer.items(any()) }
+        val acquisition = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION
+        }
+        // Explicit and selected Proxy resolution plus one shared acquisition for each requested discovery source.
+        assertEquals(5, acquisition.attempts)
+    }
+
+    @Test
     fun `mixed Proxy and Site Map related attribution matches resolver and search phase boundaries`() = runBlocking {
         val seed = proxyItem(1, "GET", "/api/items/1", 200, MimeType.JSON)
         val comparison = siteMapItem("POST", "/other", 404, MimeType.HTML)

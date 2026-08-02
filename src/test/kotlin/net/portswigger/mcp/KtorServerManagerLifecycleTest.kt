@@ -27,6 +27,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class KtorServerManagerLifecycleTest {
     private val bearerToken = "0123456789012345678901234567890123456789012"
@@ -140,7 +141,9 @@ class KtorServerManagerLifecycleTest {
         every { burpSuite.version() } returns version
         val startupBlocked = CountDownLatch(1)
         val releaseStartup = AtomicBoolean()
+        val startupWorker = AtomicReference<Thread?>()
         every { api.burpSuite() } answers {
+            startupWorker.compareAndSet(null, Thread.currentThread())
             startupBlocked.countDown()
             while (!releaseStartup.get()) {
                 try {
@@ -163,6 +166,7 @@ class KtorServerManagerLifecycleTest {
             manager.start(config(port, logging), states::add)
             assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
             assertTrue(startupBlocked.await(5, TimeUnit.SECONDS))
+            assertTrue(requireNotNull(startupWorker.get()).isDaemon)
             val startingMcpServerField = KtorServerManager::class.java.getDeclaredField("startingMcpServer").apply {
                 isAccessible = true
             }
