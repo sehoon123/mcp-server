@@ -31,6 +31,9 @@ import net.portswigger.mcp.providers.ProviderInstallConfig
 import java.awt.BorderLayout
 import java.awt.Component.CENTER_ALIGNMENT
 import java.awt.GridBagLayout
+import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.Box.*
 import javax.swing.JOptionPane.ERROR_MESSAGE
@@ -48,6 +51,7 @@ class ConfigUi internal constructor(
     private val edtWatchdogProvider: () -> EdtWatchdogSnapshot = { EdtWatchdogSnapshot() },
     private val connectionDoctor: ConnectionDoctor = ConnectionDoctor(),
     private val workflowPresetManager: WorkflowPresetManagement? = null,
+    private val cleanupErrorReporter: (String) -> Unit = {},
 ) {
     constructor(config: McpConfig, providers: List<Provider>) : this(
         config = config,
@@ -63,7 +67,8 @@ class ConfigUi internal constructor(
     private val extensionVersion = runCatching { diagnosticsProvider().serverVersion }.getOrDefault("unknown")
     val component: JComponent get() = panel
 
-    private val listenerHandles = mutableListOf<ListenerHandle>()
+    private val listenerHandles = CopyOnWriteArrayList<ListenerHandle>()
+    private val cleanupStarted = AtomicBoolean()
 
     private val enabledToggle: ToggleSwitch = Design.createToggleSwitch(false) { enabled ->
         if (suppressToggleEvents) return@createToggleSwitch
@@ -191,26 +196,61 @@ class ConfigUi internal constructor(
     }
 
     fun cleanup() {
-        listenerHandles.forEach { it.remove() }
+        if (!cleanupStarted.compareAndSet(false, true)) return
+        if (SwingUtilities.isEventDispatchThread()) {
+            cleanupOnEdt()
+            return
+        }
+        try {
+            SwingUtilities.invokeAndWait(::cleanupOnEdt)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            SwingUtilities.invokeLater(::cleanupOnEdt)
+        } catch (_: InvocationTargetException) {
+            cleanupStarted.set(false)
+            reportCleanupFailure()
+        }
+    }
+
+    private fun cleanupOnEdt() {
+        check(SwingUtilities.isEventDispatchThread()) { "MCP configuration UI cleanup must run on the EDT" }
+        var failed = false
+        fun cleanupStep(action: () -> Unit) {
+            try {
+                action()
+            } catch (_: Exception) {
+                failed = true
+            }
+        }
+
+        val handles = listenerHandles.toList()
         listenerHandles.clear()
+        handles.forEach { handle -> cleanupStep(handle::remove) }
         if (endpointDocumentListenersInstalled) {
-            hostField.document.removeDocumentListener(endpointChangeListener)
-            portField.document.removeDocumentListener(endpointChangeListener)
+            cleanupStep {
+                hostField.document.removeDocumentListener(endpointChangeListener)
+                portField.document.removeDocumentListener(endpointChangeListener)
+            }
             endpointDocumentListenersInstalled = false
         }
 
         if (::autoApproveTargetsPanel.isInitialized) {
-            autoApproveTargetsPanel.cleanup()
+            cleanupStep(autoApproveTargetsPanel::cleanup)
         }
         if (::diagnosticsPanel.isInitialized) {
-            diagnosticsPanel.cleanup()
+            cleanupStep(diagnosticsPanel::cleanup)
         }
         if (::workflowPresetPanel.isInitialized) {
-            workflowPresetPanel.cleanup()
+            cleanupStep(workflowPresetPanel::cleanup)
         }
         if (::clientSetupPanel.isInitialized) {
-            clientSetupPanel.cleanup()
+            cleanupStep(clientSetupPanel::cleanup)
         }
+        if (failed) reportCleanupFailure()
+    }
+
+    private fun reportCleanupFailure() {
+        runCatching { cleanupErrorReporter("MCP configuration UI cleanup failed") }
     }
 
     /** Cancels panel-owned work before the listener begins shutting down. Full cleanup remains idempotent. */

@@ -48,6 +48,7 @@ import net.portswigger.mcp.KtorServerManager
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
@@ -118,7 +119,10 @@ class ToolsKtTest {
     // Tool-contract fixtures deliberately replace their mocked project after the client connects. Project-bound
     // session lifecycle is covered by McpServerIntegrationTest and McpProjectEpochGuardTest instead.
     private val serverManager = KtorServerManager(
-        api, NoOpMcpAuditSink, projectIdProvider = null, extensionStorage = workflowStorage
+        api,
+        NoOpMcpAuditSink,
+        projectIdProvider = null,
+        workflowPresetStore = WorkflowPresetStore(workflowStorage),
     )
     private val testPort = findAvailablePort()
     private var serverStarted = false

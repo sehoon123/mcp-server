@@ -119,6 +119,7 @@ internal class HttpMetadataIndex(
     private var observedProjectId: String? = null
     private var generation = 0L
     private var activeMutations = 0
+    @Volatile
     private var closed = false
 
     init {
@@ -452,13 +453,16 @@ internal class HttpMetadataIndex(
         }
     }
 
+    /** Rejects new work immediately while the bounded extension cleanup delegates the quiescence drain. */
+    internal fun requestClose() {
+        closed = true
+    }
+
     override fun close() = runBlocking {
+        requestClose()
         stateLock.withLock {
-            if (!closed) {
-                closed = true
-                observedProjectId = null
-                invalidateLocked()
-            }
+            observedProjectId = null
+            invalidateLocked()
         }
         // Preserve unload quiescence: no refresh, hint validation, or mutation may use Montoya after close returns.
         refreshLock.withLock { }

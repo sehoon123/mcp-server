@@ -19,6 +19,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
@@ -55,7 +56,7 @@ class ProxyEndToEndTest {
     private val serverManager = KtorServerManager(
         api,
         NoOpMcpAuditSink,
-        extensionStorage = workflowStorage,
+        workflowPresetStore = WorkflowPresetStore(workflowStorage),
     )
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()

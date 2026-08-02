@@ -567,9 +567,16 @@ class ExactSmokeContractTest(unittest.TestCase):
         self.assertEqual(1, draft.count("V411_RELEASE_TAG=v4.11.0"))
         self.assertEqual(1, draft.count("V411_RELEASE_BRANCH=release/v4.11"))
         self.assertEqual(1, draft.count("DEFAULT_BRANCH=main"))
+        self.assertEqual(1, draft.count("V411_STABLE_TAG=v4.11.0"))
         self.assertIn('[[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]', draft)
         self.assertIn('git fetch --no-tags origin "+refs/heads/$expected_ancestry_branch:$expected_ancestry_ref"', draft)
         self.assertIn('git merge-base --is-ancestor "$commit" "$expected_ancestry_ref"', draft)
+        self.assertIn('gh api "repos/$GITHUB_REPOSITORY/releases/tags/$V411_STABLE_TAG"', draft)
+        self.assertIn('.draft == false and', draft)
+        self.assertIn('.prerelease == false and', draft)
+        self.assertIn('.immutable == true', draft)
+        self.assertIn('git merge-base --is-ancestor "$stable_source_commit" "$stable_release_ref"', draft)
+        self.assertIn("Release drafting is blocked until the reviewed v4.11 identity bridge is pinned or re-parameterized", draft)
 
         selector_pattern = re.compile(
             r"(?ms)^          V411_RELEASE_TAG=v4\.11\.0\n.*?^          fi"
@@ -621,6 +628,59 @@ class ExactSmokeContractTest(unittest.TestCase):
         assert_ref_matrix(smoke_selectors[0], "expected_workflow_ref")
         for selector in publish_selectors:
             assert_ref_matrix(selector, "expected_workflow_ref", "expected_workflow_branch")
+
+        bridge_selector_pattern = re.compile(
+            r"(?ms)^          release_core=\$\{version%%\+\*\}\n.*?^          fi"
+            r"(?=\n          if \[\[ \"\$requires_v411_stable_bridge\" == true \]\]; then)"
+        )
+        bridge_selectors = [textwrap.dedent(value) for value in bridge_selector_pattern.findall(draft)]
+        self.assertEqual(1, len(bridge_selectors))
+        for version, expected in (
+            ("4.10.0-rc.2", "false"),
+            ("4.11.0", "false"),
+            ("4.11.0-rc.7", "true"),
+            ("4.11.0-rc.8", "true"),
+            ("4.11.0+build.1", "true"),
+            ("4.11.1", "true"),
+            ("4.12.0-dev.1", "true"),
+            ("4.12.0-rc.1", "true"),
+            ("5.0.0", "true"),
+        ):
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -euo pipefail\n" + bridge_selectors[0] +
+                    '\nprintf "%s" "$requires_v411_stable_bridge"\n',
+                ],
+                env={**os.environ, "version": version},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, f"version={version} stderr={result.stderr!r}")
+            self.assertEqual(expected, result.stdout)
+        for oversized_version in (
+            "18446744073709551620.0.0",
+            "4.11.18446744073709551616",
+        ):
+            result = subprocess.run(
+                ["bash", "-c", "set -euo pipefail\n" + bridge_selectors[0]],
+                env={**os.environ, "version": oversized_version},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, result.returncode, f"oversized version accepted: {oversized_version}")
+
+        bridge_block = draft.split(
+            "          # Later main-line releases must remain blocked",
+            maxsplit=1,
+        )[1].split("\n          previous_tag=", maxsplit=1)[0]
+        self.assertNotIn("${{ inputs.", bridge_block)
+        self.assertEqual(2, bridge_block.count("\n            exit 1"))
+        self.assertIn("Release SemVer components exceed the reviewed arithmetic bound", bridge_block)
+        self.assertLess(draft.index("            exit 1"), draft.index("          previous_tag="))
 
         for release_tag, expected_branch in (
             ("v4.11.0", "release/v4.11"),

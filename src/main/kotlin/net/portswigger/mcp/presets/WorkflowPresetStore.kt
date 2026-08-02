@@ -119,6 +119,14 @@ internal class WorkflowPresetStore(private val storage: PersistedObject) {
         }
         try {
             storage.setString(WORKFLOW_PRESET_STORAGE_KEY, raw)
+            if (storage.getString(WORKFLOW_PRESET_STORAGE_KEY) != raw) {
+                throw WorkflowPresetStoreException(
+                    WorkflowPresetStoreFailure.STORAGE,
+                    writeAttempted = true,
+                )
+            }
+        } catch (e: WorkflowPresetStoreException) {
+            throw e
         } catch (e: Exception) {
             // Invocation has crossed the persistence side-effect boundary, including cancellation-like failures.
             throw WorkflowPresetStoreException(WorkflowPresetStoreFailure.STORAGE, writeAttempted = true, cause = e)

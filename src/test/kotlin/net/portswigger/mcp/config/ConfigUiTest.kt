@@ -259,6 +259,37 @@ class ConfigUiTest {
     }
 
     @Test
+    fun `cleanup from a non EDT thread is synchronous and idempotent`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait { ui = ConfigUi(config, emptyList()) }
+        val failure = AtomicReference<Throwable?>()
+
+        val worker = Thread {
+            try {
+                ui.cleanup()
+                ui.cleanup()
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        worker.start()
+        worker.join(5_000)
+
+        assertFalse(worker.isAlive)
+        assertEquals(null, failure.get())
+        SwingUtilities.invokeAndWait { Unit }
+    }
+
+    @Test
     fun `version label is conspicuous and bounded`() {
         assertEquals("Extension version: 4.0.1", formatMcpVersionLabel("4.0.1"))
         val sanitized = formatMcpVersionLabel("4.0.1\nBearer secret-value /home/user/file")

@@ -9,12 +9,15 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
@@ -151,13 +154,39 @@ class HistoryPerformanceDiagnosticsTest {
         val diagnostics = HistoryPerformanceDiagnostics()
         val workers = 100
         val perWorker = 1_000
-        (0 until workers).map {
-            async(Dispatchers.Default) {
-                repeat(perWorker) {
-                    diagnostics.measure(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING) { Unit }
-                }
+        val finished = AtomicBoolean()
+        val reader = async(Dispatchers.Default) {
+            var previous = diagnostics.snapshot().metrics.single {
+                it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
             }
-        }.awaitAll()
+            while (!finished.get()) {
+                val observed = diagnostics.snapshot().metrics.single {
+                    it.metric == HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING
+                }
+                assertTrue(observed.attempts >= previous.attempts)
+                assertTrue(observed.completed >= previous.completed)
+                assertTrue(observed.failed >= previous.failed)
+                assertTrue(observed.cancelled >= previous.cancelled)
+                assertTrue(observed.totalNanos >= previous.totalNanos)
+                assertTrue(observed.maxNanos >= previous.maxNanos)
+                observed.latencyBuckets.indices.forEach { index ->
+                    assertTrue(observed.latencyBuckets[index] >= previous.latencyBuckets[index])
+                }
+                previous = observed
+            }
+        }
+        try {
+            (0 until workers).map {
+                async(Dispatchers.Default) {
+                    repeat(perWorker) {
+                        diagnostics.measure(HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING) { Unit }
+                    }
+                }
+            }.awaitAll()
+        } finally {
+            finished.set(true)
+        }
+        reader.await()
 
         val snapshot = diagnostics.snapshot()
         assertEquals(HistoryPerformanceMetric.entries.size, snapshot.metrics.size)
@@ -201,6 +230,28 @@ class HistoryPerformanceDiagnosticsTest {
     }
 
     @Test
+    fun `torn counters are returned verbatim after bounded retries`() {
+        val diagnostics = HistoryPerformanceDiagnostics()
+        val countersField = HistoryPerformanceDiagnostics::class.java.getDeclaredField("counters").apply {
+            isAccessible = true
+        }
+        val counters = countersField.get(diagnostics) as Array<*>
+        val metricCounters = counters[HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING.ordinal]!!
+        val attemptsField = metricCounters.javaClass.getDeclaredField("attempts").apply { isAccessible = true }
+        (attemptsField.get(metricCounters) as AtomicLong).set(5)
+
+        val observed = diagnostics.snapshot().metrics.single {
+            it.metric == HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING
+        }
+        assertEquals(5, observed.attempts)
+        assertEquals(0, observed.completed)
+        assertEquals(0, observed.latencyBuckets.sum())
+        assertFalse(historyPerformanceCountersSettled(observed))
+        assertFalse(historyPerformanceCountersSettled(observed.copy(attempts = 0, totalNanos = 1)))
+        assertTrue(historyPerformanceCountersSettled(observed.copy(attempts = 0)))
+    }
+
+    @Test
     fun `fixed aggregate snapshot serializes and round trips without dynamic fields`() = runBlocking {
         var now = 0L
         val diagnostics = HistoryPerformanceDiagnostics { now }
@@ -216,6 +267,22 @@ class HistoryPerformanceDiagnosticsTest {
         assertEquals(HistoryPerformanceMetric.entries.size, decoded.metrics.size)
         assertTrue(encoded.contains("RELATED_CORRELATION_EXTENSION_PROCESSING"))
         assertTrue(encoded.contains("\"totalNanos\":42"))
+        val metricKeys = Json.parseToJsonElement(encoded).jsonObject
+            .getValue("metrics").jsonArray.first().jsonObject.keys
+        assertEquals(
+            setOf(
+                "metric",
+                "active",
+                "attempts",
+                "completed",
+                "failed",
+                "cancelled",
+                "latencyBuckets",
+                "totalNanos",
+                "maxNanos",
+            ),
+            metricKeys,
+        )
         assertFalse(encoded.contains("project"))
         assertFalse(encoded.contains("filter"))
     }

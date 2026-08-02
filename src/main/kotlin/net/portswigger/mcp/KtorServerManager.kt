@@ -70,7 +70,6 @@ import net.portswigger.mcp.security.safeExceptionSummary
 import net.portswigger.mcp.security.safeSingleLine
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.tools.ToolServices
-import burp.api.montoya.persistence.PersistedObject
 import net.portswigger.mcp.tools.activateToolExecutionSession
 import net.portswigger.mcp.tools.cancelAllToolExecutions
 import net.portswigger.mcp.tools.cancelToolExecutionSession
@@ -81,9 +80,12 @@ import java.net.BindException
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 private const val MCP_PATH = "/mcp"
 internal const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
@@ -1082,29 +1084,57 @@ internal class ManagedMcpSessionLease(
     }
 }
 
+private fun defaultWorkflowPresetStore(api: MontoyaApi): WorkflowPresetStore {
+    val extensionStorage = api.persistence().extensionData()
+    return WorkflowPresetStore(extensionStorage)
+}
+
 class KtorServerManager internal constructor(
     private val api: MontoyaApi,
     private val auditSink: McpAuditSink,
     private val projectIdProvider: (() -> String)? = { api.project().id() },
-    extensionStorage: PersistedObject = api.persistence().extensionData(),
-    workflowPresetStore: WorkflowPresetStore = WorkflowPresetStore(extensionStorage),
+    workflowPresetStore: WorkflowPresetStore,
+    private val shutdownTimeoutMillis: Long = 10_000,
 ) : ServerManager {
+
+    internal constructor(
+        api: MontoyaApi,
+        auditSink: McpAuditSink,
+        projectIdProvider: (() -> String)? = { api.project().id() },
+    ) : this(api, auditSink, projectIdProvider, defaultWorkflowPresetStore(api))
 
     constructor(api: MontoyaApi) : this(api, NoOpMcpAuditSink)
 
+    init {
+        require(shutdownTimeoutMillis in 1..10_000) { "Shutdown timeout is out of range" }
+    }
+
     private val serverVersion = KtorServerManager::class.java.`package`.implementationVersion ?: "dev"
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val lifecycleThread = AtomicReference<Thread?>()
+    private val lifecycleSubmissionLock = Any()
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "independent-mcp-lifecycle").also(lifecycleThread::set)
+    }
+    private val shutdownStarted = AtomicBoolean()
     private val loadedArtifactSha256 = executor.submit<String?> {
         LoadedArtifactIdentity.currentSha256(KtorServerManager::class.java)
     }
     private val sessionApprovals = McpSessionApprovalRegistry(MCP_MAX_SESSIONS)
     @Volatile
     private var runtimeMetrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
+    private val serverStateLock = Any()
     private var server: EmbeddedServer<*, *>? = null
     private var mcpServer: Server? = null
-    private val toolServices = ToolServices(api, extensionStorage, workflowPresetStore)
+    private var startingServer: EmbeddedServer<*, *>? = null
+    private var startingMcpServer: Server? = null
+    private val toolServices = ToolServices(api, workflowPresetStore)
 
     override fun start(config: McpConfig, callback: (ServerState) -> Unit) {
+        if (shutdownStarted.get()) {
+            callback(ServerState.Failed(IllegalStateException("MCP server manager is shut down")))
+            return
+        }
+
         val requestedHost = config.host
         val requestedPort = config.port
         val normalizedRequestedHost = ConfigValidation.normalizeLoopbackHost(requestedHost)
@@ -1116,10 +1146,29 @@ class KtorServerManager internal constructor(
         runtimeMetrics = metrics
         callback(ServerState.Starting)
 
-        executor.submit {
+        if (!submitLifecycle {
+            if (shutdownStarted.get()) {
+                metrics.markStopped()
+                callback(ServerState.Stopped)
+                return@submitLifecycle
+            }
+            var untrackedMcpServer: Server? = null
+            var untrackedServer: EmbeddedServer<*, *>? = null
+            fun cleanupUntrackedCandidates() {
+                untrackedServer?.let { candidate -> runCatching { candidate.stop(1000, 5000) } }
+                untrackedServer = null
+                untrackedMcpServer?.let { candidate ->
+                    synchronized(serverStateLock) {
+                        if (startingMcpServer === candidate) startingMcpServer = null
+                    }
+                    runCatching { closeMcpServer(candidate) }
+                }
+                untrackedMcpServer = null
+            }
             try {
                 stopCurrentServer()
                 metrics.setLoadedArtifactSha256(loadedArtifactSha256.get(30, TimeUnit.SECONDS))
+                ensureStartupAllowed()
 
                 val bindHost = normalizedRequestedHost
                     ?: throw IllegalArgumentException(
@@ -1137,10 +1186,18 @@ class KtorServerManager internal constructor(
                         )
                     )
                 )
+                untrackedMcpServer = newMcpServer
+                synchronized(serverStateLock) {
+                    ensureStartupAllowed()
+                    check(startingMcpServer == null) { "Another MCP startup candidate is already current" }
+                    startingMcpServer = newMcpServer
+                }
                 newMcpServer.registerTools(api, config, toolServices, auditSink, sessionApprovals)
+                ensureStartupAllowed()
                 newMcpServer.registerMcpResources(api, config, ::diagnostics)
+                ensureStartupAllowed()
                 newMcpServer.registerMcpPrompts(api)
-                mcpServer = newMcpServer
+                ensureStartupAllowed()
 
                 val environment = applicationEnvironment()
                 val newEngine = embeddedServer(
@@ -1164,16 +1221,54 @@ class KtorServerManager internal constructor(
                         onProjectBoundary = toolServices::resetForProjectBoundary,
                     )
                 }
-                server = newEngine
+                untrackedServer = newEngine
+                synchronized(serverStateLock) {
+                    ensureStartupAllowed()
+                    check(startingMcpServer === newMcpServer) {
+                        "MCP startup candidate is no longer current"
+                    }
+                    startingServer = newEngine
+                    untrackedServer = null
+                    untrackedMcpServer = null
+                }
                 newEngine.start(wait = false)
-                metrics.markRunning()
+                synchronized(serverStateLock) {
+                    ensureStartupAllowed()
+                    check(startingServer === newEngine && startingMcpServer === newMcpServer) {
+                        "MCP startup candidate is no longer current"
+                    }
+                    startingServer = null
+                    startingMcpServer = null
+                    server = newEngine
+                    mcpServer = newMcpServer
+                }
+                val runningPublished = synchronized(lifecycleSubmissionLock) {
+                    if (shutdownStarted.get()) {
+                        false
+                    } else {
+                        metrics.markRunning()
+                        api.logging().logToOutput(
+                            "Started authenticated MCP Streamable HTTP server at " +
+                                "http://${formatHostForUrl(bindHost)}:$requestedPort/mcp"
+                        )
+                        callback(ServerState.Running)
+                        true
+                    }
+                }
+                if (!runningPublished || shutdownStarted.get()) {
+                    stopCurrentServer()
+                    metrics.markStopped()
+                    callback(ServerState.Stopped)
+                    return@submitLifecycle
+                }
 
-                api.logging().logToOutput(
-                    "Started authenticated MCP Streamable HTTP server at http://${formatHostForUrl(bindHost)}:$requestedPort/mcp"
-                )
-                callback(ServerState.Running)
-
+            } catch (_: ServerManagerShutdownException) {
+                cleanupUntrackedCandidates()
+                runCatching { stopCurrentServer() }
+                metrics.markStopped()
+                callback(ServerState.Stopped)
             } catch (e: Exception) {
+                cleanupUntrackedCandidates()
                 runCatching { stopCurrentServer() }
                 val failure = normalizeMcpServerStartFailure(e, normalizedRequestedHost, requestedPort)
                 val summary = if (failure is McpServerStartupException) {
@@ -1181,19 +1276,43 @@ class KtorServerManager internal constructor(
                 } else {
                     safeExceptionSummary(failure)
                 }
-                metrics.markFailed(summary)
-                api.logging().logToError("MCP server failed: $summary")
-                callback(ServerState.Failed(failure))
+                val failurePublished = synchronized(lifecycleSubmissionLock) {
+                    if (shutdownStarted.get()) {
+                        false
+                    } else {
+                        metrics.markFailed(summary)
+                        api.logging().logToError("MCP server failed: $summary")
+                        callback(ServerState.Failed(failure))
+                        true
+                    }
+                }
+                if (!failurePublished || shutdownStarted.get()) {
+                    metrics.markStopped()
+                    callback(ServerState.Stopped)
+                }
             }
+        }) {
+            metrics.markStopped()
+            callback(ServerState.Stopped)
         }
     }
 
     override fun stop(callback: (ServerState) -> Unit) {
+        if (shutdownStarted.get()) {
+            callback(ServerState.Stopped)
+            return
+        }
+
         val metrics = runtimeMetrics
         metrics.markStopping()
         callback(ServerState.Stopping)
 
-        executor.submit {
+        if (!submitLifecycle {
+            if (shutdownStarted.get()) {
+                metrics.markStopped()
+                callback(ServerState.Stopped)
+                return@submitLifecycle
+            }
             try {
                 stopCurrentServer()
                 metrics.markStopped()
@@ -1205,6 +1324,23 @@ class KtorServerManager internal constructor(
                 api.logging().logToError("MCP server stop failed: $summary")
                 callback(ServerState.Failed(e))
             }
+        }) {
+            metrics.markStopped()
+            callback(ServerState.Stopped)
+        }
+    }
+
+    private fun ensureStartupAllowed() {
+        if (shutdownStarted.get()) throw ServerManagerShutdownException()
+    }
+
+    private fun submitLifecycle(action: () -> Unit): Boolean = synchronized(lifecycleSubmissionLock) {
+        if (shutdownStarted.get()) return@synchronized false
+        try {
+            executor.submit { action() }
+            true
+        } catch (_: RejectedExecutionException) {
+            false
         }
     }
 
@@ -1225,50 +1361,105 @@ class KtorServerManager internal constructor(
     internal fun clearSessionApprovals(): Int = sessionApprovals.clearApprovals()
 
     private fun stopCurrentServer() {
-        val currentEngine = server
-        server = null
-        try {
-            currentEngine?.stop(1000, 5000)
-        } finally {
+        val (engines, mcpServers, registeringMcpServers) = synchronized(serverStateLock) {
+            val detachedEngines = listOfNotNull(server, startingServer).distinct()
+            val detachedMcpServers = listOfNotNull(
+                mcpServer,
+                startingMcpServer.takeIf { startingServer != null },
+            ).distinct()
+            val detachedRegisteringMcpServers = listOfNotNull(
+                startingMcpServer.takeIf { startingServer == null },
+            )
+            server = null
+            mcpServer = null
+            startingServer = null
+            startingMcpServer = null
+            Triple(detachedEngines, detachedMcpServers, detachedRegisteringMcpServers)
+        }
+        var failure: Throwable? = null
+        fun cleanup(action: () -> Unit) {
             try {
-                val currentMcpServer = mcpServer
-                mcpServer = null
-                if (currentMcpServer != null) {
-                    currentMcpServer.unbindToolRuntimePolicy()
-                    try {
-                        runBlocking {
-                            withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { currentMcpServer.close() }
-                        }
-                    } catch (e: CancellationException) {
-                        if (e.hasNonCancellationCause()) throw e
-                        // Closing an MCP server cancels its own transport jobs. That is successful shutdown, not a failure.
-                    }
-                }
-            } finally {
-                sessionApprovals.clearSessions()
+                action()
+            } catch (error: Throwable) {
+                if (failure == null) failure = error
             }
+        }
+
+        engines.forEach { engine -> cleanup { engine.stop(1000, 5000) } }
+        mcpServers.forEach { candidate -> cleanup { closeMcpServer(candidate) } }
+        registeringMcpServers.forEach { candidate -> cleanup { candidate.unbindToolRuntimePolicy() } }
+        cleanup { sessionApprovals.clearSessions() }
+        failure?.let { throw it }
+    }
+
+    private fun closeMcpServer(candidate: Server) {
+        candidate.unbindToolRuntimePolicy()
+        try {
+            runBlocking {
+                withTimeoutOrNull(MCP_SESSION_SHUTDOWN_TIMEOUT_MILLIS) { candidate.close() }
+            }
+        } catch (e: CancellationException) {
+            if (e.hasNonCancellationCause()) throw e
+            // Closing an MCP server cancels its own transport jobs. That is successful shutdown, not a failure.
         }
     }
 
     override fun shutdown() {
+        val shutdownWon = synchronized(lifecycleSubmissionLock) {
+            shutdownStarted.compareAndSet(false, true)
+        }
+        if (!shutdownWon) return
+
         val metrics = runtimeMetrics
         metrics.markStopping()
-        runCatching {
-            executor.submit { stopCurrentServer() }.get(10, TimeUnit.SECONDS)
-            metrics.markStopped()
-        }.onFailure {
-            val summary = safeExceptionSummary(it)
-            metrics.markFailed(summary)
-            api.logging().logToError("MCP shutdown failed: $summary")
-        }
+        val calledFromLifecycleThread = Thread.currentThread() === lifecycleThread.get()
+        var interrupted = false
+        var shutdownError: Throwable? = null
+        try {
+            try {
+                if (calledFromLifecycleThread) {
+                    stopCurrentServer()
+                } else {
+                    executor.submit { stopCurrentServer() }.get(shutdownTimeoutMillis, TimeUnit.MILLISECONDS)
+                }
+            } catch (error: Throwable) {
+                shutdownError = error
+                if (error is InterruptedException) interrupted = true
+            } finally {
+                executor.shutdown()
+                if (!calledFromLifecycleThread) {
+                    try {
+                        if (!executor.awaitTermination(shutdownTimeoutMillis, TimeUnit.MILLISECONDS)) {
+                            executor.shutdownNow()
+                        }
+                    } catch (error: InterruptedException) {
+                        interrupted = true
+                        if (shutdownError == null) shutdownError = error
+                        executor.shutdownNow()
+                    }
+                }
+            }
 
-        executor.shutdown()
-        if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-            executor.shutdownNow()
+            val finalCleanupError = runCatching { stopCurrentServer() }.exceptionOrNull()
+            val effectiveError = finalCleanupError ?: shutdownError?.takeUnless { it is TimeoutException }
+            if (effectiveError == null) {
+                metrics.markStopped()
+            } else {
+                val summary = safeExceptionSummary(effectiveError)
+                metrics.markFailed(summary)
+                runCatching { api.logging().logToError("MCP shutdown failed: $summary") }
+            }
+        } finally {
+            try {
+                toolServices.close()
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt()
+            }
         }
-        toolServices.close()
     }
 }
+
+private class ServerManagerShutdownException : Exception()
 
 internal class McpServerStartupException(message: String, cause: Throwable) : Exception(message, cause)
 

@@ -19,9 +19,9 @@ withheld, and the published `v4.11.0-rc.7` is the observed candidate. Its observ
 run only on protected `release/v4.11`, anchored at the reviewed release-control revision. After that anchor is created,
 `main` may advance with later development, but those commits must never be merged or cherry-picked into the v4.11
 release line. The RC7/v4.11.0 workflow pins are intentionally single-use: RC8, a v4.11 patch, or a later stable line
-requires a reviewed re-parameterization rather than an operator-selected trust ref. Before the next main-line release is
-tagged, its draft identity gate must also account for published `v4.11.0` as a non-ancestor SerialVersion and provenance
-predecessor.
+requires a reviewed re-parameterization rather than an operator-selected trust ref. The draft identity gate now
+refuses unpinned successor v4.11 identities and every later main-line release until published `v4.11.0` can be pinned as
+a non-ancestor SerialVersion and provenance predecessor; that refusal is not an operator-selectable escape hatch.
 
 The required work was larger than a patch:
 
