@@ -46,7 +46,7 @@ internal class WorkflowPresetStore(private val storage: PersistedObject) {
 
     @Synchronized
     fun save(preset: WorkflowPreset, overwrite: Boolean): Pair<Boolean, Boolean> {
-        validatePersistedPreset(preset)
+        validateWorkflowPreset(preset)
         val envelope = readEnvelope()
         val requestedKey = workflowPresetNameKey(preset.name)
         val index = envelope.presets.indexOfFirst { workflowPresetNameKey(it.name) == requestedKey }
@@ -102,7 +102,7 @@ internal class WorkflowPresetStore(private val storage: PersistedObject) {
             throw WorkflowPresetStoreException(WorkflowPresetStoreFailure.OVERSIZED)
         }
         try {
-            envelope.presets.forEach(::validatePersistedPreset)
+            envelope.presets.forEach(::validateWorkflowPreset)
             require(envelope.presets.map { workflowPresetNameKey(it.name) }.distinct().size == envelope.presets.size)
         } catch (e: IllegalArgumentException) {
             throw WorkflowPresetStoreException(WorkflowPresetStoreFailure.MALFORMED, cause = e)
@@ -125,37 +125,40 @@ internal class WorkflowPresetStore(private val storage: PersistedObject) {
         }
     }
 
-    private fun validatePersistedPreset(preset: WorkflowPreset) {
-        require(preset.name == preset.name.trim())
-        require(preset.name.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS)
-        require(preset.name.none(Char::isISOControl))
-        require(preset.description == null ||
-            (preset.description.length <= MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS && preset.description.none(Char::isISOControl)))
-        preset.definition.kind()
-        preset.definition.httpSearch?.let {
-            validateHttpMetadataSearchSettings(SearchHttpMessages(
-                sources = it.sources, host = it.host, pathContains = it.pathContains, methods = it.methods,
-                statusCodes = it.statusCodes, mimeTypes = it.mimeTypes, inScopeOnly = it.inScopeOnly,
-                hasResponse = it.hasResponse, newestFirst = it.newestFirst, limit = it.defaultLimit,
-            ))
-        }
-        preset.definition.webSocketSearch?.let {
-            validateWebSocketMetadataSearchSettings(SearchWebsocketMessages(
-                projectId = "validation", limit = it.defaultLimit, direction = it.direction,
-                listenerPort = it.listenerPort, newestFirst = it.newestFirst,
-            ))
-        }
-        preset.definition.httpComparison?.let {
-            validateHttpComparisonSettings(CompareHttpMessages(
-                projectId = "validation", refs = emptyList(), part = it.part,
-                limitBytesPerMessage = it.limitBytesPerMessage, excerptEncoding = it.excerptEncoding,
-                ignoreHeaders = it.ignoreHeaders, includeResponseVariations = it.includeResponseVariations,
-            ))
-        }
-    }
-
     private companion object {
         val PRESET_ORDER = compareBy<WorkflowPreset>({ workflowPresetNameKey(it.name) }, { it.name })
+    }
+}
+
+internal fun validateWorkflowPreset(preset: WorkflowPreset) {
+    require(preset.name == preset.name.trim())
+    require(preset.name.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS)
+    require(preset.name.none(Char::isISOControl))
+    require(
+        preset.description == null ||
+            (preset.description.length <= MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS &&
+                preset.description.none(Char::isISOControl)),
+    )
+    preset.definition.kind()
+    preset.definition.httpSearch?.let {
+        validateHttpMetadataSearchSettings(SearchHttpMessages(
+            sources = it.sources, host = it.host, pathContains = it.pathContains, methods = it.methods,
+            statusCodes = it.statusCodes, mimeTypes = it.mimeTypes, inScopeOnly = it.inScopeOnly,
+            hasResponse = it.hasResponse, newestFirst = it.newestFirst, limit = it.defaultLimit,
+        ))
+    }
+    preset.definition.webSocketSearch?.let {
+        validateWebSocketMetadataSearchSettings(SearchWebsocketMessages(
+            projectId = "validation", limit = it.defaultLimit, direction = it.direction,
+            listenerPort = it.listenerPort, newestFirst = it.newestFirst,
+        ))
+    }
+    preset.definition.httpComparison?.let {
+        validateHttpComparisonSettings(CompareHttpMessages(
+            projectId = "validation", refs = emptyList(), part = it.part,
+            limitBytesPerMessage = it.limitBytesPerMessage, excerptEncoding = it.excerptEncoding,
+            ignoreHeaders = it.ignoreHeaders, includeResponseVariations = it.includeResponseVariations,
+        ))
     }
 }
 

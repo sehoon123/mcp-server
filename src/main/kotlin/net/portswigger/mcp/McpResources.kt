@@ -121,7 +121,7 @@ internal fun Server.registerMcpResources(
     addResource(
         uri = DIAGNOSTICS_RESOURCE_URI,
         name = "burp_diagnostics",
-        description = "Secret-free aggregate state and bounded transport/session counters for this ${ProductIdentity.PRODUCT_NAME} listener.",
+        description = "Secret-free aggregate listener, transport/session, and fixed value-free history timing counters for this ${ProductIdentity.PRODUCT_NAME} listener.",
         mimeType = RESOURCE_MIME_TYPE,
     ) { request ->
         featureServer.secureResourceRead(this, request, "diagnostics") {

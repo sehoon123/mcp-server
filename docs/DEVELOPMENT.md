@@ -339,8 +339,15 @@ Persist dedicated safe definition DTOs rather than direct tool inputs. Their sch
 stable-reference, connection-ID, traffic/result, raw-message, content-predicate, credential, or token fields. Bounded
 caller-authored name, description, host, and path strings are persisted verbatim and must not contain secrets. Execution must delegate to the existing HTTP search, WebSocket search, or HTTP comparison service, retain
 search progress/cancellation, discard delegated output after an unprovable project transition, and add no new approval
-category. The four preset tools are the complete MCP-only management surface; do not add dynamic resources,
-subscriptions, prompt changes, or native preset UI without a later reviewed milestone.
+category.
+
+The v4.12 native manager and the four MCP tools share the exact same `WorkflowPresetStore` instance. Native list/save/delete
+operations recheck the current project and expose only closed local statuses; they never execute a preset or return traffic.
+Malformed or unknown storage remains preserved, and a possible write followed by cancellation or a project transition is
+`UNCERTAIN` and must be manually reconciled. Keep `LocalWorkflowPresetManager` independent of MCP SDK request,
+transport, and result classes: a future released Kotlin SDK migration should replace only the tool/transport adapters,
+not fork the persistence, validation, project-boundary, or Swing-management logic. Do not add dynamic resources,
+subscriptions, prompts, or catalog entries for the native manager.
 
 ## Resources and prompts
 
@@ -360,6 +367,17 @@ perform hidden side effects.
 - Split workflows such as file chooser + copy into an EDT selection phase and a bounded background I/O phase.
 - Do not use an unowned `kotlin.concurrent.thread` for UI work. Panels that start jobs must own a bounded executor/job,
   disable duplicate actions, and cancel or ignore completion after `cleanup()`.
+- `ClientSetupPanel` owns one bounded worker for Claude installation, manual proxy extraction, and Connection Doctor.
+  Capture host/port and any required credential once on the EDT, run I/O off the EDT, and cancel the panel before server
+  shutdown during extension unload so late callbacks cannot publish into disposed UI.
+- `WorkflowPresetPanel` owns a separate single-worker bounded queue. Editor and confirmation snapshots stay on the EDT;
+  project observation and persistence run off the EDT. Unload cancels and boundedly drains the worker before server
+  shutdown, while every cleanup path suppresses late publication.
+- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. Only the
+  Claude Desktop action may invoke a native client writer; all other client entries remain preview-and-copy only.
+- Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
+  exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
+  no redirects, discard the response body, close after the single request, and expose only closed result enums.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.

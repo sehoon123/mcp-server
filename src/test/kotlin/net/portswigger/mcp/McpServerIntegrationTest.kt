@@ -19,6 +19,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.delay
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
 import kotlinx.coroutines.runBlocking
@@ -27,6 +28,11 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.providers.DOCTOR_SESSION_ID
+import net.portswigger.mcp.providers.DoctorListenerCode
+import net.portswigger.mcp.providers.DoctorRequestConfig
+import net.portswigger.mcp.providers.buildDoctorHttpClient
+import net.portswigger.mcp.providers.buildDoctorHttpRequest
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
@@ -34,6 +40,7 @@ import net.portswigger.mcp.security.McpAuditRecord
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.McpSessionApproval
 import net.portswigger.mcp.security.grantCurrentSessionApproval
+import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -162,22 +169,39 @@ class McpServerIntegrationTest {
     }
 
     @Test
-    fun `MCP endpoint rejects missing and incorrect bearer credentials`() {
-        val client = java.net.http.HttpClient.newHttpClient()
-        fun send(authorization: String?): java.net.http.HttpResponse<String> {
-            val builder = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI("http://127.0.0.1:${testPort}/mcp"))
-                .header("Content-Type", "application/json")
-                .POST(java.net.http.HttpRequest.BodyPublishers.ofString("{}"))
-            if (authorization != null) builder.header("Authorization", authorization)
-            return client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofString())
+    fun `Doctor guard proves authentication without creating an MCP session`() {
+        val before = serverManager.diagnostics()
+
+        buildDoctorHttpClient().use { client ->
+            fun send(config: DoctorRequestConfig): java.net.http.HttpResponse<Void> = client.send(
+                buildDoctorHttpRequest(config),
+                java.net.http.HttpResponse.BodyHandlers.discarding(),
+            )
+
+            fun sendWithoutCredential(): java.net.http.HttpResponse<Void> {
+                val request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI("http://127.0.0.1:${testPort}/mcp"))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header(MCP_SESSION_ID_HEADER, DOCTOR_SESSION_ID)
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString("{}", Charsets.UTF_8))
+                    .build()
+                return client.send(request, java.net.http.HttpResponse.BodyHandlers.discarding())
+            }
+
+            val staleConfig = DoctorRequestConfig(
+                "127.0.0.1",
+                testPort,
+                "x".repeat(43),
+                DoctorListenerCode.RUNNING,
+            )
+            val authenticatedConfig = staleConfig.copy(bearerToken = testBearerToken)
+            assertEquals(401, sendWithoutCredential().statusCode())
+            assertEquals(401, send(staleConfig).statusCode())
+            assertEquals(400, send(authenticatedConfig).statusCode())
         }
 
-        assertEquals(401, send(null).statusCode())
-        assertEquals(401, send("Bearer incorrect-token").statusCode())
-        assertNotEquals(401, send("Bearer $testBearerToken").statusCode())
-
-        // The response body can arrive just before the server's request-admission finally releases the call lease.
+        // The response can arrive just before the request-admission finally releases the call lease.
         val cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (serverManager.diagnostics().activeHttpCalls != 0 && System.nanoTime() < cleanupDeadline) {
             Thread.sleep(25)
@@ -185,9 +209,14 @@ class McpServerIntegrationTest {
         val diagnostics = serverManager.diagnostics()
         assertEquals("running", diagnostics.state)
         assertEquals("http://127.0.0.1:${testPort}/mcp", diagnostics.endpoint)
-        assertEquals(3, diagnostics.totalRequests)
-        assertEquals(2, diagnostics.authenticationRejections)
+        assertEquals(before.totalRequests + 3, diagnostics.totalRequests)
+        assertEquals(before.authenticationRejections + 2, diagnostics.authenticationRejections)
         assertEquals(0, diagnostics.activeHttpCalls)
+        assertEquals(before.pendingSessions, diagnostics.pendingSessions)
+        assertEquals(before.activeSessions, diagnostics.activeSessions)
+        assertEquals(before.initializedSessions, diagnostics.initializedSessions)
+        assertEquals(before.sessionsWithApprovals, diagnostics.sessionsWithApprovals)
+        assertEquals(before.sessionApprovalGrants, diagnostics.sessionApprovalGrants)
     }
 
     @Test
@@ -905,6 +934,51 @@ class McpServerIntegrationTest {
             0,
             diagnostics["diagnostics"]?.jsonObject?.get("webSocketSearchActive")?.jsonPrimitive?.content?.toInt(),
         )
+        val historyMetrics = diagnostics["diagnostics"]?.jsonObject
+            ?.get("historyPerformance")?.jsonObject
+            ?.get("metrics")?.jsonArray.orEmpty()
+        // Intentional wire literal: additions, renames, or reordering require an explicit reviewed contract update.
+        // The Python live collector has an independent source-level cross-check against HistoryPerformanceMetric.
+        val expectedHistoryMetricNames = listOf(
+            "INDEX_PROXY_ACQUISITION",
+            "INDEX_PROXY_PROCESSING",
+            "INDEX_SITE_MAP_ACQUISITION",
+            "INDEX_SITE_MAP_PROCESSING",
+            "INDEX_ORGANIZER_ACQUISITION",
+            "INDEX_ORGANIZER_PROCESSING",
+            "HTTP_SEARCH_PROXY_ACQUISITION",
+            "HTTP_SEARCH_SITE_MAP_ACQUISITION",
+            "HTTP_SEARCH_ORGANIZER_ACQUISITION",
+            "HTTP_SEARCH_PROCESSING",
+            "WEBSOCKET_SEARCH_ACQUISITION",
+            "WEBSOCKET_SEARCH_PROCESSING",
+            "RELATED_CORRELATION_MONTOYA_ACQUISITION",
+            "RELATED_CORRELATION_EXTENSION_PROCESSING",
+            "SCANNER_DELTA_MONTOYA_ACQUISITION",
+            "SCANNER_DELTA_EXTENSION_PROCESSING",
+        )
+        assertEquals(16, historyMetrics.size)
+        assertEquals(
+            expectedHistoryMetricNames,
+            historyMetrics.map { it.jsonObject.getValue("metric").jsonPrimitive.content },
+        )
+        historyMetrics.forEach { metric ->
+            assertEquals(
+                setOf(
+                    "metric",
+                    "active",
+                    "attempts",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "latencyBuckets",
+                    "totalNanos",
+                    "maxNanos",
+                ),
+                metric.jsonObject.keys,
+            )
+            assertEquals(11, metric.jsonObject.getValue("latencyBuckets").jsonArray.size)
+        }
         assertFalse(diagnostics.toString().contains(testBearerToken))
 
         val project = client.readResource(PROJECT_SUMMARY_RESOURCE_URI).singleTextResourceJson()
@@ -971,6 +1045,112 @@ class McpServerIntegrationTest {
         assertEquals(21, toolsBefore.size)
         assertEquals(toolsBefore, client.listTools().map { it.name })
     }
+
+    @Test
+    fun `related HTTP correlation appends bounded metadata and exposes aggregate attribution over MCP`() = runBlocking {
+        every { persistedObject.getBoolean("_alwaysAllowHttpHistory") } returns true
+        val proxyItems = listOf(
+            correlationProxyItem(1, "GET", "/api/users/123?seed-wire-secret=alpha", 200, MimeType.JSON),
+            correlationProxyItem(2, "POST", "/admin/9?comparison-wire-secret=bravo", 404, MimeType.HTML),
+            correlationProxyItem(3, "GET", "/api/users/456?candidate-wire-secret=charlie", 201, MimeType.JSON),
+        )
+        every { bridgeProxy.history() } returns proxyItems
+        every { bridgeProxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            proxyItems.filter(filter::matches)
+        }
+        client.connectToServer("http://127.0.0.1:${testPort}/mcp")
+
+        val result = client.callTool(
+            "correlate_http_activity",
+            mapOf(
+                "projectId" to "integration-project",
+                "baselineRefs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+                "comparisonRefs" to listOf(mapOf("source" to "proxy", "id" to "2")),
+                "pathDepth" to 3,
+                "relatedTraffic" to mapOf(
+                    "seedEventIndices" to listOf(0),
+                    "sources" to listOf("proxy"),
+                    "limit" to 1,
+                ),
+            ),
+        ).singleTextToolJson()
+
+        assertEquals("ok", result["status"]?.jsonPrimitive?.content)
+        val timeline = result["timeline"]?.jsonArray.orEmpty()
+        assertEquals(3, timeline.size)
+        assertEquals(
+            listOf("baseline", "comparison", "related"),
+            timeline.map { it.jsonObject.getValue("cohort").jsonPrimitive.content },
+        )
+        assertEquals(
+            listOf("1", "2", "3"),
+            timeline.map {
+                it.jsonObject.getValue("ref").jsonObject.getValue("id").jsonPrimitive.content
+            },
+        )
+        assertEquals(1, result["relatedTraffic"]?.jsonObject?.get("returned")?.jsonPrimitive?.content?.toInt())
+        assertEquals(2, result["evidence"]?.jsonObject?.get("selectedReferences")?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, result["evidence"]?.jsonObject?.get("relatedReferences")?.jsonPrimitive?.content?.toInt())
+        assertEquals(3, result["evidence"]?.jsonObject?.get("timelineEvents")?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, result["delta"]?.jsonObject?.get("baselineRecords")?.jsonPrimitive?.content?.toInt())
+        assertEquals(1, result["delta"]?.jsonObject?.get("comparisonRecords")?.jsonPrimitive?.content?.toInt())
+        listOf("seed-wire-secret", "comparison-wire-secret", "candidate-wire-secret").forEach { secret ->
+            assertFalse(result.toString().contains(secret))
+        }
+
+        val diagnostics = client.readResource(DIAGNOSTICS_RESOURCE_URI).singleTextResourceJson()
+        val metrics = diagnostics["diagnostics"]?.jsonObject
+            ?.get("historyPerformance")?.jsonObject
+            ?.get("metrics")?.jsonArray.orEmpty()
+            .associateBy { it.jsonObject.getValue("metric").jsonPrimitive.content }
+        listOf(
+            HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION,
+            HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING,
+        ).forEach { metric ->
+            val snapshot = requireNotNull(metrics[metric.name]).jsonObject
+            assertTrue(snapshot.getValue("attempts").jsonPrimitive.content.toInt() > 0)
+            assertEquals(
+                snapshot.getValue("attempts").jsonPrimitive.content,
+                snapshot.getValue("completed").jsonPrimitive.content,
+            )
+            assertEquals("0", snapshot.getValue("failed").jsonPrimitive.content)
+            assertEquals("0", snapshot.getValue("cancelled").jsonPrimitive.content)
+        }
+    }
+
+    private fun correlationProxyItem(
+        id: Int,
+        method: String,
+        path: String,
+        status: Int,
+        mimeType: MimeType,
+    ): ProxyHttpRequestResponse {
+        val item = mockk<ProxyHttpRequestResponse>()
+        val request = mockk<HttpRequest>()
+        val response = mockk<HttpResponse>()
+        val service = mockk<HttpService>()
+        every { item.id() } returns id
+        every { item.request() } returns request
+        every { item.response() } returns response
+        every { item.httpService() } returns service
+        every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z").plusNanos(id * 1_000_000L)
+        every { request.httpService() } returns service
+        every { request.method() } returns method
+        every { request.path() } returns path
+        every { request.url() } returns "https://example.test$path"
+        every { request.isInScope() } returns true
+        every { service.host() } returns "example.test"
+        every { service.port() } returns 443
+        every { service.secure() } returns true
+        every { response.statusCode() } returns status.toShort()
+        every { response.mimeType() } returns mimeType
+        return item
+    }
+
+    private fun CallToolResult?.singleTextToolJson() = Json.parseToJsonElement(
+        assertIs<TextContent>(requireNotNull(this).content.single()).text!!,
+    ).jsonObject
 
     private fun montoyaBytes(text: String): MontoyaByteArray {
         val raw = text.toByteArray(Charsets.UTF_8)

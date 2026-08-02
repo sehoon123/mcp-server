@@ -52,10 +52,27 @@ internal data class ResolvedHttpSourceMetadata(
     val notesTruncated: Boolean = false,
 )
 
+internal data class HttpMessageResolutionPerformanceAttribution(
+    val acquisitionMetric: HistoryPerformanceMetric,
+    val processingMetric: HistoryPerformanceMetric,
+)
+
+internal class HttpMessageResolutionAuthorization internal constructor(
+    val projectId: String,
+    private val sources: Set<HttpMessageSource>,
+    private val issuer: Any,
+) {
+    internal fun wasIssuedBy(expectedIssuer: Any): Boolean = issuer === expectedIssuer
+
+    internal fun permits(projectId: String, requestedSources: Collection<HttpMessageSource>): Boolean =
+        this.projectId == projectId && sources.containsAll(requestedSources)
+}
+
 internal sealed interface HttpMessageBatchResolution {
     data class Found(
         val projectId: String,
         val messages: List<ResolvedHttpMessage>,
+        val authorization: HttpMessageResolutionAuthorization,
     ) : HttpMessageBatchResolution
 
     data class Failed(
@@ -70,14 +87,26 @@ internal sealed interface HttpMessageBatchResolution {
 /**
  * Resolves project-scoped HTTP references through Montoya's filtered lookup APIs.
  *
- * Batch resolution checks project and data-access policy once, performs at most one bounded filtered Proxy/Organizer
- * lookup per source, and snapshots Site Map at most once. This avoids repeated approval prompts and per-reference source
- * acquisitions while preserving caller-order resolution and Site Map positional identity checks.
+ * Batch resolution checks project and data-access policy once, including an optional additional source set for a
+ * compound read, performs at most one bounded filtered Proxy/Organizer lookup per represented reference source, and
+ * snapshots Site Map at most once. This avoids repeated approval prompts and per-reference source acquisitions while
+ * preserving caller-order resolution and Site Map positional identity checks. A successful compound read carries an
+ * instance-bound authorization handle that can revalidate a later bounded reference set without a second prompt.
  */
 internal class HttpMessageResolver(
     private val api: MontoyaApi,
     private val config: McpConfig,
+    private val performanceDiagnostics: HistoryPerformanceDiagnostics = HistoryPerformanceDiagnostics.NO_OP,
 ) {
+    private val authorizationIssuer = Any()
+
+    internal fun authorizes(
+        authorization: HttpMessageResolutionAuthorization,
+        projectId: String,
+        requestedSources: Collection<HttpMessageSource>,
+    ): Boolean = authorization.wasIssuedBy(authorizationIssuer) &&
+        authorization.permits(projectId, requestedSources)
+
     suspend fun resolve(
         projectId: String,
         ref: HttpMessageReference,
@@ -89,6 +118,43 @@ internal class HttpMessageResolver(
         refs: List<HttpMessageReference>,
         maxRefs: Int = MAX_HTTP_REFERENCES_PER_BATCH,
         sourceMetadata: HttpSourceMetadataSelection = HttpSourceMetadataSelection.NONE,
+        additionalAuthorizationSources: List<HttpMessageSource> = emptyList(),
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution? = null,
+    ): HttpMessageBatchResolution = resolveAllInternal(
+        projectId = projectId,
+        refs = refs,
+        maxRefs = maxRefs,
+        sourceMetadata = sourceMetadata,
+        additionalAuthorizationSources = additionalAuthorizationSources,
+        authorization = null,
+        performanceAttribution = performanceAttribution,
+    )
+
+    suspend fun resolveAllAuthorized(
+        projectId: String,
+        refs: List<HttpMessageReference>,
+        authorization: HttpMessageResolutionAuthorization,
+        maxRefs: Int = MAX_HTTP_REFERENCES_PER_BATCH,
+        sourceMetadata: HttpSourceMetadataSelection = HttpSourceMetadataSelection.NONE,
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution? = null,
+    ): HttpMessageBatchResolution = resolveAllInternal(
+        projectId = projectId,
+        refs = refs,
+        maxRefs = maxRefs,
+        sourceMetadata = sourceMetadata,
+        additionalAuthorizationSources = emptyList(),
+        authorization = authorization,
+        performanceAttribution = performanceAttribution,
+    )
+
+    private suspend fun resolveAllInternal(
+        projectId: String,
+        refs: List<HttpMessageReference>,
+        maxRefs: Int,
+        sourceMetadata: HttpSourceMetadataSelection,
+        additionalAuthorizationSources: List<HttpMessageSource>,
+        authorization: HttpMessageResolutionAuthorization?,
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
     ): HttpMessageBatchResolution {
         if (!isValidProjectId(projectId)) {
             return failure(
@@ -106,6 +172,18 @@ internal class HttpMessageResolver(
                 refs.firstOrNull(),
                 refs.indices.firstOrNull(),
                 "refs must contain between 1 and ${maxRefs.coerceAtMost(MAX_HTTP_REFERENCES_PER_BATCH)} items",
+            )
+        }
+        if (
+            additionalAuthorizationSources.size > HttpMessageSource.entries.size ||
+            additionalAuthorizationSources.distinct().size != additionalAuthorizationSources.size
+        ) {
+            return failure(
+                HttpMessageResolutionStatus.INVALID_ARGUMENT,
+                null,
+                refs.firstOrNull(),
+                refs.indices.firstOrNull(),
+                "additionalAuthorizationSources must be distinct supported HTTP sources",
             )
         }
 
@@ -147,62 +225,89 @@ internal class HttpMessageResolver(
             )
         }
 
-        for (source in validated.asSequence().map { it.ref.source }.distinct().sortedBy { it.ordinal }) {
-            val allowed = try {
-                DataAccessSecurity.checkDataAccessPermission(source.dataAccessType(), config)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
+        val authorizationSources = (
+            validated.asSequence().map { it.ref.source }.toList() + additionalAuthorizationSources
+        ).distinct().sortedBy(HttpMessageSource::ordinal)
+        val grantedAuthorization = if (authorization != null) {
+            if (!authorizes(authorization, currentProjectId, authorizationSources)) {
                 return failure(
                     HttpMessageResolutionStatus.BURP_ERROR,
                     currentProjectId,
-                    validated.first { it.ref.source == source }.ref,
-                    validated.indexOfFirst { it.ref.source == source },
-                    "Burp could not check ${source.displayNameForResolution()} access: ${safeResolverException(e)}",
+                    refs.first(),
+                    0,
+                    "HTTP source preauthorization was invalid",
                 )
             }
-            runCatching {
-                api.logging().logToOutput(
-                    "MCP ${source.displayNameForResolution()} access ${if (allowed) "granted" else "denied"}"
-                )
+            authorization
+        } else {
+            for (source in authorizationSources) {
+                val sourceRefIndex = validated.indexOfFirst { it.ref.source == source }
+                val sourceRef = validated.getOrNull(sourceRefIndex)?.ref
+                val allowed = try {
+                    DataAccessSecurity.checkDataAccessPermission(source.dataAccessType(), config)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return failure(
+                        HttpMessageResolutionStatus.BURP_ERROR,
+                        currentProjectId,
+                        sourceRef,
+                        sourceRefIndex.takeIf { it >= 0 },
+                        "Burp could not check ${source.displayNameForResolution()} access: ${safeResolverException(e)}",
+                    )
+                }
+                runCatching {
+                    api.logging().logToOutput(
+                        "MCP ${source.displayNameForResolution()} access ${if (allowed) "granted" else "denied"}"
+                    )
+                }
+                val projectAfterSourceApproval = try {
+                    api.project().id()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    return failure(
+                        HttpMessageResolutionStatus.BURP_ERROR,
+                        currentProjectId,
+                        sourceRef,
+                        sourceRefIndex.takeIf { it >= 0 },
+                        "Burp could not recheck the project after HTTP data approval: ${safeResolverException(e)}",
+                    )
+                }
+                if (projectAfterSourceApproval != currentProjectId) {
+                    return failure(
+                        HttpMessageResolutionStatus.PROJECT_MISMATCH,
+                        projectAfterSourceApproval,
+                        sourceRef,
+                        sourceRefIndex.takeIf { it >= 0 },
+                        "Burp project changed during HTTP data approval",
+                    )
+                }
+                if (!allowed) {
+                    return failure(
+                        HttpMessageResolutionStatus.ACCESS_DENIED,
+                        currentProjectId,
+                        sourceRef,
+                        sourceRefIndex.takeIf { it >= 0 },
+                        "${source.displayNameForResolution()} access denied by Burp Suite",
+                    )
+                }
             }
-            val projectAfterSourceApproval = try {
-                api.project().id()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return failure(
-                    HttpMessageResolutionStatus.BURP_ERROR,
-                    currentProjectId,
-                    validated.first { it.ref.source == source }.ref,
-                    validated.indexOfFirst { it.ref.source == source },
-                    "Burp could not recheck the project after HTTP data approval: ${safeResolverException(e)}",
-                )
-            }
-            if (projectAfterSourceApproval != currentProjectId) {
-                val changedIndex = validated.indexOfFirst { it.ref.source == source }
-                return failure(
-                    HttpMessageResolutionStatus.PROJECT_MISMATCH,
-                    projectAfterSourceApproval,
-                    validated[changedIndex].ref,
-                    changedIndex,
-                    "Burp project changed during HTTP data approval",
-                )
-            }
-            if (!allowed) {
-                val deniedIndex = validated.indexOfFirst { it.ref.source == source }
-                return failure(
-                    HttpMessageResolutionStatus.ACCESS_DENIED,
-                    currentProjectId,
-                    validated[deniedIndex].ref,
-                    deniedIndex,
-                    "${source.displayNameForResolution()} access denied by Burp Suite",
-                )
-            }
+            HttpMessageResolutionAuthorization(
+                projectId = currentProjectId,
+                sources = authorizationSources.toSet(),
+                issuer = authorizationIssuer,
+            )
         }
 
         val resolution = try {
-            resolveValidated(currentProjectId, validated, sourceMetadata)
+            resolveValidated(
+                currentProjectId,
+                validated,
+                sourceMetadata,
+                grantedAuthorization,
+                performanceAttribution,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -243,6 +348,8 @@ internal class HttpMessageResolver(
         projectId: String,
         refs: List<ValidatedHttpReference>,
         sourceMetadataSelection: HttpSourceMetadataSelection,
+        authorization: HttpMessageResolutionAuthorization,
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
     ): HttpMessageBatchResolution {
         var proxyItems: Map<Int, ProxyHttpRequestResponse>? = null
         var organizerItems: Map<Int, OrganizerItem>? = null
@@ -251,100 +358,148 @@ internal class HttpMessageResolver(
 
         refs.forEachIndexed { index, validated ->
             currentCoroutineContext().ensureActive()
-            val message = when (validated.ref.source) {
+            val outcome = when (validated.ref.source) {
                 HttpMessageSource.PROXY -> {
-                    val items = proxyItems ?: acquireProxyItems(refs).also { proxyItems = it }
+                    val items = proxyItems ?: acquireProxyItems(refs, performanceAttribution).also { proxyItems = it }
                     val item = items[validated.numericId]
                         ?: return notFound(projectId, validated.ref, index)
-                    val request = item.request()
-                        ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = when (sourceMetadataSelection) {
-                        HttpSourceMetadataSelection.NONE -> null
-                        HttpSourceMetadataSelection.FULL -> {
-                            val notes = item.annotations().notes().boundedResolvedNotes()
-                            ResolvedHttpSourceMetadata(
-                                time = item.time().toString(),
-                                listenerPort = item.listenerPort(),
-                                edited = item.edited(),
-                                notes = notes.first,
-                                notesTruncated = notes.second,
+                    measureProcessing(performanceAttribution) processing@{
+                        val request = item.request()
+                            ?: return@processing ResolvedItemOutcome.RequestUnavailable
+                        val sourceMetadata = when (sourceMetadataSelection) {
+                            HttpSourceMetadataSelection.NONE -> null
+                            HttpSourceMetadataSelection.FULL -> {
+                                val notes = item.annotations().notes().boundedResolvedNotes()
+                                ResolvedHttpSourceMetadata(
+                                    time = item.time().toString(),
+                                    listenerPort = item.listenerPort(),
+                                    edited = item.edited(),
+                                    notes = notes.first,
+                                    notesTruncated = notes.second,
+                                )
+                            }
+                            HttpSourceMetadataSelection.PROXY_CAPTURE_TIME -> ResolvedHttpSourceMetadata(
+                                proxyCaptureTimeEpochMillis = item.time().toInstant().toEpochMilli(),
                             )
                         }
-                        HttpSourceMetadataSelection.PROXY_CAPTURE_TIME -> ResolvedHttpSourceMetadata(
-                            proxyCaptureTimeEpochMillis = item.time().toInstant().toEpochMilli(),
+                        ResolvedItemOutcome.Found(
+                            ResolvedHttpMessage(validated.ref, request, item.response(), null, sourceMetadata),
                         )
                     }
-                    ResolvedHttpMessage(validated.ref, request, item.response(), null, sourceMetadata)
                 }
 
                 HttpMessageSource.ORGANIZER -> {
-                    val items = organizerItems ?: acquireOrganizerItems(refs).also { organizerItems = it }
+                    val items = organizerItems ?: acquireOrganizerItems(refs, performanceAttribution).also { organizerItems = it }
                     val item = items[validated.numericId]
                         ?: return notFound(projectId, validated.ref, index)
-                    val request = item.request()
-                        ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
-                        val notes = item.annotations().notes().boundedResolvedNotes()
-                        ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
-                    } else null
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata)
+                    measureProcessing(performanceAttribution) processing@{
+                        val request = item.request()
+                            ?: return@processing ResolvedItemOutcome.RequestUnavailable
+                        val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
+                            val notes = item.annotations().notes().boundedResolvedNotes()
+                            ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
+                        } else null
+                        ResolvedItemOutcome.Found(
+                            ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata),
+                        )
+                    }
                 }
 
                 HttpMessageSource.SITE_MAP -> {
                     val parsed = requireNotNull(validated.siteMapId)
-                    val items = siteMapItems ?: acquireSiteMapItems().also { siteMapItems = it }
+                    val items = siteMapItems ?: acquireSiteMapItems(performanceAttribution).also { siteMapItems = it }
                     val item = items.getOrNull(parsed.index)
                         ?: return notFound(projectId, validated.ref, index)
-                    if (stableSiteMapId(projectId, parsed.index, item) != validated.ref.id) {
-                        return notFound(projectId, validated.ref, index)
-                    }
-                    val request = item.request()
-                        ?: return requestUnavailable(projectId, validated.ref, index)
-                    val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
-                        val notes = item.annotations().notes().boundedResolvedNotes()
-                        ResolvedHttpSourceMetadata(
-                            inScope = request.isInScope(),
-                            notes = notes.first,
-                            notesTruncated = notes.second,
+                    measureProcessing(performanceAttribution) processing@{
+                        if (stableSiteMapId(projectId, parsed.index, item) != validated.ref.id) {
+                            return@processing ResolvedItemOutcome.NotFound
+                        }
+                        val request = item.request()
+                            ?: return@processing ResolvedItemOutcome.RequestUnavailable
+                        val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
+                            val notes = item.annotations().notes().boundedResolvedNotes()
+                            ResolvedHttpSourceMetadata(
+                                inScope = request.isInScope(),
+                                notes = notes.first,
+                                notesTruncated = notes.second,
+                            )
+                        } else null
+                        ResolvedItemOutcome.Found(
+                            ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata),
                         )
-                    } else null
-                    ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata)
+                    }
                 }
             }
-            resolved += message
+            when (outcome) {
+                is ResolvedItemOutcome.Found -> resolved += outcome.message
+                ResolvedItemOutcome.NotFound -> return notFound(projectId, validated.ref, index)
+                ResolvedItemOutcome.RequestUnavailable -> return requestUnavailable(projectId, validated.ref, index)
+            }
         }
 
-        return HttpMessageBatchResolution.Found(projectId, resolved)
+        return HttpMessageBatchResolution.Found(projectId, resolved, authorization)
     }
 
-    private suspend fun acquireProxyItems(refs: List<ValidatedHttpReference>): Map<Int, ProxyHttpRequestResponse> {
+    private suspend fun acquireProxyItems(
+        refs: List<ValidatedHttpReference>,
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
+    ): Map<Int, ProxyHttpRequestResponse> {
         val requestedIds = refs.asSequence()
             .filter { it.ref.source == HttpMessageSource.PROXY }
             .map { requireNotNull(it.numericId) }
             .toSet()
         currentCoroutineContext().ensureActive()
-        val items = api.proxy().history { it.id() in requestedIds }
+        val items = measureAcquisition(performanceAttribution) { api.proxy().history { it.id() in requestedIds } }
         currentCoroutineContext().ensureActive()
-        return indexFilteredItems(items, requestedIds, ProxyHttpRequestResponse::id)
+        return measureProcessing(performanceAttribution) {
+            indexFilteredItems(items, requestedIds, ProxyHttpRequestResponse::id)
+        }
     }
 
-    private suspend fun acquireOrganizerItems(refs: List<ValidatedHttpReference>): Map<Int, OrganizerItem> {
+    private suspend fun acquireOrganizerItems(
+        refs: List<ValidatedHttpReference>,
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
+    ): Map<Int, OrganizerItem> {
         val requestedIds = refs.asSequence()
             .filter { it.ref.source == HttpMessageSource.ORGANIZER }
             .map { requireNotNull(it.numericId) }
             .toSet()
         currentCoroutineContext().ensureActive()
-        val items = api.organizer().items { it.id() in requestedIds }
+        val items = measureAcquisition(performanceAttribution) { api.organizer().items { it.id() in requestedIds } }
         currentCoroutineContext().ensureActive()
-        return indexFilteredItems(items, requestedIds, OrganizerItem::id)
+        return measureProcessing(performanceAttribution) {
+            indexFilteredItems(items, requestedIds, OrganizerItem::id)
+        }
     }
 
-    private suspend fun acquireSiteMapItems(): List<MontoyaHttpRequestResponse> {
+    private suspend fun acquireSiteMapItems(
+        performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
+    ): List<MontoyaHttpRequestResponse> {
         currentCoroutineContext().ensureActive()
-        val items = api.siteMap().requestResponses()
+        val items = measureAcquisition(performanceAttribution) { api.siteMap().requestResponses() }
         currentCoroutineContext().ensureActive()
         return items
     }
+
+    private suspend fun <T> measureAcquisition(
+        attribution: HttpMessageResolutionPerformanceAttribution?,
+        block: suspend () -> T,
+    ): T = if (attribution == null) block() else {
+        performanceDiagnostics.measure(attribution.acquisitionMetric, block)
+    }
+
+    private suspend fun <T> measureProcessing(
+        attribution: HttpMessageResolutionPerformanceAttribution?,
+        block: suspend () -> T,
+    ): T = if (attribution == null) block() else {
+        performanceDiagnostics.measure(attribution.processingMetric, block)
+    }
+}
+
+private sealed interface ResolvedItemOutcome {
+    data class Found(val message: ResolvedHttpMessage) : ResolvedItemOutcome
+    data object NotFound : ResolvedItemOutcome
+    data object RequestUnavailable : ResolvedItemOutcome
 }
 
 private fun <T> indexFilteredItems(

@@ -287,7 +287,8 @@ internal fun formatMcpDiagnostics(
     diagnostics.historyPerformance.metrics.forEach { metric ->
         appendLine(
             "History ${metric.metric.displayLabel()}: active=${metric.active}, attempts=${metric.attempts}, " +
-                "completed=${metric.completed}, failed=${metric.failed}, cancelled=${metric.cancelled}, max=${metric.maxNanos}ns, " +
+                "completed=${metric.completed}, failed=${metric.failed}, cancelled=${metric.cancelled}, " +
+                "total=${metric.totalNanos}ns, max=${metric.maxNanos}ns, " +
                 "buckets=${metric.latencyBuckets.formatHistoryBuckets()}",
         )
     }
@@ -363,6 +364,10 @@ private fun HistoryPerformanceMetric.displayLabel(): String = when (this) {
     HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING -> "HTTP search processing"
     HistoryPerformanceMetric.WEBSOCKET_SEARCH_ACQUISITION -> "WebSocket search acquisition"
     HistoryPerformanceMetric.WEBSOCKET_SEARCH_PROCESSING -> "WebSocket search processing"
+    HistoryPerformanceMetric.RELATED_CORRELATION_MONTOYA_ACQUISITION -> "related correlation Montoya acquisition"
+    HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING -> "related correlation extension processing"
+    HistoryPerformanceMetric.SCANNER_DELTA_MONTOYA_ACQUISITION -> "Scanner delta Montoya acquisition"
+    HistoryPerformanceMetric.SCANNER_DELTA_EXTENSION_PROCESSING -> "Scanner delta extension processing"
 }
 
 private fun List<Long>.formatHistoryBuckets(): String = buildString {

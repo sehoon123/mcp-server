@@ -5,6 +5,8 @@ import burp.api.montoya.MontoyaApi
 import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.config.ConfigUi
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.presets.LocalWorkflowPresetManager
+import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
@@ -31,7 +33,15 @@ class ExtensionBase : BurpExtension {
         }
         val auditLog = PersistentMcpAuditLog(extensionStorage, config, api.logging())
         val edtWatchdog = EdtWatchdog()
-        val serverManager = KtorServerManager(api, auditLog, extensionStorage = extensionStorage)
+        // Keep project preset persistence outside the SDK transport adapter so native UI and MCP tools share one lock.
+        val workflowPresetStore = WorkflowPresetStore(extensionStorage)
+        val workflowPresetManager = LocalWorkflowPresetManager(workflowPresetStore) { api.project().id() }
+        val serverManager = KtorServerManager(
+            api,
+            auditLog,
+            extensionStorage = extensionStorage,
+            workflowPresetStore = workflowPresetStore,
+        )
 
         val proxyJarManager = ProxyJarManager(api.logging())
         val proxyVerified = runCatching { proxyJarManager.getProxyJar() }
@@ -57,6 +67,7 @@ class ExtensionBase : BurpExtension {
             proxyVerified = proxyVerified,
             clearSessionApprovals = serverManager::clearSessionApprovals,
             edtWatchdogProvider = edtWatchdog::snapshot,
+            workflowPresetManager = workflowPresetManager,
         )
 
         configUi.onEnabledToggled { enabled ->
@@ -81,6 +92,7 @@ class ExtensionBase : BurpExtension {
             edtWatchdog.close()
             runCatching { referenceMenuRegistration.deregister() }
             referenceMenuProvider.close()
+            configUi.cancelBackgroundWork()
             serverManager.shutdown()
             configUi.cleanup()
             auditLog.close()

@@ -23,6 +23,30 @@ from typing import Any, Callable
 SUPPORTED_PROTOCOLS = ("2025-03-26", "2025-06-18", "2025-11-25")
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_MCP_RESPONSE_BYTES = 16 * 1024 * 1024
+HISTORY_PERFORMANCE_BUCKET_COUNT = 11
+HISTORY_PERFORMANCE_METRICS = (
+    "INDEX_PROXY_ACQUISITION",
+    "INDEX_PROXY_PROCESSING",
+    "INDEX_SITE_MAP_ACQUISITION",
+    "INDEX_SITE_MAP_PROCESSING",
+    "INDEX_ORGANIZER_ACQUISITION",
+    "INDEX_ORGANIZER_PROCESSING",
+    "HTTP_SEARCH_PROXY_ACQUISITION",
+    "HTTP_SEARCH_SITE_MAP_ACQUISITION",
+    "HTTP_SEARCH_ORGANIZER_ACQUISITION",
+    "HTTP_SEARCH_PROCESSING",
+    "WEBSOCKET_SEARCH_ACQUISITION",
+    "WEBSOCKET_SEARCH_PROCESSING",
+    "RELATED_CORRELATION_MONTOYA_ACQUISITION",
+    "RELATED_CORRELATION_EXTENSION_PROCESSING",
+    "SCANNER_DELTA_MONTOYA_ACQUISITION",
+    "SCANNER_DELTA_EXTENSION_PROCESSING",
+)
+_HISTORY_PERFORMANCE_COUNTER_FIELDS = ("attempts", "completed", "failed", "cancelled", "totalNanos")
+_HISTORY_PERFORMANCE_METRIC_FIELDS = frozenset(
+    {"metric", "active", "latencyBuckets", "maxNanos", *_HISTORY_PERFORMANCE_COUNTER_FIELDS}
+)
+_MAX_SIGNED_LONG = (1 << 63) - 1
 
 
 class HarnessError(RuntimeError):
@@ -111,6 +135,60 @@ def read_private_token(path: pathlib.Path) -> str:
     if not all(character.isascii() and (character.isalnum() or character in "_-") for character in token):
         raise HarnessError("token file does not contain a valid local bearer value")
     return token
+
+
+def read_private_json_file(path: pathlib.Path, *, max_bytes: int = 64 * 1024) -> dict[str, Any]:
+    """Read one private, single-link JSON object without logging or retaining its path."""
+    if max_bytes < 2 or max_bytes > 1024 * 1024:
+        raise HarnessError("private JSON file bound is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise HarnessError("private JSON input must be a regular non-symlink file") from error
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or metadata.st_size > max_bytes
+        ):
+            raise HarnessError("private JSON input must be a single-link private bounded file")
+        content = source.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise HarnessError("private JSON input exceeded its safety bound")
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise HarnessError("private JSON input contained duplicate keys")
+            value[key] = item
+        return value
+
+    try:
+        decoded = json.loads(content.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HarnessError("private JSON input was invalid") from error
+    if not isinstance(decoded, dict):
+        raise HarnessError("private JSON input must contain one object")
+    pending: list[tuple[Any, int]] = [(decoded, 0)]
+    tokens = 0
+    while pending:
+        value, depth = pending.pop()
+        tokens += 1
+        if tokens > 10_000 or depth > 32:
+            raise HarnessError("private JSON input exceeded structural bounds")
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) or len(key) > 128 for key in value):
+                raise HarnessError("private JSON input contained an invalid key")
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            pending.extend((item, depth + 1) for item in value)
+        elif value is not None and not isinstance(value, (str, int, float, bool)):
+            raise HarnessError("private JSON input contained an unsupported value")
+    return decoded
 
 
 def read_bounded_regular_file(path: pathlib.Path, max_bytes: int) -> bytes:
@@ -474,6 +552,118 @@ def read_bounded_diagnostics(client: McpClient) -> tuple[dict[str, Any], str]:
         "webSocketSearchCancelled",
     }
     return {key: value.get(key) for key in sorted(allowed)}, text
+
+
+def parse_history_performance_snapshot(diagnostics_text: str) -> dict[str, dict[str, Any]]:
+    """Parse the fixed, value-free history metrics exposed by the existing diagnostics resource."""
+    if not isinstance(diagnostics_text, str) or len(diagnostics_text.encode("utf-8")) > 2 * 1024 * 1024:
+        raise HarnessError("diagnostics history snapshot was not bounded text")
+    try:
+        diagnostics = json.loads(diagnostics_text)["diagnostics"]
+        history = diagnostics["historyPerformance"]
+        metrics = history["metrics"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        raise HarnessError("diagnostics history snapshot was malformed")
+    if not isinstance(history, dict) or set(history) != {"metrics"} or not isinstance(metrics, list):
+        raise HarnessError("diagnostics history snapshot was malformed")
+    if len(metrics) != len(HISTORY_PERFORMANCE_METRICS):
+        raise HarnessError("diagnostics history metric cardinality changed")
+
+    parsed: dict[str, dict[str, Any]] = {}
+    for expected_name, value in zip(HISTORY_PERFORMANCE_METRICS, metrics, strict=True):
+        if not isinstance(value, dict) or set(value) != _HISTORY_PERFORMANCE_METRIC_FIELDS:
+            raise HarnessError("diagnostics history metric fields changed")
+        name = value.get("metric")
+        if name != expected_name or name in parsed:
+            raise HarnessError("diagnostics history metric identity or order changed")
+        active = value.get("active")
+        if isinstance(active, bool) or not isinstance(active, int) or active not in range(0, 65):
+            raise HarnessError("diagnostics history active count was invalid")
+        normalized: dict[str, Any] = {"active": active}
+        for field in _HISTORY_PERFORMANCE_COUNTER_FIELDS + ("maxNanos",):
+            counter = value.get(field)
+            if (
+                isinstance(counter, bool)
+                or not isinstance(counter, int)
+                or counter < 0
+                or counter >= _MAX_SIGNED_LONG
+            ):
+                raise HarnessError("diagnostics history counter was invalid or saturated")
+            normalized[field] = counter
+        buckets = value.get("latencyBuckets")
+        if (
+            not isinstance(buckets, list)
+            or len(buckets) != HISTORY_PERFORMANCE_BUCKET_COUNT
+            or any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in buckets)
+            or any(item >= _MAX_SIGNED_LONG for item in buckets)
+        ):
+            raise HarnessError("diagnostics history buckets were invalid or saturated")
+        if normalized["attempts"] != normalized["completed"] + normalized["failed"] + normalized["cancelled"]:
+            raise HarnessError("diagnostics history outcomes were inconsistent")
+        if sum(buckets) != normalized["attempts"]:
+            raise HarnessError("diagnostics history buckets were inconsistent")
+        if normalized["maxNanos"] > normalized["totalNanos"]:
+            raise HarnessError("diagnostics history elapsed totals were inconsistent")
+        if normalized["attempts"] == 0 and (normalized["totalNanos"] != 0 or normalized["maxNanos"] != 0):
+            raise HarnessError("unused diagnostics history metric retained elapsed time")
+        normalized["latencyBuckets"] = list(buckets)
+        parsed[name] = normalized
+    return parsed
+
+
+def diff_history_performance_snapshots(
+    before: dict[str, dict[str, Any]],
+    after: dict[str, dict[str, Any]],
+    expected_changed_metrics: frozenset[str],
+) -> dict[str, dict[str, Any]]:
+    """Difference quiet serial snapshots and reject contamination, regression, or saturation."""
+    if set(before) != set(HISTORY_PERFORMANCE_METRICS) or set(after) != set(HISTORY_PERFORMANCE_METRICS):
+        raise HarnessError("diagnostics history snapshots did not contain the fixed metric set")
+    if not expected_changed_metrics or not expected_changed_metrics.issubset(HISTORY_PERFORMANCE_METRICS):
+        raise HarnessError("expected diagnostics history metrics were invalid")
+    differences: dict[str, dict[str, Any]] = {}
+    for name in HISTORY_PERFORMANCE_METRICS:
+        earlier = before[name]
+        later = after[name]
+        if earlier.get("active") != 0 or later.get("active") != 0:
+            raise HarnessError("diagnostics history measurement boundary was active")
+        for field in _HISTORY_PERFORMANCE_COUNTER_FIELDS + ("maxNanos",):
+            if later.get(field, -1) < earlier.get(field, 0):
+                raise HarnessError("diagnostics history counter regressed")
+        earlier_buckets = earlier.get("latencyBuckets")
+        later_buckets = later.get("latencyBuckets")
+        if not isinstance(earlier_buckets, list) or not isinstance(later_buckets, list):
+            raise HarnessError("diagnostics history buckets were malformed")
+        if any(later_value < earlier_value for earlier_value, later_value in zip(earlier_buckets, later_buckets, strict=True)):
+            raise HarnessError("diagnostics history bucket regressed")
+        persistent_fields = _HISTORY_PERFORMANCE_COUNTER_FIELDS + ("maxNanos", "latencyBuckets")
+        if name not in expected_changed_metrics:
+            if any(earlier.get(field) != later.get(field) for field in persistent_fields):
+                raise HarnessError("unrelated diagnostics history metric changed during the quiet measurement")
+            continue
+        delta = {
+            field: later[field] - earlier[field]
+            for field in _HISTORY_PERFORMANCE_COUNTER_FIELDS
+        }
+        delta_buckets = [
+            later_value - earlier_value
+            for earlier_value, later_value in zip(earlier_buckets, later_buckets, strict=True)
+        ]
+        if delta["attempts"] <= 0:
+            raise HarnessError("target diagnostics history metric did not record the measurement")
+        if delta["attempts"] != delta["completed"] + delta["failed"] + delta["cancelled"]:
+            raise HarnessError("target diagnostics history outcome delta was inconsistent")
+        if sum(delta_buckets) != delta["attempts"]:
+            raise HarnessError("target diagnostics history bucket delta was inconsistent")
+        differences[name] = {
+            **delta,
+            "latencyBuckets": delta_buckets,
+            "activeBefore": earlier["active"],
+            "activeAfter": later["active"],
+            "maxNanosBefore": earlier["maxNanos"],
+            "maxNanosAfter": later["maxNanos"],
+        }
+    return differences
 
 
 def wait_for_active_http_call_barrier(

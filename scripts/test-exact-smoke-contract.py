@@ -41,6 +41,50 @@ def load_preflight_module():
 
 
 def correlation_tool() -> dict:
+    related_input_properties = {
+        "seedEventIndices": {"type": "array", "minItems": 1, "maxItems": 4},
+        "sources": {"type": "array", "minItems": 1, "maxItems": 3},
+        "inScopeOnly": {"type": "boolean"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 16},
+    }
+    related_output_properties = {
+        "seedEventIndices": {"type": "array", "maxItems": 4},
+        "sources": {"type": "array", "maxItems": 3},
+        "requestedLimit": {"type": "integer", "maximum": 16},
+        "queryCount": {"type": "integer", "maximum": 4},
+        "candidateSummariesExamined": {"type": "integer", "maximum": 200},
+        "qualifiedCandidates": {"type": "integer", "maximum": 200},
+        "returned": {"type": "integer", "maximum": 16},
+        "truncated": {"type": "boolean"},
+        "basis": {"type": "string"},
+        "identityEstablished": {
+            "type": "boolean",
+            "description": "No identity, probability, causality, or vulnerability evidence is established.",
+        },
+        "matches": {"type": "array", "maxItems": 16},
+    }
+    evidence_properties = {
+        name: {"type": "boolean"}
+        for name in (
+            "chronologyEstablished",
+            "cohortBoundaryEstablishesTime",
+            "exactCrossSourceIdentityEstablished",
+            "probableDuplicatesDeduplicated",
+        )
+    }
+    evidence_properties.update(
+        {
+            "ordering": {"type": "string"},
+            "selectedReferences": {"type": "integer"},
+            "relatedReferences": {"type": "integer"},
+            "timelineEvents": {"type": "integer"},
+            "maxReferences": {"type": "integer"},
+            "maxReferencesPerCohort": {"type": "integer"},
+            "maxRelatedReferences": {"type": "integer"},
+            "maxTimelineEvents": {"type": "integer"},
+            "limitations": {"type": "array"},
+        }
+    )
     return {
         "name": "correlate_http_activity",
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
@@ -48,7 +92,65 @@ def correlation_tool() -> dict:
             "properties": {
                 "baselineRefs": {"maxItems": 16},
                 "comparisonRefs": {"maxItems": 16},
+                "relatedTraffic": {
+                    "type": "object",
+                    "properties": related_input_properties,
+                    "required": ["seedEventIndices"],
+                },
             }
+        },
+        "outputSchema": {
+            "properties": {
+                "timeline": {"type": "array", "maxItems": 48},
+                "relatedTraffic": {
+                    "type": "object",
+                    "properties": related_output_properties,
+                    "required": list(related_output_properties),
+                },
+                "evidence": {
+                    "type": "object",
+                    "properties": evidence_properties,
+                    "required": list(evidence_properties),
+                },
+            }
+        },
+    }
+
+
+def scanner_tool() -> dict:
+    delta_properties = {
+        "basis": {"description": "Fixed append-only visibility basis; not a full regression comparison."},
+        "baselineSnapshotSize": {"type": "integer"},
+        "currentSnapshotSize": {"type": "integer"},
+        "appendedRangeSize": {"type": "integer"},
+        "regressionEstablished": {"description": "No regression is established."},
+        "removedOrChangedEstablished": {"description": "No removal is established."},
+        "completeHistoryEstablished": {"description": "No complete project history is established."},
+    }
+    output_properties = {
+        "items": {"type": "array", "maxItems": 50},
+        "returned": {"type": "integer", "maximum": 50},
+        "scanned": {"type": "integer", "maximum": 10_000},
+        "snapshotCursor": {"type": "string", "maxLength": 16_384},
+        "nextDeltaCursor": {"type": "string", "maxLength": 16_384},
+        "deltaMode": {"type": "boolean"},
+        "delta": {
+            "type": "object",
+            "properties": delta_properties,
+            "required": list(delta_properties),
+        },
+    }
+    return {
+        "name": "get_scanner_issues",
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+        "inputSchema": {
+            "properties": {
+                "sinceSnapshotCursor": {"type": "string", "maxLength": 16_384},
+            }
+        },
+        "outputSchema": {
+            "properties": output_properties,
+            "required": list(output_properties),
         },
     }
 
@@ -56,7 +158,11 @@ def correlation_tool() -> dict:
 def catalog(edition: str) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     expected = contract.EDITION_CATALOG_IDENTIFIERS[edition]
     tools = [
-        correlation_tool() if name == "correlate_http_activity" else {"name": name}
+        correlation_tool()
+        if name == "correlate_http_activity"
+        else scanner_tool()
+        if name == "get_scanner_issues"
+        else {"name": name}
         for name in sorted(expected["tools"])
     ]
     prompts = [{"name": name} for name in sorted(expected["prompts"])]
@@ -600,10 +706,17 @@ class ExactSmokeContractTest(unittest.TestCase):
             with self.assertRaises(HarnessError):
                 contract.validate_release_identity(source, digest, version)
 
-    def test_edition_catalogs_enforce_exact_identifiers_and_correlation_bounds(self):
+    def test_edition_catalogs_enforce_exact_identifiers_and_additive_v412_bounds(self):
         for edition in contract.EDITION_CATALOG_COUNTS:
             tools, prompts, resources, templates = catalog(edition)
-            result = contract.validate_catalog(edition, tools, prompts, resources, templates)
+            result = contract.validate_catalog(
+                edition,
+                tools,
+                prompts,
+                resources,
+                templates,
+                require_v412_schema=True,
+            )
             self.assertEqual(contract.EDITION_CATALOG_COUNTS[edition], result["counts"])
             self.assertEqual("matched", result["identifierSets"])
             self.assertTrue(result["correlationReadOnly"])
@@ -664,6 +777,105 @@ class ExactSmokeContractTest(unittest.TestCase):
             malformed[1][-1] = "not-an-object"
             with self.assertRaises(HarnessError):
                 contract.validate_catalog(edition, *malformed)
+
+    def test_v412_catalog_schema_validation_rejects_related_and_scanner_delta_drift(self):
+        def reject_correlation(mutate):
+            tools, prompts, resources, templates = catalog("professional")
+            correlation = next(tool for tool in tools if tool.get("name") == "correlate_http_activity")
+            mutate(correlation)
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(
+                    "professional",
+                    tools,
+                    prompts,
+                    resources,
+                    templates,
+                    require_v412_schema=True,
+                )
+
+        reject_correlation(
+            lambda tool: tool["inputSchema"]["properties"]["relatedTraffic"]["properties"]
+            ["seedEventIndices"].update(maxItems=5)
+        )
+        reject_correlation(
+            lambda tool: tool["inputSchema"]["properties"]["relatedTraffic"]["properties"]
+            ["limit"].update(maximum=17)
+        )
+        reject_correlation(lambda tool: tool["outputSchema"]["properties"]["timeline"].update(maxItems=49))
+        reject_correlation(
+            lambda tool: tool["outputSchema"]["properties"]["relatedTraffic"]["properties"]
+            ["candidateSummariesExamined"].update(maximum=201)
+        )
+        reject_correlation(
+            lambda tool: tool["outputSchema"]["properties"]["relatedTraffic"]["properties"]
+            ["identityEstablished"].update(description="identity only")
+        )
+        reject_correlation(
+            lambda tool: tool["outputSchema"]["properties"]["evidence"]["required"].remove(
+                "maxRelatedReferences"
+            )
+        )
+
+        def reject_scanner(mutate):
+            tools, prompts, resources, templates = catalog("professional")
+            scanner = next(tool for tool in tools if tool.get("name") == "get_scanner_issues")
+            mutate(scanner)
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(
+                    "professional",
+                    tools,
+                    prompts,
+                    resources,
+                    templates,
+                    require_v412_schema=True,
+                )
+
+        reject_scanner(
+            lambda tool: tool["inputSchema"]["properties"]["sinceSnapshotCursor"].update(maxLength=16_385)
+        )
+        reject_scanner(lambda tool: tool["outputSchema"]["properties"]["items"].update(maxItems=51))
+        reject_scanner(lambda tool: tool["outputSchema"]["properties"]["scanned"].update(maximum=10_001))
+        reject_scanner(
+            lambda tool: tool["outputSchema"]["properties"]["nextDeltaCursor"].update(maxLength=16_385)
+        )
+        reject_scanner(lambda tool: tool["outputSchema"]["required"].remove("deltaMode"))
+        reject_scanner(
+            lambda tool: tool["outputSchema"]["properties"]["delta"]["properties"]
+            ["completeHistoryEstablished"].update(description="complete")
+        )
+
+    def test_v412_schema_gate_is_version_selected_and_preserves_legacy_catalog_validation(self):
+        self.assertFalse(contract.requires_v412_catalog_schema("4.11.0-rc.7"))
+        self.assertTrue(contract.requires_v412_catalog_schema("4.12.0-rc.1"))
+        self.assertTrue(contract.requires_v412_catalog_schema("4.12.0"))
+        with self.assertRaises(HarnessError):
+            contract.requires_v412_catalog_schema("4.13.0-rc.1")
+        with self.assertRaises(HarnessError):
+            contract.requires_v412_catalog_schema("4.12.0\nprivate")
+
+        for edition in contract.EDITION_CATALOG_COUNTS:
+            tools, prompts, resources, templates = json.loads(json.dumps(catalog(edition)))
+            correlation = next(tool for tool in tools if tool.get("name") == "correlate_http_activity")
+            correlation["inputSchema"]["properties"].pop("relatedTraffic")
+            correlation.pop("outputSchema")
+            scanner = next((tool for tool in tools if tool.get("name") == "get_scanner_issues"), None)
+            if scanner is not None:
+                scanner.clear()
+                scanner["name"] = "get_scanner_issues"
+
+            result = contract.validate_catalog(edition, tools, prompts, resources, templates)
+            self.assertEqual(contract.EDITION_CATALOG_COUNTS[edition], result["counts"])
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog(
+                    edition,
+                    tools,
+                    prompts,
+                    resources,
+                    templates,
+                    require_v412_schema=True,
+                )
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("community", *catalog("community"), require_v412_schema="true")
 
     def test_catalog_response_rejects_pagination_instead_of_attesting_only_the_first_page(self):
         response = {"result": {"tools": [{"name": "one"}]}}

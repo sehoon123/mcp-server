@@ -305,14 +305,16 @@ Burp-scale observation.
 
 ## Local history acquisition and processing attribution
 
-The v4.11 development line records fixed-cardinality elapsed-time diagnostics for direct history source acquisition and
-extension processing. The measurements cover Proxy, Site Map, and Organizer metadata-index refreshes, unified HTTP
-search, and WebSocket search. Full timing/bucket records are visible only in the local Burp diagnostics panel and remain
-serialization-transient; MCP schemas, catalogs, audit records, logs, and persisted settings do not contain them. For the
-exact-candidate cancellation gate, `burp://diagnostics` projects only the current WebSocket-search processing gauge and
-saturation-safe completed/cancelled totals. These value-free extension-lifetime aggregates permit an in-flight barrier and
-observed outcome delta without exposing filters,
-traffic, project/session identity, timing, or other metric records.
+The history recorder maintains fixed-cardinality elapsed-time diagnostics for direct source acquisition and extension
+processing. The original metrics cover Proxy, Site Map, and Organizer metadata-index refreshes, unified HTTP search, and
+WebSocket search. Under the historical v4.11 contract, complete timing records remain local-panel-only and
+`burp://diagnostics` projects only the WebSocket-search processing gauge plus saturation-safe completed/cancelled totals.
+The additive v4.12 contract intentionally projects the complete fixed 16-metric set through the existing authenticated
+`burp://diagnostics` resource: active/attempt/outcome counters, eleven fixed buckets, saturating total duration, and
+maximum duration for every metric. Audit records, logs, persisted settings, catalogs, and tool schemas still contain no
+such records, and this v4.12 exposure does not reinterpret v4.11 release evidence. The aggregates retain no filters,
+traffic, source sizes, or project/session identity, but an authenticated diagnostics reader can infer coarse operation
+activity and timing from them.
 
 An **acquisition** measurement starts immediately before the synchronous Burp/Montoya list call and ends when that call
 returns or throws. The Montoya subsystem accessor and the extension's lightweight source-view wrapper construction are
@@ -777,6 +779,136 @@ off request workers and the Swing event thread, and flushes synchronously only d
 The writer snapshots revision and records under a short lock, performs linear complete-record JSON encoding and storage
 outside that lock, and applies cap-driven trimming only after successful current-revision persistence.
 
+### v4.12 live phase-attribution plumbing
+
+The existing extension-lifetime history recorder adds four fixed, value-free metrics, and the
+`burp://diagnostics` payload now carries the complete 16-metric set whose full records were previously local-panel-only:
+
+- `RELATED_CORRELATION_MONTOYA_ACQUISITION`
+- `RELATED_CORRELATION_EXTENSION_PROCESSING`
+- `SCANNER_DELTA_MONTOYA_ACQUISITION`
+- `SCANNER_DELTA_EXTENSION_PROCESSING`
+
+Every metric retains only an active gauge, attempt/outcome counters, 11 fixed elapsed-time buckets, a saturating total,
+and a maximum monotonic duration. It accepts no project, client, source, query, filter, reference, cursor, issue, traffic,
+exception, or credential value. Related-correlation acquisition measures serial internal-search and selected-reference
+Montoya calls; its processing metric covers private metadata projection, resolver indexing, selected metadata
+materialization, ranking, and result assembly as separate non-overlapping segments. A completed related segment remains
+`completed` if a later segment makes the enclosing call fail closed; the live collector independently requires an overall
+`ok` result and clean measured segment outcomes. Scanner metrics apply only to delta mode:
+`api.siteMap().issues()` is acquisition and the append-stable bounded page computation is processing, with any non-`ok`
+page classified as failed. Ordinary Scanner cursor/legacy calls and explicit-only correlation do not increment these new
+metrics.
+
+`scripts/run-live-v412-performance-attribution.py` is an opt-in exact-candidate collector. It requires a clean
+`4.12.0-rc.N` checkout, exact source/JAR/server identity, a numeric loopback endpoint, a private mode-0600 argument file,
+a reviewed disposable-fixture attestation, a Burp PID/RSS ceiling, and one exact 10k/50k/100k stage per invocation. The
+runner performs serial warmups, takes quiet diagnostics snapshots around fixed serial calls, rejects unrelated metric
+changes, active boundaries, unexpected phase-attempt cardinality, or attributed phase time exceeding the serial client
+wall window, and writes one exclusive mode-0600 aggregate report. It records only the aggregate attributed-to-wall ratio,
+not individual in-process samples. It never records arguments, project
+or session identifiers, references, cursors, filters, issue summaries, traffic, credentials, endpoints, or local paths.
+It also refuses Scanner-delta measurement outside Professional.
+
+Create the argument file only in a private directory, keep it mode 0600, and never commit it. The following redacted
+related-correlation skeleton shows the accepted shape; replace every placeholder privately with values from the reviewed
+disposable fixture:
+
+```bash
+umask 077
+cat > "$PRIVATE_DIR/v412-related-arguments.json" <<'JSON'
+{
+  "projectId": "REPLACE_WITH_OPAQUE_PROJECT_BINDING",
+  "baselineRefs": [{"source": "proxy", "id": "REPLACE_WITH_STABLE_REFERENCE"}],
+  "comparisonRefs": [{"source": "site_map", "id": "REPLACE_WITH_DISTINCT_STABLE_REFERENCE"}],
+  "pathDepth": 2,
+  "relatedTraffic": {
+    "seedEventIndices": [0],
+    "sources": ["proxy", "site_map"],
+    "inScopeOnly": true,
+    "limit": 8
+  }
+}
+JSON
+chmod 600 "$PRIVATE_DIR/v412-related-arguments.json"
+
+scripts/run-live-v412-performance-attribution.py \
+  --approved-disposable-project \
+  --operation related-correlation \
+  --stage 10000 \
+  --edition community \
+  --token-file "$TOKEN_FILE" \
+  --arguments-file "$PRIVATE_DIR/v412-related-arguments.json" \
+  --output "$PRIVATE_DIR/v412-related-10000.json" \
+  --candidate-jar "$CANDIDATE_JAR" \
+  --expected-jar-sha256 "$JAR_SHA256" \
+  --expected-source-commit "$SOURCE_COMMIT" \
+  --expected-server-version "$RC_VERSION" \
+  --fixture-id reviewed-http-10000 \
+  --fixture-record-sha256 "$FIXTURE_RECORD_SHA256" \
+  --burp-version "$BURP_VERSION" \
+  --jvm-version "$JVM_VERSION" \
+  --os-family "$OS_FAMILY" \
+  --endpoint "$NUMERIC_LOOPBACK_ENDPOINT" \
+  --burp-pid "$BURP_PID"
+```
+
+Scanner delta uses a separate private file and Professional invocation; its accepted minimal shape is:
+
+```json
+{
+  "count": 50,
+  "summariesOnly": true,
+  "sinceSnapshotCursor": "REPLACE_WITH_PRIVATE_SIGNED_BASELINE_CURSOR",
+  "newestFirst": false
+}
+```
+
+Run 10k, 50k, and 100k as separate serial invocations for each applicable edition/operation. A product-valid candidate
+that stops qualifying during selected-reference revalidation is an unstable measurement fixture: the runner refuses it
+with a categorical fixture-change error, and that attempt is not an accepted evidence row.
+
+The runner does not generate HTTP history or Scanner issues and cannot attest a fixture's source size for related
+correlation; that size remains an independently reviewed fixture claim. A related-correlation row must examine at least
+one candidate, qualify at least one candidate, and append at least one revalidated related event. Scanner's current
+`snapshotSize` must equal the named stage, its baseline must precede that stage, and the measured page must inspect at
+least one entry from a non-empty append-stable range. In-process phase totals exclude approval waits, project checks,
+transport, scheduling, fixture creation, and unrelated Burp work; serial client wall time spans the complete measured
+call and is only an upper bound for their disjoint sum. Individual wall-time samples remain process-local and are not
+written to evidence; only the aggregate attributed-phase-to-wall ratio is retained. The instrumentation and collector
+are measurement plumbing only: they do not establish latency percentiles, a Burp product benchmark, an optimization, or an
+improvement. Accepted Community/Professional 10k/50k/100k rows remain required before any such claim or Montoya
+parallelization.
+
+## Logical related-traffic bounds
+
+Optional `correlate_http_activity.relatedTraffic` runs at most four serial internal HTTP searches. Each search returns at
+most 50 reference/metadata summaries and inherits the existing 10,000-record metadata-scan bound. The private relation
+projection deliberately bypasses adaptive metadata-index hints, so its phase cardinality does not depend on a warm index
+or a one-time hint retry. This fixed-attribution choice can be slower than the ordinary full-projection search when a
+current warm index exists; no performance improvement is claimed. The reported 200-invocation bound is therefore a bound
+on returned candidate summaries, not on all source records inspected. At most 16 selected stable references are
+reacquired through source-specific stable-reference resolution and scored again before they can be appended.
+
+These limits bound extension processing and output; they do not reduce the cost of Montoya source acquisition. Each
+internal search may obtain complete source views, and selected Site Map revalidation may snapshot that source. No
+discovery search is parallelized, and no latency or throughput
+improvement is claimed. Live 10k/50k/100k measurements must precede any acquisition redesign or performance claim.
+
+## Logical Scanner delta bounds
+
+Professional `get_scanner_issues` can issue a signed baseline cursor and scan a later append-stable visible range. A page
+returns at most 50 summaries and inspects at most 10,000 range entries, checking cancellation every 64 entries. Delta
+continuations freeze the comparison size and first/last anchors so later appends do not extend an in-progress page chain.
+Only matching items are summarized; issue detail, remediation, evidence, and Collaborator interactions are not read by
+the delta path.
+
+These are extension-side logical processing/output limits, not a Montoya acquisition or latency improvement. Every call
+still obtains `api.siteMap().issues()` before the bounded loop, and the pinned API may materialize the complete current
+list. First/last anchors reject shrink and boundary reorder but cannot detect every same-size middle replacement, so the
+mode does not claim a complete diff, regression detection, removal/change detection, or causality. Professional
+10k/50k/100k acquisition and processing measurements remain open and must precede optimization or performance claims.
+
 ## Reproducible packaging
 
 The extension manifest previously included build time, user, JDK, and Gradle fields, and `embedProxyJar` mutated the
@@ -816,7 +948,8 @@ Performance changes should preserve the following:
   cannot build or return a snapshot during an MCP Scope or project-option mutation.
 - Stable-ID Proxy/WebSocket/Organizer readers use filtered lookup APIs instead of full returned snapshots.
 - Derived request actions render full request text only when an interactive approval needs it.
-- Signed HTTP, WebSocket, and Scanner-issue cursors reject tampering, project changes, and stale source boundaries.
+- Signed HTTP, WebSocket, and Scanner-issue cursors reject tampering, project changes, and stale source boundaries;
+  Scanner delta continuations freeze their comparison range and never claim middle-replacement detection.
 - HTTP comparison never inspects more than 1 MiB per reference and never claims equality for a truncated matching prefix.
 - Focused active audits reject out-of-scope requests and missing/overlapping insertion points before Scanner starts.
 - Scanner get/cancel accepts only extension-owned task IDs; at most eight active and 32 retained handles are tracked.

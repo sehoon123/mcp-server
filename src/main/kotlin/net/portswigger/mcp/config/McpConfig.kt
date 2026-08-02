@@ -24,6 +24,8 @@ private const val APPROVAL_YOLO_MODE_KEY = "approvalYoloMode"
 private val LOCAL_BEARER_TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43,128}")
 private val INSTALLATION_BEARER_TOKEN_LOCK = Any()
 
+internal fun isValidLocalBearerToken(value: String): Boolean = LOCAL_BEARER_TOKEN_PATTERN.matches(value)
+
 class McpConfig(
     private val storage: PersistedObject,
     private val logging: Logging,
@@ -376,14 +378,14 @@ private class InstallationBearerTokenStore(
                 val legacy = readLegacyProjectToken()
                 val candidate = when {
                     legacy == null -> generateLocalBearerToken()
-                    LOCAL_BEARER_TOKEN_PATTERN.matches(legacy) -> legacy
+                    isValidLocalBearerToken(legacy) -> legacy
                     else -> throw LocalBearerTokenPersistenceException(
                         "The legacy local MCP bearer token is invalid; rotate it explicitly"
                     )
                 }
                 persistPreference(candidate)
             }
-            LOCAL_BEARER_TOKEN_PATTERN.matches(preferred) -> preferred
+            isValidLocalBearerToken(preferred) -> preferred
             else -> throw LocalBearerTokenPersistenceException(
                 "The installation-scoped local MCP bearer token is invalid; rotate it explicitly"
             )

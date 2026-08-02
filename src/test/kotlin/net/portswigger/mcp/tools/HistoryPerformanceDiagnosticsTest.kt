@@ -6,10 +6,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
@@ -48,10 +52,12 @@ class HistoryPerformanceDiagnosticsTest {
         assertEquals(0, metric.failed)
         assertEquals(0, metric.cancelled)
         assertEquals(List(HISTORY_PERFORMANCE_BUCKET_COUNT) { 1L }, metric.latencyBuckets)
+        assertEquals(elapsed.sum(), metric.totalNanos)
         assertEquals(5_000_000_000L, metric.maxNanos)
         snapshot.metrics.filterNot { it.metric == metric.metric }.forEach {
             assertEquals(0, it.attempts)
             assertEquals(List(HISTORY_PERFORMANCE_BUCKET_COUNT) { 0L }, it.latencyBuckets)
+            assertEquals(0, it.totalNanos)
         }
     }
 
@@ -90,6 +96,7 @@ class HistoryPerformanceDiagnosticsTest {
         assertEquals(1, metric.failed)
         assertEquals(1, metric.cancelled)
         assertEquals(3, metric.latencyBuckets.sum())
+        assertEquals(6, metric.totalNanos)
     }
 
     @Test
@@ -171,7 +178,7 @@ class HistoryPerformanceDiagnosticsTest {
         }
         val counters = countersField.get(diagnostics) as Array<*>
         val metricCounters = counters[HistoryPerformanceMetric.INDEX_SITE_MAP_PROCESSING.ordinal]!!
-        for (fieldName in listOf("attempts", "completed")) {
+        for (fieldName in listOf("attempts", "completed", "totalNanos")) {
             val field = metricCounters.javaClass.getDeclaredField(fieldName).apply { isAccessible = true }
             (field.get(metricCounters) as AtomicLong).set(Long.MAX_VALUE)
         }
@@ -189,16 +196,45 @@ class HistoryPerformanceDiagnosticsTest {
         assertEquals(Long.MAX_VALUE, metric.attempts)
         assertEquals(Long.MAX_VALUE, metric.completed)
         assertEquals(Long.MAX_VALUE, metric.latencyBuckets[0])
+        assertEquals(Long.MAX_VALUE, metric.totalNanos)
         assertFalse(metric.latencyBuckets.any { it < 0 })
     }
 
     @Test
-    fun `clock failures and disabled recorder never alter operation results`() = runBlocking {
-        val diagnostics = HistoryPerformanceDiagnostics { error("clock") }
+    fun `fixed aggregate snapshot serializes and round trips without dynamic fields`() = runBlocking {
+        var now = 0L
+        val diagnostics = HistoryPerformanceDiagnostics { now }
+        diagnostics.measure(HistoryPerformanceMetric.RELATED_CORRELATION_EXTENSION_PROCESSING) {
+            now = 42
+        }
+
+        val snapshot = diagnostics.snapshot()
+        val encoded = Json.encodeToString(snapshot)
+        val decoded = Json.decodeFromString<HistoryPerformanceSnapshot>(encoded)
+
+        assertEquals(snapshot, decoded)
+        assertEquals(HistoryPerformanceMetric.entries.size, decoded.metrics.size)
+        assertTrue(encoded.contains("RELATED_CORRELATION_EXTENSION_PROCESSING"))
+        assertTrue(encoded.contains("\"totalNanos\":42"))
+        assertFalse(encoded.contains("project"))
+        assertFalse(encoded.contains("filter"))
+    }
+
+    @Test
+    fun `clock failures and disabled recorder never alter operation results or poison timing totals`() = runBlocking {
+        var clockReads = 0
+        val diagnostics = HistoryPerformanceDiagnostics {
+            if (clockReads++ == 0) error("clock") else Long.MAX_VALUE
+        }
         assertEquals("ok", diagnostics.measure(HistoryPerformanceMetric.INDEX_ORGANIZER_ACQUISITION) { "ok" })
-        assertEquals(1, diagnostics.snapshot().metrics.single {
+        val metric = diagnostics.snapshot().metrics.single {
             it.metric == HistoryPerformanceMetric.INDEX_ORGANIZER_ACQUISITION
-        }.attempts)
+        }
+        assertEquals(1, metric.attempts)
+        assertEquals(1, metric.completed)
+        assertEquals(1, metric.latencyBuckets.first())
+        assertEquals(0, metric.totalNanos)
+        assertEquals(0, metric.maxNanos)
 
         assertEquals("disabled", HistoryPerformanceDiagnostics.NO_OP.measure(
             HistoryPerformanceMetric.HTTP_SEARCH_PROXY_ACQUISITION,

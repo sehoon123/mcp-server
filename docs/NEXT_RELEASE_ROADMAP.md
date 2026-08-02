@@ -1,6 +1,6 @@
 # Active release roadmap
 
-**Status date:** 2026-07-31<br>
+**Status date:** 2026-08-01<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
 **Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
@@ -44,6 +44,7 @@ locally assembled corrective artifact or reuse RC evidence as stable exact-byte 
 | `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
 | `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
 | `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, seven-day attested observation, fresh stable evidence |
+| `v4.12.0` | Local client setup and no-growth workflow UX | Five-client Setup Center; bounded Connection Doctor; later existing-surface enhancements | Exact 21/28 catalogs, privacy/lifecycle/accessibility and real-client evidence |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
 ## v4.8.0 — Independent Trust Baseline
@@ -465,6 +466,149 @@ aliases or families.
 - [x] The release-control track keeps the MCP surface unchanged at 21 Community / 28 Professional tools and allows
   unrelated post-anchor development to continue on `main` without entering v4.11 stable evidence.
 
+## v4.12.0 — Local Client Setup and No-growth Workflow UX
+
+Development begins on advancing `main` under `4.12.0-dev.1` while the next stable release remains `v4.11.0` on the
+protected `release/v4.11` lineage. No v4.12 commit may be merged or cherry-picked into that release branch. The v4.12
+candidate `SerialVersion` is intentionally deferred until the v4.11 line is complete; select it as one greater than the
+maximum SerialVersion of every published release with the same BApp UUID, including non-ancestor tags.
+
+Milestone order:
+
+1. Add a native Swing Client Setup Center for exactly Claude Desktop, Claude Code, VS Code / GitHub Copilot, Cursor,
+   and OpenAI Codex together with its bounded Connection Doctor. Previews and clipboard output are token/path-free. Only
+   Claude Desktop reuses the existing atomic private installer; the other four remain preview-and-copy only, and manual
+   proxy extraction is a separate action. Doctor runs one direct, body-discarding, no-redirect authenticated
+   numeric-loopback admission check off the EDT, creates no MCP session, and exposes only closed categorical
+   status/evidence; it does not claim a full MCP handshake or third-party client correctness.
+2. Add native local workflow-preset management without traffic execution or a new MCP surface.
+3. Extend existing `correlate_http_activity` with bounded related-traffic discovery, then extend existing Scanner tools
+   with bounded delta behavior. Do not add aliases or new tools for either feature.
+4. Run live Burp-backed 10k/50k/100k measurement before any Montoya parallelization or performance claim, and optimize
+   only extension-owned measured hotspots.
+
+Milestone 1 preserves every MCP tool, prompt, resource, URI, template, schema, capability, and route behavior. The exact
+catalog remains 21 Community / 28 Professional. It persists no selected client, probe result, endpoint, credential, or
+telemetry; the current token reaches only the explicit Claude installer and a running-listener Doctor request. One
+panel-owned bounded worker serializes installation, extraction, and Doctor work, and unload cancellation suppresses late
+UI publication. Synthetic 1024x720 light/dark 100/150/200% layout and keyboard/accessibility tests are required, while
+supported-client versions, Burp themes, keyboard-only traversal, screen reader, and high-contrast behavior remain live
+RC evidence.
+
+Kotlin MCP SDK/protocol modernization remains blocked on authoritative released server support, stable conformance, and
+the v5 approval model. Do not add a parallel raw dispatcher or weaken loopback, bearer, Host, Origin, or project gates.
+
+### v4.12.0 milestone 1 gate
+
+Checked source/offline gates below record mocked, wire-contract, and deterministic UI validation only. They are not live
+Burp or third-party-client evidence; the corresponding live gate remains explicitly unchecked.
+
+- [x] Exact five-entry preview/catalog, Claude-only write, token-free manual extraction, and scoped clipboard privacy
+  tests pass.
+- [x] The valid-current-token 400 / stale-token 401 guard pair proves zero pending, active, initialized, or approved MCP
+  session change.
+- [x] One-worker EDT/cancellation, no-late-publication, responsive layout, keyboard, and accessibility tests pass.
+- [x] At the milestone-1 checkpoint, Community and Professional remain exactly 21/28 with unchanged names/fingerprints,
+  and Setup Center/Doctor introduce zero tool/resource/schema production diff. Later milestone-3 additive schemas and
+  the milestone-4 diagnostics payload are assessed only by their explicit gates below.
+- [ ] Real supported-client and Community/Professional Burp validation is recorded before an RC claim.
+
+Milestone 2 adds one native `WorkflowPresetPanel` and a structured editor over the existing three safe preset definition
+types. It shares the exact `WorkflowPresetStore` instance used by the four existing MCP preset tools, keeps all project
+observation and persistence off the EDT, and owns one bounded worker that is cancelled on unload. The local manager can
+refresh, create, update, and delete, but cannot execute a preset, read traffic, or materialize runtime cursor/reference
+fields. Invalid raw storage is preserved; a possible write followed by cancellation or project transition is reported as
+uncertain and is not retried automatically.
+
+The local management boundary has no dependency on MCP SDK request, transport, or result classes. A future authoritative
+released Kotlin SDK migration replaces the wire adapters around this domain boundary rather than introducing a second
+preset store, dispatcher, or native model.
+
+### v4.12.0 milestone 2 gate
+
+- [x] Native create/read/update/delete covers HTTP metadata search, WebSocket metadata search, and HTTP comparison
+  definitions while exposing no execution control.
+- [x] Native and MCP operations share one synchronized store; malformed/unknown/oversized storage is preserved and
+  project transitions return no stale list or falsely certain mutation result.
+- [x] Preset persistence runs off the EDT, duplicate actions are disabled, and unload suppresses late publication.
+- [x] At the milestone-2 checkpoint, Community/Professional remain exactly 21/28 and native preset management adds no
+  tool, prompt, resource, URI, template, capability, schema, or route. The later PERF-012 diagnostics-resource payload
+  change is assessed only by the milestone-4 gate below.
+
+Milestone 3 first extends the existing `correlate_http_activity` request/result schema rather than registering a tool or
+alias. One to four explicit event indices seed at most four host/first-path searches over an already-authorized set of up
+to three sources. Each search returns at most 50 metadata-only candidates; explicit references are excluded, candidates
+are canonical-reference deduplicated, and at most 16 deterministic matches are appended after both explicit cohorts.
+The original baseline/comparison delta remains exact and unchanged by those events. Results report the bounded search
+envelope, truncation, fixed relation signals, and deterministic scores, while expressly denying probability, confidence,
+identity, chronology, causality, semantic dependence, vulnerability evidence, or complete project enumeration.
+
+The internal related-search projection retains only the reference and bounded relation metadata needed by correlation.
+It does not materialize normal search notes, body lengths, auxiliary Proxy/Organizer fields, complete URLs, or query
+strings. Existing Site Map stable-ID generation may still inspect its already-documented bounded private identity
+samples. The bounded selected references are reacquired through an instance-bound authorization handle and scored
+again from current materialized metadata; missing references fail closed and no-longer-qualifying candidates are omitted.
+Source approval is performed once over the explicit/discovery union, and project transition, denial, accessor failure, or
+cancellation returns no partial timeline.
+
+### v4.12.0 milestone 3 correlation gate
+
+- [x] Related discovery is limited to four seeds, four searches, 50 returned candidates per search, 200 candidate
+  summaries per invocation, and 16 appended events; every limit/truncation condition is represented in the result.
+- [x] Explicit references remain globally distinct and excluded from discovery; appended events never change the
+  baseline/comparison delta and never imply chronology, causality, identity, semantic dependence, or vulnerability.
+- [x] Additional discovery sources are approved once before source acquisition; selected stable references are
+  revalidated without another approval; denial/project transition/missing selection returns no partial explicit or
+  related output, and internal related search does not materialize private summary fields.
+- [x] Community/Professional remain exactly 21/28 with no new tool, alias, prompt, resource, URI, template, capability,
+  or route. For this correlation feature, only its existing schema/description changes; the separate PERF-012
+  diagnostics-resource payload change is assessed by the milestone-4 gate below.
+
+Milestone 3 then extends Professional `get_scanner_issues` cursor mode without creating a tool or retaining a decoded
+baseline. Every successful ordinary cursor page returns a signed process-local `snapshotCursor`. Passing that token as
+`sinceSnapshotCursor` scans only the currently visible range appended after its full-list baseline. A bounded delta
+continuation freezes the comparison snapshot and returns `nextDeltaCursor`, which is passed back through the same input;
+appends after that freeze wait for a subsequent comparison. Delta mode withholds the next `snapshotCursor` checkpoint
+until `hasMore` is false so a caller cannot accidentally advance past an undrained range.
+
+This mode returns at most 50 summaries and scans at most 10,000 issues per call. It reports baseline/current/range sizes,
+scan/continuation bounds, and fixed false claims for regression, removal/in-place change, and complete history. Existing
+first/last stable anchors reject list shrink and boundary reordering, but cannot detect every same-size middle
+replacement. The output therefore means only “new matching Scanner issues visible in an append-stable range”; it is not
+a complete added/removed/changed diff, proof of a vulnerability regression, or causality evidence. Snapshot and delta
+cursors remain signed, project/query-bound, non-persistent, and invalid after their server-lifetime secret changes.
+
+### v4.12.0 milestone 3 Scanner delta gate
+
+- [x] `cursor` and `sinceSnapshotCursor` are mutually exclusive; tampering, server restart, project mismatch, query
+  mismatch, shrink, and boundary reorder fail closed before returning issue summaries.
+- [x] Delta pagination freezes the comparison size/anchors, scans at most 10,000 and returns at most 50 per call, exposes
+  the appropriate continuation even for an empty filtered page, and excludes later appends until the next baseline.
+- [x] Summary/delta paths do not materialize detail, remediation, evidence messages, or Collaborator interactions for
+  unselected issues; cancellation and final project recheck discard partial output.
+- [x] Result language and evidence explicitly deny complete history, removal/change detection, regression, and causality;
+  same-size middle replacement tests must remain an acknowledged non-detection rather than a passing diff claim.
+- [x] Community/Professional remain exactly 21/28; for Scanner delta, only the existing Professional issue-search
+  schema/description changes and no alias, prompt, resource, URI, template, capability, or route is added. The separate
+  PERF-012 diagnostics-resource payload change is assessed by the milestone-4 gate below.
+
+Milestone 4 adds measurement plumbing before any performance optimization. It intentionally expands the existing
+authenticated `burp://diagnostics` payload from the historical partial projection to all 16 fixed, value-free history
+metrics, including elapsed buckets, saturating totals, and maxima. This permits coarse operation/timing inference by an
+authenticated diagnostics reader but retains no traffic, source size, project/session identity, filter, cursor, reference,
+or credential. It adds no resource, tool, alias, prompt, URI, template, capability, or route.
+
+### v4.12.0 milestone 4 (PERF-012) gate
+
+- [x] The complete fixed 16-metric diagnostics projection, its authenticated timing-inference tradeoff, and its exact
+  value-free schema are reviewed and pinned by wire tests.
+- [x] Related-correlation and Scanner-delta acquisition/processing regions remain serial and disjoint; quiet snapshots,
+  exact phase-attempt cardinality, nonzero useful work, and attributed time not exceeding client wall time fail closed.
+- [ ] Aggregate-only mode-0600 Community and Professional evidence covers each applicable 10k/50k/100k stage on a clean
+  exact `4.12.0-rc.N` candidate with reviewed disposable-fixture attestation and exact source/JAR/server identity.
+- [x] No latency, percentile, throughput, Burp-product benchmark, optimization, improvement, or Montoya parallelization
+  claim is made until accepted live rows identify an extension-owned hotspot and bounded before/after evidence exists.
+
 ## v5.0.0 — Modern MCP gate
 
 There is no target date. [V5_READINESS.md](V5_READINESS.md) and
@@ -569,6 +713,17 @@ or an open release-blocking P0/P1 exists. Other suggested labels remain:
 | `H2-001` | Live HTTP/2 routing validation in a supported Burp runtime |
 | `DIAG-001` | Bounded negotiated-protocol distribution counters |
 | `UX-001` | Select one measured client/operator UX problem for separate review |
+
+### Milestone: v4.12.0 — Local Client Setup and No-growth Workflow UX
+
+| ID | Issue |
+| --- | --- |
+| `UX-012` | Five-client secret-free Setup Center with Claude-only installer |
+| `DIAG-012` | Bounded session-free Connection Doctor with controlled evidence |
+| `PRESET-012` | Native local preset manager without MCP catalog growth |
+| `CORR-012` | Related-traffic mode on existing correlation tool |
+| `SCAN-012` | Delta mode on existing Scanner surface |
+| `PERF-012` | Burp-backed measurement before extension-owned optimization |
 
 ### Milestone: v5.0.0 — Modern MCP gate
 

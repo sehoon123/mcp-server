@@ -10,7 +10,16 @@ import net.portswigger.mcp.McpServerStartupException
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.presets.WorkflowPresetManagement
+import net.portswigger.mcp.providers.ClaudeDesktopProvider
+import net.portswigger.mcp.providers.ClientSetupEndpoint
+import net.portswigger.mcp.providers.ConnectionDoctor
+import net.portswigger.mcp.providers.DoctorListenerCode
+import net.portswigger.mcp.providers.DoctorRequestConfig
+import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyProvenance
+import net.portswigger.mcp.providers.doctorListenerCode
+import net.portswigger.mcp.providers.streamableHttpEndpoint
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
@@ -25,6 +34,8 @@ import java.awt.GridBagLayout
 import javax.swing.*
 import javax.swing.Box.*
 import javax.swing.JOptionPane.ERROR_MESSAGE
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 class ConfigUi internal constructor(
     private val config: McpConfig,
@@ -35,6 +46,8 @@ class ConfigUi internal constructor(
     private val proxyVerified: Boolean,
     private val clearSessionApprovals: () -> Int,
     private val edtWatchdogProvider: () -> EdtWatchdogSnapshot = { EdtWatchdogSnapshot() },
+    private val connectionDoctor: ConnectionDoctor = ConnectionDoctor(),
+    private val workflowPresetManager: WorkflowPresetManagement? = null,
 ) {
     constructor(config: McpConfig, providers: List<Provider>) : this(
         config = config,
@@ -71,19 +84,30 @@ class ConfigUi internal constructor(
         toggleListener?.invoke(enabled)
     }
     private val validationErrorLabel = WarningLabel()
-    private val hostField = JTextField(15)
-    private val portField = JTextField(5)
+    private val hostField = JTextField(15).apply { name = "serverHostField" }
+    private val portField = JTextField(5).apply { name = "serverPortField" }
     private val reinstallNotice = WarningLabel("Make sure to reinstall after changing server settings")
 
     private lateinit var serverConfigurationPanel: ServerConfigurationPanel
     private lateinit var advancedOptionsPanel: AdvancedOptionsPanel
     private lateinit var autoApproveTargetsPanel: AutoApproveTargetsPanel
     private lateinit var diagnosticsPanel: DiagnosticsPanel
-    private lateinit var installationPanel: InstallationPanel
+    private lateinit var workflowPresetPanel: WorkflowPresetPanel
+    private lateinit var clientSetupPanel: ClientSetupPanel
 
     private var toggleListener: ((Boolean) -> Unit)? = null
     private var suppressToggleEvents: Boolean = false
+    private var endpointDocumentListenersInstalled = false
 
+    private val endpointChangeListener = object : DocumentListener {
+        override fun insertUpdate(event: DocumentEvent?) = endpointChanged()
+        override fun removeUpdate(event: DocumentEvent?) = endpointChanged()
+        override fun changedUpdate(event: DocumentEvent?) = endpointChanged()
+
+        private fun endpointChanged() {
+            if (::clientSetupPanel.isInitialized) clientSetupPanel.markEndpointStale()
+        }
+    }
     private val dataAccessRefreshListener: () -> Unit = {
         serverConfigurationPanel.updateDataAccessCheckboxes()
     }
@@ -128,11 +152,30 @@ class ConfigUi internal constructor(
             edtWatchdogProvider = edtWatchdogProvider,
         )
 
-        installationPanel = InstallationPanel(
-            providers = providers,
+        require(
+            providers.all { it is ClaudeDesktopProvider || it is ManualProxyInstallerProvider } &&
+                providers.count { it is ClaudeDesktopProvider } <= 1 &&
+                providers.count { it is ManualProxyInstallerProvider } <= 1
+        ) { "Client setup providers must be the unique supported Claude Desktop and manual proxy providers" }
+        workflowPresetManager?.let { manager ->
+            workflowPresetPanel = WorkflowPresetPanel(
+                management = manager,
+                parentComponent = panel,
+            )
+        }
+
+        val claudeDesktopProvider = providers.filterIsInstance<ClaudeDesktopProvider>().singleOrNull()
+        val manualProxyProvider = providers.filterIsInstance<ManualProxyInstallerProvider>().singleOrNull()
+        clientSetupPanel = ClientSetupPanel(
+            initialEndpoint = initialClientSetupEndpoint(),
+            claudeDesktopInstaller = claudeDesktopProvider,
+            prepareProxyExtraction = manualProxyProvider?.let { provider -> provider::prepareExtraction },
             reinstallNotice = reinstallNotice,
             parentComponent = panel,
+            endpointProvider = ::clientSetupEndpointSnapshot,
             installConfigProvider = ::providerInstallSnapshot,
+            doctorConfigProvider = ::doctorRequestSnapshot,
+            connectionDoctor = connectionDoctor,
         )
 
         setupConfigListeners()
@@ -142,11 +185,19 @@ class ConfigUi internal constructor(
         listenerHandles += config.addDataAccessChangeListener(dataAccessRefreshListener)
         listenerHandles += config.addRequestActionApprovalChangeListener(requestActionApprovalRefreshListener)
         listenerHandles += config.addScopeChangeApprovalChangeListener(scopeChangeApprovalRefreshListener)
+        hostField.document.addDocumentListener(endpointChangeListener)
+        portField.document.addDocumentListener(endpointChangeListener)
+        endpointDocumentListenersInstalled = true
     }
 
     fun cleanup() {
         listenerHandles.forEach { it.remove() }
         listenerHandles.clear()
+        if (endpointDocumentListenersInstalled) {
+            hostField.document.removeDocumentListener(endpointChangeListener)
+            portField.document.removeDocumentListener(endpointChangeListener)
+            endpointDocumentListenersInstalled = false
+        }
 
         if (::autoApproveTargetsPanel.isInitialized) {
             autoApproveTargetsPanel.cleanup()
@@ -154,9 +205,65 @@ class ConfigUi internal constructor(
         if (::diagnosticsPanel.isInitialized) {
             diagnosticsPanel.cleanup()
         }
-        if (::installationPanel.isInitialized) {
-            installationPanel.cleanup()
+        if (::workflowPresetPanel.isInitialized) {
+            workflowPresetPanel.cleanup()
         }
+        if (::clientSetupPanel.isInitialized) {
+            clientSetupPanel.cleanup()
+        }
+    }
+
+    /** Cancels panel-owned work before the listener begins shutting down. Full cleanup remains idempotent. */
+    fun cancelBackgroundWork() {
+        if (::workflowPresetPanel.isInitialized) {
+            workflowPresetPanel.cancelBackgroundWorkAndAwait()
+        }
+        if (::clientSetupPanel.isInitialized) {
+            clientSetupPanel.cancelBackgroundWork()
+        }
+    }
+
+    private fun initialClientSetupEndpoint(): ClientSetupEndpoint? = runCatching {
+        ClientSetupEndpoint.from(config.host, config.port)
+    }.getOrNull()
+
+    private fun clientSetupEndpointSnapshot(): ClientSetupEndpoint {
+        check(SwingUtilities.isEventDispatchThread()) { "client endpoint must be captured on the EDT" }
+        val hostText = hostField.text
+        val portText = portField.text
+        ConfigValidation.validateServerConfig(hostText, portText)?.let { error ->
+            throw IllegalArgumentException(error)
+        }
+        val port = requireNotNull(portText.trim().toIntOrNull()) { "MCP endpoint port is invalid" }
+        return ClientSetupEndpoint.from(hostText, port)
+    }
+
+    private fun doctorRequestSnapshot(): DoctorRequestConfig {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor configuration must be captured on the EDT" }
+        val diagnostics = runCatching { diagnosticsProvider() }.getOrNull()
+        val listener = doctorListenerCode(diagnostics?.state)
+        val endpoint = runCatching { clientSetupEndpointSnapshot() }.getOrNull()
+            ?: return DoctorRequestConfig(
+                host = "",
+                port = 0,
+                bearerToken = null,
+                listener = listener,
+                configurationValid = false,
+            )
+        val displayedEndpoint = streamableHttpEndpoint(endpoint.host, endpoint.port)
+        val endpointMatchesListener = listener != DoctorListenerCode.RUNNING || diagnostics?.endpoint == displayedEndpoint
+        val token = if (listener == DoctorListenerCode.RUNNING && endpointMatchesListener) {
+            config.localBearerToken
+        } else {
+            null
+        }
+        return DoctorRequestConfig(
+            endpoint.host,
+            endpoint.port,
+            token,
+            listener,
+            endpointMatchesListener = endpointMatchesListener,
+        )
     }
 
     private fun providerInstallSnapshot(): ProviderInstallConfig {
@@ -180,7 +287,7 @@ class ConfigUi internal constructor(
     fun getConfig(): McpConfig {
         ConfigValidation.normalizeLoopbackHost(hostField.text)?.let {
             config.host = it
-            hostField.text = it
+            if (hostField.text != it) hostField.text = it
         }
         portField.text.trim().toIntOrNull()?.let { config.port = it }
         return config
@@ -295,11 +402,15 @@ class ConfigUi internal constructor(
         rightPanelContent.add(advancedOptionsPanel)
         rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
         rightPanelContent.add(diagnosticsPanel)
+        if (::workflowPresetPanel.isInitialized) {
+            rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
+            rightPanelContent.add(workflowPresetPanel)
+        }
         rightPanelContent.add(createVerticalGlue())
         rightPanelContent.add(reinstallNotice)
         rightPanelContent.add(createVerticalStrut(10))
 
-        rightPanelContent.add(installationPanel)
+        rightPanelContent.add(clientSetupPanel)
 
         val columnsPanel = ResponsiveColumnsPanel(leftPanel, rightPanel)
         panel.add(columnsPanel, BorderLayout.CENTER)

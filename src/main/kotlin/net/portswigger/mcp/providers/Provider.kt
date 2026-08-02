@@ -30,7 +30,10 @@ data class ProviderInstallConfig(
     val host: String,
     val port: Int,
     val localBearerToken: String,
-)
+) {
+    override fun toString(): String =
+        "ProviderInstallConfig(endpoint=<redacted>, localBearerToken=<redacted>)"
+}
 
 fun interface ProviderInstallOperation {
     fun execute(): String?
@@ -45,12 +48,13 @@ interface Provider {
     fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation?
 }
 
-private const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
+internal const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
 
 internal fun streamableHttpEndpoint(host: String, port: Int): String {
     val normalized = requireNotNull(ConfigValidation.normalizeLoopbackHost(host)) {
         "MCP endpoint host must be 127.0.0.1 or ::1"
     }
+    require(port in 1024..65535) { "MCP endpoint port is outside the valid range" }
     val connectHost = if (':' in normalized) "[$normalized]" else normalized
     return "http://$connectHost:$port/mcp"
 }
@@ -284,10 +288,14 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
 class ManualProxyInstallerProvider(private val logging: Logging, private val proxyJarManager: ProxyJarManager) :
     Provider {
     override val name = "Proxy jar"
-    override val installButtonText = "Extract server proxy jar"
+    override val installButtonText = "Extract proxy jar..."
     override val confirmationText = null
 
-    override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation? {
+    @Suppress("UNUSED_PARAMETER")
+    override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation? = prepareExtraction()
+
+    /** Selects the destination on Swing's EDT without reading or retaining the bearer credential. */
+    internal fun prepareExtraction(): ProviderInstallOperation? {
         check(SwingUtilities.isEventDispatchThread()) { "proxy destination must be selected on the EDT" }
         val fileChooser = JFileChooser().apply {
             dialogTitle = "Save proxy jar"
@@ -311,7 +319,7 @@ class ManualProxyInstallerProvider(private val logging: Logging, private val pro
                 throw ex
             }
 
-            "Extracted proxy jar to $destinationFile"
+            "Proxy jar extracted successfully"
         }
     }
 }

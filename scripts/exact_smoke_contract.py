@@ -120,6 +120,9 @@ SCENARIO_REQUIRED_EDITIONS = {
 }
 _HEX_40 = re.compile(r"^[a-f0-9]{40}$")
 _HEX_64 = re.compile(r"^[a-f0-9]{64}$")
+_CATALOG_RELEASE_VERSION = re.compile(
+    r"^([1-9][0-9]*)\.([0-9]+)\.([0-9]+)(?:-rc\.[1-9][0-9]*)?$"
+)
 _UUID_VALUE = re.compile(rb"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
 _JSON_KEY_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _PRIVATE_JSON_KEYS = frozenset({"projectid", "sessionid", "stableid", "scannertaskid", "collaboratorpayload"})
@@ -272,12 +275,229 @@ def _catalog_identifiers(items: list[dict[str, Any]], field: str, label: str) ->
     return frozenset(identifiers)
 
 
+def _schema_object(value: Any, required_properties: frozenset[str], label: str) -> dict[str, Any]:
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    while pending:
+        candidate, depth = pending.pop(0)
+        if not isinstance(candidate, dict) or depth > 8:
+            continue
+        properties = candidate.get("properties")
+        if isinstance(properties, dict) and required_properties.issubset(properties):
+            return candidate
+        for key in ("anyOf", "oneOf", "allOf"):
+            variants = candidate.get(key)
+            if isinstance(variants, list):
+                pending.extend((variant, depth + 1) for variant in variants)
+    raise HarnessError(f"{label} schema was malformed")
+
+
+def _schema_bound(value: Any, field: str, expected: int, label: str) -> None:
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    while pending:
+        candidate, depth = pending.pop(0)
+        if not isinstance(candidate, dict) or depth > 8:
+            continue
+        if candidate.get(field) == expected:
+            return
+        for key in ("anyOf", "oneOf", "allOf"):
+            variants = candidate.get(key)
+            if isinstance(variants, list):
+                pending.extend((variant, depth + 1) for variant in variants)
+    raise HarnessError(f"{label} bound changed")
+
+
+def _schema_required(schema: dict[str, Any], names: frozenset[str], label: str) -> None:
+    required = schema.get("required")
+    if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
+        raise HarnessError(f"{label} required fields changed")
+    if not names.issubset(required):
+        raise HarnessError(f"{label} required fields changed")
+
+
+def requires_v412_catalog_schema(server_version: str) -> bool:
+    if not isinstance(server_version, str) or len(server_version) > 128:
+        raise HarnessError("server version is invalid")
+    match = _CATALOG_RELEASE_VERSION.fullmatch(server_version)
+    if match is None:
+        raise HarnessError("catalog schema contract is undefined for this server version")
+    release_line = (int(match.group(1)), int(match.group(2)))
+    if release_line < (4, 12):
+        return False
+    if release_line == (4, 12):
+        return True
+    raise HarnessError("catalog schema contract is undefined for this server version")
+
+
+def _validate_correlation_schema(tool: dict[str, Any], require_v412_schema: bool) -> None:
+    annotations = tool.get("annotations") or {}
+    input_schema = tool.get("inputSchema") or {}
+    if not isinstance(annotations, dict) or not isinstance(input_schema, dict):
+        raise HarnessError("correlation tool schema was malformed")
+    properties = input_schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        raise HarnessError("correlation tool schema was malformed")
+    if annotations.get("readOnlyHint") is not True or annotations.get("destructiveHint") is not False:
+        raise HarnessError("correlation tool annotations changed")
+    for name in ("baselineRefs", "comparisonRefs"):
+        _schema_bound(properties.get(name), "maxItems", 16, "correlation cohort")
+    if not require_v412_schema:
+        return
+
+    output_schema = tool.get("outputSchema") or {}
+    output_properties = output_schema.get("properties") or {}
+    if not isinstance(output_schema, dict) or not isinstance(output_properties, dict):
+        raise HarnessError("correlation tool schema was malformed")
+    related_input = _schema_object(
+        properties.get("relatedTraffic"),
+        frozenset({"seedEventIndices", "sources", "inScopeOnly", "limit"}),
+        "correlation relatedTraffic input",
+    )
+    related_input_properties = related_input["properties"]
+    _schema_required(related_input, frozenset({"seedEventIndices"}), "correlation relatedTraffic input")
+    _schema_bound(related_input_properties["seedEventIndices"], "minItems", 1, "related seed minimum")
+    _schema_bound(related_input_properties["seedEventIndices"], "maxItems", 4, "related seed maximum")
+    _schema_bound(related_input_properties["sources"], "minItems", 1, "related source minimum")
+    _schema_bound(related_input_properties["sources"], "maxItems", 3, "related source maximum")
+    _schema_bound(related_input_properties["limit"], "minimum", 1, "related result minimum")
+    _schema_bound(related_input_properties["limit"], "maximum", 16, "related result maximum")
+
+    _schema_bound(output_properties.get("timeline"), "maxItems", 48, "correlation timeline maximum")
+    related_output = _schema_object(
+        output_properties.get("relatedTraffic"),
+        frozenset(
+            {
+                "seedEventIndices",
+                "sources",
+                "requestedLimit",
+                "queryCount",
+                "candidateSummariesExamined",
+                "qualifiedCandidates",
+                "returned",
+                "truncated",
+                "basis",
+                "identityEstablished",
+                "matches",
+            }
+        ),
+        "correlation relatedTraffic output",
+    )
+    related_output_properties = related_output["properties"]
+    _schema_required(related_output, frozenset(related_output_properties), "correlation relatedTraffic output")
+    _schema_bound(related_output_properties["seedEventIndices"], "maxItems", 4, "related output seeds")
+    _schema_bound(related_output_properties["sources"], "maxItems", 3, "related output sources")
+    _schema_bound(related_output_properties["requestedLimit"], "maximum", 16, "related requested limit")
+    _schema_bound(related_output_properties["queryCount"], "maximum", 4, "related query count")
+    _schema_bound(
+        related_output_properties["candidateSummariesExamined"],
+        "maximum",
+        200,
+        "related examined summaries",
+    )
+    _schema_bound(related_output_properties["qualifiedCandidates"], "maximum", 200, "related qualified candidates")
+    _schema_bound(related_output_properties["returned"], "maximum", 16, "related returned results")
+    _schema_bound(related_output_properties["matches"], "maxItems", 16, "related match maximum")
+    related_text = json.dumps(related_output, sort_keys=True, separators=(",", ":")).lower()
+    for phrase in ("identity", "probability", "causality", "vulnerability evidence"):
+        if phrase not in related_text:
+            raise HarnessError("correlation relatedTraffic limitations changed")
+
+    evidence = _schema_object(
+        output_properties.get("evidence"),
+        frozenset(
+            {
+                "ordering",
+                "chronologyEstablished",
+                "cohortBoundaryEstablishesTime",
+                "exactCrossSourceIdentityEstablished",
+                "probableDuplicatesDeduplicated",
+                "selectedReferences",
+                "relatedReferences",
+                "timelineEvents",
+                "maxReferences",
+                "maxReferencesPerCohort",
+                "maxRelatedReferences",
+                "maxTimelineEvents",
+                "limitations",
+            }
+        ),
+        "correlation evidence output",
+    )
+    _schema_required(
+        evidence,
+        frozenset(
+            {
+                "ordering",
+                "chronologyEstablished",
+                "cohortBoundaryEstablishesTime",
+                "exactCrossSourceIdentityEstablished",
+                "probableDuplicatesDeduplicated",
+                "selectedReferences",
+                "relatedReferences",
+                "timelineEvents",
+                "maxReferences",
+                "maxReferencesPerCohort",
+                "maxRelatedReferences",
+                "maxTimelineEvents",
+                "limitations",
+            }
+        ),
+        "correlation evidence output",
+    )
+
+
+def _validate_scanner_delta_schema(tool: dict[str, Any]) -> None:
+    annotations = tool.get("annotations") or {}
+    input_schema = tool.get("inputSchema") or {}
+    output_schema = tool.get("outputSchema") or {}
+    if not isinstance(annotations, dict) or not isinstance(input_schema, dict) or not isinstance(output_schema, dict):
+        raise HarnessError("Scanner delta tool schema was malformed")
+    input_properties = input_schema.get("properties") or {}
+    output_properties = output_schema.get("properties") or {}
+    if not isinstance(input_properties, dict) or not isinstance(output_properties, dict):
+        raise HarnessError("Scanner delta tool schema was malformed")
+    if annotations.get("readOnlyHint") is not True or annotations.get("destructiveHint") is not False:
+        raise HarnessError("Scanner issue tool annotations changed")
+    _schema_bound(input_properties.get("sinceSnapshotCursor"), "maxLength", 16_384, "Scanner delta input cursor")
+    _schema_bound(output_properties.get("items"), "maxItems", 50, "Scanner issue result maximum")
+    _schema_bound(output_properties.get("returned"), "maximum", 50, "Scanner returned maximum")
+    _schema_bound(output_properties.get("scanned"), "maximum", 10_000, "Scanner scan maximum")
+    for name in ("snapshotCursor", "nextDeltaCursor"):
+        _schema_bound(output_properties.get(name), "maxLength", 16_384, f"Scanner {name}")
+    delta = _schema_object(
+        output_properties.get("delta"),
+        frozenset(
+            {
+                "basis",
+                "baselineSnapshotSize",
+                "currentSnapshotSize",
+                "appendedRangeSize",
+                "regressionEstablished",
+                "removedOrChangedEstablished",
+                "completeHistoryEstablished",
+            }
+        ),
+        "Scanner delta output",
+    )
+    _schema_required(delta, frozenset(delta["properties"]), "Scanner delta output")
+    _schema_required(
+        output_schema,
+        frozenset({"items", "returned", "scanned", "snapshotCursor", "nextDeltaCursor", "deltaMode", "delta"}),
+        "Scanner issue output",
+    )
+    delta_text = json.dumps(delta, sort_keys=True, separators=(",", ":")).lower()
+    for phrase in ("regression", "removal", "complete project history"):
+        if phrase not in delta_text:
+            raise HarnessError("Scanner delta limitations changed")
+
+
 def validate_catalog(
     edition: str,
     tools: list[dict[str, Any]],
     prompts: list[dict[str, Any]],
     resources: list[dict[str, Any]],
     resource_templates: list[dict[str, Any]],
+    *,
+    require_v412_schema: bool = False,
 ) -> dict[str, Any]:
     expected_identifiers = EDITION_CATALOG_IDENTIFIERS.get(edition)
     if expected_identifiers is None:
@@ -304,19 +524,16 @@ def validate_catalog(
     correlation = next((tool for tool in tools if tool.get("name") == "correlate_http_activity"), None)
     if correlation is None:
         raise HarnessError("correlation tool is absent")
-    annotations = correlation.get("annotations") or {}
-    input_schema = correlation.get("inputSchema") or {}
-    if not isinstance(annotations, dict) or not isinstance(input_schema, dict):
-        raise HarnessError("correlation tool schema was malformed")
-    properties = input_schema.get("properties") or {}
-    if not isinstance(properties, dict):
-        raise HarnessError("correlation tool schema was malformed")
-    if annotations.get("readOnlyHint") is not True or annotations.get("destructiveHint") is not False:
-        raise HarnessError("correlation tool annotations changed")
-    for name in ("baselineRefs", "comparisonRefs"):
-        cohort_schema = properties.get(name) or {}
-        if not isinstance(cohort_schema, dict) or cohort_schema.get("maxItems") != 16:
-            raise HarnessError("correlation cohort bounds changed")
+    if not isinstance(require_v412_schema, bool):
+        raise HarnessError("catalog schema contract selector was invalid")
+    _validate_correlation_schema(correlation, require_v412_schema)
+    scanner = next((tool for tool in tools if tool.get("name") == "get_scanner_issues"), None)
+    if edition == "professional" and scanner is None:
+        raise HarnessError("Scanner issue tool is absent from Professional")
+    if edition == "community" and scanner is not None:
+        raise HarnessError("Scanner issue tool is present in Community")
+    if require_v412_schema and scanner is not None:
+        _validate_scanner_delta_schema(scanner)
 
     return {
         "counts": counts,

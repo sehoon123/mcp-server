@@ -1,10 +1,12 @@
 package net.portswigger.mcp.tools
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.Serializable
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
+@Serializable
 enum class HistoryPerformanceMetric {
     INDEX_PROXY_ACQUISITION,
     INDEX_PROXY_PROCESSING,
@@ -18,6 +20,10 @@ enum class HistoryPerformanceMetric {
     HTTP_SEARCH_PROCESSING,
     WEBSOCKET_SEARCH_ACQUISITION,
     WEBSOCKET_SEARCH_PROCESSING,
+    RELATED_CORRELATION_MONTOYA_ACQUISITION,
+    RELATED_CORRELATION_EXTENSION_PROCESSING,
+    SCANNER_DELTA_MONTOYA_ACQUISITION,
+    SCANNER_DELTA_EXTENSION_PROCESSING,
 }
 
 enum class HistoryPerformanceOutcome {
@@ -26,6 +32,7 @@ enum class HistoryPerformanceOutcome {
     CANCELLED,
 }
 
+@Serializable
 data class HistoryPerformanceMetricSnapshot(
     val metric: HistoryPerformanceMetric,
     val active: Int,
@@ -34,9 +41,11 @@ data class HistoryPerformanceMetricSnapshot(
     val failed: Long,
     val cancelled: Long,
     val latencyBuckets: List<Long>,
+    val totalNanos: Long,
     val maxNanos: Long,
 )
 
+@Serializable
 data class HistoryPerformanceSnapshot(
     val metrics: List<HistoryPerformanceMetricSnapshot>,
 ) {
@@ -51,6 +60,7 @@ data class HistoryPerformanceSnapshot(
                     failed = 0,
                     cancelled = 0,
                     latencyBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT) { 0 },
+                    totalNanos = 0,
                     maxNanos = 0,
                 )
             },
@@ -59,6 +69,7 @@ data class HistoryPerformanceSnapshot(
 }
 
 internal const val HISTORY_PERFORMANCE_BUCKET_COUNT = 11
+private const val UNAVAILABLE_NANO_TIME = Long.MIN_VALUE
 internal val HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS =
     listOf(1L, 5L, 10L, 25L, 50L, 100L, 250L, 500L, 1_000L, 5_000L)
 
@@ -119,7 +130,7 @@ internal class HistoryPerformanceDiagnostics private constructor(
         )
     }
 
-    private fun safeNanoTime(): Long = runCatching(nanoTime).getOrDefault(0)
+    private fun safeNanoTime(): Long = runCatching(nanoTime).getOrDefault(UNAVAILABLE_NANO_TIME)
 
     companion object {
         val NO_OP = HistoryPerformanceDiagnostics(false, { 0 })
@@ -133,6 +144,7 @@ private class MetricCounters {
     private val failed = AtomicLong()
     private val cancelled = AtomicLong()
     private val latencyBuckets = AtomicLongArray(HISTORY_PERFORMANCE_BUCKET_COUNT)
+    private val totalNanos = AtomicLong()
     private val maxNanos = AtomicLong()
 
     fun enter() {
@@ -151,6 +163,7 @@ private class MetricCounters {
             HistoryPerformanceOutcome.CANCELLED -> cancelled.incrementSaturated()
         }
         latencyBuckets.incrementSaturated(bucketIndex(elapsedNanos))
+        totalNanos.addSaturated(elapsedNanos.coerceAtLeast(0))
         maxNanos.updateMaximum(elapsedNanos)
     }
 
@@ -163,6 +176,7 @@ private class MetricCounters {
         cancelled = cancelled.get(),
         latencyBuckets = List(HISTORY_PERFORMANCE_BUCKET_COUNT, latencyBuckets::get),
         maxNanos = maxNanos.get(),
+        totalNanos = totalNanos.get(),
     )
 }
 
@@ -189,6 +203,15 @@ private fun AtomicLongArray.incrementSaturated(index: Int) {
     }
 }
 
+private fun AtomicLong.addSaturated(increment: Long) {
+    val bounded = increment.coerceAtLeast(0)
+    while (true) {
+        val current = get()
+        val next = if (current >= Long.MAX_VALUE - bounded) Long.MAX_VALUE else current + bounded
+        if (current == Long.MAX_VALUE || compareAndSet(current, next)) return
+    }
+}
+
 private fun AtomicLong.updateMaximum(value: Long) {
     val bounded = value.coerceAtLeast(0)
     while (true) {
@@ -197,4 +220,5 @@ private fun AtomicLong.updateMaximum(value: Long) {
     }
 }
 
-private fun elapsedNanos(start: Long, end: Long): Long = (end - start).coerceAtLeast(0)
+private fun elapsedNanos(start: Long, end: Long): Long =
+    if (start == UNAVAILABLE_NANO_TIME || end == UNAVAILABLE_NANO_TIME) 0 else (end - start).coerceAtLeast(0)

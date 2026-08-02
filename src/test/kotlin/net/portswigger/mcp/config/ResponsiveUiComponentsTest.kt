@@ -8,6 +8,16 @@ import net.portswigger.mcp.config.components.AdaptiveButtonPanel
 import net.portswigger.mcp.config.components.ResponsiveColumnsPanel
 import net.portswigger.mcp.config.components.WidthTrackingPanel
 import net.portswigger.mcp.config.components.WrappingText
+import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
+import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
+import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
+import net.portswigger.mcp.presets.WorkflowPreset
+import net.portswigger.mcp.presets.WorkflowPresetManagement
+import net.portswigger.mcp.providers.ClaudeDesktopProvider
+import net.portswigger.mcp.providers.ManualProxyInstallerProvider
+import net.portswigger.mcp.providers.ProxyJarManager
+import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -19,6 +29,7 @@ import java.awt.Container
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.event.ActionEvent
+import java.nio.file.Path
 import javax.accessibility.AccessibleRole
 import javax.accessibility.AccessibleState
 import javax.swing.AbstractButton
@@ -27,7 +38,9 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.JTable
 import javax.swing.JViewport
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -52,6 +65,51 @@ class ResponsiveUiComponentsTest {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `setup preview reapplies theme and font changes to an existing component tree`() {
+        runOnEdt {
+            val storage = mockk<PersistedObject>(relaxed = true)
+            every { storage.getBoolean(any()) } returns null
+            every { storage.getString(any()) } returns null
+            every { storage.getInteger(any()) } returns null
+            val logging = mockk<Logging>(relaxed = true)
+            val ui = ConfigUi(
+                config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences()),
+                providers = emptyList(),
+                diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+                auditLog = NoOpMcpAuditSink,
+                proxyProvenance = null,
+                proxyVerified = false,
+                clearSessionApprovals = { 0 },
+                workflowPresetManager = responsivePresetManagement(),
+            )
+            try {
+                val preview = ui.component.descendants().filterIsInstance<JTextArea>()
+                    .single { it.name == "clientSetupPreview" }
+                val presetStatus = ui.component.descendants().filterIsInstance<WrappingText>()
+                    .single { it.name == "workflowPresetStatusText" }
+                val presetTable = ui.component.descendants().filterIsInstance<JTable>()
+                    .single { it.name == "workflowPresetTable" }
+                val initialSize = preview.font.size
+                val initialPresetSize = presetStatus.font.size
+                val initialRowHeight = presetTable.rowHeight
+                withUiFontScale(2f) {
+                    SwingUtilities.updateComponentTreeUI(ui.component)
+                    assertTrue(preview.font.size >= initialSize * 1.5)
+                    assertEquals(Design.Typography.bodyMedium.size, preview.font.size)
+                    assertEquals(Design.Colors.onSurface, preview.foreground)
+                    assertEquals(Design.Colors.surface, preview.background)
+                    assertTrue(presetStatus.font.size >= initialPresetSize * 1.5)
+                    assertTrue(contrastRatio(presetStatus.foreground, Design.Colors.surface) >= 4.5)
+                    assertTrue(presetTable.rowHeight >= initialRowHeight * 1.5)
+                    assertEquals(presetTable.rowHeight * 6, presetTable.preferredScrollableViewportSize.height)
+                }
+            } finally {
+                ui.cleanup()
             }
         }
     }
@@ -198,8 +256,25 @@ class ResponsiveUiComponentsTest {
         every { storage.getBoolean(any()) } returns null
         every { storage.getString(any()) } returns null
         every { storage.getInteger(any()) } returns null
-        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
-        val ui = ConfigUi(config, emptyList())
+        val logging = mockk<Logging>(relaxed = true)
+        val config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
+        val proxyJarManager = ProxyJarManager(
+            logging,
+            proxyDirectory = Path.of("build", "responsive-ui-test-proxy"),
+        )
+        val ui = ConfigUi(
+            config = config,
+            providers = listOf(
+                ClaudeDesktopProvider(logging, proxyJarManager),
+                ManualProxyInstallerProvider(logging, proxyJarManager),
+            ),
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = NoOpMcpAuditSink,
+            proxyProvenance = null,
+            proxyVerified = false,
+            clearSessionApprovals = { 0 },
+            workflowPresetManager = responsivePresetManagement(),
+        )
 
         try {
             ui.component.setSize(1_024, 720)
@@ -256,6 +331,49 @@ class ResponsiveUiComponentsTest {
                     )
                 }
 
+            val preview = ui.component.descendants()
+                .filterIsInstance<JTextArea>()
+                .single { it.name == "clientSetupPreview" }
+            assertEquals(Design.Typography.bodyMedium.size, preview.font.size)
+            assertTrue(
+                contrastRatio(preview.foreground, preview.background) >= 4.5,
+                "Configuration preview must retain text contrast in the active theme",
+            )
+            val previewScroll = ui.component.descendants()
+                .filterIsInstance<JScrollPane>()
+                .single { it.name == "clientSetupPreviewScroll" }
+            assertTrue(previewScroll.maximumSize.height >= previewScroll.preferredSize.height)
+            assertTrue(previewScroll.width <= settingsSurface.width)
+            assertTrue(
+                previewScroll.viewport.extentSize.height >= preview.getFontMetrics(preview.font).height * 4,
+                "Configuration preview must retain at least four visible text rows",
+            )
+
+            val presetScroll = ui.component.descendants()
+                .filterIsInstance<JScrollPane>()
+                .single { it.name == "workflowPresetTableScroll" }
+            val presetTable = ui.component.descendants()
+                .filterIsInstance<JTable>()
+                .single { it.name == "workflowPresetTable" }
+            assertTrue(presetScroll.maximumSize.height >= presetScroll.preferredSize.height)
+            assertTrue(presetScroll.width <= settingsSurface.width)
+            assertTrue(
+                presetScroll.viewport.extentSize.height >= presetTable.rowHeight * 4,
+                "Workflow preset table must retain at least four visible rows",
+            )
+            assertTrue(presetTable.rowHeight >= presetTable.getFontMetrics(presetTable.font).height + Design.Spacing.SM)
+            assertTrue(
+                contrastRatio(presetTable.foreground, presetTable.background) >= 4.5,
+                "Workflow preset table must retain text contrast in the active theme",
+            )
+            listOf("workflowPresetStatusText", "workflowPresetSelectionText").forEach { name ->
+                val text = ui.component.descendants().filterIsInstance<WrappingText>().single { it.name == name }
+                assertTrue(
+                    contrastRatio(text.foreground, Design.Colors.surface) >= 4.5,
+                    "$name must retain text contrast in the active theme",
+                )
+            }
+
             ui.component.descendants()
                 .filterIsInstance<JTextField>()
                 .filter { it.isVisible && it.height > 0 }
@@ -291,6 +409,16 @@ class ResponsiveUiComponentsTest {
         } finally {
             ui.cleanup()
         }
+    }
+
+    private fun responsivePresetManagement(): WorkflowPresetManagement = object : WorkflowPresetManagement {
+        override fun list() = LocalWorkflowPresetListResult(LocalWorkflowPresetStatus.OK)
+
+        override fun save(preset: WorkflowPreset, overwrite: Boolean) =
+            LocalWorkflowPresetMutationResult(LocalWorkflowPresetStatus.OK, preset = preset)
+
+        override fun delete(name: String) =
+            LocalWorkflowPresetMutationResult(LocalWorkflowPresetStatus.OK, deleted = false)
     }
 
     private fun assertButtonTextFits(button: AbstractButton) {
@@ -358,6 +486,10 @@ private val TEST_THEMES = listOf(
             "List.hoverBackground" to Color(0xF1F3F4),
             "List.alternateRowColor" to Color(0xF8F9FA),
             "List.border" to Color(0xDADCE0),
+            "Table.background" to Color.WHITE,
+            "Table.foreground" to Color(0x202124),
+            "Table.selectionBackground" to Color(0xD2E3FC),
+            "Table.selectionForeground" to Color(0x174EA6),
         ),
     ),
     TestTheme(
@@ -379,6 +511,10 @@ private val TEST_THEMES = listOf(
             "List.hoverBackground" to Color(0x303134),
             "List.alternateRowColor" to Color(0x252629),
             "List.border" to Color(0x5F6368),
+            "Table.background" to Color(0x292A2D),
+            "Table.foreground" to Color(0xF1F3F4),
+            "Table.selectionBackground" to Color(0x3C4043),
+            "Table.selectionForeground" to Color(0x8AB4F8),
         ),
     ),
 )
@@ -420,6 +556,7 @@ private fun withUiFontScale(scale: Float, action: () -> Unit) {
         "TextField.font",
         "Spinner.font",
         "List.font",
+        "Table.font",
     )
     val originals = keys.associateWith { UIManager.getFont(it) }
     try {

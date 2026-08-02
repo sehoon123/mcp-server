@@ -161,7 +161,7 @@ Version 4.4 keeps the Professional/Community tool catalogs at 26/19 and adds the
 capabilities. Community advertises 3 fixed resources, 4 resource templates, and 3 prompts; Professional advertises the
 same 3 fixed resources plus 7 templates and 4 prompts. The fixed JSON resources are:
 
-- `burp://diagnostics` — secret-free aggregate listener, session, liveness, and approval counters;
+- `burp://diagnostics` — secret-free aggregate listener, session, liveness, approval, and fixed value-free history acquisition/processing timing counters;
 - `burp://project/summary` — the current opaque project ID, with local project names and paths omitted; and
 - `burp://scope/summary` — project binding and MCP scope policy, explicitly noting that Montoya cannot enumerate
   configured scope rules.
@@ -414,13 +414,26 @@ returns a complete delta over bounded service, normalized path-prefix,
 method, status-class, MIME, and extension counts. Unchanged service and path-prefix key counts are reported separately;
 changed entries include baseline, comparison, and signed delta counts.
 
+Optionally set `relatedTraffic` with one to four zero-based seed indices into the concatenated baseline/comparison input,
+up to three approved sources, an optional Burp Scope restriction, and a result limit of one to 16 (default eight). For
+each distinct seed host/first-path key, the tool examines at most 50 compact search matches and at most 200 across the
+invocation, removes explicitly selected references, and appends qualifying events after both explicit cohorts. The
+explicit baseline/comparison delta never includes appended events. `truncated`, examined/qualified counts, per-seed
+signals, and a deterministic bounded score describe the search envelope; the score is not probability, confidence,
+identity, causality, semantic dependence, vulnerability evidence, or a claim of complete project enumeration.
+
 Only Proxy references can expose a capture timestamp. Site Map and Organizer events explicitly report timestamp
-unavailability. Cohort membership and caller order do not establish chronology, causality, or vulnerability evidence.
-Cross-source records with the same bounded method, service, path, response status, MIME type, and response-presence
-metadata can share an invocation-local similarity group, but that is not exact identity and records are never
-deduplicated. Correlation results do not retain or return query strings, fragments, headers, bodies, notes, or raw message
-bytes; Site Map stable-ID validation may still inspect its existing bounded private identity samples. Any project change,
-access denial, missing record, accessor failure, or cancellation discards partial correlation output.
+unavailability. Cohort membership, caller order, capture time, related-result order, and metadata score do not establish
+chronology or causality. Explicit cross-source records with the same bounded method, service, path, response status, MIME
+type, and response-presence metadata can share an invocation-local similarity group, but that is not exact identity and records
+are never deduplicated. Explicit and extra discovery sources are authorized together once, after which related discovery
+uses a query/path-only internal search projection rather than materializing normal search notes, body lengths, auxiliary
+fields, or query-bearing URLs. The
+bounded selected stable references are then reacquired through the instance-bound authorization handle and scored again from
+materialized metadata; a missing reference fails closed and a candidate that no longer qualifies is omitted.
+Correlation results do not retain or return query strings, fragments, headers, bodies, notes, or raw message bytes; Site
+Map stable-ID validation may still inspect its existing bounded private identity samples. Any project change, access
+denial, missing explicit or selected related record, accessor failure, or cancellation discards partial correlation output.
 
 ## Stable-ID request actions
 
@@ -483,8 +496,14 @@ WebSocket payload-regex, credential, or token fields. Bounded caller-authored na
 are persisted verbatim and must not contain secrets. Search limit/cursor and comparison refs are runtime-only execution
 arguments. Execution delegates to the same search/comparison services and therefore retains
 their approvals, progress, cancellation, cursor, bounds, and result statuses. Malformed, unknown-version, and oversized
-stored values fail closed and are preserved rather than overwritten. Preset management is MCP-only in this milestone;
-there is no native Swing preset UI or dynamic preset resource catalog.
+stored values fail closed and are preserved rather than overwritten.
+
+The **Workflow Preset Manager** in Burp's **MCP Bridge** tab uses the same synchronized project-backed store as those
+four MCP tools. It can create, inspect, update, delete, and refresh the three safe definition types without executing a
+preset or reading traffic. The structured editor intentionally has no project-ID, cursor, stable-reference,
+connection-ID, traffic/result, content-predicate, credential, or token field. A project transition after a possible
+write is reported as uncertain and requires an explicit refresh before retrying. The manager adds no MCP tool, resource,
+prompt, route, or dynamic catalog entry.
 
 ## Scope, comparison, and focused Scanner audits
 
@@ -585,10 +604,18 @@ source lookup and bounded content materialization.
 These read tools return both JSON text and MCP `structuredContent`, advertise output schemas, and carry read-only,
 non-destructive, idempotent tool annotations. Sensitive data approval is evaluated on every read. On Professional,
 `get_scanner_issues` keeps legacy offset/count calls compatible with a 512 KiB text safety cap; set `cursorMode: true`
-or supply severity, confidence,
-exact-host, or name filters to use compact
-newest/oldest pagination. Cursor mode returns at most 50 summaries, scans at most 10,000 issues per call, and uses a
-signed project/query/snapshot cursor that is invalidated on MCP server restart.
+or supply severity, confidence, exact-host, or name filters to use compact newest/oldest pagination. Cursor mode returns
+at most 50 summaries, scans at most 10,000 issues per call, and uses signed project/query/snapshot cursors that are
+invalidated on MCP server restart.
+
+Every successful ordinary cursor page includes `snapshotCursor`. Pass it later as `sinceSnapshotCursor` to read only
+issues in the currently visible list range appended after that baseline. If `hasMore` is true, pass `nextDeltaCursor`
+back as `sinceSnapshotCursor`; the continuation freezes the comparison snapshot, so later appends wait for a subsequent
+delta read. Do not advance the baseline until the range is drained: `snapshotCursor` is returned from delta mode only
+when `hasMore` is false. Delta pages report baseline/current sizes, raw appended-range size, scan bounds, and fixed false claims for
+regression, removal/in-place change, and complete history. First/last anchors reject shrink or boundary reordering, but
+a same-size middle replacement can remain undetected. This is therefore an append-stable new-visible-issue aid, not a
+complete added/removed/changed diff, proof of a vulnerability regression, or causality evidence.
 
 ## Configure clients
 
@@ -616,7 +643,28 @@ authentication is still mandatory and browser `Origin`/`Host` checks are defense
 replacement. Ordinary calls return JSON; the same endpoint can optionally use an event stream for server-initiated
 requests. Never commit the token to a repository.
 
-The following examples are alternatives. Configure only the clients you actually use.
+The **Client Setup Center** in Burp's **MCP Bridge** tab provides a read-only preview for exactly five clients:
+Claude Desktop, Claude Code, VS Code / GitHub Copilot, Cursor, and OpenAI Codex. Preview and copy actions
+never include the current bearer token or resolved local filesystem paths. Refresh the preview after changing the host
+or port.
+
+Only **Claude Desktop** has an automatic client-configuration action, which reuses the existing verified, backed-up,
+atomic installer. The other four entries are preview-and-copy only: set their environment variable or password input
+outside Burp. **Extract proxy jar...** remains a separate advanced/manual stdio action and is not a client installer;
+native HTTP clients do not use the proxy jar. The mcporter example below remains manual and is not an entry in the
+five-client Setup Center.
+
+The Setup Center also includes **Connection Doctor**. It runs one bounded HTTP/1.1 request directly (without JVM proxy
+selection or redirects) against a validated numeric-loopback endpoint only when it exactly matches the authoritative
+endpoint of the in-process listener reported as `running`; it discards the response body and creates no MCP session.
+Its controlled result can show whether the current credential reached the expected local admission guard, but it does
+not perform a full MCP handshake and cannot prove that a third-party client's configuration is correct. Safe copied
+evidence contains only categorical listener/probe results—never the endpoint, bearer, response, exception, project
+data, or local path. Running the check intentionally increments the local request counter and updates last-activity and
+peak-in-flight metrics; a rejected credential also increments the authentication-rejection counter.
+
+The following examples are alternatives. Configure only the clients you actually use, and verify the example against
+the documentation for your installed client version before applying it.
 
 ### Claude Code
 
@@ -648,15 +696,16 @@ For a project-shared configuration, use `--scope project`. Claude creates `.mcp.
 }
 ```
 
-Claude Code expands `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` from its environment. Claude Code requires `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a
-project containing `.mcp.json`, review and approve the server when Claude asks whether to trust it.
+Claude Code expands `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` from its environment. Claude Code requires
+`"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a project containing
+`.mcp.json`, review and approve the server when Claude asks whether to trust it.
 
 ### Claude Desktop and other stdio-only clients
 
-Use **Install to Claude Desktop** in Burp's **MCP Bridge** tab. The installer extracts the proxy already packaged
-inside `independent-mcp-bridge-all.jar` and adds a `burp-independent` entry to Claude Desktop's configuration. It
-leaves an existing `burp` entry untouched. You do **not** need to download,
-install, or update `mcp-proxy-all.jar` separately.
+Select **Claude Desktop** in the Client Setup Center and use **Install to Claude Desktop**. The installer extracts the
+proxy already packaged inside `independent-mcp-bridge-all.jar` and adds a `burp-independent` entry to Claude Desktop's
+configuration. It leaves an existing `burp` entry untouched. You do **not** need to download, install, or update
+`mcp-proxy-all.jar` separately.
 
 The generated configuration is equivalent to:
 
@@ -755,7 +804,7 @@ mcporter call burp-independent.search_http_messages \
 
 Burp may show a project-data or action approval dialog depending on the tool and MCP Bridge-tab policy.
 
-### Visual Studio Code / GitHub Copilot
+### VS Code / GitHub Copilot
 
 Create `.vscode/mcp.json` for a workspace configuration, or run **MCP: Open User Configuration** from the Command
 Palette for a user-level configuration:
@@ -801,7 +850,8 @@ Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for a global con
 }
 ```
 
-Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Cursor. Cursor recognizes this URL as a Streamable HTTP server.
+Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Cursor. Cursor recognizes this URL as a
+Streamable HTTP server.
 
 ### OpenAI Codex
 
@@ -826,17 +876,20 @@ Set `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` in the environment that launches Codex
    secret input, or header value shown above.
 4. Restart or reconnect every client. Delete obsolete installer backups after confirming the new configuration works.
 
-The credential is installation-scoped: it survives extension reloads, full Burp restarts, and project changes. Only the
-explicit **Rotate local bearer token...** control attempts to replace it. RC6 migrates a valid credential from the
-currently loaded legacy project into Burp's persistent preference store before deleting that current-project copy. Older
-unopened project files can still contain the obsolete RC5-era value; it is no longer authoritative on an upgraded
-installation.
+The credential is installation-scoped: it survives extension reloads, full Burp restarts, and project changes. Only
+the explicit **Rotate local bearer token...** control attempts to replace it. The v4.11 credential lifecycle migrates
+a valid credential from the currently loaded legacy project into Burp's persistent preference store before deleting that
+current-project copy and includes the completed cleanup behavior used by upgraded installations. Older unopened project
+files can still contain the obsolete project-scoped value; it is no longer authoritative on an upgraded installation.
 
 A confirmed rotation immediately replaces the persisted credential, but an already-running listener retains its startup
 token until restarted. If the UI cannot confirm a rotation, re-copy or rotate the token before restarting Burp or the
 listener. A `401 Unauthorized` after rotation almost always means one side still has the old value.
 
 ### Connection troubleshooting
+
+Start with **Run Connection Doctor** in the Client Setup Center. A passing admission result is intentionally narrower
+than end-to-end client health; continue with the client-specific checks below if the client still cannot connect.
 
 - A `401` means the bearer header is missing, malformed, or stale. Copy the current token, restart the Burp listener,
   and update or reinstall the client.
