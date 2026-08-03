@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import javax.accessibility.AccessibleContext
 import javax.accessibility.AccessibleRelation
 import javax.swing.JButton
 import javax.swing.JComboBox
@@ -91,6 +92,123 @@ class ClientSetupPanelTest {
             panel.findNamed<JButton>("refreshSetupPreviewButton").doClick()
             assertEquals(1, endpointSnapshots.get())
             assertTrue(panel.findNamed<JTextArea>("clientSetupPreview").text.contains("http://[::1]:9999/mcp"))
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `stale copy refreshes once on EDT and copies the exact safe preview for all five clients`() {
+        val endpointSnapshots = AtomicInteger()
+        val clipboardCopies = AtomicInteger()
+        val copied = AtomicReference<String?>()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                endpointProvider = {
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    endpointSnapshots.incrementAndGet()
+                    ClientSetupEndpoint.from("::1", 9999)
+                },
+                clipboard = ClientSetupClipboard { value ->
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    clipboardCopies.incrementAndGet()
+                    copied.set(value)
+                },
+            )
+            val selector = panel.findNamed<JComboBox<*>>("clientSetupSelector")
+            assertEquals(5, selector.itemCount)
+
+            for (index in 0 until selector.itemCount) {
+                selector.selectedIndex = index
+                panel.markEndpointStale()
+                copied.set(null)
+
+                val copy = panel.findNamed<JButton>("copySetupPreviewButton")
+                val preview = panel.findNamed<JTextArea>("clientSetupPreview")
+                assertTrue(copy.isEnabled)
+                assertEquals("Refresh and copy configuration", copy.text)
+                assertEquals("Refresh and copy configuration", copy.accessibleContext.accessibleName)
+                assertEquals(
+                    "Refreshes from the displayed numeric loopback host and port, then copies the visible secret-free configuration",
+                    copy.accessibleContext.accessibleDescription,
+                )
+                assertNotNull(
+                    copy.accessibleContext.accessibleRelationSet
+                        .get(AccessibleRelation.CONTROLLER_FOR),
+                )
+                assertTrue(preview.text.contains("preview unavailable"))
+                assertEquals(
+                    "Host or port changed. Choose Refresh preview or Refresh and copy configuration.",
+                    panel.findNamed<WrappingText>("clientSetupPreviewStatus").text,
+                )
+
+                copy.doClick()
+
+                assertEquals(index + 1, endpointSnapshots.get())
+                assertEquals(index + 1, clipboardCopies.get())
+                assertEquals(preview.text, copied.get())
+                assertTrue(preview.text.contains("http://[::1]:9999/mcp"))
+                listOf(SENTINEL_TOKEN, "/Users/private", "C:\\private").forEach { forbidden ->
+                    assertFalse(preview.text.contains(forbidden))
+                }
+                assertEquals("Copy configuration", copy.text)
+                assertEquals("Copy configuration", copy.accessibleContext.accessibleName)
+                assertEquals(
+                    "Copies exactly the visible secret-free configuration preview",
+                    copy.accessibleContext.accessibleDescription,
+                )
+                assertEquals(
+                    "Configuration preview copied.",
+                    panel.findNamed<WrappingText>("clientSetupPreviewStatus").text,
+                )
+            }
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `invalid stale endpoint copies nothing and retains the controlled retry action`() {
+        val endpointSnapshots = AtomicInteger()
+        val clipboardCopies = AtomicInteger()
+        val accessibilityUpdates = AtomicInteger()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                endpointProvider = {
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    endpointSnapshots.incrementAndGet()
+                    throw IllegalArgumentException("$SENTINEL_TOKEN /Users/private C:\\private")
+                },
+                clipboard = ClientSetupClipboard { clipboardCopies.incrementAndGet() },
+            )
+            panel.markEndpointStale()
+            val copy = panel.findNamed<JButton>("copySetupPreviewButton")
+            val preview = panel.findNamed<JTextArea>("clientSetupPreview")
+            val statusText = panel.findNamed<WrappingText>("clientSetupPreviewStatus")
+            statusText.accessibleContext.addPropertyChangeListener { event ->
+                if (event.propertyName == AccessibleContext.ACCESSIBLE_NAME_PROPERTY) {
+                    accessibilityUpdates.incrementAndGet()
+                }
+            }
+
+            copy.doClick()
+            val updatesAfterFirstAttempt = accessibilityUpdates.get()
+            copy.doClick()
+
+            assertEquals(2, endpointSnapshots.get())
+            assertEquals(0, clipboardCopies.get())
+            assertTrue(updatesAfterFirstAttempt > 0)
+            assertTrue(accessibilityUpdates.get() > updatesAfterFirstAttempt)
+            assertTrue(copy.isEnabled)
+            assertEquals("Refresh and copy configuration", copy.text)
+            assertEquals("Refresh and copy configuration", copy.accessibleContext.accessibleName)
+            assertTrue(preview.text.contains("preview unavailable"))
+            val status = statusText.text
+            assertEquals("Configuration was not copied because the local host or port is invalid.", status)
+            listOf(SENTINEL_TOKEN, "/Users/private", "C:\\private").forEach { forbidden ->
+                assertFalse(preview.text.contains(forbidden))
+                assertFalse(status.contains(forbidden))
+            }
             panel.cleanup()
         }
     }
@@ -281,8 +399,101 @@ class ClientSetupPanelTest {
         val evidence = copied.get()
         assertNotNull(evidence)
         assertTrue(evidence.contains("CREDENTIAL_REJECTED"))
+        assertTrue(evidence.lines().contains("Scope: LOCAL_ADMISSION_ONLY EXTERNAL_CLIENT_NOT_TESTED"))
         listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/").forEach { forbidden ->
             assertFalse(evidence.contains(forbidden))
+        }
+    }
+
+    @Test
+    fun `endpoint changes invalidate published Doctor evidence without exposing context`() {
+        val copied = AtomicReference<String?>()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(clipboard = ClientSetupClipboard(copied::set))
+            panel.markDoctorResultStale(DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED)
+            assertTrue(panel.findNamed<WrappingText>("doctorResultText").text.contains("has not run"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(awaitOnEdt {
+            panel.findNamed<WrappingText>("doctorResultText").text.contains("admitted")
+        })
+
+        SwingUtilities.invokeAndWait {
+            val copyEvidence = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+            assertTrue(copyEvidence.isEnabled)
+            copyEvidence.doClick()
+            assertNotNull(copied.get())
+            copied.set(null)
+
+            panel.markEndpointStale()
+
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local-admission check no longer applies"))
+            assertTrue(staleResult.contains("displayed endpoint changed"))
+            assertTrue(staleResult.contains("does not prove that an external client works"))
+            listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/", "C:\\").forEach { forbidden ->
+                assertFalse(staleResult.contains(forbidden))
+            }
+            assertFalse(copyEvidence.isEnabled)
+            copyEvidence.doClick()
+            assertNull(copied.get())
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(awaitOnEdt {
+            panel.findNamed<WrappingText>("doctorResultText").text.contains("admitted") &&
+                panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled
+        })
+        SwingUtilities.invokeAndWait { panel.cleanup() }
+    }
+
+    @Test
+    fun `context generation fences an in-flight Doctor completion`() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val copied = AtomicReference<String?>()
+        val doctor = ConnectionDoctor(DoctorExchange {
+            started.countDown()
+            try {
+                release.await(5, TimeUnit.SECONDS)
+                400
+            } finally {
+                completed.countDown()
+            }
+        })
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                doctor = doctor,
+                clipboard = ClientSetupClipboard(copied::set),
+            )
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+
+        SwingUtilities.invokeAndWait {
+            panel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local listener state changed"))
+            assertTrue(staleResult.contains("Run a new check when available"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+        }
+
+        release.countDown()
+        assertTrue(completed.await(5, TimeUnit.SECONDS))
+        assertTrue(awaitOnEdt { panel.findNamed<JButton>("runConnectionDoctorButton").isEnabled })
+        SwingUtilities.invokeAndWait {
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local listener state changed"))
+            assertFalse(staleResult.contains("admitted"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+            assertTrue(
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text.contains("result discarded"),
+            )
+            assertNull(copied.get())
+            panel.cleanup()
         }
     }
 
@@ -378,6 +589,11 @@ class ClientSetupPanelTest {
                 runDoctor.accessibleContext.accessibleRelationSet
                     .get(AccessibleRelation.CONTROLLER_FOR),
             )
+            val copyEvidenceDescription = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+                .accessibleContext.accessibleDescription
+            assertTrue(copyEvidenceDescription.contains("current endpoint"))
+            assertTrue(copyEvidenceDescription.contains("local-admission-only"))
+            assertTrue(copyEvidenceDescription.contains("external client"))
             val install = panel.findNamed<JButton>("installClaudeDesktopButton")
             assertNotNull(
                 install.accessibleContext.accessibleRelationSet

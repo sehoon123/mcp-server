@@ -367,17 +367,25 @@ perform hidden side effects.
 - Split workflows such as file chooser + copy into an EDT selection phase and a bounded background I/O phase.
 - Do not use an unowned `kotlin.concurrent.thread` for UI work. Panels that start jobs must own a bounded executor/job,
   disable duplicate actions, and cancel or ignore completion after `cleanup()`.
+- `ConfigUi` treats `cleanup()` as a terminal publication boundary: listener-state callbacks arriving afterward must not
+  mutate detached controls or open a dialog from the detached panel.
 - `ClientSetupPanel` owns one bounded worker for Claude installation, manual proxy extraction, and Connection Doctor.
   Capture host/port and any required credential once on the EDT, run I/O off the EDT, and cancel the panel before server
-  shutdown during extension unload so late callbacks cannot publish into disposed UI.
+  shutdown during extension unload so late callbacks cannot publish into disposed UI. Fence each Doctor run with an
+  opaque EDT-owned context generation, rotate it after endpoint edits, listener-state transitions, or credential-rotation
+  attempts, and publish completion only while the captured generation is still current; the fence must retain no context
+  values.
 - `WorkflowPresetPanel` owns a separate single-worker bounded queue. Editor and confirmation snapshots stay on the EDT;
   project observation and persistence run off the EDT. Unload cancels and boundedly drains the worker before server
   shutdown, while every cleanup path suppresses late publication.
-- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. Only the
-  Claude Desktop action may invoke a native client writer; all other client entries remain preview-and-copy only.
+- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. After endpoint
+  edits, the combined refresh-and-copy action snapshots the displayed endpoint once on the EDT, renders through the same
+  safe catalog, and copies exactly the visible preview; validation failure must copy nothing. Only the Claude Desktop
+  action may invoke a native client writer; all other client entries remain preview-and-copy only.
 - Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
-  no redirects, discard the response body, close after the single request, and expose only closed result enums.
+  no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
+  evidence must retain a fixed, value-free scope marker stating local admission only and external client not tested.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.

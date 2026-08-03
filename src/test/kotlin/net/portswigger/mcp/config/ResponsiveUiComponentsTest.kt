@@ -278,6 +278,10 @@ class ResponsiveUiComponentsTest {
 
         try {
             ui.component.setSize(1_024, 720)
+            ui.component.descendants()
+                .filterIsInstance<JTextField>()
+                .single { it.name == "serverPortField" }
+                .text = "9877"
             repeat(5) { layoutRecursively(ui.component) }
 
             val columns = ui.component.descendants()
@@ -318,6 +322,10 @@ class ResponsiveUiComponentsTest {
                 .toList()
             assertTrue(buttons.isNotEmpty())
             buttons.forEach(::assertButtonTextFits)
+            val staleCopyButton = buttons
+                .filterIsInstance<JButton>()
+                .single { it.name == "copySetupPreviewButton" }
+            assertEquals("Refresh and copy configuration", staleCopyButton.text)
 
             ui.component.descendants()
                 .filterIsInstance<JLabel>()
