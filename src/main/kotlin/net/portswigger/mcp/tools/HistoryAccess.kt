@@ -203,8 +203,13 @@ internal fun AuditIssue.toHistorySummary(id: String = stableHistoryId()): Scanne
  */
 internal fun AuditIssue.stableHistoryId(index: Int? = null): String {
     require(index == null || index >= 0) { "Scanner issue index must be non-negative" }
+    return stableScannerIssueId(scannerIssueFingerprint(), index)
+}
+
+internal fun stableScannerIssueId(fingerprint: String, index: Int? = null): String {
+    require(index == null || index >= 0) { "Scanner issue index must be non-negative" }
     val locator = index?.toString(36) ?: "x"
-    return "issue_v2_${locator}_${scannerIssueFingerprint()}"
+    return "issue_v2_${locator}_$fingerprint"
 }
 
 internal fun AuditIssue.scannerIssueFingerprint(): String {

@@ -28,9 +28,18 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+// Changes require reviewed compatibility/version handling and independent regeneration, not copied runtime output.
+private const val GOLDEN_SCANNER_PAGE_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoicGFnZSIsInByb2plY3RJZCI6InByb2plY3QtMTIzIiwicXVlcnkiOnsic2V2ZXJpdGllcyI6bnVsbCwiY29uZmlkZW5jZXMiOm51bGwsImhvc3QiOm51bGwsIm5hbWVDb250YWlucyI6bnVsbCwiY2FzZVNlbnNpdGl2ZSI6ZmFsc2UsIm5ld2VzdEZpcnN0IjpmYWxzZX0sInNuYXBzaG90Ijp7InNpemUiOjMsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF85ODE3MzczNzdiMmExODAxMDE4YmEwNjRjZTcxNTg3MSIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8yX2FlYWQxNDcyYmNhZGU4YzQ0OGIzNjhkZmYwYTE3NTYxIn0sIm5leHRJbmRleCI6MX0.QA9lgYfqkbbXMFpEJFhgPVMea_ruS9YbI0RE6MPgl3E"
+private const val GOLDEN_SCANNER_SNAPSHOT_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoic25hcHNob3QiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7InNldmVyaXRpZXMiOm51bGwsImNvbmZpZGVuY2VzIjpudWxsLCJob3N0IjpudWxsLCJuYW1lQ29udGFpbnMiOm51bGwsImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6ZmFsc2V9LCJzbmFwc2hvdCI6eyJzaXplIjozLCJmaXJzdEFuY2hvciI6Imlzc3VlX3YyXzBfOTgxNzM3Mzc3YjJhMTgwMTAxOGJhMDY0Y2U3MTU4NzEiLCJsYXN0QW5jaG9yIjoiaXNzdWVfdjJfMl9hZWFkMTQ3MmJjYWRlOGM0NDhiMzY4ZGZmMGExNzU2MSJ9fQ.wEepHLs4Van9NHogmVjZFAt5s8VhEZbRjAaYHbbD5ZY"
+private const val GOLDEN_SCANNER_DELTA_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoiZGVsdGEiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7InNldmVyaXRpZXMiOm51bGwsImNvbmZpZGVuY2VzIjpudWxsLCJob3N0IjpudWxsLCJuYW1lQ29udGFpbnMiOm51bGwsImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6dHJ1ZX0sImJhc2VsaW5lIjp7InNpemUiOjIsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF83ZDI3ZDc1YTgzNzYxNGFlOTY5ZjgyNTdkNjVhY2VkZiIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8xXzIxYTRlZTE0NGMyZTJjOTQyOGMwMjcwYWMyNGRhNmUzIn0sImN1cnJlbnQiOnsic2l6ZSI6NSwiZmlyc3RBbmNob3IiOiJpc3N1ZV92Ml8wXzdkMjdkNzVhODM3NjE0YWU5NjlmODI1N2Q2NWFjZWRmIiwibGFzdEFuY2hvciI6Imlzc3VlX3YyXzRfY2U1NjhlNDg3ZGE3YjBmZjcwZmUxMjBhODVlNzZiNjEifSwibmV4dEluZGV4IjoyfQ.egwKwlp9KwRMaHa_eI0mf7TnXSB2kf30aXsdvVgshqw"
 
 class ScannerIssueSearchTest {
     private val api = mockk<MontoyaApi>()
@@ -81,6 +90,177 @@ class ScannerIssueSearchTest {
         assertEquals(firstId.substringAfterLast('_'), secondId.substringAfterLast('_'))
         assertTrue(firstId.startsWith("issue_v2_0_"))
         assertTrue(secondId.startsWith("issue_v2_1_"))
+    }
+
+    @Test
+    fun `cursor call fingerprints one boundary object once across both anchors and result ID`() = runBlocking {
+        val issue = issue(1, "Only", "example.test", AuditIssueSeverity.HIGH)
+        val definition = issue.definition()
+        val service = issue.httpService()
+        clearMocks(issue, definition, service, answers = false, recordedCalls = true)
+        every { siteMap.issues() } returns listOf(issue)
+
+        val result = this@ScannerIssueSearchTest.service.get(
+            GetScannerIssues(count = 1, cursorMode = true, newestFirst = false),
+        ).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        assertEquals(listOf("Only"), result.items.map { it.name })
+        verify(exactly = 2) { issue.definition() }
+        verify(exactly = 2) { definition.typeIndex() }
+        verify(exactly = 2) { issue.name() }
+        verify(exactly = 2) { issue.baseUrl() }
+        verify(exactly = 2) { issue.httpService() }
+        verify(exactly = 2) { service.host() }
+        verify(exactly = 2) { service.port() }
+        verify(exactly = 2) { service.secure() }
+        verify(exactly = 2) { issue.severity() }
+        verify(exactly = 2) { issue.confidence() }
+        verify(exactly = 0) { issue.detail() }
+        verify(exactly = 0) { issue.remediation() }
+        verify(exactly = 0) { issue.requestResponses() }
+        verify(exactly = 0) { issue.collaboratorInteractions() }
+    }
+
+    @Test
+    fun `cursor cache keys value-equal colliding issues by object identity`() = runBlocking {
+        val first = issue(1, "First", "example.test", AuditIssueSeverity.HIGH)
+        val second = issue(2, "Second", "example.test", AuditIssueSeverity.HIGH)
+        every { first.hashCode() } returns 17
+        every { second.hashCode() } returns 17
+        every { first == second } returns true
+        every { second == first } returns true
+        assertEquals(first.hashCode(), second.hashCode())
+        assertTrue(first == second)
+        assertTrue(second == first)
+        clearMocks(first, second, answers = false, recordedCalls = true)
+        every { siteMap.issues() } returns listOf(first, second)
+
+        val result = service.get(
+            GetScannerIssues(count = 2, cursorMode = true, newestFirst = false),
+        ).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        assertEquals(2, result.items.size)
+        assertTrue(result.items[0].id.startsWith("issue_v2_0_"))
+        assertTrue(result.items[1].id.startsWith("issue_v2_1_"))
+        assertNotEquals(
+            result.items[0].id.substringAfterLast('_'),
+            result.items[1].id.substringAfterLast('_'),
+        )
+        verify(exactly = 2) { first.name() }
+        verify(exactly = 2) { second.name() }
+        verify(exactly = 0) { first.hashCode() }
+        verify(exactly = 0) { second.hashCode() }
+        verify(exactly = 0) { first == second }
+        verify(exactly = 0) { second == first }
+    }
+
+    @Test
+    fun `cursor composes base36 locator outside cache for one object at two indices`() = runBlocking {
+        val repeated = issue(1, "Repeated", "example.test", AuditIssueSeverity.HIGH)
+        val filler = issue(2, "Filler", "example.test", AuditIssueSeverity.LOW)
+        val issues = MutableList(36) { filler }.also {
+            it[0] = repeated
+            it[35] = repeated
+        }
+        every { siteMap.issues() } returns issues
+
+        val result = service.get(
+            GetScannerIssues(count = 1, cursorMode = true, newestFirst = true),
+        ).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        assertEquals(1, result.items.size)
+        assertEquals(repeated.stableHistoryId(35), result.items.single().id)
+        assertTrue(result.items.single().id.startsWith("issue_v2_z_"))
+        verify(exactly = 0) { filler.name() }
+    }
+
+    @Test
+    fun `cursor result-only misses are computed without retention`() = runBlocking {
+        val first = issue(1, "First boundary", "example.test", AuditIssueSeverity.HIGH)
+        val repeated = issue(2, "Repeated result", "example.test", AuditIssueSeverity.MEDIUM)
+        val last = issue(3, "Last boundary", "example.test", AuditIssueSeverity.LOW)
+        val definition = repeated.definition()
+        val httpService = repeated.httpService()
+        clearMocks(repeated, definition, httpService, answers = false, recordedCalls = true)
+        every { siteMap.issues() } returns listOf(first, repeated, repeated, last)
+
+        val result = service.get(
+            GetScannerIssues(count = 4, cursorMode = true, newestFirst = false),
+        ).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        assertEquals(
+            listOf("First boundary", "Repeated result", "Repeated result", "Last boundary"),
+            result.items.map { it.name },
+        )
+        assertTrue(result.items[1].id.startsWith("issue_v2_1_"))
+        assertTrue(result.items[2].id.startsWith("issue_v2_2_"))
+        assertEquals(
+            result.items[1].id.substringAfterLast('_'),
+            result.items[2].id.substringAfterLast('_'),
+        )
+        verify(exactly = 4) { repeated.definition() }
+        verify(exactly = 4) { definition.typeIndex() }
+        verify(exactly = 4) { repeated.name() }
+        verify(exactly = 4) { repeated.baseUrl() }
+        verify(exactly = 4) { repeated.httpService() }
+        verify(exactly = 4) { httpService.host() }
+        verify(exactly = 4) { httpService.port() }
+        verify(exactly = 4) { httpService.secure() }
+        verify(exactly = 4) { repeated.severity() }
+        verify(exactly = 4) { repeated.confidence() }
+        verify(exactly = 0) { repeated.detail() }
+        verify(exactly = 0) { repeated.remediation() }
+        verify(exactly = 0) { repeated.requestResponses() }
+        verify(exactly = 0) { repeated.collaboratorInteractions() }
+    }
+
+    @Test
+    fun `cursor fingerprint cache is fresh for every service call`() = runBlocking {
+        val issue = issue(1, "Original", "example.test", AuditIssueSeverity.HIGH)
+        var currentName = "Original"
+        every { issue.name() } answers { currentName }
+        every { siteMap.issues() } returns listOf(issue)
+        val baseline = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+
+        currentName = "Changed"
+        val delta = service.get(GetScannerIssues(sinceSnapshotCursor = baseline)).output
+
+        assertEquals(ScannerIssuePageStatus.STALE_CURSOR, delta.status)
+        assertTrue(delta.items.isEmpty())
+    }
+
+    @Test
+    fun `cursor fingerprint cancellation propagates and a later call recomputes`() = runBlocking {
+        val issue = issue(1, "Retry", "example.test", AuditIssueSeverity.HIGH)
+        val definition = issue.definition()
+        clearMocks(issue, definition, answers = false, recordedCalls = true)
+        val cancellation = CancellationException("cancel fingerprint")
+        var cancelNext = true
+        every { issue.definition() } answers {
+            if (cancelNext) {
+                cancelNext = false
+                throw cancellation
+            }
+            definition
+        }
+        every { siteMap.issues() } returns listOf(issue)
+
+        val observed = assertFailsWith<CancellationException> {
+            service.get(GetScannerIssues(count = 1, cursorMode = true))
+        }
+        assertTrue(observed === cancellation)
+
+        val retry = service.get(GetScannerIssues(count = 1, cursorMode = true)).output
+        assertEquals(ScannerIssuePageStatus.OK, retry.status)
+        assertEquals(listOf("Retry"), retry.items.map { it.name })
+        verify(exactly = 3) { issue.definition() }
+        verify(exactly = 2) { definition.typeIndex() }
     }
 
     @Test
@@ -137,7 +317,8 @@ class ScannerIssueSearchTest {
             GetScannerIssues(count = 1, cursorMode = true, newestFirst = false)
         ).output
         assertEquals(listOf("One"), page1.items.map { it.name })
-        assertNotNull(page1.nextCursor)
+        assertEquals(GOLDEN_SCANNER_PAGE_CURSOR, page1.nextCursor)
+        assertEquals(GOLDEN_SCANNER_SNAPSHOT_CURSOR, page1.snapshotCursor)
 
         current += appended
         val page2 = service.get(GetScannerIssues(count = 1, cursor = page1.nextCursor)).output
@@ -209,6 +390,63 @@ class ScannerIssueSearchTest {
     }
 
     @Test
+    fun `delta reuses baseline and appended boundary fingerprints within one call`() = runBlocking {
+        val baseline = issue(1, "Baseline", "example.test", AuditIssueSeverity.HIGH)
+        val appended = issue(2, "Appended", "example.test", AuditIssueSeverity.HIGH)
+        val current = mutableListOf(baseline)
+        every { siteMap.issues() } answers { current.toList() }
+        val snapshotCursor = assertNotNull(
+            service.get(GetScannerIssues(cursorMode = true, newestFirst = false)).output.snapshotCursor,
+        )
+        val baselineDefinition = baseline.definition()
+        val baselineService = baseline.httpService()
+        val appendedDefinition = appended.definition()
+        val appendedService = appended.httpService()
+        clearMocks(
+            baseline,
+            baselineDefinition,
+            baselineService,
+            appended,
+            appendedDefinition,
+            appendedService,
+            answers = false,
+            recordedCalls = true,
+        )
+        current += appended
+
+        val result = service.get(GetScannerIssues(sinceSnapshotCursor = snapshotCursor)).output
+
+        assertEquals(ScannerIssuePageStatus.OK, result.status)
+        assertEquals(listOf("Appended"), result.items.map { it.name })
+        verify(exactly = 1) { baseline.definition() }
+        verify(exactly = 1) { baselineDefinition.typeIndex() }
+        verify(exactly = 1) { baseline.name() }
+        verify(exactly = 1) { baseline.baseUrl() }
+        verify(exactly = 1) { baseline.httpService() }
+        verify(exactly = 1) { baselineService.host() }
+        verify(exactly = 1) { baselineService.port() }
+        verify(exactly = 1) { baselineService.secure() }
+        verify(exactly = 1) { baseline.severity() }
+        verify(exactly = 1) { baseline.confidence() }
+        verify(exactly = 2) { appended.definition() }
+        verify(exactly = 2) { appendedDefinition.typeIndex() }
+        verify(exactly = 2) { appended.name() }
+        verify(exactly = 2) { appended.baseUrl() }
+        verify(exactly = 2) { appended.httpService() }
+        verify(exactly = 2) { appendedService.host() }
+        verify(exactly = 2) { appendedService.port() }
+        verify(exactly = 2) { appendedService.secure() }
+        verify(exactly = 2) { appended.severity() }
+        verify(exactly = 2) { appended.confidence() }
+        listOf(baseline, appended).forEach { issue ->
+            verify(exactly = 0) { issue.detail() }
+            verify(exactly = 0) { issue.remediation() }
+            verify(exactly = 0) { issue.requestResponses() }
+            verify(exactly = 0) { issue.collaboratorInteractions() }
+        }
+    }
+
+    @Test
     fun `only Scanner delta records fixed acquisition and processing phase metrics`() = runBlocking {
         var tick = 0L
         val diagnostics = HistoryPerformanceDiagnostics { tick++ }
@@ -268,6 +506,7 @@ class ScannerIssueSearchTest {
         assertEquals(listOf("New five", "New four"), first.items.map { it.name })
         assertTrue(first.hasMore)
         assertNull(first.snapshotCursor)
+        assertEquals(GOLDEN_SCANNER_DELTA_CURSOR, first.nextDeltaCursor)
 
         val second = service.get(
             GetScannerIssues(count = 2, sinceSnapshotCursor = assertNotNull(first.nextDeltaCursor)),

@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.IdentityHashMap
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -268,6 +269,26 @@ private class ScannerIssueSearchError(
     override val message: String,
 ) : Exception(message)
 
+private class ScannerIssueFingerprintCache {
+    // AuditIssue is a third-party object: never invoke its equality/hash contract for cache identity.
+    private val anchorFingerprints = IdentityHashMap<AuditIssue, String>()
+
+    fun anchorStableHistoryId(issue: AuditIssue, index: Int): String {
+        require(index >= 0) { "Scanner issue index must be non-negative" }
+        // Store only after every accessor and digest step succeeds so cancellation/failure is never memoized.
+        val fingerprint = anchorFingerprints[issue] ?: issue.scannerIssueFingerprint().also {
+            anchorFingerprints[issue] = it
+        }
+        return stableScannerIssueId(fingerprint, index)
+    }
+
+    fun resultStableHistoryId(issue: AuditIssue, index: Int): String {
+        require(index >= 0) { "Scanner issue index must be non-negative" }
+        val fingerprint = anchorFingerprints[issue] ?: issue.scannerIssueFingerprint()
+        return stableScannerIssueId(fingerprint, index)
+    }
+}
+
 internal class ScannerIssueSearchService(
     private val api: MontoyaApi,
     private val config: McpConfig,
@@ -494,9 +515,15 @@ internal class ScannerIssueSearchService(
                         }
                     },
                 ) {
-                    deltaPage(input, projectId, issues, preparedDelta)
+                    deltaPage(input, projectId, issues, preparedDelta, ScannerIssueFingerprintCache())
                 }
-                preparedCursor != null -> cursorPage(input, projectId, issues, preparedCursor)
+                preparedCursor != null -> cursorPage(
+                    input,
+                    projectId,
+                    issues,
+                    preparedCursor,
+                    ScannerIssueFingerprintCache(),
+                )
                 else -> legacyPage(input, projectId, issues)
             }
         } catch (e: CancellationException) {
@@ -566,18 +593,21 @@ internal class ScannerIssueSearchService(
         projectId: String,
         issues: List<AuditIssue>,
         prepared: PreparedScannerIssueCursor,
+        fingerprintCache: ScannerIssueFingerprintCache,
     ): StructuredToolResponse<ScannerIssuePageResult> {
         val cursor = prepared.cursor
         val query = prepared.query
         val snapshot = if (cursor == null) {
             ScannerIssueCursorSnapshot(
                 size = issues.size,
-                firstAnchor = issues.firstOrNull()?.stableHistoryId(0),
-                lastAnchor = issues.lastOrNull()?.stableHistoryId(issues.lastIndex),
+                firstAnchor = issues.firstOrNull()?.let { fingerprintCache.anchorStableHistoryId(it, 0) },
+                lastAnchor = issues.lastOrNull()?.let {
+                    fingerprintCache.anchorStableHistoryId(it, issues.lastIndex)
+                },
             )
         } else {
             try {
-                validateSnapshot(cursor, issues)
+                validateSnapshot(cursor, issues, fingerprintCache)
                 cursor.snapshot
             } catch (e: ScannerIssueSearchError) {
                 return responseError(e.status, e.message, projectId, legacyMode = false)
@@ -593,7 +623,9 @@ internal class ScannerIssueSearchService(
             if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
             val issue = issues[index]
             scanned++
-            if (issue.matches(compiledQuery)) results += issue.toHistorySummary(issue.stableHistoryId(index))
+            if (issue.matches(compiledQuery)) {
+                results += issue.toHistorySummary(fingerprintCache.resultStableHistoryId(issue, index))
+            }
             index += direction
         }
         val scanLimitReached = scanned >= MAX_SCANNER_ISSUE_SCAN && index in 0 until snapshot.size
@@ -637,12 +669,14 @@ internal class ScannerIssueSearchService(
         projectId: String,
         issues: List<AuditIssue>,
         prepared: PreparedScannerIssueDelta,
+        fingerprintCache: ScannerIssueFingerprintCache,
     ): StructuredToolResponse<ScannerIssuePageResult> {
         val baseline = prepared.baseline
         try {
             validateAppendStableSnapshot(
                 snapshot = baseline,
                 issues = issues,
+                fingerprintCache = fingerprintCache,
                 changedMessage = "Scanner issue list changed since the baseline; capture a new snapshot",
                 orderingMessage = "Scanner issue ordering changed since the baseline; capture a new snapshot",
             )
@@ -651,14 +685,17 @@ internal class ScannerIssueSearchService(
         }
         val current = prepared.current ?: ScannerIssueCursorSnapshot(
             size = issues.size,
-            firstAnchor = issues.firstOrNull()?.stableHistoryId(0),
-            lastAnchor = issues.lastOrNull()?.stableHistoryId(issues.lastIndex),
+            firstAnchor = issues.firstOrNull()?.let { fingerprintCache.anchorStableHistoryId(it, 0) },
+            lastAnchor = issues.lastOrNull()?.let {
+                fingerprintCache.anchorStableHistoryId(it, issues.lastIndex)
+            },
         )
         if (prepared.current != null) {
             try {
                 validateAppendStableSnapshot(
                     snapshot = current,
                     issues = issues,
+                    fingerprintCache = fingerprintCache,
                     changedMessage = "Scanner issue list changed while paging the delta; start a new delta read",
                     orderingMessage = "Scanner issue ordering changed while paging the delta; start a new delta read",
                 )
@@ -693,7 +730,9 @@ internal class ScannerIssueSearchService(
             if (scanned and 63 == 0) currentCoroutineContext().ensureActive()
             val issue = issues[index]
             scanned++
-            if (issue.matches(compiledQuery)) results += issue.toHistorySummary(issue.stableHistoryId(index))
+            if (issue.matches(compiledQuery)) {
+                results += issue.toHistorySummary(fingerprintCache.resultStableHistoryId(issue, index))
+            }
             index += direction
         }
         val hasMore = index in baseline.size until current.size
@@ -742,7 +781,11 @@ internal class ScannerIssueSearchService(
         )
     }
 
-    private fun validateSnapshot(cursor: ScannerIssueCursor, issues: List<AuditIssue>) {
+    private fun validateSnapshot(
+        cursor: ScannerIssueCursor,
+        issues: List<AuditIssue>,
+        fingerprintCache: ScannerIssueFingerprintCache,
+    ) {
         if (cursor.version != SCANNER_CURSOR_VERSION) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.INVALID_CURSOR, "unsupported cursor version")
         }
@@ -752,6 +795,7 @@ internal class ScannerIssueSearchService(
         validateAppendStableSnapshot(
             snapshot = cursor.snapshot,
             issues = issues,
+            fingerprintCache = fingerprintCache,
             changedMessage = "Scanner issue list changed while paging; start a new query",
             orderingMessage = "Scanner issue ordering changed while paging; start a new query",
         )
@@ -760,6 +804,7 @@ internal class ScannerIssueSearchService(
     private fun validateAppendStableSnapshot(
         snapshot: ScannerIssueCursorSnapshot,
         issues: List<AuditIssue>,
+        fingerprintCache: ScannerIssueFingerprintCache,
         changedMessage: String,
         orderingMessage: String,
     ) {
@@ -767,8 +812,11 @@ internal class ScannerIssueSearchService(
             throw ScannerIssueSearchError(ScannerIssuePageStatus.STALE_CURSOR, changedMessage)
         }
         if (snapshot.size > 0 &&
-            (issues.first().stableHistoryId(0) != snapshot.firstAnchor ||
-                issues[snapshot.size - 1].stableHistoryId(snapshot.size - 1) != snapshot.lastAnchor)
+            (fingerprintCache.anchorStableHistoryId(issues.first(), 0) != snapshot.firstAnchor ||
+                fingerprintCache.anchorStableHistoryId(
+                    issues[snapshot.size - 1],
+                    snapshot.size - 1,
+                ) != snapshot.lastAnchor)
         ) {
             throw ScannerIssueSearchError(ScannerIssuePageStatus.STALE_CURSOR, orderingMessage)
         }
