@@ -58,6 +58,12 @@ internal fun interface ClientSetupClipboard {
 }
 
 private const val SETUP_TEXT_FALLBACK_WIDTH = 480
+private const val COPY_CONFIGURATION_LABEL = "Copy configuration"
+private const val REFRESH_AND_COPY_CONFIGURATION_LABEL = "Refresh and copy configuration"
+private const val COPY_CONFIGURATION_DESCRIPTION =
+    "Copies exactly the visible secret-free configuration preview"
+private const val REFRESH_AND_COPY_CONFIGURATION_DESCRIPTION =
+    "Refreshes from the displayed numeric loopback host and port, then copies the visible secret-free configuration"
 
 internal enum class DoctorResultStaleReason {
     ENDPOINT_CHANGED,
@@ -141,7 +147,7 @@ internal class ClientSetupPanel(
         fallbackMaxWidth = SETUP_TEXT_FALLBACK_WIDTH,
     )
     private val safetyText = WrappingText(
-        "Safe preview only: copy the current token using the control above, then use it for $BEARER_TOKEN_ENVIRONMENT_VARIABLE or the client's password input. The current credential and resolved local filesystem paths are never included here. Refresh after changing the host or port, and compare this example with the documentation for your installed client version.",
+        "Safe preview only: copy the current token using the control above, then use it for $BEARER_TOKEN_ENVIRONMENT_VARIABLE or the client's password input. The current credential and resolved local filesystem paths are never included here. After changing the host or port, choose Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL, and compare this example with the documentation for your installed client version.",
         WrappingTextStyle.BODY_MEDIUM,
         fallbackMaxWidth = SETUP_TEXT_FALLBACK_WIDTH,
     )
@@ -195,9 +201,13 @@ internal class ClientSetupPanel(
         accessibleContext.accessibleDescription = "Refreshes the safe preview from the displayed numeric loopback host and port"
         addActionListener { refreshPreview() }
     }
-    private val copyPreviewButton = Design.createOutlinedButton("Copy configuration").apply {
+    private val copyPreviewButton = Design.createOutlinedButton(
+        COPY_CONFIGURATION_LABEL,
+        sizingText = REFRESH_AND_COPY_CONFIGURATION_LABEL,
+    ).apply {
         name = "copySetupPreviewButton"
-        accessibleContext.accessibleDescription = "Copies exactly the visible secret-free configuration preview"
+        accessibleContext.accessibleName = COPY_CONFIGURATION_LABEL
+        accessibleContext.accessibleDescription = COPY_CONFIGURATION_DESCRIPTION
         addActionListener { copyPreview() }
     }
     private val installClaudeButton = Design.createFilledButton(
@@ -292,9 +302,8 @@ internal class ClientSetupPanel(
         check(SwingUtilities.isEventDispatchThread()) { "client endpoint changes belong to the EDT" }
         if (closed.get()) return
         markDoctorResultStale(DoctorResultStaleReason.ENDPOINT_CHANGED)
-        currentEndpoint = null
-        renderPreview()
-        showPreviewStatus("Host or port changed. Refresh the preview before copying configuration.")
+        renderPreview(null)
+        showPreviewStatus("Host or port changed. Choose Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL.")
     }
 
     fun markDoctorResultStale(reason: DoctorResultStaleReason) {
@@ -458,16 +467,27 @@ internal class ClientSetupPanel(
         rebuildClientActions()
     }
 
-    private fun renderPreview() {
-        val endpoint = currentEndpoint
-        if (endpoint == null) {
-            previewArea.text = "Configuration preview unavailable. Enter a valid numeric loopback host and port, then choose Refresh preview."
-            copyPreviewButton.isEnabled = false
+    private fun renderPreview(endpoint: ClientSetupEndpoint? = currentEndpoint) {
+        val renderedPreview = if (endpoint == null) {
+            "Configuration preview unavailable. Enter a valid numeric loopback host and port, then choose " +
+                "Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL."
         } else {
-            previewArea.text = ClientSetupCatalog.render(selectedDefinition().id, endpoint)
-            copyPreviewButton.isEnabled = true
+            ClientSetupCatalog.render(selectedDefinition().id, endpoint)
         }
+        previewArea.text = renderedPreview
         previewArea.caretPosition = 0
+        currentEndpoint = endpoint
+        updateCopyPreviewAction()
+    }
+
+    private fun updateCopyPreviewAction() {
+        val requiresRefresh = currentEndpoint == null
+        val label = if (requiresRefresh) REFRESH_AND_COPY_CONFIGURATION_LABEL else COPY_CONFIGURATION_LABEL
+        copyPreviewButton.text = label
+        copyPreviewButton.accessibleContext.accessibleName = label
+        copyPreviewButton.accessibleContext.accessibleDescription =
+            if (requiresRefresh) REFRESH_AND_COPY_CONFIGURATION_DESCRIPTION else COPY_CONFIGURATION_DESCRIPTION
+        copyPreviewButton.isEnabled = !closed.get()
     }
 
     private fun rebuildClientActions() {
@@ -492,21 +512,43 @@ internal class ClientSetupPanel(
     private fun refreshPreview() {
         check(SwingUtilities.isEventDispatchThread()) { "client preview refresh belongs to the EDT" }
         if (closed.get()) return
-        currentEndpoint = try {
+        val refreshed = refreshEndpointAndRenderPreview()
+        showPreviewStatus(
+            if (refreshed) "Secret-free preview refreshed."
+            else "Preview unavailable until the local host and port are valid.",
+        )
+    }
+
+    private fun refreshEndpointAndRenderPreview(): Boolean {
+        val endpoint = try {
             endpointProvider()
         } catch (_: Exception) {
             null
         }
-        renderPreview()
-        showPreviewStatus(
-            if (currentEndpoint == null) "Preview unavailable until the local host and port are valid."
-            else "Secret-free preview refreshed.",
-        )
+        if (endpoint == null) {
+            renderPreview(null)
+            return false
+        }
+        return try {
+            renderPreview(endpoint)
+            true
+        } catch (_: Exception) {
+            renderPreview(null)
+            false
+        }
     }
 
     private fun copyPreview() {
         check(SwingUtilities.isEventDispatchThread()) { "client preview copy belongs to the EDT" }
-        if (closed.get() || !copyPreviewButton.isEnabled) return
+        if (closed.get()) return
+        if (currentEndpoint == null) {
+            showPreviewStatus("Refreshing the configuration preview before copy.")
+            if (!refreshEndpointAndRenderPreview()) {
+                showPreviewStatus("Configuration was not copied because the local host or port is invalid.")
+                return
+            }
+        }
+        if (closed.get()) return
         try {
             clipboard.copy(previewArea.text)
             showPreviewStatus("Configuration preview copied.")

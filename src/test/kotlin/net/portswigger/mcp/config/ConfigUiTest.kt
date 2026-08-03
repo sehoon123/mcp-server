@@ -191,10 +191,12 @@ class ConfigUiTest {
             assertEquals(initialPreview, preview.text)
 
             SwingUtilities.invokeAndWait { portField.text = "9877" }
-            assertFalse(copyPreview.isEnabled)
+            assertTrue(copyPreview.isEnabled)
+            assertEquals("Refresh and copy configuration", copyPreview.text)
             assertTrue(preview.text.contains("preview unavailable"))
             SwingUtilities.invokeAndWait { refresh.doClick() }
             assertTrue(copyPreview.isEnabled)
+            assertEquals("Copy configuration", copyPreview.text)
             verify(exactly = 0) { preferences.getString(any()) }
 
             SwingUtilities.invokeAndWait { runDoctor.doClick() }

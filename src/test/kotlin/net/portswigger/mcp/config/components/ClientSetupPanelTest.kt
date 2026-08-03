@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import javax.accessibility.AccessibleContext
 import javax.accessibility.AccessibleRelation
 import javax.swing.JButton
 import javax.swing.JComboBox
@@ -91,6 +92,123 @@ class ClientSetupPanelTest {
             panel.findNamed<JButton>("refreshSetupPreviewButton").doClick()
             assertEquals(1, endpointSnapshots.get())
             assertTrue(panel.findNamed<JTextArea>("clientSetupPreview").text.contains("http://[::1]:9999/mcp"))
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `stale copy refreshes once on EDT and copies the exact safe preview for all five clients`() {
+        val endpointSnapshots = AtomicInteger()
+        val clipboardCopies = AtomicInteger()
+        val copied = AtomicReference<String?>()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                endpointProvider = {
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    endpointSnapshots.incrementAndGet()
+                    ClientSetupEndpoint.from("::1", 9999)
+                },
+                clipboard = ClientSetupClipboard { value ->
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    clipboardCopies.incrementAndGet()
+                    copied.set(value)
+                },
+            )
+            val selector = panel.findNamed<JComboBox<*>>("clientSetupSelector")
+            assertEquals(5, selector.itemCount)
+
+            for (index in 0 until selector.itemCount) {
+                selector.selectedIndex = index
+                panel.markEndpointStale()
+                copied.set(null)
+
+                val copy = panel.findNamed<JButton>("copySetupPreviewButton")
+                val preview = panel.findNamed<JTextArea>("clientSetupPreview")
+                assertTrue(copy.isEnabled)
+                assertEquals("Refresh and copy configuration", copy.text)
+                assertEquals("Refresh and copy configuration", copy.accessibleContext.accessibleName)
+                assertEquals(
+                    "Refreshes from the displayed numeric loopback host and port, then copies the visible secret-free configuration",
+                    copy.accessibleContext.accessibleDescription,
+                )
+                assertNotNull(
+                    copy.accessibleContext.accessibleRelationSet
+                        .get(AccessibleRelation.CONTROLLER_FOR),
+                )
+                assertTrue(preview.text.contains("preview unavailable"))
+                assertEquals(
+                    "Host or port changed. Choose Refresh preview or Refresh and copy configuration.",
+                    panel.findNamed<WrappingText>("clientSetupPreviewStatus").text,
+                )
+
+                copy.doClick()
+
+                assertEquals(index + 1, endpointSnapshots.get())
+                assertEquals(index + 1, clipboardCopies.get())
+                assertEquals(preview.text, copied.get())
+                assertTrue(preview.text.contains("http://[::1]:9999/mcp"))
+                listOf(SENTINEL_TOKEN, "/Users/private", "C:\\private").forEach { forbidden ->
+                    assertFalse(preview.text.contains(forbidden))
+                }
+                assertEquals("Copy configuration", copy.text)
+                assertEquals("Copy configuration", copy.accessibleContext.accessibleName)
+                assertEquals(
+                    "Copies exactly the visible secret-free configuration preview",
+                    copy.accessibleContext.accessibleDescription,
+                )
+                assertEquals(
+                    "Configuration preview copied.",
+                    panel.findNamed<WrappingText>("clientSetupPreviewStatus").text,
+                )
+            }
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `invalid stale endpoint copies nothing and retains the controlled retry action`() {
+        val endpointSnapshots = AtomicInteger()
+        val clipboardCopies = AtomicInteger()
+        val accessibilityUpdates = AtomicInteger()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                endpointProvider = {
+                    assertTrue(SwingUtilities.isEventDispatchThread())
+                    endpointSnapshots.incrementAndGet()
+                    throw IllegalArgumentException("$SENTINEL_TOKEN /Users/private C:\\private")
+                },
+                clipboard = ClientSetupClipboard { clipboardCopies.incrementAndGet() },
+            )
+            panel.markEndpointStale()
+            val copy = panel.findNamed<JButton>("copySetupPreviewButton")
+            val preview = panel.findNamed<JTextArea>("clientSetupPreview")
+            val statusText = panel.findNamed<WrappingText>("clientSetupPreviewStatus")
+            statusText.accessibleContext.addPropertyChangeListener { event ->
+                if (event.propertyName == AccessibleContext.ACCESSIBLE_NAME_PROPERTY) {
+                    accessibilityUpdates.incrementAndGet()
+                }
+            }
+
+            copy.doClick()
+            val updatesAfterFirstAttempt = accessibilityUpdates.get()
+            copy.doClick()
+
+            assertEquals(2, endpointSnapshots.get())
+            assertEquals(0, clipboardCopies.get())
+            assertTrue(updatesAfterFirstAttempt > 0)
+            assertTrue(accessibilityUpdates.get() > updatesAfterFirstAttempt)
+            assertTrue(copy.isEnabled)
+            assertEquals("Refresh and copy configuration", copy.text)
+            assertEquals("Refresh and copy configuration", copy.accessibleContext.accessibleName)
+            assertTrue(preview.text.contains("preview unavailable"))
+            val status = statusText.text
+            assertEquals("Configuration was not copied because the local host or port is invalid.", status)
+            listOf(SENTINEL_TOKEN, "/Users/private", "C:\\private").forEach { forbidden ->
+                assertFalse(preview.text.contains(forbidden))
+                assertFalse(status.contains(forbidden))
+            }
             panel.cleanup()
         }
     }

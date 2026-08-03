@@ -645,8 +645,9 @@ requests. Never commit the token to a repository.
 
 The **Client Setup Center** in Burp's **MCP Bridge** tab provides a read-only preview for exactly five clients:
 Claude Desktop, Claude Code, VS Code / GitHub Copilot, Cursor, and OpenAI Codex. Preview and copy actions
-never include the current bearer token or resolved local filesystem paths. Refresh the preview after changing the host
-or port.
+never include the current bearer token or resolved local filesystem paths. After changing the host or port, either use
+the separate **Refresh preview** action, or choose **Refresh and copy configuration** to validate, render, and copy in
+one activation. Invalid endpoint input leaves the preview unavailable and copies nothing.
 
 Only **Claude Desktop** has an automatic client-configuration action, which reuses the existing verified, backed-up,
 atomic installer. The other four entries are preview-and-copy only: set their environment variable or password input

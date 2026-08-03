@@ -376,8 +376,10 @@ perform hidden side effects.
 - `WorkflowPresetPanel` owns a separate single-worker bounded queue. Editor and confirmation snapshots stay on the EDT;
   project observation and persistence run off the EDT. Unload cancels and boundedly drains the worker before server
   shutdown, while every cleanup path suppresses late publication.
-- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. Only the
-  Claude Desktop action may invoke a native client writer; all other client entries remain preview-and-copy only.
+- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. After endpoint
+  edits, the combined refresh-and-copy action snapshots the displayed endpoint once on the EDT, renders through the same
+  safe catalog, and copies exactly the visible preview; validation failure must copy nothing. Only the Claude Desktop
+  action may invoke a native client writer; all other client entries remain preview-and-copy only.
 - Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
   no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
