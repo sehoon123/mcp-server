@@ -1,8 +1,6 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
-import burp.api.montoya.organizer.OrganizerItem
-import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.proxy.ProxyWebSocketMessage
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import burp.api.montoya.websocket.Direction
@@ -42,27 +40,6 @@ private val SCANNER_ISSUE_FIELDS = setOf(
 )
 
 @Serializable
-data class ProxyHttpHistorySummary(
-    val id: Int,
-    val time: String,
-    val method: String,
-    val url: String,
-    val host: String,
-    val port: Int,
-    val secure: Boolean,
-    val statusCode: Int?,
-    val mimeType: String?,
-    val listenerPort: Int,
-    val edited: Boolean,
-    val requestBodyBytes: Int,
-    val responseBodyBytes: Int?,
-    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
-    val notes: String?,
-    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
-    val notesTruncated: Boolean,
-)
-
-@Serializable
 data class WebSocketHistorySummary(
     val id: Int,
     val webSocketId: Int,
@@ -70,20 +47,6 @@ data class WebSocketHistorySummary(
     val direction: String,
     val payloadBytes: Int,
     val listenerPort: Int,
-    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
-    val notes: String?,
-    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
-    val notesTruncated: Boolean,
-)
-
-@Serializable
-data class OrganizerItemSummary(
-    val id: Int,
-    val status: String,
-    val url: String,
-    val statusCode: Int?,
-    val requestBodyBytes: Int,
-    val responseBodyBytes: Int?,
     @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
     val notes: String?,
     @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
@@ -156,36 +119,6 @@ data class HistoryContentSlice(
 )
 
 @Serializable
-data class HttpMessageMetadata(
-    val id: Int,
-    val source: String,
-    val method: String,
-    val url: String,
-    val host: String,
-    val port: Int,
-    val secure: Boolean,
-    val time: String?,
-    val statusCode: Int?,
-    val mimeType: String?,
-    val listenerPort: Int?,
-    val edited: Boolean?,
-    @JsonSchemaMetadata(maxLength = MAX_NOTES_CHARS)
-    val notes: String?,
-    @JsonSchemaMetadata(description = "True when notes was truncated to its 2,000-character output bound.")
-    val notesTruncated: Boolean,
-)
-
-@Serializable
-data class HttpMessageReadResult(
-    val status: HistoryReadStatus,
-    val id: Int,
-    val part: String,
-    val metadata: HttpMessageMetadata? = null,
-    val content: HistoryContentSlice? = null,
-    val error: String? = null,
-)
-
-@Serializable
 data class WebSocketMessageMetadata(
     val id: Int,
     val webSocketId: Int,
@@ -227,30 +160,6 @@ data class ScannerIssueReadResult(
     val error: String? = null,
 )
 
-internal fun ProxyHttpRequestResponse.toHistorySummary(): ProxyHttpHistorySummary {
-    val request = request()
-    val response = response()
-    val service = httpService()
-    val notes = annotations().notes().boundedNotes()
-    return ProxyHttpHistorySummary(
-        id = id(),
-        time = time().toString(),
-        method = request?.method().orEmpty(),
-        url = request?.url().orEmpty(),
-        host = service.host(),
-        port = service.port(),
-        secure = service.secure(),
-        statusCode = response?.statusCode()?.toInt(),
-        mimeType = if (response != null) mimeType().name else null,
-        listenerPort = listenerPort(),
-        edited = edited(),
-        requestBodyBytes = request?.body()?.length() ?: 0,
-        responseBodyBytes = response?.body()?.length(),
-        notes = notes.first,
-        notesTruncated = notes.second,
-    )
-}
-
 internal fun ProxyWebSocketMessage.toHistorySummary(): WebSocketHistorySummary {
     val notes = annotations().notes().boundedNotes()
     return WebSocketHistorySummary(
@@ -260,22 +169,6 @@ internal fun ProxyWebSocketMessage.toHistorySummary(): WebSocketHistorySummary {
         direction = direction().name,
         payloadBytes = payload()?.length() ?: 0,
         listenerPort = listenerPort(),
-        notes = notes.first,
-        notesTruncated = notes.second,
-    )
-}
-
-internal fun OrganizerItem.toHistorySummary(): OrganizerItemSummary {
-    val request = request()
-    val response = response()
-    val notes = annotations().notes().boundedNotes()
-    return OrganizerItemSummary(
-        id = id(),
-        status = status().displayName(),
-        url = request?.url().orEmpty(),
-        statusCode = response?.statusCode()?.toInt(),
-        requestBodyBytes = request?.body()?.length() ?: 0,
-        responseBodyBytes = response?.body()?.length(),
         notes = notes.first,
         notesTruncated = notes.second,
     )
@@ -345,136 +238,6 @@ private fun MessageDigest.updateScannerIdentityValue(value: String) {
         update(value.substring(start, end).toByteArray(Charsets.UTF_8))
         start = end
     }
-}
-
-internal fun ProxyHttpRequestResponse.readPart(
-    part: String,
-    offset: Int,
-    limit: Int,
-    encoding: String,
-): HttpMessageReadResult {
-    val normalizedPart = normalizeHttpPart(part)
-    val request = request()
-    val response = response()
-    val service = httpService()
-    val notes = annotations().notes().boundedNotes()
-    val metadata = HttpMessageMetadata(
-        id = id(),
-        source = "proxy",
-        method = request?.method().orEmpty(),
-        url = request?.url().orEmpty(),
-        host = service.host(),
-        port = service.port(),
-        secure = service.secure(),
-        time = time().toString(),
-        statusCode = response?.statusCode()?.toInt(),
-        mimeType = if (response != null) mimeType().name else null,
-        listenerPort = listenerPort(),
-        edited = edited(),
-        notes = notes.first,
-        notesTruncated = notes.second,
-    )
-
-    if (normalizedPart == "metadata") {
-        return HttpMessageReadResult(
-            status = HistoryReadStatus.OK,
-            id = id(),
-            part = normalizedPart,
-            metadata = metadata,
-        )
-    }
-
-    val bytes = when (normalizedPart) {
-        "request" -> request?.toByteArray()
-        "request_headers" -> request?.let { it.toByteArray().subArray(0, it.bodyOffset()) }
-        "request_body" -> request?.body()
-        "response" -> response?.toByteArray()
-        "response_headers" -> response?.let { it.toByteArray().subArray(0, it.bodyOffset()) }
-        "response_body" -> response?.body()
-        else -> error("Unsupported HTTP message part: $normalizedPart")
-    }
-
-    if (bytes == null) {
-        return HttpMessageReadResult(
-            status = HistoryReadStatus.PART_UNAVAILABLE,
-            id = id(),
-            part = normalizedPart,
-            metadata = metadata,
-            error = "$normalizedPart is not available for proxy history item ${id()}",
-        )
-    }
-
-    return HttpMessageReadResult(
-        status = HistoryReadStatus.OK,
-        id = id(),
-        part = normalizedPart,
-        metadata = metadata,
-        content = bytes.toHistorySlice(offset, limit, encoding),
-    )
-}
-
-internal fun OrganizerItem.readPart(
-    part: String,
-    offset: Int,
-    limit: Int,
-    encoding: String,
-): HttpMessageReadResult {
-    val normalizedPart = normalizeHttpPart(part)
-    val request = request()
-    val response = response()
-    val service = httpService()
-    val notes = annotations().notes().boundedNotes()
-    val metadata = HttpMessageMetadata(
-        id = id(),
-        source = "organizer",
-        method = request?.method().orEmpty(),
-        url = request?.url().orEmpty(),
-        host = service.host(),
-        port = service.port(),
-        secure = service.secure(),
-        time = null,
-        statusCode = response?.statusCode()?.toInt(),
-        mimeType = response?.mimeType()?.name,
-        listenerPort = null,
-        edited = null,
-        notes = notes.first,
-        notesTruncated = notes.second,
-    )
-
-    if (normalizedPart == "metadata") {
-        return HttpMessageReadResult(
-            status = HistoryReadStatus.OK,
-            id = id(),
-            part = normalizedPart,
-            metadata = metadata,
-        )
-    }
-
-    val bytes = when (normalizedPart) {
-        "request" -> request?.toByteArray()
-        "request_headers" -> request?.let { it.toByteArray().subArray(0, it.bodyOffset()) }
-        "request_body" -> request?.body()
-        "response" -> response?.toByteArray()
-        "response_headers" -> response?.let { it.toByteArray().subArray(0, it.bodyOffset()) }
-        "response_body" -> response?.body()
-        else -> error("Unsupported HTTP message part: $normalizedPart")
-    }
-    if (bytes == null) {
-        return HttpMessageReadResult(
-            status = HistoryReadStatus.PART_UNAVAILABLE,
-            id = id(),
-            part = normalizedPart,
-            metadata = metadata,
-            error = "$normalizedPart is not available for Organizer item ${id()}",
-        )
-    }
-    return HttpMessageReadResult(
-        status = HistoryReadStatus.OK,
-        id = id(),
-        part = normalizedPart,
-        metadata = metadata,
-        content = bytes.toHistorySlice(offset, limit, encoding),
-    )
 }
 
 internal fun AuditIssue.readField(
