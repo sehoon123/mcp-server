@@ -80,6 +80,45 @@ class WorkflowPresetPanelTest {
     }
 
     @Test
+    fun `selection publishes only a privacy-bounded effective input preview`() {
+        val privatePreset = WorkflowPreset(
+            name = "Preview",
+            description = "Local description",
+            definition = WorkflowPresetDefinition(httpSearch = SavedHttpSearch(
+                host = "private-panel-host.test",
+                pathContains = "/private-panel-path",
+                methods = listOf("GET", "POST"),
+                defaultLimit = 13,
+            )),
+        )
+        val management = InMemoryManagement(mutableListOf(privatePreset))
+        lateinit var panel: WorkflowPresetPanel
+        SwingUtilities.invokeAndWait {
+            panel = WorkflowPresetPanel(management, JPanel())
+        }
+        try {
+            val refresh = panel.named<JButton>("refreshWorkflowPresetsButton")
+            val table = panel.named<JTable>("workflowPresetTable")
+            val preview = panel.named<JTextArea>("workflowPresetSelectionText")
+
+            SwingUtilities.invokeAndWait { refresh.doClick() }
+            await { table.rowCount == 1 && refresh.isEnabled }
+            SwingUtilities.invokeAndWait { table.setRowSelectionInterval(0, 0) }
+
+            assertTrue(preview.text.contains("host filter set"))
+            assertTrue(preview.text.contains("path filter set"))
+            assertTrue(preview.text.contains("methods 2 selected"))
+            assertTrue(preview.text.contains("page limit 13"))
+            assertTrue(preview.text.contains("never reads or executes traffic"))
+            assertFalse(preview.text.contains("private-panel-host.test"))
+            assertFalse(preview.text.contains("private-panel-path"))
+            assertEquals(1, management.workerThreads.size)
+        } finally {
+            panel.cancelBackgroundWorkAndAwait()
+        }
+    }
+
+    @Test
     fun `cleanup interrupts blocked work suppresses late publication and is idempotent`() {
         val started = CountDownLatch(1)
         val interrupted = AtomicBoolean(false)
@@ -251,6 +290,7 @@ class WorkflowPresetPanelTest {
             assertNotNull(table.accessibleContext.accessibleRelationSet.get(AccessibleRelation.CONTROLLER_FOR))
             assertNotNull(status.accessibleContext.accessibleRelationSet.get(AccessibleRelation.CONTROLLED_BY))
             assertNotNull(selection.accessibleContext.accessibleRelationSet.get(AccessibleRelation.CONTROLLED_BY))
+            assertTrue(selection.accessibleContext.accessibleDescription.contains("preset summary"))
             assertTrue(panel.getFocusTraversalKeys(java.awt.KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS).isNotEmpty())
             assertTrue(buttons.none { it.text.contains("Execute", ignoreCase = true) })
         } finally {
