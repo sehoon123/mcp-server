@@ -660,8 +660,10 @@ endpoint of the in-process listener reported as `running`; it discards the respo
 Its controlled result can show whether the current credential reached the expected local admission guard, but it does
 not perform a full MCP handshake and cannot prove that a third-party client's configuration is correct. Safe copied
 evidence contains only categorical listener/probe results—never the endpoint, bearer, response, exception, project
-data, or local path. Running the check intentionally increments the local request counter and updates last-activity and
-peak-in-flight metrics; a rejected credential also increments the authentication-rejection counter.
+data, or local path. The panel invalidates a displayed result and disables evidence copying after the displayed endpoint
+changes, the listener state changes, or a credential rotation is attempted; run a new check after the local context is
+current. Running the check intentionally increments the local request counter and updates last-activity and peak-in-flight
+metrics; a rejected credential also increments the authentication-rejection counter.
 
 The following examples are alternatives. Configure only the clients you actually use, and verify the example against
 the documentation for your installed client version before applying it.
