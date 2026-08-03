@@ -13,7 +13,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.TargetValidation
 import net.portswigger.mcp.presets.DeleteWorkflowPreset
@@ -33,7 +32,6 @@ import net.portswigger.mcp.security.McpSessionApprovalRegistry
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.SensitiveActionAuditOperation
 import net.portswigger.mcp.security.SensitiveActionSecurity
-import net.portswigger.mcp.security.filterConfigCredentials
 import java.util.regex.Pattern
 
 internal suspend fun checkDataAccessOrDeny(
@@ -53,7 +51,6 @@ private const val MAX_RAW_HTTP2_BODY_CHARS = 1024 * 1024
 private const val MAX_RAW_HTTP_HEADERS = 128
 private const val MAX_RAW_HEADER_NAME_CHARS = 256
 private const val MAX_RAW_HEADER_VALUE_CHARS = 16 * 1024
-private const val MAX_CONFIGURATION_JSON_CHARS = 1024 * 1024
 private const val MAX_SAFE_REGEX_CHARS = 512
 
 /**
@@ -178,9 +175,6 @@ private fun HttpSessionAnalysisStatus.isMcpError(): Boolean = when (this) {
 
     else -> false
 }
-
-private fun MontoyaApi.isCurrentProject(expectedProjectId: String?): Boolean =
-    expectedProjectId == null || project().id() == expectedProjectId
 
 internal fun validateRawTarget(hostname: String, port: Int) {
     require(TargetValidation.normalizeTarget(TargetValidation.formatTarget(hostname, port)) != null) {
@@ -408,6 +402,7 @@ internal fun Server.registerTools(
         webSocketMessageSearchService,
         httpMessageComparisonService,
     )
+    val burpOptionsService = BurpOptionsService(api, config, services.httpMetadataIndex)
 
     mcpStructuredToolWithContext<SendRawHttpRequest, RawHttpActionResult>(
         description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
@@ -429,492 +424,14 @@ internal fun Server.registerTools(
         description = "Return bounded project- or user-level Burp configuration after approval unless YOLO mode allows it. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Credentials are filtered by default; disabling filtering may return sensitive values. This changes no Burp state.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
-        val deniedMessage =
-            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration access denied by Burp Suite"
-        val expectedProjectId = if (input.level == BurpOptionsLevel.PROJECT) {
-            try {
-                api.project().id()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val error = standardToolException("Burp could not capture the project before configuration approval", e)
-                return@mcpStructuredToolWithContext StructuredToolResponse(
-                    GetBurpOptionsResult(
-                        StandardToolStatus.BURP_ERROR,
-                        ToolRetryGuidance.SAFE_TO_RETRY,
-                        input.level,
-                        error = error,
-                    ),
-                    text = "Error: $error",
-                    isError = true,
-                )
-            }
-        } else {
-            null
-        }
-        val approved = try {
-            when (input.level) {
-                BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
-                    "read project configuration",
-                    "Export project-level Burp configuration to the MCP client",
-                    api = api,
-                    config = config,
-                    auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_READ,
-                )
-                BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
-                    "read user configuration",
-                    "Export user-level Burp configuration to the MCP client",
-                    api = api,
-                    config = config,
-                    auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_READ,
-                )
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not request configuration approval", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val projectStableAfterApproval = try {
-            api.isCurrentProject(expectedProjectId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not recheck the project after configuration approval", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!projectStableAfterApproval) {
-            val error = "Burp project changed during project configuration approval"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.PROJECT_MISMATCH,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!approved) {
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.ACCESS_DENIED,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = deniedMessage,
-                ),
-                text = deniedMessage,
-            )
-        }
-        val exported = try {
-            when (input.level) {
-                BurpOptionsLevel.PROJECT -> api.burpSuite().exportProjectOptionsAsJson()
-                BurpOptionsLevel.USER -> api.burpSuite().exportUserOptionsAsJson()
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not export configuration", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val projectStableAfterExport = try {
-            api.isCurrentProject(expectedProjectId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not recheck the project after configuration export", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!projectStableAfterExport) {
-            val error = "Burp project changed while project configuration was exported"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.PROJECT_MISMATCH,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (exported.length > MAX_CONFIGURATION_JSON_CHARS) {
-            val error = "configuration exceeds the output limit"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.LIMIT_EXCEEDED,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val credentialsFiltered = config.filterConfigCredentials
-        val configuration = try {
-            if (credentialsFiltered) filterConfigCredentials(exported) else exported
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not filter exported configuration", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val projectStableAfterFiltering = try {
-            api.isCurrentProject(expectedProjectId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not recheck the project after configuration filtering", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!projectStableAfterFiltering) {
-            val error = "Burp project changed while project configuration was prepared"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.PROJECT_MISMATCH,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (configuration.length > MAX_CONFIGURATION_JSON_CHARS) {
-            val error = "filtered configuration exceeds the output limit"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                GetBurpOptionsResult(
-                    StandardToolStatus.LIMIT_EXCEEDED,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    input.level,
-                    error = error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        StructuredToolResponse(
-            GetBurpOptionsResult(
-                StandardToolStatus.OK,
-                ToolRetryGuidance.NOT_APPLICABLE,
-                input.level,
-                configuration = configuration,
-                configurationChars = configuration.length,
-                credentialsFiltered = credentialsFiltered,
-            ),
-            text = configuration,
-        )
+        burpOptionsService.get(input)
     }
-
-    val toolingDisabledMessage =
-        "User has disabled configuration editing. They can enable it in Burp's ${ProductIdentity.SUITE_TAB_NAME} tab by selecting 'Enable tools that can edit your config'"
 
     mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
         description = "Import bounded project- or user-level Burp configuration when editing tools are enabled. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Approval is required unless YOLO mode allows it. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
-        if (input.json.length > MAX_CONFIGURATION_JSON_CHARS) {
-            val error = "json is too large"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.INVALID_ARGUMENT,
-                    ToolRetryGuidance.AFTER_CORRECTION,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!config.configEditingTooling) {
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.DISABLED,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    toolingDisabledMessage,
-                ),
-                text = toolingDisabledMessage,
-            )
-        }
-        val deniedMessage =
-            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration change denied by Burp Suite"
-        val expectedProjectId = if (input.level == BurpOptionsLevel.PROJECT) {
-            try {
-                api.project().id()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val error = standardToolException("Burp could not capture the project before configuration-change approval", e)
-                return@mcpStructuredToolWithContext StructuredToolResponse(
-                    SetBurpOptionsResult(
-                        StandardToolStatus.BURP_ERROR,
-                        ToolRetryGuidance.SAFE_TO_RETRY,
-                        StandardExecutionState.NOT_STARTED,
-                        input.level,
-                        error,
-                    ),
-                    text = "Error: $error",
-                    isError = true,
-                )
-            }
-        } else {
-            null
-        }
-        val approved = try {
-            when (input.level) {
-                BurpOptionsLevel.PROJECT -> SensitiveActionSecurity.checkPermission(
-                    "change project configuration",
-                    "Merge supplied JSON into Burp project configuration",
-                    input.json,
-                    api = api,
-                    config = config,
-                    auditOperation = SensitiveActionAuditOperation.PROJECT_OPTIONS_WRITE,
-                )
-                BurpOptionsLevel.USER -> SensitiveActionSecurity.checkPermission(
-                    "change user configuration",
-                    "Merge supplied JSON into Burp user configuration",
-                    input.json,
-                    api = api,
-                    config = config,
-                    auditOperation = SensitiveActionAuditOperation.USER_OPTIONS_WRITE,
-                )
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not request configuration-change approval", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val projectStableAfterApproval = try {
-            api.isCurrentProject(expectedProjectId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val error = standardToolException("Burp could not recheck the project after configuration-change approval", e)
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.SAFE_TO_RETRY,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!projectStableAfterApproval) {
-            val error = "Burp project changed during project configuration approval"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.PROJECT_MISMATCH,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!approved) {
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.ACCESS_DENIED,
-                    ToolRetryGuidance.AFTER_USER_ACTION,
-                    StandardExecutionState.NOT_STARTED,
-                    input.level,
-                    deniedMessage,
-                ),
-                text = deniedMessage,
-            )
-        }
-        val successMessage =
-            "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration has been applied"
-        val callContext = currentCoroutineContext()
-        callContext.ensureActive()
-        try {
-            when (input.level) {
-                BurpOptionsLevel.PROJECT -> {
-                    api.logging().logToOutput("Applying project-level configuration through MCP")
-                    services.httpMetadataIndex.withMutation {
-                        api.burpSuite().importProjectOptionsFromJson(input.json)
-                    }
-                }
-                BurpOptionsLevel.USER -> {
-                    api.logging().logToOutput("Applying user-level configuration through MCP")
-                    api.burpSuite().importUserOptionsFromJson(input.json)
-                }
-            }
-        } catch (e: CancellationException) {
-            if (!callContext.isActive) throw e
-            val error = uncertainExecutionError(
-                "Configuration may have been partially applied",
-                e,
-                preserveCancellation = false,
-                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
-            )
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.DO_NOT_RETRY,
-                    StandardExecutionState.UNCERTAIN,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        } catch (e: Exception) {
-            val error = uncertainExecutionError(
-                "Configuration may have been partially applied",
-                e,
-                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
-            )
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.DO_NOT_RETRY,
-                    StandardExecutionState.UNCERTAIN,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        val projectStableAfterImport = try {
-            api.isCurrentProject(expectedProjectId)
-        } catch (e: CancellationException) {
-            if (!callContext.isActive) throw e
-            val error = uncertainExecutionError(
-                "Configuration may have been applied but the project boundary could not be rechecked",
-                e,
-                preserveCancellation = false,
-                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
-            )
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.DO_NOT_RETRY,
-                    StandardExecutionState.UNCERTAIN,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        } catch (e: Exception) {
-            val error = uncertainExecutionError(
-                "Configuration may have been applied but the project boundary could not be rechecked",
-                e,
-                preserveCancellation = false,
-                maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
-            )
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.BURP_ERROR,
-                    ToolRetryGuidance.DO_NOT_RETRY,
-                    StandardExecutionState.UNCERTAIN,
-                    input.level,
-                    error,
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        if (!projectStableAfterImport) {
-            val error = "Configuration may have been applied while the Burp project changed; reconcile manually and do not retry automatically"
-            return@mcpStructuredToolWithContext StructuredToolResponse(
-                SetBurpOptionsResult(
-                    StandardToolStatus.PROJECT_MISMATCH,
-                    ToolRetryGuidance.DO_NOT_RETRY,
-                    StandardExecutionState.UNCERTAIN,
-                    input.level,
-                    boundedStandardToolError(error),
-                ),
-                text = "Error: $error",
-                isError = true,
-            )
-        }
-        StructuredToolResponse(
-            SetBurpOptionsResult(
-                StandardToolStatus.OK,
-                ToolRetryGuidance.NOT_APPLICABLE,
-                StandardExecutionState.COMPLETED,
-                input.level,
-            ),
-            text = successMessage,
-        )
+        burpOptionsService.set(input)
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
@@ -1297,32 +814,6 @@ internal fun recordHttpResponseInSiteMap(
     runCatching { api.logging().logToOutput("MCP request completed; $warning") }
     return SiteMapRecordResult(recorded = false, warning = warning)
 }
-
-@Serializable
-enum class BurpOptionsLevel {
-    @SerialName("project")
-    PROJECT,
-
-    @SerialName("user")
-    USER,
-}
-
-@Serializable
-data class GetBurpOptions(
-    @JsonSchemaMetadata(description = "Configuration level to read: project or user.")
-    val level: BurpOptionsLevel,
-)
-
-@Serializable
-data class SetBurpOptions(
-    @JsonSchemaMetadata(description = "Configuration level to change: project or user.")
-    val level: BurpOptionsLevel,
-    @JsonSchemaMetadata(
-        description = "Complete configuration JSON to import; project input requires project_options, user input requires user_options.",
-        maxLength = 1048576,
-    )
-    val json: String,
-)
 
 @Serializable
 enum class BurpControl {
