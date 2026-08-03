@@ -119,6 +119,104 @@ class WorkflowPresetEditorTest {
     }
 
     @Test
+    fun `editor validates on change and publishes a privacy-bounded execution-neutral preview`() {
+        lateinit var form: WorkflowPresetEditorForm
+        val validity = mutableListOf<Boolean>()
+        SwingUtilities.invokeAndWait {
+            form = WorkflowPresetEditorForm(null)
+            form.setValidationListener(validity::add)
+
+            assertFalse(validity.last())
+            assertTrue(
+                form.named<JTextArea>("workflowPresetInputPreviewText").text
+                    .contains("available when the settings are valid"),
+            )
+
+            form.named<JTextField>("workflowPresetNameField").text = "Live validation"
+            form.named<JTextField>("workflowPresetHttpHostField").text = "private-preview-host.test"
+            form.named<JTextField>("workflowPresetHttpDefaultLimitField").text = "25"
+
+            assertTrue(validity.last())
+            assertTrue(form.named<JTextArea>("workflowPresetValidationText").text.startsWith("Preset settings are valid."))
+            val preview = form.named<JTextArea>("workflowPresetInputPreviewText").text
+            assertTrue(preview.contains("host filter set"))
+            assertTrue(preview.contains("page limit 25"))
+            assertTrue(preview.contains("never reads or executes traffic"))
+            assertFalse(preview.contains("private-preview-host.test"))
+
+            form.named<JTextField>("workflowPresetHttpDefaultLimitField").text = "51"
+            assertFalse(validity.last())
+            assertTrue(form.named<JTextArea>("workflowPresetValidationText").text.startsWith("Preset settings are invalid."))
+            assertTrue(
+                form.named<JTextArea>("workflowPresetInputPreviewText").text
+                    .contains("available when the settings are valid"),
+            )
+        }
+    }
+
+    @Test
+    fun `real save control tracks new existing valid and invalid form states`() {
+        SwingUtilities.invokeAndWait {
+            val newForm = WorkflowPresetEditorForm(null)
+            var accepted: WorkflowPreset? = null
+            val createButton = createWorkflowPresetSaveButton(
+                creating = true,
+                form = newForm,
+                onAccepted = { accepted = it },
+            )
+            assertEquals("saveWorkflowPresetEditButton", createButton.name)
+            assertEquals("Create preset", createButton.text)
+            assertFalse(createButton.isEnabled)
+
+            newForm.named<JTextField>("workflowPresetNameField").text = "Button state"
+            assertTrue(createButton.isEnabled)
+            newForm.named<JTextField>("workflowPresetHttpDefaultLimitField").text = "51"
+            assertFalse(createButton.isEnabled)
+            newForm.named<JTextField>("workflowPresetHttpDefaultLimitField").text = "50"
+            assertTrue(createButton.isEnabled)
+            createButton.doClick()
+            assertEquals("Button state", accepted?.name)
+
+            val existing = WorkflowPreset(
+                name = "Existing",
+                definition = WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+            )
+            val existingForm = WorkflowPresetEditorForm(existing)
+            val saveButton = createWorkflowPresetSaveButton(
+                creating = false,
+                form = existingForm,
+                onAccepted = {},
+            )
+            assertEquals("Save changes", saveButton.text)
+            assertTrue(saveButton.isEnabled)
+        }
+    }
+
+    @Test
+    fun `oversized pasted text is rejected before list expansion and hidden fields do not block another type`() {
+        SwingUtilities.invokeAndWait {
+            val form = WorkflowPresetEditorForm(null)
+            val validity = mutableListOf<Boolean>()
+            form.setValidationListener(validity::add)
+            form.named<JTextField>("workflowPresetNameField").text = "Bounded paste"
+            form.named<JTextField>("workflowPresetHttpMethodsField").text =
+                List(5_000) { "GET" }.joinToString(",")
+
+            assertFalse(validity.last())
+            assertTrue(form.named<JTextArea>("workflowPresetValidationText").text.startsWith("Preset settings are invalid."))
+            assertTrue(
+                form.named<JTextArea>("workflowPresetInputPreviewText").text
+                    .contains("available when the settings are valid"),
+            )
+
+            form.named<JComboBox<*>>("workflowPresetTypeSelector").selectedIndex =
+                WorkflowPresetType.WEBSOCKET_SEARCH.ordinal
+            assertTrue(validity.last())
+            assertNotNull(form.toPreset()?.definition?.webSocketSearch)
+        }
+    }
+
+    @Test
     fun `all editor bounds fail closed and publish only a categorical validation message`() {
         SwingUtilities.invokeAndWait {
             fun invalid(mutator: (WorkflowPresetEditorForm) -> Unit) {
@@ -205,6 +303,9 @@ class WorkflowPresetEditorTest {
             form.named<JTextArea>("workflowPresetValidationText")
                 .accessibleContext.accessibleDescription.isNotBlank(),
         )
+        val preview = form.named<JTextArea>("workflowPresetInputPreviewText")
+        assertTrue(preview.accessibleContext.accessibleDescription.contains("never reads or executes traffic"))
+        assertFalse(preview.text.contains("project", ignoreCase = true))
     }
 
     private inline fun <reified T : Component> Container.named(name: String): T =

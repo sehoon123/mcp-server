@@ -9,6 +9,7 @@ import net.portswigger.mcp.presets.SavedWebSocketSearch
 import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetDefinition
 import net.portswigger.mcp.presets.WorkflowPresetType
+import net.portswigger.mcp.presets.executionNeutralInputPreview
 import net.portswigger.mcp.presets.validateWorkflowPreset
 import net.portswigger.mcp.tools.HttpComparisonEncoding
 import net.portswigger.mcp.tools.HttpComparisonPart
@@ -45,6 +46,10 @@ import javax.swing.KeyStroke
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
 import javax.swing.WindowConstants
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
+
+internal const val MAX_WORKFLOW_PRESET_EDITOR_RAW_FIELD_CHARS = 16_384
 
 internal fun interface WorkflowPresetEditor {
     fun edit(parent: Component, existing: WorkflowPreset?): WorkflowPreset?
@@ -59,6 +64,22 @@ internal fun installWorkflowPresetEditorCancellation(rootPane: JRootPane, cancel
     rootPane.actionMap.put("cancel-preset-editor", object : AbstractAction() {
         override fun actionPerformed(event: ActionEvent?) = cancel()
     })
+}
+
+internal fun createWorkflowPresetSaveButton(
+    creating: Boolean,
+    form: WorkflowPresetEditorForm,
+    onAccepted: (WorkflowPreset) -> Unit,
+): JButton {
+    check(SwingUtilities.isEventDispatchThread()) { "workflow preset save control belongs to the EDT" }
+    return Design.createFilledButton(if (creating) "Create preset" else "Save changes").apply {
+        name = "saveWorkflowPresetEditButton"
+        isEnabled = false
+        accessibleContext.accessibleDescription =
+            "Stores the validated project-local preset without reading or executing traffic"
+        addActionListener { form.toPreset()?.let(onAccepted) }
+        form.setValidationListener { isEnabled = it }
+    }
 }
 
 /** Structured local editor; it deliberately has no cursor, reference, traffic, result, or execution controls. */
@@ -77,15 +98,9 @@ internal object SwingWorkflowPresetEditor : WorkflowPresetEditor {
             name = "cancelWorkflowPresetEditButton"
             addActionListener { dialog.dispose() }
         }
-        val saveButton = Design.createFilledButton(if (existing == null) "Create preset" else "Save changes").apply {
-            name = "saveWorkflowPresetEditButton"
-            addActionListener {
-                val preset = form.toPreset()
-                if (preset != null) {
-                    result.set(preset)
-                    dialog.dispose()
-                }
-            }
+        val saveButton = createWorkflowPresetSaveButton(existing == null, form) { preset ->
+            result.set(preset)
+            dialog.dispose()
         }
         val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, Design.Spacing.SM, 0)).apply {
             isOpaque = false
@@ -133,6 +148,16 @@ internal class WorkflowPresetEditorForm(existing: WorkflowPreset?) : JPanel() {
         name = "workflowPresetValidationText"
         accessibleContext.accessibleDescription = "Workflow preset validation status"
     }
+    private val inputPreviewText = WrappingText(
+        "Execution-neutral preview is available when the settings are valid.",
+        WrappingTextStyle.BODY_MEDIUM,
+        fallbackMaxWidth = 640,
+    ).apply {
+        name = "workflowPresetInputPreviewText"
+        accessibleContext.accessibleDescription =
+            "Privacy-bounded effective input preview that never reads or executes traffic"
+    }
+    private var validationListener: (Boolean) -> Unit = {}
 
     private val httpSourcesField = editorField("workflowPresetHttpSourcesField")
     private val httpHostField = editorField("workflowPresetHttpHostField")
@@ -194,6 +219,10 @@ internal class WorkflowPresetEditorForm(existing: WorkflowPreset?) : JPanel() {
         add(definitionCards)
         add(Box.createVerticalStrut(Design.Spacing.SM))
         add(validationText)
+        add(Box.createVerticalStrut(Design.Spacing.MD))
+        add(Design.createSectionLabel("Execution-neutral input preview").apply { labelFor = inputPreviewText })
+        add(Box.createVerticalStrut(Design.Spacing.SM))
+        add(inputPreviewText)
 
         typeSelector.addActionListener { showSelectedDefinition() }
         load(existing)
@@ -204,70 +233,154 @@ internal class WorkflowPresetEditorForm(existing: WorkflowPreset?) : JPanel() {
             "Existing preset name; create a new preset to use another name"
         }
         showSelectedDefinition()
+        installLiveValidation()
+        refreshValidationState()
     }
 
     fun requestNameFocus() {
         nameField.requestFocusInWindow()
     }
 
-    fun toPreset(): WorkflowPreset? {
-        validationText.updateContent(" ")
-        return try {
-            val name = nameField.text.trim()
-            require(name.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS && name.none(Char::isISOControl))
-            val description = descriptionField.text.takeUnless(String::isEmpty)?.also {
-                require(it.length <= MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS && it.none(Char::isISOControl))
-            }
-            val definition = when (selectedType()) {
-                WorkflowPresetType.HTTP_SEARCH -> WorkflowPresetDefinition(httpSearch = SavedHttpSearch(
-                    sources = parseSources(httpSourcesField.text),
-                    host = optionalText(httpHostField.text),
-                    pathContains = optionalText(httpPathField.text),
-                    methods = parseList(httpMethodsField.text)?.map { it.uppercase(Locale.ROOT) },
-                    statusCodes = parseIntegerList(httpStatusCodesField.text, 100..599),
-                    mimeTypes = parseList(httpMimeTypesField.text)?.map { it.uppercase(Locale.ROOT) },
-                    inScopeOnly = triStateValue(httpInScope),
-                    hasResponse = triStateValue(httpHasResponse),
-                    newestFirst = triStateValue(httpNewestFirst),
-                    defaultLimit = optionalInteger(httpDefaultLimitField.text, 1..50),
-                ))
-                WorkflowPresetType.WEBSOCKET_SEARCH -> WorkflowPresetDefinition(webSocketSearch = SavedWebSocketSearch(
-                    direction = when (webSocketDirection.selectedIndex) {
-                        0 -> null
-                        1 -> WebSocketSearchDirection.CLIENT_TO_SERVER
-                        else -> WebSocketSearchDirection.SERVER_TO_CLIENT
-                    },
-                    listenerPort = optionalInteger(webSocketListenerPortField.text, 1..65_535),
-                    newestFirst = triStateValue(webSocketNewestFirst),
-                    defaultLimit = optionalInteger(webSocketDefaultLimitField.text, 1..50),
-                ))
-                WorkflowPresetType.HTTP_COMPARISON -> WorkflowPresetDefinition(httpComparison = SavedHttpComparison(
-                    part = comparisonPart.selectedIndex.takeIf { it > 0 }?.let { HttpComparisonPart.entries[it - 1] },
-                    limitBytesPerMessage = optionalInteger(comparisonLimitField.text, 1..1_048_576),
-                    excerptEncoding = when (comparisonEncoding.selectedIndex) {
-                        0 -> null
-                        1 -> HttpComparisonEncoding.TEXT
-                        else -> HttpComparisonEncoding.BASE64
-                    },
-                    ignoreHeaders = parseList(comparisonIgnoreHeadersField.text),
-                    includeResponseVariations = triStateValue(comparisonVariations),
-                ))
-            }
-            WorkflowPreset(name, description, definition).also(::validateWorkflowPreset)
-        } catch (_: IllegalArgumentException) {
-            validationText.updateContent(
-                "Preset settings are invalid. Check required lengths, comma-separated values, numeric bounds, and the selected workflow type.",
-            )
-            null
+    fun setValidationListener(listener: (Boolean) -> Unit) {
+        check(SwingUtilities.isEventDispatchThread()) { "workflow preset validation listener belongs to the EDT" }
+        validationListener = listener
+        refreshValidationState()
+    }
+
+    fun toPreset(): WorkflowPreset? = parsePreset().also(::publishValidationState)
+
+    private fun parsePreset(): WorkflowPreset? = try {
+        require(selectedTextFields().all { it.document.length <= MAX_WORKFLOW_PRESET_EDITOR_RAW_FIELD_CHARS })
+        val name = nameField.text.trim()
+        require(name.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS && name.none(Char::isISOControl))
+        val description = descriptionField.text.takeUnless(String::isEmpty)?.also {
+            require(it.length <= MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS && it.none(Char::isISOControl))
         }
+        val definition = when (selectedType()) {
+            WorkflowPresetType.HTTP_SEARCH -> WorkflowPresetDefinition(httpSearch = SavedHttpSearch(
+                sources = parseSources(httpSourcesField.text),
+                host = optionalText(httpHostField.text),
+                pathContains = optionalText(httpPathField.text),
+                methods = parseList(httpMethodsField.text)?.map { it.uppercase(Locale.ROOT) },
+                statusCodes = parseIntegerList(httpStatusCodesField.text, 100..599),
+                mimeTypes = parseList(httpMimeTypesField.text)?.map { it.uppercase(Locale.ROOT) },
+                inScopeOnly = triStateValue(httpInScope),
+                hasResponse = triStateValue(httpHasResponse),
+                newestFirst = triStateValue(httpNewestFirst),
+                defaultLimit = optionalInteger(httpDefaultLimitField.text, 1..50),
+            ))
+            WorkflowPresetType.WEBSOCKET_SEARCH -> WorkflowPresetDefinition(webSocketSearch = SavedWebSocketSearch(
+                direction = when (webSocketDirection.selectedIndex) {
+                    0 -> null
+                    1 -> WebSocketSearchDirection.CLIENT_TO_SERVER
+                    else -> WebSocketSearchDirection.SERVER_TO_CLIENT
+                },
+                listenerPort = optionalInteger(webSocketListenerPortField.text, 1..65_535),
+                newestFirst = triStateValue(webSocketNewestFirst),
+                defaultLimit = optionalInteger(webSocketDefaultLimitField.text, 1..50),
+            ))
+            WorkflowPresetType.HTTP_COMPARISON -> WorkflowPresetDefinition(httpComparison = SavedHttpComparison(
+                part = comparisonPart.selectedIndex.takeIf { it > 0 }?.let { HttpComparisonPart.entries[it - 1] },
+                limitBytesPerMessage = optionalInteger(comparisonLimitField.text, 1..1_048_576),
+                excerptEncoding = when (comparisonEncoding.selectedIndex) {
+                    0 -> null
+                    1 -> HttpComparisonEncoding.TEXT
+                    else -> HttpComparisonEncoding.BASE64
+                },
+                ignoreHeaders = parseList(comparisonIgnoreHeadersField.text),
+                includeResponseVariations = triStateValue(comparisonVariations),
+            ))
+        }
+        WorkflowPreset(name, description, definition).also(::validateWorkflowPreset)
+    } catch (_: IllegalArgumentException) {
+        null
     }
 
     private fun selectedType(): WorkflowPresetType = WorkflowPresetType.entries[typeSelector.selectedIndex]
+
+    private fun selectedTextFields(): List<JTextField> = buildList {
+        add(nameField)
+        add(descriptionField)
+        when (selectedType()) {
+            WorkflowPresetType.HTTP_SEARCH -> addAll(
+                listOf(
+                    httpSourcesField,
+                    httpHostField,
+                    httpPathField,
+                    httpMethodsField,
+                    httpStatusCodesField,
+                    httpMimeTypesField,
+                    httpDefaultLimitField,
+                ),
+            )
+            WorkflowPresetType.WEBSOCKET_SEARCH -> addAll(
+                listOf(webSocketListenerPortField, webSocketDefaultLimitField),
+            )
+            WorkflowPresetType.HTTP_COMPARISON -> addAll(
+                listOf(comparisonLimitField, comparisonIgnoreHeadersField),
+            )
+        }
+    }
 
     private fun showSelectedDefinition() {
         (definitionCards.layout as CardLayout).show(definitionCards, selectedType().name)
         definitionCards.revalidate()
         definitionCards.repaint()
+    }
+
+    private fun installLiveValidation() {
+        val listener = object : DocumentListener {
+            override fun insertUpdate(event: DocumentEvent?) = refreshValidationState()
+            override fun removeUpdate(event: DocumentEvent?) = refreshValidationState()
+            override fun changedUpdate(event: DocumentEvent?) = refreshValidationState()
+        }
+        listOf(
+            nameField,
+            descriptionField,
+            httpSourcesField,
+            httpHostField,
+            httpPathField,
+            httpMethodsField,
+            httpStatusCodesField,
+            httpMimeTypesField,
+            httpDefaultLimitField,
+            webSocketListenerPortField,
+            webSocketDefaultLimitField,
+            comparisonLimitField,
+            comparisonIgnoreHeadersField,
+        ).forEach { it.document.addDocumentListener(listener) }
+        listOf(
+            typeSelector,
+            httpInScope,
+            httpHasResponse,
+            httpNewestFirst,
+            webSocketDirection,
+            webSocketNewestFirst,
+            comparisonPart,
+            comparisonEncoding,
+            comparisonVariations,
+        ).forEach { it.addActionListener { refreshValidationState() } }
+    }
+
+    private fun refreshValidationState() {
+        check(SwingUtilities.isEventDispatchThread()) { "workflow preset validation belongs to the EDT" }
+        publishValidationState(parsePreset())
+    }
+
+    private fun publishValidationState(preset: WorkflowPreset?) {
+        val valid = preset != null
+        validationText.updateContent(
+            if (valid) {
+                "Preset settings are valid. Saving stores settings only and does not read or execute traffic."
+            } else {
+                "Preset settings are invalid. Check required lengths, comma-separated values, numeric bounds, and the selected workflow type."
+            },
+        )
+        inputPreviewText.updateContent(
+            preset?.executionNeutralInputPreview()
+                ?: "Execution-neutral preview is available when the settings are valid; no traffic is read or executed.",
+        )
+        validationListener(valid)
     }
 
     private fun httpPanel(): JPanel = formPanel(
@@ -375,7 +488,15 @@ private fun setTriState(combo: JComboBox<String>, value: Boolean?) {
 private fun optionalText(raw: String): String? = raw.takeUnless(String::isEmpty)
 
 private fun parseList(raw: String): List<String>? {
+    require(raw.length <= MAX_WORKFLOW_PRESET_EDITOR_RAW_FIELD_CHARS)
     if (raw.isBlank()) return null
+    var delimiters = 0
+    raw.forEach { character ->
+        if (character == ',') {
+            delimiters++
+            require(delimiters < 32)
+        }
+    }
     return raw.split(',').map(String::trim).also { values ->
         require(values.isNotEmpty() && values.size <= 32 && values.all(String::isNotEmpty))
         require(values.none { value -> value.any(Char::isISOControl) })

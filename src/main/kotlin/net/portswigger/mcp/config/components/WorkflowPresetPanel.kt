@@ -8,6 +8,7 @@ import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
 import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetManagement
 import net.portswigger.mcp.presets.WorkflowPresetType
+import net.portswigger.mcp.presets.executionNeutralInputPreview
 import net.portswigger.mcp.presets.workflowPresetNameKey
 import java.awt.Dimension
 import java.util.concurrent.ArrayBlockingQueue
@@ -360,7 +361,8 @@ internal class WorkflowPresetPanel(
                 "No preset selected."
             } else {
                 val description = preset.description?.takeIf(String::isNotBlank)?.let { " Description: $it" }.orEmpty()
-                "Selected: ${preset.name}. Type: ${preset.definition.kind().displayName()}.$description Editing or deleting requires an explicit action; selection never executes traffic."
+                "Selected: ${preset.name}. Type: ${preset.definition.kind().displayName()}.$description " +
+                    "${preset.executionNeutralInputPreview()} Editing or deleting requires an explicit action."
             },
         )
         updateButtonState()
