@@ -378,6 +378,14 @@ class ClientSetupPanelTest {
                     DoctorRequestConfig("127.0.0.1", 9876, SENTINEL_TOKEN, DoctorListenerCode.RUNNING)
                 },
             )
+            assertEquals(
+                "No Connection Doctor check has run.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
+            assertEquals(
+                "No background setup action has run for Claude Desktop.",
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text,
+            )
             val button = panel.findNamed<JButton>("runConnectionDoctorButton")
             button.doClick()
             button.doClick()
@@ -389,7 +397,23 @@ class ClientSetupPanelTest {
         SwingUtilities.invokeAndWait {
             val result = panel.findNamed<WrappingText>("doctorResultText").text
             assertTrue(result.contains("rejected"))
+            assertEquals(
+                "Connection Doctor status updated.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
+            assertEquals(
+                "No background setup action has run for Claude Desktop.",
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text,
+            )
             panel.findNamed<JButton>("copyDoctorEvidenceButton").doClick()
+            assertEquals(
+                "Safe Connection Doctor evidence copied.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
+            assertEquals(
+                "No background setup action has run for Claude Desktop.",
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text,
+            )
             panel.cleanup()
         }
 
@@ -406,6 +430,134 @@ class ClientSetupPanelTest {
     }
 
     @Test
+    fun `Doctor status survives client selection installation and extraction updates`() {
+        mockkObject(Dialogs)
+        try {
+            val messages = CountDownLatch(2)
+            every { Dialogs.showMessageDialog(any(), any(), any()) } answers {
+                messages.countDown()
+                Unit
+            }
+            val installs = AtomicInteger()
+            val extractions = AtomicInteger()
+            lateinit var panel: ClientSetupPanel
+            SwingUtilities.invokeAndWait {
+                panel = createPanel(
+                    provider = provider {
+                        installs.incrementAndGet()
+                        null
+                    },
+                    prepareExtraction = {
+                        ProviderInstallOperation {
+                            assertFalse(SwingUtilities.isEventDispatchThread())
+                            extractions.incrementAndGet()
+                            null
+                        }
+                    },
+                )
+                panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+            }
+            assertTrue(awaitOnEdt {
+                panel.findNamed<WrappingText>("doctorStatusText").text ==
+                    "Connection Doctor status updated."
+            })
+
+            lateinit var doctorResult: String
+            lateinit var doctorStatus: String
+            SwingUtilities.invokeAndWait {
+                doctorResult = panel.findNamed<WrappingText>("doctorResultText").text
+                doctorStatus = panel.findNamed<WrappingText>("doctorStatusText").text
+                val selector = panel.findNamed<JComboBox<*>>("clientSetupSelector")
+                for (index in 0 until selector.itemCount) {
+                    selector.selectedIndex = index
+                    val selected = selector.getItemAt(index) as ClientSetupDefinition
+                    assertEquals(doctorResult, panel.findNamed<WrappingText>("doctorResultText").text)
+                    assertEquals(doctorStatus, panel.findNamed<WrappingText>("doctorStatusText").text)
+                    assertEquals(
+                        "No background setup action has run for ${selected.displayName}.",
+                        panel.findNamed<WrappingText>("clientSetupActionStatus").text,
+                    )
+                    assertTrue(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+                }
+                selector.selectedIndex = 0
+                panel.findNamed<JButton>("installClaudeDesktopButton").doClick()
+            }
+            assertTrue(awaitOnEdt {
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text
+                    .startsWith("Claude Desktop installation completed")
+            })
+            SwingUtilities.invokeAndWait {
+                assertEquals(doctorResult, panel.findNamed<WrappingText>("doctorResultText").text)
+                assertEquals(doctorStatus, panel.findNamed<WrappingText>("doctorStatusText").text)
+                panel.findNamed<JButton>("extractProxyJarButton").doClick()
+            }
+            assertTrue(awaitOnEdt {
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text ==
+                    "Proxy jar extracted successfully."
+            })
+            assertTrue(messages.await(5, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait {
+                assertEquals(doctorResult, panel.findNamed<WrappingText>("doctorResultText").text)
+                assertEquals(doctorStatus, panel.findNamed<WrappingText>("doctorStatusText").text)
+                assertTrue(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+                panel.cleanup()
+            }
+            assertEquals(1, installs.get())
+            assertEquals(1, extractions.get())
+        } finally {
+            unmockkObject(Dialogs)
+        }
+    }
+
+    @Test
+    fun `provider failures remain in setup status without rewriting Doctor status`() {
+        mockkObject(Dialogs)
+        try {
+            val published = CountDownLatch(1)
+            every { Dialogs.showMessageDialog(any(), any(), any()) } answers {
+                published.countDown()
+                Unit
+            }
+            val privateFailure = "$SENTINEL_TOKEN /Users/private C:\\private"
+            lateinit var panel: ClientSetupPanel
+            SwingUtilities.invokeAndWait {
+                panel = createPanel(
+                    provider = provider { throw IllegalStateException(privateFailure) },
+                )
+                panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+            }
+            assertTrue(awaitOnEdt {
+                panel.findNamed<WrappingText>("doctorStatusText").text ==
+                    "Connection Doctor status updated."
+            })
+
+            lateinit var doctorResult: String
+            lateinit var doctorStatus: String
+            SwingUtilities.invokeAndWait {
+                doctorResult = panel.findNamed<WrappingText>("doctorResultText").text
+                doctorStatus = panel.findNamed<WrappingText>("doctorStatusText").text
+                panel.findNamed<JButton>("installClaudeDesktopButton").doClick()
+            }
+            assertTrue(published.await(5, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait {
+                val setupStatus = panel.findNamed<WrappingText>("clientSetupActionStatus").text
+                assertEquals("Claude Desktop installation failed: IllegalStateException", setupStatus)
+                assertEquals(doctorResult, panel.findNamed<WrappingText>("doctorResultText").text)
+                assertEquals(doctorStatus, panel.findNamed<WrappingText>("doctorStatusText").text)
+                assertTrue(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+                listOf(SENTINEL_TOKEN, "/Users/private", "C:\\private").forEach { forbidden ->
+                    assertFalse(setupStatus.contains(forbidden))
+                    assertFalse(doctorResult.contains(forbidden))
+                    assertFalse(doctorStatus.contains(forbidden))
+                }
+                panel.cleanup()
+            }
+        } finally {
+            unmockkObject(Dialogs)
+        }
+    }
+
+    @Test
     fun `endpoint changes invalidate published Doctor evidence without exposing context`() {
         val copied = AtomicReference<String?>()
         lateinit var panel: ClientSetupPanel
@@ -413,6 +565,10 @@ class ClientSetupPanelTest {
             panel = createPanel(clipboard = ClientSetupClipboard(copied::set))
             panel.markDoctorResultStale(DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED)
             assertTrue(panel.findNamed<WrappingText>("doctorResultText").text.contains("has not run"))
+            assertEquals(
+                "No Connection Doctor check has run.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
             assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
             panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
         }
@@ -422,19 +578,37 @@ class ClientSetupPanelTest {
 
         SwingUtilities.invokeAndWait {
             val copyEvidence = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+            val doctorStatus = panel.findNamed<WrappingText>("doctorStatusText")
+            val doctorStatusUpdates = AtomicInteger()
+            doctorStatus.accessibleContext.addPropertyChangeListener { event ->
+                if (event.propertyName == AccessibleContext.ACCESSIBLE_NAME_PROPERTY) {
+                    doctorStatusUpdates.incrementAndGet()
+                }
+            }
             assertTrue(copyEvidence.isEnabled)
+            assertEquals("Connection Doctor status updated.", doctorStatus.text)
             copyEvidence.doClick()
+            assertEquals("Safe Connection Doctor evidence copied.", doctorStatus.text)
             assertNotNull(copied.get())
             copied.set(null)
+            doctorStatusUpdates.set(0)
 
             panel.markEndpointStale()
+            panel.markDoctorResultStale(DoctorResultStaleReason.ENDPOINT_CHANGED)
 
             val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            val staleStatus = doctorStatus.text
             assertTrue(staleResult.contains("local-admission check no longer applies"))
             assertTrue(staleResult.contains("displayed endpoint changed"))
             assertTrue(staleResult.contains("does not prove that an external client works"))
+            assertEquals(
+                "Safe evidence copying is unavailable until a new local-admission check runs.",
+                staleStatus,
+            )
+            assertEquals(1, doctorStatusUpdates.get())
             listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/", "C:\\").forEach { forbidden ->
                 assertFalse(staleResult.contains(forbidden))
+                assertFalse(staleStatus.contains(forbidden))
             }
             assertFalse(copyEvidence.isEnabled)
             copyEvidence.doClick()
@@ -443,6 +617,7 @@ class ClientSetupPanelTest {
         }
         assertTrue(awaitOnEdt {
             panel.findNamed<WrappingText>("doctorResultText").text.contains("admitted") &&
+                panel.findNamed<WrappingText>("doctorStatusText").text == "Connection Doctor status updated." &&
                 panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled
         })
         SwingUtilities.invokeAndWait { panel.cleanup() }
@@ -474,10 +649,18 @@ class ClientSetupPanelTest {
         assertTrue(started.await(5, TimeUnit.SECONDS))
 
         SwingUtilities.invokeAndWait {
+            assertEquals(
+                "Connection Doctor check is running.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
             panel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
             val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
             assertTrue(staleResult.contains("local listener state changed"))
             assertTrue(staleResult.contains("Run a new check when available"))
+            assertEquals(
+                "Safe evidence copying is unavailable until a new local-admission check runs.",
+                panel.findNamed<WrappingText>("doctorStatusText").text,
+            )
             assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
         }
 
@@ -490,7 +673,11 @@ class ClientSetupPanelTest {
             assertFalse(staleResult.contains("admitted"))
             assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
             assertTrue(
-                panel.findNamed<WrappingText>("clientSetupActionStatus").text.contains("result discarded"),
+                panel.findNamed<WrappingText>("doctorStatusText").text.contains("result discarded"),
+            )
+            assertEquals(
+                "No background setup action has run for Claude Desktop.",
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text,
             )
             assertNull(copied.get())
             panel.cleanup()
@@ -585,21 +772,38 @@ class ClientSetupPanelTest {
                     .contains(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, InputEvent.SHIFT_DOWN_MASK)),
             )
             val runDoctor = panel.findNamed<JButton>("runConnectionDoctorButton")
-            assertNotNull(
-                runDoctor.accessibleContext.accessibleRelationSet
-                    .get(AccessibleRelation.CONTROLLER_FOR),
-            )
-            val copyEvidenceDescription = panel.findNamed<JButton>("copyDoctorEvidenceButton")
-                .accessibleContext.accessibleDescription
+            val copyEvidence = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+            val doctorResult = panel.findNamed<WrappingText>("doctorResultText")
+            val doctorStatus = panel.findNamed<WrappingText>("doctorStatusText")
+            val actionStatus = panel.findNamed<WrappingText>("clientSetupActionStatus")
+            assertTrue(runDoctor.controls(doctorResult))
+            assertTrue(runDoctor.controls(doctorStatus))
+            assertTrue(copyEvidence.controls(doctorStatus))
+            assertFalse(runDoctor.controls(actionStatus))
+            assertFalse(copyEvidence.controls(actionStatus))
+            assertTrue(doctorResult.isControlledBy(runDoctor))
+            assertTrue(doctorStatus.isControlledBy(runDoctor))
+            assertTrue(doctorStatus.isControlledBy(copyEvidence))
+            assertFalse(actionStatus.isControlledBy(runDoctor))
+            assertFalse(actionStatus.isControlledBy(copyEvidence))
+            val copyEvidenceDescription = copyEvidence.accessibleContext.accessibleDescription
             assertTrue(copyEvidenceDescription.contains("current endpoint"))
             assertTrue(copyEvidenceDescription.contains("local-admission-only"))
             assertTrue(copyEvidenceDescription.contains("external client"))
             val install = panel.findNamed<JButton>("installClaudeDesktopButton")
-            assertNotNull(
-                install.accessibleContext.accessibleRelationSet
-                    .get(AccessibleRelation.CONTROLLER_FOR),
-            )
-            assertTrue(panel.findNamed<WrappingText>("clientSetupActionStatus").isVisible)
+            val extract = panel.findNamed<JButton>("extractProxyJarButton")
+            assertTrue(install.controls(actionStatus))
+            assertTrue(extract.controls(actionStatus))
+            assertFalse(install.controls(doctorStatus))
+            assertFalse(extract.controls(doctorStatus))
+            assertTrue(actionStatus.isControlledBy(install))
+            assertTrue(actionStatus.isControlledBy(extract))
+            assertFalse(doctorStatus.isControlledBy(install))
+            assertFalse(doctorStatus.isControlledBy(extract))
+            assertTrue(actionStatus.isVisible)
+            assertTrue(doctorStatus.isVisible)
+            assertTrue(doctorStatus.accessibleContext.accessibleName.isNotBlank())
+            assertTrue(doctorStatus.accessibleContext.accessibleDescription.isNotBlank())
             panel.descendants().filterIsInstance<JButton>().filter { it.name != null }.forEach { button ->
                 assertTrue(button.isFocusPainted)
                 assertTrue(button.accessibleContext.accessibleName.isNotBlank())
@@ -675,6 +879,18 @@ class ClientSetupPanelTest {
         assertTrue(matches.size <= 1, "duplicate component name: $name")
         return matches.singleOrNull()
     }
+
+    private fun Component.controls(target: Component): Boolean =
+        accessibleContext.accessibleRelationSet
+            .get(AccessibleRelation.CONTROLLER_FOR)
+            ?.target
+            ?.any { it === target } == true
+
+    private fun Component.isControlledBy(controller: Component): Boolean =
+        accessibleContext.accessibleRelationSet
+            .get(AccessibleRelation.CONTROLLED_BY)
+            ?.target
+            ?.any { it === controller } == true
 
     private fun Container.descendants(): Sequence<Component> = sequence {
         components.forEach { component ->

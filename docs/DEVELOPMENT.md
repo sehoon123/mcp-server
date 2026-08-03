@@ -374,7 +374,9 @@ perform hidden side effects.
   shutdown during extension unload so late callbacks cannot publish into disposed UI. Fence each Doctor run with an
   opaque EDT-owned context generation, rotate it after endpoint edits, listener-state transitions, or credential-rotation
   attempts, and publish completion only while the captured generation is still current; the fence must retain no context
-  values.
+  values. Keep `doctorStatusText` independent from installation and proxy-extraction status: client selection and provider
+  actions must not rewrite Doctor result/status, while a stale transition must disable evidence copying and publish only
+  fixed, value-free Doctor status text.
 - `WorkflowPresetPanel` owns a separate single-worker bounded queue. Editor and confirmation snapshots stay on the EDT;
   project observation and persistence run off the EDT. Unload cancels and boundedly drains the worker before server
   shutdown, while every cleanup path suppresses late publication.

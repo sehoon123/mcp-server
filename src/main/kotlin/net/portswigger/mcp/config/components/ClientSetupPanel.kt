@@ -64,6 +64,9 @@ private const val COPY_CONFIGURATION_DESCRIPTION =
     "Copies exactly the visible secret-free configuration preview"
 private const val REFRESH_AND_COPY_CONFIGURATION_DESCRIPTION =
     "Refreshes from the displayed numeric loopback host and port, then copies the visible secret-free configuration"
+private const val INITIAL_DOCTOR_STATUS = "No Connection Doctor check has run."
+private const val STALE_DOCTOR_STATUS =
+    "Safe evidence copying is unavailable until a new local-admission check runs."
 
 internal enum class DoctorResultStaleReason {
     ENDPOINT_CHANGED,
@@ -250,6 +253,13 @@ internal class ClientSetupPanel(
         name = "doctorResultText"
         accessibleContext.accessibleDescription = "Latest Connection Doctor result"
     }
+    private val doctorStatusText = WrappingText(
+        INITIAL_DOCTOR_STATUS,
+        WrappingTextStyle.LABEL_MEDIUM,
+    ).apply {
+        name = "doctorStatusText"
+        accessibleContext.accessibleDescription = "Latest Connection Doctor check or evidence-copy status"
+    }
     private val previewStatusText = WrappingText(
         "No preview action has run.",
         WrappingTextStyle.LABEL_MEDIUM,
@@ -262,7 +272,7 @@ internal class ClientSetupPanel(
         WrappingTextStyle.LABEL_MEDIUM,
     ).apply {
         name = "clientSetupActionStatus"
-        accessibleContext.accessibleDescription = "Latest installation, extraction, or Connection Doctor status"
+        accessibleContext.accessibleDescription = "Latest client installation or proxy extraction status"
     }
 
     init {
@@ -314,6 +324,7 @@ internal class ClientSetupPanel(
         if (doctorHasStarted) {
             val staleSummary = reason.summary()
             if (doctorResultText.text != staleSummary) doctorResultText.updateContent(staleSummary)
+            if (doctorStatusText.text != STALE_DOCTOR_STATUS) showDoctorStatus(STALE_DOCTOR_STATUS)
         }
         updateMutationButtonState()
     }
@@ -362,19 +373,23 @@ internal class ClientSetupPanel(
         doctorResultText.accessibleContext.accessibleRelationSet.add(
             AccessibleRelation(AccessibleRelation.CONTROLLED_BY, runDoctorButton),
         )
-        val backgroundActionButtons = arrayOf(
-            installClaudeButton,
-            extractProxyButton,
-            runDoctorButton,
-            copyEvidenceButton,
-        )
-        backgroundActionButtons.forEach { button ->
+        val providerActionButtons = arrayOf(installClaudeButton, extractProxyButton)
+        providerActionButtons.forEach { button ->
             button.accessibleContext.accessibleRelationSet.add(
                 AccessibleRelation(AccessibleRelation.CONTROLLER_FOR, actionStatusText),
             )
         }
         actionStatusText.accessibleContext.accessibleRelationSet.add(
-            AccessibleRelation(AccessibleRelation.CONTROLLED_BY, backgroundActionButtons),
+            AccessibleRelation(AccessibleRelation.CONTROLLED_BY, providerActionButtons),
+        )
+        val doctorActionButtons = arrayOf(runDoctorButton, copyEvidenceButton)
+        doctorActionButtons.forEach { button ->
+            button.accessibleContext.accessibleRelationSet.add(
+                AccessibleRelation(AccessibleRelation.CONTROLLER_FOR, doctorStatusText),
+            )
+        }
+        doctorStatusText.accessibleContext.accessibleRelationSet.add(
+            AccessibleRelation(AccessibleRelation.CONTROLLED_BY, doctorActionButtons),
         )
     }
 
@@ -429,6 +444,8 @@ internal class ClientSetupPanel(
             add(AdaptiveButtonPanel(listOf(extractProxyButton)).apply { alignmentX = LEFT_ALIGNMENT })
         }
 
+        add(Box.createVerticalStrut(Design.Spacing.SM))
+        add(actionStatusText)
         add(Box.createVerticalStrut(Design.Spacing.LG))
         add(Design.createSectionLabel("Connection Doctor"))
         add(Box.createVerticalStrut(Design.Spacing.SM))
@@ -444,7 +461,7 @@ internal class ClientSetupPanel(
         add(Box.createVerticalStrut(Design.Spacing.SM))
         add(doctorResultText)
         add(Box.createVerticalStrut(Design.Spacing.SM))
-        add(actionStatusText)
+        add(doctorStatusText)
     }
 
     private fun selectedDefinition(): ClientSetupDefinition =
@@ -631,6 +648,8 @@ internal class ClientSetupPanel(
                 showActionStatus(message)
                 Dialogs.showMessageDialog(parentComponent, message, ERROR_MESSAGE)
             },
+            rejectionStatus = "Background setup actions are unavailable.",
+            statusSink = ::showActionStatus,
         )
     }
 
@@ -657,6 +676,7 @@ internal class ClientSetupPanel(
         doctorEvidence = null
         copyEvidenceButton.isEnabled = false
         doctorResultText.updateContent("Connection Doctor is running a bounded local check...")
+        showDoctorStatus("Connection Doctor check is running.")
         setActionInProgress(true)
         val submitted = submitBackground(
             task = { connectionDoctor.run(snapshot) },
@@ -670,6 +690,8 @@ internal class ClientSetupPanel(
                     contextGeneration,
                 )
             },
+            rejectionStatus = "Connection Doctor could not start.",
+            statusSink = ::showDoctorStatus,
         )
         if (!submitted && !closed.get()) {
             doctorHasStarted = false
@@ -685,7 +707,7 @@ internal class ClientSetupPanel(
         if (doctorContextGeneration !== contextGeneration) {
             doctorEvidence = null
             updateMutationButtonState()
-            showActionStatus("Connection Doctor result discarded because its local context changed.")
+            showDoctorStatus("Connection Doctor result discarded because its local context changed.")
             return
         }
         publishDoctorReport(report)
@@ -697,22 +719,26 @@ internal class ClientSetupPanel(
         doctorEvidence = formatDoctorEvidence(report)
         doctorResultText.updateContent(formatDoctorSummary(report))
         updateMutationButtonState()
-        showActionStatus("Connection Doctor status updated.")
+        showDoctorStatus("Connection Doctor status updated.")
     }
 
     private fun copyDoctorEvidence() {
         check(SwingUtilities.isEventDispatchThread()) { "Doctor evidence copy belongs to the EDT" }
         val evidence = doctorEvidence ?: return
         if (closed.get() || actionInProgress) return
-        copyControlled(evidence, "Safe Connection Doctor evidence copied.")
+        copyControlled(evidence, "Safe Connection Doctor evidence copied.", ::showDoctorStatus)
     }
 
-    private fun copyControlled(value: String, successText: String) {
+    private fun copyControlled(
+        value: String,
+        successText: String,
+        statusSink: (String) -> Unit,
+    ) {
         try {
             clipboard.copy(value)
-            showActionStatus(successText)
+            statusSink(successText)
         } catch (_: Exception) {
-            showActionStatus("Clipboard copy is unavailable.")
+            statusSink("Clipboard copy is unavailable.")
         }
     }
 
@@ -720,6 +746,8 @@ internal class ClientSetupPanel(
         task: () -> T,
         onSuccess: (T) -> Unit,
         onFailure: (Throwable) -> Unit,
+        rejectionStatus: String,
+        statusSink: (String) -> Unit,
     ): Boolean = try {
         activeFuture = actionExecutor.submit {
             val outcome = runCatching(task)
@@ -733,7 +761,7 @@ internal class ClientSetupPanel(
         true
     } catch (_: RejectedExecutionException) {
         setActionInProgress(false)
-        if (!closed.get()) showActionStatus("Background setup actions are unavailable.")
+        if (!closed.get()) statusSink(rejectionStatus)
         false
     }
 
@@ -749,6 +777,10 @@ internal class ClientSetupPanel(
 
     private fun showActionStatus(content: String) {
         actionStatusText.updateContent(content)
+    }
+
+    private fun showDoctorStatus(content: String) {
+        doctorStatusText.updateContent(content)
     }
 
     private fun setActionInProgress(value: Boolean) {

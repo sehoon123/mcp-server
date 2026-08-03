@@ -663,9 +663,10 @@ not perform a full MCP handshake and cannot prove that a third-party client's co
 evidence contains only a fixed local-admission scope marker and categorical listener/probe results—never the endpoint,
 bearer, response, exception, project data, or local path. The panel invalidates a displayed result and disables evidence
 copying after the displayed endpoint changes, the listener state changes, or a credential rotation is attempted; run a
-new check after the local context is current. Running the check intentionally increments the local request counter and
-updates last-activity and peak-in-flight metrics; a rejected credential also increments the authentication-rejection
-counter.
+new check after the local context is current. Doctor check and evidence-copy status is reported separately from client
+installation and proxy-extraction status, so selecting another client does not rewrite the current Doctor result or
+status. Running the check intentionally increments the local request counter and updates last-activity and peak-in-flight
+metrics; a rejected credential also increments the authentication-rejection counter.
 
 The following examples are alternatives. Configure only the clients you actually use, and verify the example against
 the documentation for your installed client version before applying it.
