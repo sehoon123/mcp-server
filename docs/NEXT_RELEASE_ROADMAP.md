@@ -556,9 +556,11 @@ and avoids duplicate HTTP-body access and resource-size byte-array copies. Detac
 all-slots-first, concurrent, total-deadline path, and the lifecycle worker is daemonized so an interrupt-insensitive
 third-party startup call cannot retain the process after bounded shutdown returns. A follow-up metadata-index refinement
 also reuses fingerprints already computed for retained slots when those slots serve as rebuild/append anchors. It
-continues to read omitted-range anchors and every warm-validation anchor from the current source. These are code-level
-work/cardinality changes, not live Burp latency or throughput evidence; the 10k/50k/100k gate and prohibition on Montoya parallelization
-and performance claims remain unchanged.
+continues to read omitted-range anchors and every warm-validation anchor from the current source. A subsequent internal
+consolidation removes orphaned per-source HTTP/Site Map read DTOs and implementations; production tool and resource reads
+remain exclusively behind `HttpMessageReadService` and `HttpMessageResolver`, while the retained Site Map file contains
+identity helpers only. These are code-level work/cardinality and maintenance changes, not live Burp latency or throughput
+evidence; the 10k/50k/100k gate and prohibition on Montoya parallelization and performance claims remain unchanged.
 
 ### v4.12.0 milestone 3 correlation gate
 

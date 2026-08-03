@@ -465,7 +465,7 @@ class HttpMessageSearchTest {
     }
 
     @Test
-    fun `Site Map search returns a project scoped ID that supports bounded detail reads`() = runBlocking {
+    fun `Site Map search returns a project scoped ID that supports bounded canonical reads`() = runBlocking {
         val fixture = siteMapItem(
             method = "POST",
             url = "https://example.test/site-map",
@@ -481,66 +481,55 @@ class HttpMessageSearchTest {
             )
         )
         val found = search.items.single()
+        val projectId = assertNotNull(search.projectId)
+        val reader = HttpMessageReadService(api, config)
         assertEquals(HttpMessageSource.SITE_MAP, found.ref.source)
         assertTrue(found.ref.id.matches(Regex("sitemap_0_[0-9a-f]{32}")))
 
-        val detail = service.readSiteMapMessage(
-            GetSitemapMessageById(
-                projectId = assertNotNull(search.projectId),
-                id = found.ref.id,
-                part = "response_body",
-                offset = 1,
-                limit = 3,
-            )
-        )
-
-        assertEquals(SiteMapReadStatus.OK, detail.status)
-        assertEquals("bcd", detail.content?.data)
-        assertEquals(5, detail.content?.totalBytes)
-        assertEquals(4, detail.content?.nextOffsetBytes)
-        assertEquals(found.ref.id, detail.metadata?.id)
-
-        val unified = HttpMessageReadService(api, config).read(
+        val detail = reader.read(
             GetHttpMessage(
-                projectId = assertNotNull(search.projectId),
+                projectId = projectId,
                 ref = found.ref,
                 part = "response_body",
                 offset = 1,
                 limit = 3,
             )
         )
-        assertEquals(HttpMessageReadStatus.OK, unified.status)
-        assertEquals("bcd", unified.content?.data)
-        assertEquals(true, unified.metadata?.inScope)
-        assertEquals(found.ref, unified.metadata?.ref)
+        assertEquals(HttpMessageReadStatus.OK, detail.status)
+        assertEquals("bcd", detail.content?.data)
+        assertEquals(5, detail.content?.totalBytes)
+        assertEquals(4, detail.content?.nextOffsetBytes)
+        assertEquals(true, detail.metadata?.inScope)
+        assertEquals(found.ref, detail.metadata?.ref)
 
-        val invalidOffset = service.readSiteMapMessage(
-            GetSitemapMessageById(
-                projectId = assertNotNull(search.projectId),
-                id = found.ref.id,
+        val invalidOffset = reader.read(
+            GetHttpMessage(
+                projectId = projectId,
+                ref = found.ref,
                 part = "response_body",
                 offset = 6,
             )
         )
-        assertEquals(SiteMapReadStatus.INVALID_ARGUMENT, invalidOffset.status)
+        assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, invalidOffset.status)
         assertTrue(invalidOffset.error.orEmpty().contains("totalBytes"))
     }
 
     @Test
-    fun `Site Map IDs fail closed after a project or indexed item changes`() = runBlocking {
+    fun `Site Map references fail closed after a project or indexed item changes`() = runBlocking {
         val first = siteMapItem("GET", "https://example.test/first", 200)
         siteMapItems += first.item
         val search = service.search(SearchHttpMessages(sources = listOf(HttpMessageSource.SITE_MAP)))
-        val id = search.items.single().ref.id
+        val ref = search.items.single().ref
+        val reader = HttpMessageReadService(api, config)
 
         every { project.id() } returns "other-project"
-        val wrongProject = service.readSiteMapMessage(GetSitemapMessageById("project-123", id))
-        assertEquals(SiteMapReadStatus.PROJECT_MISMATCH, wrongProject.status)
+        val wrongProject = reader.read(GetHttpMessage("project-123", ref))
+        assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, wrongProject.status)
 
         every { project.id() } returns "project-123"
         siteMapItems[0] = siteMapItem("GET", "https://example.test/replaced", 200).item
-        val stale = service.readSiteMapMessage(GetSitemapMessageById("project-123", id))
-        assertEquals(SiteMapReadStatus.NOT_FOUND, stale.status)
+        val stale = reader.read(GetHttpMessage("project-123", ref))
+        assertEquals(HttpMessageReadStatus.NOT_FOUND, stale.status)
     }
 
     @Test

@@ -811,99 +811,6 @@ internal class HttpMessageSearchService(
         }
     }
 
-    suspend fun readSiteMapMessage(input: GetSitemapMessageById): SiteMapMessageReadResult {
-        val safeProjectId = input.projectId.take(256)
-        val safeId = input.id.take(128)
-        val safePart = input.part?.take(64) ?: "metadata"
-        if (input.projectId.length > 256 || input.id.length > 128 || (input.part?.length ?: 0) > 64) {
-            return siteMapReadError(
-                SiteMapReadStatus.INVALID_ARGUMENT,
-                safeProjectId,
-                safeId,
-                safePart,
-                "projectId, id, or part is too long",
-            )
-        }
-
-        val part: String
-        val offset: Int
-        val limit: Int
-        val encoding: String
-        try {
-            part = normalizeHttpPart(input.part)
-            offset = normalizeHistoryOffset(input.offset)
-            limit = normalizeHistoryLimit(input.limit)
-            encoding = normalizeHistoryEncoding(input.encoding)
-        } catch (e: IllegalArgumentException) {
-            return siteMapReadError(
-                SiteMapReadStatus.INVALID_ARGUMENT,
-                safeProjectId,
-                safeId,
-                safePart,
-                e.message ?: "invalid read arguments",
-            )
-        }
-
-        val parsedId = parseSiteMapId(input.id) ?: return siteMapReadError(
-            SiteMapReadStatus.INVALID_ID,
-            input.projectId,
-            input.id,
-            part,
-            "id must be a Site Map ID returned by search_http_messages",
-        )
-
-        if (!checkAccess(HttpMessageSource.SITE_MAP)) {
-            return siteMapReadError(
-                SiteMapReadStatus.ACCESS_DENIED,
-                input.projectId,
-                input.id,
-                part,
-                "Site Map access denied by Burp Suite",
-            )
-        }
-
-        val projectId = currentProjectId()
-        if (input.projectId != projectId) {
-            return siteMapReadError(
-                SiteMapReadStatus.PROJECT_MISMATCH,
-                projectId,
-                input.id,
-                part,
-                "ID belongs to a different Burp project",
-            )
-        }
-
-        val items = api.siteMap().requestResponses()
-        val item = items.getOrNull(parsedId.index) ?: return siteMapReadError(
-            SiteMapReadStatus.NOT_FOUND,
-            projectId,
-            input.id,
-            part,
-            "Site Map item was removed or is no longer at its original position",
-        )
-        if (stableSiteMapId(projectId, parsedId.index, item) != input.id) {
-            return siteMapReadError(
-                SiteMapReadStatus.NOT_FOUND,
-                projectId,
-                input.id,
-                part,
-                "Site Map item changed after the ID was issued",
-            )
-        }
-
-        return try {
-            item.readSiteMapPart(projectId, input.id, part, offset, limit, encoding)
-        } catch (e: IllegalArgumentException) {
-            siteMapReadError(
-                SiteMapReadStatus.INVALID_ARGUMENT,
-                projectId,
-                input.id,
-                part,
-                e.message ?: "invalid read arguments",
-            )
-        }
-    }
-
     private suspend fun checkAccess(source: HttpMessageSource): Boolean {
         val accessType = when (source) {
             HttpMessageSource.PROXY -> DataAccessType.HTTP_HISTORY
@@ -1565,20 +1472,6 @@ private fun HttpMessageSearchService.searchError(
     hasMore = false,
     nextCursor = null,
     error = message.take(512),
-)
-
-private fun siteMapReadError(
-    status: SiteMapReadStatus,
-    projectId: String,
-    id: String,
-    part: String,
-    message: String,
-) = SiteMapMessageReadResult(
-    status = status,
-    projectId = projectId,
-    id = id,
-    part = part,
-    error = message,
 )
 
 private fun HttpMessageSource.displayName(): String = when (this) {
