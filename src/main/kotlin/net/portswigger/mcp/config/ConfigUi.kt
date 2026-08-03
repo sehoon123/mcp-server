@@ -64,7 +64,12 @@ class ConfigUi internal constructor(
     )
 
     private val panel = JPanel(BorderLayout())
-    private val extensionVersion = runCatching { diagnosticsProvider().serverVersion }.getOrDefault("unknown")
+    private val initialDiagnosticsUiState = runCatching { diagnosticsProvider() }
+        .getOrNull()
+        ?.let { snapshot -> snapshot.serverVersion to doctorListenerCode(snapshot.state) }
+        ?: ("unknown" to DoctorListenerCode.UNAVAILABLE)
+    private val extensionVersion = initialDiagnosticsUiState.first
+    private var lastDoctorListenerCode = initialDiagnosticsUiState.second
     val component: JComponent get() = panel
 
     private val listenerHandles = CopyOnWriteArrayList<ListenerHandle>()
@@ -86,7 +91,13 @@ class ConfigUi internal constructor(
 
         validationErrorLabel.isVisible = false
         config.enabled = enabled
-        toggleListener?.invoke(enabled)
+        try {
+            if (::clientSetupPanel.isInitialized) {
+                clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+            }
+        } finally {
+            toggleListener?.invoke(enabled)
+        }
     }
     private val validationErrorLabel = WarningLabel()
     private val hostField = JTextField(15).apply { name = "serverHostField" }
@@ -142,6 +153,13 @@ class ConfigUi internal constructor(
             hostField = hostField,
             portField = portField,
             reinstallNotice = reinstallNotice,
+            onBearerTokenRotationAttempted = {
+                if (::clientSetupPanel.isInitialized) {
+                    clientSetupPanel.markDoctorResultStale(
+                        DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED,
+                    )
+                }
+            },
         )
 
         autoApproveTargetsPanel = AutoApproveTargetsPanel(config = config)
@@ -337,6 +355,14 @@ class ConfigUi internal constructor(
         CoroutineScope(Dispatchers.Swing).launch {
             suppressToggleEvents = true
 
+            val nextDoctorListenerCode = state.toDoctorListenerCode()
+            if (nextDoctorListenerCode != lastDoctorListenerCode) {
+                lastDoctorListenerCode = nextDoctorListenerCode
+                if (::clientSetupPanel.isInitialized) {
+                    clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+                }
+            }
+
             val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
             if (::advancedOptionsPanel.isInitialized) {
                 advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
@@ -455,6 +481,14 @@ class ConfigUi internal constructor(
         val columnsPanel = ResponsiveColumnsPanel(leftPanel, rightPanel)
         panel.add(columnsPanel, BorderLayout.CENTER)
     }
+}
+
+private fun ServerState.toDoctorListenerCode(): DoctorListenerCode = when (this) {
+    ServerState.Starting -> DoctorListenerCode.STARTING
+    ServerState.Running -> DoctorListenerCode.RUNNING
+    ServerState.Stopping -> DoctorListenerCode.STOPPING
+    ServerState.Stopped -> DoctorListenerCode.STOPPED
+    is ServerState.Failed -> DoctorListenerCode.FAILED
 }
 
 internal fun formatMcpVersionLabel(version: String): String =

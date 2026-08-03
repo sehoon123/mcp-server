@@ -281,8 +281,101 @@ class ClientSetupPanelTest {
         val evidence = copied.get()
         assertNotNull(evidence)
         assertTrue(evidence.contains("CREDENTIAL_REJECTED"))
+        assertTrue(evidence.lines().contains("Scope: LOCAL_ADMISSION_ONLY EXTERNAL_CLIENT_NOT_TESTED"))
         listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/").forEach { forbidden ->
             assertFalse(evidence.contains(forbidden))
+        }
+    }
+
+    @Test
+    fun `endpoint changes invalidate published Doctor evidence without exposing context`() {
+        val copied = AtomicReference<String?>()
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(clipboard = ClientSetupClipboard(copied::set))
+            panel.markDoctorResultStale(DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED)
+            assertTrue(panel.findNamed<WrappingText>("doctorResultText").text.contains("has not run"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(awaitOnEdt {
+            panel.findNamed<WrappingText>("doctorResultText").text.contains("admitted")
+        })
+
+        SwingUtilities.invokeAndWait {
+            val copyEvidence = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+            assertTrue(copyEvidence.isEnabled)
+            copyEvidence.doClick()
+            assertNotNull(copied.get())
+            copied.set(null)
+
+            panel.markEndpointStale()
+
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local-admission check no longer applies"))
+            assertTrue(staleResult.contains("displayed endpoint changed"))
+            assertTrue(staleResult.contains("does not prove that an external client works"))
+            listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/", "C:\\").forEach { forbidden ->
+                assertFalse(staleResult.contains(forbidden))
+            }
+            assertFalse(copyEvidence.isEnabled)
+            copyEvidence.doClick()
+            assertNull(copied.get())
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(awaitOnEdt {
+            panel.findNamed<WrappingText>("doctorResultText").text.contains("admitted") &&
+                panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled
+        })
+        SwingUtilities.invokeAndWait { panel.cleanup() }
+    }
+
+    @Test
+    fun `context generation fences an in-flight Doctor completion`() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val copied = AtomicReference<String?>()
+        val doctor = ConnectionDoctor(DoctorExchange {
+            started.countDown()
+            try {
+                release.await(5, TimeUnit.SECONDS)
+                400
+            } finally {
+                completed.countDown()
+            }
+        })
+        lateinit var panel: ClientSetupPanel
+        SwingUtilities.invokeAndWait {
+            panel = createPanel(
+                doctor = doctor,
+                clipboard = ClientSetupClipboard(copied::set),
+            )
+            panel.findNamed<JButton>("runConnectionDoctorButton").doClick()
+        }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+
+        SwingUtilities.invokeAndWait {
+            panel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local listener state changed"))
+            assertTrue(staleResult.contains("Run a new check when available"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+        }
+
+        release.countDown()
+        assertTrue(completed.await(5, TimeUnit.SECONDS))
+        assertTrue(awaitOnEdt { panel.findNamed<JButton>("runConnectionDoctorButton").isEnabled })
+        SwingUtilities.invokeAndWait {
+            val staleResult = panel.findNamed<WrappingText>("doctorResultText").text
+            assertTrue(staleResult.contains("local listener state changed"))
+            assertFalse(staleResult.contains("admitted"))
+            assertFalse(panel.findNamed<JButton>("copyDoctorEvidenceButton").isEnabled)
+            assertTrue(
+                panel.findNamed<WrappingText>("clientSetupActionStatus").text.contains("result discarded"),
+            )
+            assertNull(copied.get())
+            panel.cleanup()
         }
     }
 
@@ -378,6 +471,11 @@ class ClientSetupPanelTest {
                 runDoctor.accessibleContext.accessibleRelationSet
                     .get(AccessibleRelation.CONTROLLER_FOR),
             )
+            val copyEvidenceDescription = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+                .accessibleContext.accessibleDescription
+            assertTrue(copyEvidenceDescription.contains("current endpoint"))
+            assertTrue(copyEvidenceDescription.contains("local-admission-only"))
+            assertTrue(copyEvidenceDescription.contains("external client"))
             val install = panel.findNamed<JButton>("installClaudeDesktopButton")
             assertNotNull(
                 install.accessibleContext.accessibleRelationSet

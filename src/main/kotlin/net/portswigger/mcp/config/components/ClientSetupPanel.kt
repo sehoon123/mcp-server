@@ -59,6 +59,22 @@ internal fun interface ClientSetupClipboard {
 
 private const val SETUP_TEXT_FALLBACK_WIDTH = 480
 
+internal enum class DoctorResultStaleReason {
+    ENDPOINT_CHANGED,
+    LISTENER_STATE_CHANGED,
+    CREDENTIAL_ROTATION_ATTEMPTED,
+}
+
+private fun DoctorResultStaleReason.cause(): String = when (this) {
+    DoctorResultStaleReason.ENDPOINT_CHANGED -> "the displayed endpoint changed"
+    DoctorResultStaleReason.LISTENER_STATE_CHANGED -> "the local listener state changed"
+    DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED -> "credential rotation was attempted"
+}
+
+private fun DoctorResultStaleReason.summary(): String =
+    "The last started Connection Doctor local-admission check no longer applies because ${cause()}. " +
+        "Run a new check when available. This check does not prove that an external client works."
+
 private fun applyPreviewAreaStyle(area: JTextArea) {
     area.font = Font(Font.MONOSPACED, Font.PLAIN, Design.Typography.bodyMedium.size)
     area.foreground = Design.Colors.onSurface
@@ -100,6 +116,9 @@ internal class ClientSetupPanel(
     private var actionInProgress = false
     private var currentEndpoint: ClientSetupEndpoint? = initialEndpoint
     private var doctorEvidence: String? = null
+    // Opaque identity fences late results without retaining endpoint, listener, or credential values.
+    private var doctorContextGeneration = Any()
+    private var doctorHasStarted = false
     private var panelInitialized = false
 
     private val clientSelector = JComboBox(DefaultComboBoxModel(definitions.toTypedArray())).apply {
@@ -207,7 +226,10 @@ internal class ClientSetupPanel(
     private val copyEvidenceButton = Design.createOutlinedButton("Copy safe evidence").apply {
         name = "copyDoctorEvidenceButton"
         isEnabled = false
-        accessibleContext.accessibleDescription = "Copies only the controlled Connection Doctor result codes without endpoint, credential, response, or path data. Available after a Connection Doctor run."
+        accessibleContext.accessibleDescription =
+            "Copies the fixed local-admission-only scope marker and controlled Connection Doctor result codes " +
+                "without endpoint, credential, response, or path data. An external client is not tested. " +
+                "Available only after a run that still matches the current endpoint, listener, and credential context."
         addActionListener { copyDoctorEvidence() }
     }
     private val doctorResultText = WrappingText(
@@ -269,9 +291,22 @@ internal class ClientSetupPanel(
     fun markEndpointStale() {
         check(SwingUtilities.isEventDispatchThread()) { "client endpoint changes belong to the EDT" }
         if (closed.get()) return
+        markDoctorResultStale(DoctorResultStaleReason.ENDPOINT_CHANGED)
         currentEndpoint = null
         renderPreview()
         showPreviewStatus("Host or port changed. Refresh the preview before copying configuration.")
+    }
+
+    fun markDoctorResultStale(reason: DoctorResultStaleReason) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor freshness changes belong to the EDT" }
+        if (closed.get()) return
+        doctorContextGeneration = Any()
+        doctorEvidence = null
+        if (doctorHasStarted) {
+            val staleSummary = reason.summary()
+            if (doctorResultText.text != staleSummary) doctorResultText.updateContent(staleSummary)
+        }
+        updateMutationButtonState()
     }
 
     private fun updateColors() {
@@ -563,34 +598,60 @@ internal class ClientSetupPanel(
         val snapshot = try {
             doctorConfigProvider()
         } catch (_: Exception) {
-            publishDoctorReport(
-                DoctorReport(
-                    DoctorListenerCode.UNKNOWN,
-                    DoctorProbeCode.INVALID_CONFIGURATION,
-                ),
-            )
+            if (!closed.get()) {
+                publishDoctorReport(
+                    DoctorReport(
+                        DoctorListenerCode.UNKNOWN,
+                        DoctorProbeCode.INVALID_CONFIGURATION,
+                    ),
+                )
+            }
             return
         }
+        if (closed.get()) return
 
+        val contextGeneration = doctorContextGeneration
+        doctorHasStarted = true
         doctorEvidence = null
         copyEvidenceButton.isEnabled = false
         doctorResultText.updateContent("Connection Doctor is running a bounded local check...")
         setActionInProgress(true)
-        submitBackground(
+        val submitted = submitBackground(
             task = { connectionDoctor.run(snapshot) },
-            onSuccess = ::publishDoctorReport,
+            onSuccess = { report -> publishDoctorReportIfCurrent(report, contextGeneration) },
             onFailure = {
-                publishDoctorReport(
+                publishDoctorReportIfCurrent(
                     DoctorReport(
                         snapshot.listener,
                         DoctorProbeCode.CONNECTION_FAILED,
                     ),
+                    contextGeneration,
                 )
             },
         )
+        if (!submitted && !closed.get()) {
+            doctorHasStarted = false
+            doctorResultText.updateContent(
+                "Connection Doctor could not start. No local-admission check was performed.",
+            )
+            updateMutationButtonState()
+        }
+    }
+
+    private fun publishDoctorReportIfCurrent(report: DoctorReport, contextGeneration: Any) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor results belong to the EDT" }
+        if (doctorContextGeneration !== contextGeneration) {
+            doctorEvidence = null
+            updateMutationButtonState()
+            showActionStatus("Connection Doctor result discarded because its local context changed.")
+            return
+        }
+        publishDoctorReport(report)
     }
 
     private fun publishDoctorReport(report: DoctorReport) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor results belong to the EDT" }
+        doctorHasStarted = true
         doctorEvidence = formatDoctorEvidence(report)
         doctorResultText.updateContent(formatDoctorSummary(report))
         updateMutationButtonState()
@@ -617,21 +678,21 @@ internal class ClientSetupPanel(
         task: () -> T,
         onSuccess: (T) -> Unit,
         onFailure: (Throwable) -> Unit,
-    ) {
-        try {
-            activeFuture = actionExecutor.submit {
-                val outcome = runCatching(task)
-                SwingUtilities.invokeLater {
-                    if (closed.get()) return@invokeLater
-                    activeFuture = null
-                    setActionInProgress(false)
-                    outcome.fold(onSuccess, onFailure)
-                }
+    ): Boolean = try {
+        activeFuture = actionExecutor.submit {
+            val outcome = runCatching(task)
+            SwingUtilities.invokeLater {
+                if (closed.get()) return@invokeLater
+                activeFuture = null
+                setActionInProgress(false)
+                outcome.fold(onSuccess, onFailure)
             }
-        } catch (_: RejectedExecutionException) {
-            setActionInProgress(false)
-            if (!closed.get()) showActionStatus("Background setup actions are unavailable.")
         }
+        true
+    } catch (_: RejectedExecutionException) {
+        setActionInProgress(false)
+        if (!closed.get()) showActionStatus("Background setup actions are unavailable.")
+        false
     }
 
     private fun showProviderError(prefix: String, error: Throwable) {
