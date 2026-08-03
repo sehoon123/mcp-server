@@ -7,9 +7,6 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import net.portswigger.mcp.tools.CompareHttpMessages
-import net.portswigger.mcp.tools.SearchHttpMessages
-import net.portswigger.mcp.tools.SearchWebsocketMessages
 import net.portswigger.mcp.tools.validateHttpComparisonSettings
 import net.portswigger.mcp.tools.validateHttpMetadataSearchSettings
 import net.portswigger.mcp.tools.validateWebSocketMetadataSearchSettings
@@ -17,6 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 
 internal const val WORKFLOW_PRESET_STORAGE_KEY = "workflowPresetsV1"
+private const val WORKFLOW_PRESET_VALIDATION_PROJECT_ID = "validation"
 internal fun workflowPresetNameKey(name: String): String = name.lowercase(Locale.ROOT)
 
 internal enum class WorkflowPresetStoreFailure {
@@ -149,24 +147,21 @@ internal fun validateWorkflowPreset(preset: WorkflowPreset) {
     )
     preset.definition.kind()
     preset.definition.httpSearch?.let {
-        validateHttpMetadataSearchSettings(SearchHttpMessages(
-            sources = it.sources, host = it.host, pathContains = it.pathContains, methods = it.methods,
-            statusCodes = it.statusCodes, mimeTypes = it.mimeTypes, inScopeOnly = it.inScopeOnly,
-            hasResponse = it.hasResponse, newestFirst = it.newestFirst, limit = it.defaultLimit,
-        ))
+        validateHttpMetadataSearchSettings(it.toHttpSearchInput(limit = null, cursor = null))
     }
     preset.definition.webSocketSearch?.let {
-        validateWebSocketMetadataSearchSettings(SearchWebsocketMessages(
-            projectId = "validation", limit = it.defaultLimit, direction = it.direction,
-            listenerPort = it.listenerPort, newestFirst = it.newestFirst,
-        ))
+        validateWebSocketMetadataSearchSettings(
+            it.toWebSocketSearchInput(
+                projectId = WORKFLOW_PRESET_VALIDATION_PROJECT_ID,
+                limit = null,
+                cursor = null,
+            ),
+        )
     }
     preset.definition.httpComparison?.let {
-        validateHttpComparisonSettings(CompareHttpMessages(
-            projectId = "validation", refs = emptyList(), part = it.part,
-            limitBytesPerMessage = it.limitBytesPerMessage, excerptEncoding = it.excerptEncoding,
-            ignoreHeaders = it.ignoreHeaders, includeResponseVariations = it.includeResponseVariations,
-        ))
+        validateHttpComparisonSettings(
+            it.toHttpComparisonInput(WORKFLOW_PRESET_VALIDATION_PROJECT_ID, emptyList()),
+        )
     }
 }
 

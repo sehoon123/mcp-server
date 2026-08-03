@@ -12,9 +12,6 @@ import net.portswigger.mcp.presets.MAX_WORKFLOW_PRESET_DESCRIPTION_CHARS
 import net.portswigger.mcp.presets.MAX_WORKFLOW_PRESET_NAME_CHARS
 import net.portswigger.mcp.presets.SaveWorkflowPreset
 import net.portswigger.mcp.presets.SaveWorkflowPresetResult
-import net.portswigger.mcp.presets.SavedHttpComparison
-import net.portswigger.mcp.presets.SavedHttpSearch
-import net.portswigger.mcp.presets.SavedWebSocketSearch
 import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetAlreadyExistsException
 import net.portswigger.mcp.presets.WorkflowPresetStatus
@@ -22,6 +19,9 @@ import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.presets.WorkflowPresetStoreException
 import net.portswigger.mcp.presets.WorkflowPresetStoreFailure
 import net.portswigger.mcp.presets.WorkflowPresetType
+import net.portswigger.mcp.presets.toHttpComparisonInput
+import net.portswigger.mcp.presets.toHttpSearchInput
+import net.portswigger.mcp.presets.toWebSocketSearchInput
 import net.portswigger.mcp.presets.validateWorkflowPreset
 import net.portswigger.mcp.presets.workflowPresetNameKey
 
@@ -272,21 +272,33 @@ internal class WorkflowPresetService(
                     val saved = requireNotNull(preset.definition.httpSearch)
                     ExecuteWorkflowPresetResult(
                         WorkflowPresetStatus.OK, project, preset.name, kind,
-                        httpSearch = httpSearch.search(saved.toInput(input.limit, input.cursor), reportProgress),
+                        httpSearch = httpSearch.search(
+                            saved.toHttpSearchInput(limit = input.limit, cursor = input.cursor),
+                            reportProgress,
+                        ),
                     )
                 }
                 WorkflowPresetType.WEBSOCKET_SEARCH -> {
                     val saved = requireNotNull(preset.definition.webSocketSearch)
                     ExecuteWorkflowPresetResult(
                         WorkflowPresetStatus.OK, project, preset.name, kind,
-                        webSocketSearch = webSocketSearch.search(saved.toInput(project, input.limit, input.cursor), reportProgress),
+                        webSocketSearch = webSocketSearch.search(
+                            saved.toWebSocketSearchInput(
+                                projectId = project,
+                                limit = input.limit,
+                                cursor = input.cursor,
+                            ),
+                            reportProgress,
+                        ),
                     )
                 }
                 WorkflowPresetType.HTTP_COMPARISON -> {
                     val saved = requireNotNull(preset.definition.httpComparison)
                     ExecuteWorkflowPresetResult(
                         WorkflowPresetStatus.OK, project, preset.name, kind,
-                        httpComparison = comparison.compare(saved.toInput(project, requireNotNull(input.refs))),
+                        httpComparison = comparison.compare(
+                            saved.toHttpComparisonInput(project, requireNotNull(input.refs)),
+                        ),
                     )
                 }
             }
@@ -342,20 +354,6 @@ private fun normalizePreset(
 private fun normalizeName(name: String): String = name.trim().also {
     require(it.length in 1..MAX_WORKFLOW_PRESET_NAME_CHARS && it.none(Char::isISOControl))
 }
-
-private fun SavedHttpSearch.toInput(limit: Int?, cursor: String?) = SearchHttpMessages(
-    sources, host, pathContains, methods, statusCodes, mimeTypes, inScopeOnly, hasResponse,
-    newestFirst = newestFirst, limit = limit ?: defaultLimit, cursor = cursor,
-)
-
-private fun SavedWebSocketSearch.toInput(projectId: String, limit: Int?, cursor: String?) = SearchWebsocketMessages(
-    projectId = projectId, cursor = cursor, limit = limit ?: defaultLimit, direction = direction,
-    listenerPort = listenerPort, newestFirst = newestFirst,
-)
-
-private fun SavedHttpComparison.toInput(projectId: String, refs: List<HttpMessageReference>) = CompareHttpMessages(
-    projectId, refs, part, limitBytesPerMessage, excerptEncoding, ignoreHeaders, includeResponseVariations
-)
 
 private fun WorkflowPresetStoreException.toStatus(): WorkflowPresetStatus = when (failure) {
     WorkflowPresetStoreFailure.CAPACITY -> WorkflowPresetStatus.CAPACITY_REACHED
