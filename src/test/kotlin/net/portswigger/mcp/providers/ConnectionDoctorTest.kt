@@ -140,14 +140,18 @@ class ConnectionDoctorTest {
     }
 
     @Test
-    fun `summary and evidence are fixed shape and endpoint free`() {
+    fun `summary and evidence are fixed shape scoped and endpoint free`() {
         DoctorProbeCode.entries.forEach { probe ->
             val report = DoctorReport(DoctorListenerCode.RUNNING, probe)
             val summary = formatDoctorSummary(report)
             val evidence = formatDoctorEvidence(report)
+            val evidenceLines = evidence.lines()
             assertTrue(summary.isNotBlank())
-            assertEquals(3, evidence.lines().size)
-            assertTrue(evidence.startsWith("Connection Doctor safe evidence\nListener: "))
+            assertEquals(4, evidenceLines.size)
+            assertEquals("Connection Doctor safe evidence", evidenceLines[0])
+            assertEquals("Scope: LOCAL_ADMISSION_ONLY EXTERNAL_CLIENT_NOT_TESTED", evidenceLines[1])
+            assertTrue(evidenceLines[2].startsWith("Listener: "))
+            assertTrue(evidenceLines[3].startsWith("Probe: "))
             listOf("http://", "127.0.0.1", "9876", "Authorization", token, "/Users/", "C:\\")
                 .forEach { forbidden ->
                     assertFalse(summary.contains(forbidden), "$probe summary disclosed $forbidden")

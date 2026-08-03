@@ -17,7 +17,8 @@ class AdvancedOptionsPanel(
     private val config: McpConfig,
     private val hostField: JTextField,
     private val portField: JTextField,
-    private val reinstallNotice: WarningLabel
+    private val reinstallNotice: WarningLabel,
+    private val onBearerTokenRotationAttempted: () -> Unit,
 ) : JPanel() {
     private val tokenStatus = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
 
@@ -70,6 +71,7 @@ class AdvancedOptionsPanel(
             }
         }
         val rotateTokenButton = JButton("Rotate local bearer token...").apply {
+            name = "rotateLocalBearerTokenButton"
             addActionListener {
                 val confirmed = JOptionPane.showConfirmDialog(
                     this@AdvancedOptionsPanel,
@@ -80,24 +82,10 @@ class AdvancedOptionsPanel(
                     JOptionPane.WARNING_MESSAGE,
                 )
                 if (confirmed == JOptionPane.OK_OPTION) {
-                    val token = try {
-                        config.rotateLocalBearerToken()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        tokenStatus.updateContent(
-                            "Token rotation could not be confirmed; re-copy or rotate before restarting the server"
-                        )
-                        return@addActionListener
-                    }
-                    reinstallNotice.isVisible = true
                     try {
-                        copyTokenToClipboard(token)
-                        tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        tokenStatus.updateContent("Token rotated; restart the server and update clients")
+                        rotateBearerToken()
+                    } finally {
+                        onBearerTokenRotationAttempted()
                     }
                 }
             }
@@ -105,6 +93,28 @@ class AdvancedOptionsPanel(
         add(AdaptiveButtonPanel(listOf(copyTokenButton, rotateTokenButton)))
         add(createVerticalStrut(Design.Spacing.SM))
         add(tokenStatus)
+    }
+
+    private fun rotateBearerToken() {
+        val token = try {
+            config.rotateLocalBearerToken()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            tokenStatus.updateContent(
+                "Token rotation could not be confirmed; re-copy or rotate before restarting the server"
+            )
+            return
+        }
+        reinstallNotice.isVisible = true
+        try {
+            copyTokenToClipboard(token)
+            tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            tokenStatus.updateContent("Token rotated; restart the server and update clients")
+        }
     }
 
     private fun copyTokenToClipboard(token: String) {

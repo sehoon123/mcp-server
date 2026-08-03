@@ -58,6 +58,28 @@ internal fun interface ClientSetupClipboard {
 }
 
 private const val SETUP_TEXT_FALLBACK_WIDTH = 480
+private const val COPY_CONFIGURATION_LABEL = "Copy configuration"
+private const val REFRESH_AND_COPY_CONFIGURATION_LABEL = "Refresh and copy configuration"
+private const val COPY_CONFIGURATION_DESCRIPTION =
+    "Copies exactly the visible secret-free configuration preview"
+private const val REFRESH_AND_COPY_CONFIGURATION_DESCRIPTION =
+    "Refreshes from the displayed numeric loopback host and port, then copies the visible secret-free configuration"
+
+internal enum class DoctorResultStaleReason {
+    ENDPOINT_CHANGED,
+    LISTENER_STATE_CHANGED,
+    CREDENTIAL_ROTATION_ATTEMPTED,
+}
+
+private fun DoctorResultStaleReason.cause(): String = when (this) {
+    DoctorResultStaleReason.ENDPOINT_CHANGED -> "the displayed endpoint changed"
+    DoctorResultStaleReason.LISTENER_STATE_CHANGED -> "the local listener state changed"
+    DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED -> "credential rotation was attempted"
+}
+
+private fun DoctorResultStaleReason.summary(): String =
+    "The last started Connection Doctor local-admission check no longer applies because ${cause()}. " +
+        "Run a new check when available. This check does not prove that an external client works."
 
 private fun applyPreviewAreaStyle(area: JTextArea) {
     area.font = Font(Font.MONOSPACED, Font.PLAIN, Design.Typography.bodyMedium.size)
@@ -100,6 +122,9 @@ internal class ClientSetupPanel(
     private var actionInProgress = false
     private var currentEndpoint: ClientSetupEndpoint? = initialEndpoint
     private var doctorEvidence: String? = null
+    // Opaque identity fences late results without retaining endpoint, listener, or credential values.
+    private var doctorContextGeneration = Any()
+    private var doctorHasStarted = false
     private var panelInitialized = false
 
     private val clientSelector = JComboBox(DefaultComboBoxModel(definitions.toTypedArray())).apply {
@@ -122,7 +147,7 @@ internal class ClientSetupPanel(
         fallbackMaxWidth = SETUP_TEXT_FALLBACK_WIDTH,
     )
     private val safetyText = WrappingText(
-        "Safe preview only: copy the current token using the control above, then use it for $BEARER_TOKEN_ENVIRONMENT_VARIABLE or the client's password input. The current credential and resolved local filesystem paths are never included here. Refresh after changing the host or port, and compare this example with the documentation for your installed client version.",
+        "Safe preview only: copy the current token using the control above, then use it for $BEARER_TOKEN_ENVIRONMENT_VARIABLE or the client's password input. The current credential and resolved local filesystem paths are never included here. After changing the host or port, choose Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL, and compare this example with the documentation for your installed client version.",
         WrappingTextStyle.BODY_MEDIUM,
         fallbackMaxWidth = SETUP_TEXT_FALLBACK_WIDTH,
     )
@@ -176,9 +201,13 @@ internal class ClientSetupPanel(
         accessibleContext.accessibleDescription = "Refreshes the safe preview from the displayed numeric loopback host and port"
         addActionListener { refreshPreview() }
     }
-    private val copyPreviewButton = Design.createOutlinedButton("Copy configuration").apply {
+    private val copyPreviewButton = Design.createOutlinedButton(
+        COPY_CONFIGURATION_LABEL,
+        sizingText = REFRESH_AND_COPY_CONFIGURATION_LABEL,
+    ).apply {
         name = "copySetupPreviewButton"
-        accessibleContext.accessibleDescription = "Copies exactly the visible secret-free configuration preview"
+        accessibleContext.accessibleName = COPY_CONFIGURATION_LABEL
+        accessibleContext.accessibleDescription = COPY_CONFIGURATION_DESCRIPTION
         addActionListener { copyPreview() }
     }
     private val installClaudeButton = Design.createFilledButton(
@@ -207,7 +236,10 @@ internal class ClientSetupPanel(
     private val copyEvidenceButton = Design.createOutlinedButton("Copy safe evidence").apply {
         name = "copyDoctorEvidenceButton"
         isEnabled = false
-        accessibleContext.accessibleDescription = "Copies only the controlled Connection Doctor result codes without endpoint, credential, response, or path data. Available after a Connection Doctor run."
+        accessibleContext.accessibleDescription =
+            "Copies the fixed local-admission-only scope marker and controlled Connection Doctor result codes " +
+                "without endpoint, credential, response, or path data. An external client is not tested. " +
+                "Available only after a run that still matches the current endpoint, listener, and credential context."
         addActionListener { copyDoctorEvidence() }
     }
     private val doctorResultText = WrappingText(
@@ -269,9 +301,21 @@ internal class ClientSetupPanel(
     fun markEndpointStale() {
         check(SwingUtilities.isEventDispatchThread()) { "client endpoint changes belong to the EDT" }
         if (closed.get()) return
-        currentEndpoint = null
-        renderPreview()
-        showPreviewStatus("Host or port changed. Refresh the preview before copying configuration.")
+        markDoctorResultStale(DoctorResultStaleReason.ENDPOINT_CHANGED)
+        renderPreview(null)
+        showPreviewStatus("Host or port changed. Choose Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL.")
+    }
+
+    fun markDoctorResultStale(reason: DoctorResultStaleReason) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor freshness changes belong to the EDT" }
+        if (closed.get()) return
+        doctorContextGeneration = Any()
+        doctorEvidence = null
+        if (doctorHasStarted) {
+            val staleSummary = reason.summary()
+            if (doctorResultText.text != staleSummary) doctorResultText.updateContent(staleSummary)
+        }
+        updateMutationButtonState()
     }
 
     private fun updateColors() {
@@ -423,16 +467,27 @@ internal class ClientSetupPanel(
         rebuildClientActions()
     }
 
-    private fun renderPreview() {
-        val endpoint = currentEndpoint
-        if (endpoint == null) {
-            previewArea.text = "Configuration preview unavailable. Enter a valid numeric loopback host and port, then choose Refresh preview."
-            copyPreviewButton.isEnabled = false
+    private fun renderPreview(endpoint: ClientSetupEndpoint? = currentEndpoint) {
+        val renderedPreview = if (endpoint == null) {
+            "Configuration preview unavailable. Enter a valid numeric loopback host and port, then choose " +
+                "Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL."
         } else {
-            previewArea.text = ClientSetupCatalog.render(selectedDefinition().id, endpoint)
-            copyPreviewButton.isEnabled = true
+            ClientSetupCatalog.render(selectedDefinition().id, endpoint)
         }
+        previewArea.text = renderedPreview
         previewArea.caretPosition = 0
+        currentEndpoint = endpoint
+        updateCopyPreviewAction()
+    }
+
+    private fun updateCopyPreviewAction() {
+        val requiresRefresh = currentEndpoint == null
+        val label = if (requiresRefresh) REFRESH_AND_COPY_CONFIGURATION_LABEL else COPY_CONFIGURATION_LABEL
+        copyPreviewButton.text = label
+        copyPreviewButton.accessibleContext.accessibleName = label
+        copyPreviewButton.accessibleContext.accessibleDescription =
+            if (requiresRefresh) REFRESH_AND_COPY_CONFIGURATION_DESCRIPTION else COPY_CONFIGURATION_DESCRIPTION
+        copyPreviewButton.isEnabled = !closed.get()
     }
 
     private fun rebuildClientActions() {
@@ -457,21 +512,43 @@ internal class ClientSetupPanel(
     private fun refreshPreview() {
         check(SwingUtilities.isEventDispatchThread()) { "client preview refresh belongs to the EDT" }
         if (closed.get()) return
-        currentEndpoint = try {
+        val refreshed = refreshEndpointAndRenderPreview()
+        showPreviewStatus(
+            if (refreshed) "Secret-free preview refreshed."
+            else "Preview unavailable until the local host and port are valid.",
+        )
+    }
+
+    private fun refreshEndpointAndRenderPreview(): Boolean {
+        val endpoint = try {
             endpointProvider()
         } catch (_: Exception) {
             null
         }
-        renderPreview()
-        showPreviewStatus(
-            if (currentEndpoint == null) "Preview unavailable until the local host and port are valid."
-            else "Secret-free preview refreshed.",
-        )
+        if (endpoint == null) {
+            renderPreview(null)
+            return false
+        }
+        return try {
+            renderPreview(endpoint)
+            true
+        } catch (_: Exception) {
+            renderPreview(null)
+            false
+        }
     }
 
     private fun copyPreview() {
         check(SwingUtilities.isEventDispatchThread()) { "client preview copy belongs to the EDT" }
-        if (closed.get() || !copyPreviewButton.isEnabled) return
+        if (closed.get()) return
+        if (currentEndpoint == null) {
+            showPreviewStatus("Refreshing the configuration preview before copy.")
+            if (!refreshEndpointAndRenderPreview()) {
+                showPreviewStatus("Configuration was not copied because the local host or port is invalid.")
+                return
+            }
+        }
+        if (closed.get()) return
         try {
             clipboard.copy(previewArea.text)
             showPreviewStatus("Configuration preview copied.")
@@ -563,34 +640,60 @@ internal class ClientSetupPanel(
         val snapshot = try {
             doctorConfigProvider()
         } catch (_: Exception) {
-            publishDoctorReport(
-                DoctorReport(
-                    DoctorListenerCode.UNKNOWN,
-                    DoctorProbeCode.INVALID_CONFIGURATION,
-                ),
-            )
+            if (!closed.get()) {
+                publishDoctorReport(
+                    DoctorReport(
+                        DoctorListenerCode.UNKNOWN,
+                        DoctorProbeCode.INVALID_CONFIGURATION,
+                    ),
+                )
+            }
             return
         }
+        if (closed.get()) return
 
+        val contextGeneration = doctorContextGeneration
+        doctorHasStarted = true
         doctorEvidence = null
         copyEvidenceButton.isEnabled = false
         doctorResultText.updateContent("Connection Doctor is running a bounded local check...")
         setActionInProgress(true)
-        submitBackground(
+        val submitted = submitBackground(
             task = { connectionDoctor.run(snapshot) },
-            onSuccess = ::publishDoctorReport,
+            onSuccess = { report -> publishDoctorReportIfCurrent(report, contextGeneration) },
             onFailure = {
-                publishDoctorReport(
+                publishDoctorReportIfCurrent(
                     DoctorReport(
                         snapshot.listener,
                         DoctorProbeCode.CONNECTION_FAILED,
                     ),
+                    contextGeneration,
                 )
             },
         )
+        if (!submitted && !closed.get()) {
+            doctorHasStarted = false
+            doctorResultText.updateContent(
+                "Connection Doctor could not start. No local-admission check was performed.",
+            )
+            updateMutationButtonState()
+        }
+    }
+
+    private fun publishDoctorReportIfCurrent(report: DoctorReport, contextGeneration: Any) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor results belong to the EDT" }
+        if (doctorContextGeneration !== contextGeneration) {
+            doctorEvidence = null
+            updateMutationButtonState()
+            showActionStatus("Connection Doctor result discarded because its local context changed.")
+            return
+        }
+        publishDoctorReport(report)
     }
 
     private fun publishDoctorReport(report: DoctorReport) {
+        check(SwingUtilities.isEventDispatchThread()) { "Connection Doctor results belong to the EDT" }
+        doctorHasStarted = true
         doctorEvidence = formatDoctorEvidence(report)
         doctorResultText.updateContent(formatDoctorSummary(report))
         updateMutationButtonState()
@@ -617,21 +720,21 @@ internal class ClientSetupPanel(
         task: () -> T,
         onSuccess: (T) -> Unit,
         onFailure: (Throwable) -> Unit,
-    ) {
-        try {
-            activeFuture = actionExecutor.submit {
-                val outcome = runCatching(task)
-                SwingUtilities.invokeLater {
-                    if (closed.get()) return@invokeLater
-                    activeFuture = null
-                    setActionInProgress(false)
-                    outcome.fold(onSuccess, onFailure)
-                }
+    ): Boolean = try {
+        activeFuture = actionExecutor.submit {
+            val outcome = runCatching(task)
+            SwingUtilities.invokeLater {
+                if (closed.get()) return@invokeLater
+                activeFuture = null
+                setActionInProgress(false)
+                outcome.fold(onSuccess, onFailure)
             }
-        } catch (_: RejectedExecutionException) {
-            setActionInProgress(false)
-            if (!closed.get()) showActionStatus("Background setup actions are unavailable.")
         }
+        true
+    } catch (_: RejectedExecutionException) {
+        setActionInProgress(false)
+        if (!closed.get()) showActionStatus("Background setup actions are unavailable.")
+        false
     }
 
     private fun showProviderError(prefix: String, error: Throwable) {
