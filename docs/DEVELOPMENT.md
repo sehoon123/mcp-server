@@ -367,6 +367,8 @@ perform hidden side effects.
 - Split workflows such as file chooser + copy into an EDT selection phase and a bounded background I/O phase.
 - Do not use an unowned `kotlin.concurrent.thread` for UI work. Panels that start jobs must own a bounded executor/job,
   disable duplicate actions, and cancel or ignore completion after `cleanup()`.
+- `ConfigUi` treats `cleanup()` as a terminal publication boundary: listener-state callbacks arriving afterward must not
+  mutate detached controls or open a dialog from the detached panel.
 - `ClientSetupPanel` owns one bounded worker for Claude installation, manual proxy extraction, and Connection Doctor.
   Capture host/port and any required credential once on the EDT, run I/O off the EDT, and cancel the panel before server
   shutdown during extension unload so late callbacks cannot publish into disposed UI. Fence each Doctor run with an

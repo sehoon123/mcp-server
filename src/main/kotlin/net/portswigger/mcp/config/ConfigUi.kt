@@ -74,6 +74,7 @@ class ConfigUi internal constructor(
 
     private val listenerHandles = CopyOnWriteArrayList<ListenerHandle>()
     private val cleanupStarted = AtomicBoolean()
+    private val statePublicationClosed = AtomicBoolean()
 
     private val enabledToggle: ToggleSwitch = Design.createToggleSwitch(false) { enabled ->
         if (suppressToggleEvents) return@createToggleSwitch
@@ -214,6 +215,8 @@ class ConfigUi internal constructor(
     }
 
     fun cleanup() {
+        // Publication stays terminal even if cleanup reports a failure and its teardown steps are retried.
+        statePublicationClosed.set(true)
         if (!cleanupStarted.compareAndSet(false, true)) return
         if (SwingUtilities.isEventDispatchThread()) {
             cleanupOnEdt()
@@ -352,7 +355,9 @@ class ConfigUi internal constructor(
     }
 
     fun updateServerState(state: ServerState) {
+        if (statePublicationClosed.get()) return
         CoroutineScope(Dispatchers.Swing).launch {
+            if (statePublicationClosed.get()) return@launch
             suppressToggleEvents = true
 
             val nextDoctorListenerCode = state.toDoctorListenerCode()

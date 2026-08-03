@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.awt.Container
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -388,6 +389,80 @@ class ConfigUiTest {
             assertEquals(1, exchanges.get())
         } finally {
             unmockkStatic(JOptionPane::class)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `queued listener failure is discarded when cleanup wins before EDT publication`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait { ui = ConfigUi(config, emptyList()) }
+
+        mockkObject(Dialogs)
+        try {
+            every { Dialogs.showMessageDialog(any(), any(), any()) } returns Unit
+            ui.cancelBackgroundWork()
+            val edtBlocked = CountDownLatch(1)
+            val allowCleanup = CountDownLatch(1)
+            SwingUtilities.invokeLater {
+                edtBlocked.countDown()
+                if (allowCleanup.await(5, TimeUnit.SECONDS)) ui.cleanup()
+            }
+            assertTrue(edtBlocked.await(5, TimeUnit.SECONDS))
+
+            ui.updateServerState(ServerState.Failed(IllegalStateException("late listener failure")))
+            allowCleanup.countDown()
+            SwingUtilities.invokeAndWait { Unit }
+
+            verify(exactly = 0) { Dialogs.showMessageDialog(any(), any(), any()) }
+        } finally {
+            unmockkObject(Dialogs)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `listener transition published after cleanup does not re-enable detached endpoint fields`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(config, emptyList())
+            ui.updateServerState(ServerState.Running)
+        }
+        SwingUtilities.invokeAndWait { Unit }
+        val hostField = ui.component.descendants().filterIsInstance<JTextField>()
+            .single { it.name == "serverHostField" }
+        val portField = ui.component.descendants().filterIsInstance<JTextField>()
+            .single { it.name == "serverPortField" }
+
+        try {
+            assertFalse(hostField.isEnabled)
+            assertFalse(portField.isEnabled)
+            ui.cancelBackgroundWork()
+            ui.cleanup()
+
+            SwingUtilities.invokeAndWait { ui.updateServerState(ServerState.Stopped) }
+
+            assertFalse(hostField.isEnabled)
+            assertFalse(portField.isEnabled)
+        } finally {
             ui.cleanup()
         }
     }
