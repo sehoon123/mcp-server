@@ -561,9 +561,12 @@ consolidation removes orphaned per-source HTTP/Site Map read DTOs and implementa
 remain exclusively behind `HttpMessageReadService` and `HttpMessageResolver`, while the retained Site Map file contains
 identity helpers only. Configuration-tool registration also delegates project/user export and import to one
 `BurpOptionsService` without changing its schemas, approval operations, credential filtering, project checkpoints,
-pre-commit cancellation, post-invocation uncertainty, retry guidance, or metadata-index mutation barrier. These are
-code-level work/cardinality and maintenance changes, not live Burp latency or throughput evidence; the 10k/50k/100k gate
-and prohibition on Montoya parallelization and performance claims remain unchanged.
+pre-commit cancellation, post-invocation uncertainty, retry guidance, or metadata-index mutation barrier. Scanner cursor
+and delta calls now retain only bounded first/last-anchor fingerprints for repeated references to the same issue object
+within one call; result-only misses are not retained. Legacy output, cross-call freshness, stable-ID bytes, and
+cancellation behavior remain unchanged. These are code-level work/cardinality and maintenance changes, not live Burp
+latency or throughput evidence; the 10k/50k/100k gate and prohibition on Montoya parallelization and performance claims
+remain unchanged.
 
 ### v4.12.0 milestone 3 correlation gate
 

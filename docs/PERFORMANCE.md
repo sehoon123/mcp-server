@@ -920,6 +920,14 @@ continuations freeze the comparison size and first/last anchors so later appends
 Only matching items are summarized; issue detail, remediation, evidence, and Collaborator interactions are not read by
 the delta path.
 
+Cursor and delta materialization use one invocation-local, object-identity cache for bounded issue fingerprints already
+observed while creating or validating anchors. Only first/last boundary observations are retained (at most four object
+identities per invocation); a returned-result miss computes its fingerprint without retaining it. The cache retains no raw
+metadata or content, is discarded after the call, and does not memoize accessor failures or cancellation. In the
+deterministic one-record cursor fixture, first-anchor, last-anchor, and returned-ID work now performs one fingerprint
+instead of three; including the independent summary projection, each shared identity accessor is called twice instead of
+four times. This is MockK accessor-cardinality evidence only, not live Burp latency, throughput, or allocation evidence.
+
 These are extension-side logical processing/output limits, not a Montoya acquisition or latency improvement. Every call
 still obtains `api.siteMap().issues()` before the bounded loop, and the pinned API may materialize the complete current
 list. First/last anchors reject shrink and boundary reorder but cannot detect every same-size middle replacement, so the
