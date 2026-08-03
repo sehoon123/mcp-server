@@ -281,6 +281,7 @@ class ClientSetupPanelTest {
         val evidence = copied.get()
         assertNotNull(evidence)
         assertTrue(evidence.contains("CREDENTIAL_REJECTED"))
+        assertTrue(evidence.lines().contains("Scope: LOCAL_ADMISSION_ONLY EXTERNAL_CLIENT_NOT_TESTED"))
         listOf(SENTINEL_TOKEN, "Authorization", "127.0.0.1", "9876", "/Users/").forEach { forbidden ->
             assertFalse(evidence.contains(forbidden))
         }
@@ -470,10 +471,11 @@ class ClientSetupPanelTest {
                 runDoctor.accessibleContext.accessibleRelationSet
                     .get(AccessibleRelation.CONTROLLER_FOR),
             )
-            assertTrue(
-                panel.findNamed<JButton>("copyDoctorEvidenceButton")
-                    .accessibleContext.accessibleDescription.contains("current endpoint"),
-            )
+            val copyEvidenceDescription = panel.findNamed<JButton>("copyDoctorEvidenceButton")
+                .accessibleContext.accessibleDescription
+            assertTrue(copyEvidenceDescription.contains("current endpoint"))
+            assertTrue(copyEvidenceDescription.contains("local-admission-only"))
+            assertTrue(copyEvidenceDescription.contains("external client"))
             val install = panel.findNamed<JButton>("installClaudeDesktopButton")
             assertNotNull(
                 install.accessibleContext.accessibleRelationSet

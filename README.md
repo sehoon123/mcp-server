@@ -659,11 +659,12 @@ selection or redirects) against a validated numeric-loopback endpoint only when 
 endpoint of the in-process listener reported as `running`; it discards the response body and creates no MCP session.
 Its controlled result can show whether the current credential reached the expected local admission guard, but it does
 not perform a full MCP handshake and cannot prove that a third-party client's configuration is correct. Safe copied
-evidence contains only categorical listener/probe results—never the endpoint, bearer, response, exception, project
-data, or local path. The panel invalidates a displayed result and disables evidence copying after the displayed endpoint
-changes, the listener state changes, or a credential rotation is attempted; run a new check after the local context is
-current. Running the check intentionally increments the local request counter and updates last-activity and peak-in-flight
-metrics; a rejected credential also increments the authentication-rejection counter.
+evidence contains only a fixed local-admission scope marker and categorical listener/probe results—never the endpoint,
+bearer, response, exception, project data, or local path. The panel invalidates a displayed result and disables evidence
+copying after the displayed endpoint changes, the listener state changes, or a credential rotation is attempted; run a
+new check after the local context is current. Running the check intentionally increments the local request counter and
+updates last-activity and peak-in-flight metrics; a rejected credential also increments the authentication-rejection
+counter.
 
 The following examples are alternatives. Configure only the clients you actually use, and verify the example against
 the documentation for your installed client version before applying it.
@@ -891,7 +892,8 @@ listener. A `401 Unauthorized` after rotation almost always means one side still
 ### Connection troubleshooting
 
 Start with **Run Connection Doctor** in the Client Setup Center. A passing admission result is intentionally narrower
-than end-to-end client health; continue with the client-specific checks below if the client still cannot connect.
+than end-to-end client health; continue with the client-specific checks below if the client still cannot connect. Copied
+safe evidence carries a fixed local-admission-only scope marker and states that an external client was not tested.
 
 - A `401` means the bearer header is missing, malformed, or stale. Copy the current token, restart the Burp listener,
   and update or reinstall the client.

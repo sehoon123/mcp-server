@@ -380,7 +380,8 @@ perform hidden side effects.
   Claude Desktop action may invoke a native client writer; all other client entries remain preview-and-copy only.
 - Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
-  no redirects, discard the response body, close after the single request, and expose only closed result enums.
+  no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
+  evidence must retain a fixed, value-free scope marker stating local admission only and external client not tested.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.

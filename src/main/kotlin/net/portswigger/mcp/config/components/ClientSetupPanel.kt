@@ -226,7 +226,10 @@ internal class ClientSetupPanel(
     private val copyEvidenceButton = Design.createOutlinedButton("Copy safe evidence").apply {
         name = "copyDoctorEvidenceButton"
         isEnabled = false
-        accessibleContext.accessibleDescription = "Copies only the controlled Connection Doctor result codes without endpoint, credential, response, or path data. Available only after a run that still matches the current endpoint, listener, and credential context."
+        accessibleContext.accessibleDescription =
+            "Copies the fixed local-admission-only scope marker and controlled Connection Doctor result codes " +
+                "without endpoint, credential, response, or path data. An external client is not tested. " +
+                "Available only after a run that still matches the current endpoint, listener, and credential context."
         addActionListener { copyDoctorEvidence() }
     }
     private val doctorResultText = WrappingText(
