@@ -5,7 +5,9 @@ import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.persistence.Preferences
 import io.mockk.*
 import net.portswigger.mcp.ProductIdentity
+import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.config.components.WrappingText
 import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
@@ -23,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.awt.Container
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -189,10 +192,12 @@ class ConfigUiTest {
             assertEquals(initialPreview, preview.text)
 
             SwingUtilities.invokeAndWait { portField.text = "9877" }
-            assertFalse(copyPreview.isEnabled)
+            assertTrue(copyPreview.isEnabled)
+            assertEquals("Refresh and copy configuration", copyPreview.text)
             assertTrue(preview.text.contains("preview unavailable"))
             SwingUtilities.invokeAndWait { refresh.doClick() }
             assertTrue(copyPreview.isEnabled)
+            assertEquals("Copy configuration", copyPreview.text)
             verify(exactly = 0) { preferences.getString(any()) }
 
             SwingUtilities.invokeAndWait { runDoctor.doClick() }
@@ -254,6 +259,210 @@ class ConfigUiTest {
             ui.cancelBackgroundWork()
             ui.cancelBackgroundWork()
             ui.cleanup()
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `Doctor evidence survives a duplicate listener state and is invalidated by a transition`() {
+        val token = "l".repeat(43)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val preferences = mockk<Preferences>(relaxed = true)
+        every { preferences.getString(any()) } returns token
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), preferences)
+        val diagnostics = unavailableMcpDiagnosticsSnapshot().copy(
+            state = "running",
+            endpoint = "http://127.0.0.1:9876/mcp",
+        )
+        val exchanges = AtomicInteger()
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(
+                config = config,
+                providers = emptyList(),
+                diagnosticsProvider = { diagnostics },
+                auditLog = NoOpMcpAuditSink,
+                proxyProvenance = null,
+                proxyVerified = false,
+                clearSessionApprovals = { 0 },
+                connectionDoctor = ConnectionDoctor(DoctorExchange {
+                    exchanges.incrementAndGet()
+                    400
+                }),
+            )
+        }
+
+        try {
+            val runDoctor = ui.component.descendants().filterIsInstance<JButton>()
+                .single { it.name == "runConnectionDoctorButton" }
+            val copyEvidence = ui.component.descendants().filterIsInstance<JButton>()
+                .single { it.name == "copyDoctorEvidenceButton" }
+            val result = ui.component.descendants().filterIsInstance<WrappingText>()
+                .single { it.name == "doctorResultText" }
+
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            assertTrue(awaitOnEdtCondition { copyEvidence.isEnabled && result.text.contains("admitted") })
+            assertEquals(1, exchanges.get())
+
+            ui.updateServerState(ServerState.Running)
+            SwingUtilities.invokeAndWait { Unit }
+            assertTrue(awaitOnEdtCondition { copyEvidence.isEnabled && result.text.contains("admitted") })
+            assertEquals(1, exchanges.get())
+
+            ui.updateServerState(ServerState.Stopped)
+            assertTrue(awaitOnEdtCondition {
+                !copyEvidence.isEnabled && result.text.contains("local listener state changed")
+            })
+            SwingUtilities.invokeAndWait {
+                assertTrue(result.text.contains("does not prove that an external client works"))
+            }
+            assertEquals(1, exchanges.get())
+        } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `credential rotation attempt invalidates Doctor evidence even when persistence is uncertain`() {
+        val token = "r".repeat(43)
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val preferences = mockk<Preferences>(relaxed = true)
+        every { preferences.getString(any()) } returns token
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), preferences)
+        val diagnostics = unavailableMcpDiagnosticsSnapshot().copy(
+            state = "running",
+            endpoint = "http://127.0.0.1:9876/mcp",
+        )
+        val exchanges = AtomicInteger()
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(
+                config = config,
+                providers = emptyList(),
+                diagnosticsProvider = { diagnostics },
+                auditLog = NoOpMcpAuditSink,
+                proxyProvenance = null,
+                proxyVerified = false,
+                clearSessionApprovals = { 0 },
+                connectionDoctor = ConnectionDoctor(DoctorExchange {
+                    exchanges.incrementAndGet()
+                    400
+                }),
+            )
+        }
+
+        mockkStatic(JOptionPane::class)
+        try {
+            val confirmation = AtomicInteger(JOptionPane.CANCEL_OPTION)
+            every {
+                JOptionPane.showConfirmDialog(any(), any(), any(), any(), any())
+            } answers { confirmation.get() }
+            val buttons = ui.component.descendants().filterIsInstance<JButton>().toList()
+            val runDoctor = buttons.single { it.name == "runConnectionDoctorButton" }
+            val copyEvidence = buttons.single { it.name == "copyDoctorEvidenceButton" }
+            val rotateToken = buttons.single { it.name == "rotateLocalBearerTokenButton" }
+            val result = ui.component.descendants().filterIsInstance<WrappingText>()
+                .single { it.name == "doctorResultText" }
+
+            SwingUtilities.invokeAndWait { runDoctor.doClick() }
+            awaitButtonEnabled(runDoctor)
+            assertTrue(awaitOnEdtCondition { copyEvidence.isEnabled && result.text.contains("admitted") })
+
+            SwingUtilities.invokeAndWait {
+                rotateToken.doClick()
+                assertTrue(copyEvidence.isEnabled)
+                assertTrue(result.text.contains("admitted"))
+                confirmation.set(JOptionPane.OK_OPTION)
+                rotateToken.doClick()
+                assertFalse(copyEvidence.isEnabled)
+                assertTrue(result.text.contains("credential rotation was attempted"))
+                assertTrue(result.text.contains("does not prove that an external client works"))
+                assertFalse(result.text.contains(token))
+            }
+            assertEquals(1, exchanges.get())
+        } finally {
+            unmockkStatic(JOptionPane::class)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `queued listener failure is discarded when cleanup wins before EDT publication`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait { ui = ConfigUi(config, emptyList()) }
+
+        mockkObject(Dialogs)
+        try {
+            every { Dialogs.showMessageDialog(any(), any(), any()) } returns Unit
+            ui.cancelBackgroundWork()
+            val edtBlocked = CountDownLatch(1)
+            val allowCleanup = CountDownLatch(1)
+            SwingUtilities.invokeLater {
+                edtBlocked.countDown()
+                if (allowCleanup.await(5, TimeUnit.SECONDS)) ui.cleanup()
+            }
+            assertTrue(edtBlocked.await(5, TimeUnit.SECONDS))
+
+            ui.updateServerState(ServerState.Failed(IllegalStateException("late listener failure")))
+            allowCleanup.countDown()
+            SwingUtilities.invokeAndWait { Unit }
+
+            verify(exactly = 0) { Dialogs.showMessageDialog(any(), any(), any()) }
+        } finally {
+            unmockkObject(Dialogs)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `listener transition published after cleanup does not re-enable detached endpoint fields`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(config, emptyList())
+            ui.updateServerState(ServerState.Running)
+        }
+        SwingUtilities.invokeAndWait { Unit }
+        val hostField = ui.component.descendants().filterIsInstance<JTextField>()
+            .single { it.name == "serverHostField" }
+        val portField = ui.component.descendants().filterIsInstance<JTextField>()
+            .single { it.name == "serverPortField" }
+
+        try {
+            assertFalse(hostField.isEnabled)
+            assertFalse(portField.isEnabled)
+            ui.cancelBackgroundWork()
+            ui.cleanup()
+
+            SwingUtilities.invokeAndWait { ui.updateServerState(ServerState.Stopped) }
+
+            assertFalse(hostField.isEnabled)
+            assertFalse(portField.isEnabled)
+        } finally {
             ui.cleanup()
         }
     }
@@ -473,6 +682,20 @@ private fun awaitButtonEnabled(button: JButton) {
         Thread.sleep(10)
     }
     assertTrue(button.isEnabled, "button did not become enabled before the deadline")
+}
+
+private fun awaitOnEdtCondition(
+    timeoutSeconds: Long = 5,
+    condition: () -> Boolean,
+): Boolean {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+    while (System.nanoTime() < deadline) {
+        val result = AtomicReference(false)
+        SwingUtilities.invokeAndWait { result.set(condition()) }
+        if (result.get()) return true
+        Thread.sleep(10)
+    }
+    return false
 }
 
 private fun Container.descendants(): Sequence<java.awt.Component> = sequence {

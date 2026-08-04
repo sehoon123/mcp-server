@@ -3,7 +3,10 @@ package net.portswigger.mcp.config.components
 import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
+import net.portswigger.mcp.presets.MAX_WORKFLOW_PRESET_NAME_CHARS
+import net.portswigger.mcp.presets.SavedHttpComparison
 import net.portswigger.mcp.presets.SavedHttpSearch
+import net.portswigger.mcp.presets.SavedWebSocketSearch
 import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetDefinition
 import net.portswigger.mcp.presets.WorkflowPresetManagement
@@ -74,6 +77,154 @@ class WorkflowPresetPanelTest {
             assertTrue(management.workerThreads.isNotEmpty())
             assertFalse(management.workerThreads.any { it.contains("AWT-EventQueue") })
             assertTrue(panel.descendants().filterIsInstance<JButton>().none { it.text.contains("Execute", true) })
+        } finally {
+            panel.cancelBackgroundWorkAndAwait()
+        }
+    }
+
+    @Test
+    fun `delete confirmation identifies the bounded target without description or control text`() {
+        val privateDescription = "Private preset description must not enter the confirmation"
+        val privateSavedValues = listOf(
+            "private-confirmation-host.test",
+            "/private-confirmation-path",
+            "54321",
+            "X-Private-Confirmation",
+        )
+        val cases = listOf(
+            WorkflowPreset(
+                "HTTP target",
+                privateDescription,
+                WorkflowPresetDefinition(httpSearch = SavedHttpSearch(
+                    host = privateSavedValues[0],
+                    pathContains = privateSavedValues[1],
+                )),
+            ) to "HTTP metadata search",
+            WorkflowPreset(
+                "WebSocket target",
+                privateDescription,
+                WorkflowPresetDefinition(webSocketSearch = SavedWebSocketSearch(
+                    listenerPort = privateSavedValues[2].toInt(),
+                )),
+            ) to "WebSocket metadata search",
+            WorkflowPreset(
+                "Comparison target",
+                privateDescription,
+                WorkflowPresetDefinition(httpComparison = SavedHttpComparison(
+                    ignoreHeaders = listOf(privateSavedValues[3]),
+                )),
+            ) to "HTTP comparison",
+        )
+
+        cases.forEach { (preset, expectedType) ->
+            val message = workflowPresetDeleteConfirmationMessage(preset)
+            assertTrue(message.contains("\"${preset.name}\""))
+            assertTrue(message.contains(expectedType))
+            assertTrue(message.contains("does not execute traffic"))
+            assertFalse(message.contains(privateDescription))
+            privateSavedValues.forEach { value -> assertFalse(message.contains(value)) }
+            assertFalse(message.any(Char::isISOControl))
+            assertTrue(message.length <= MAX_WORKFLOW_PRESET_DELETE_CONFIRMATION_CHARS)
+        }
+
+        val supplementaryFormat = String(Character.toChars(0x110bd))
+        val delimiterAndFormatMessage = workflowPresetDeleteConfirmationMessage(
+            WorkflowPreset(
+                "Quoted \"target\" \\ path\u202e\u2028\u2029$supplementaryFormat",
+                privateDescription,
+                WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+            ),
+        )
+        assertTrue(
+            delimiterAndFormatMessage.contains(
+                "Quoted \\\"target\\\" \\\\ path\\u202e\\u2028\\u2029\\U000110bd",
+            ),
+        )
+        assertFalse(delimiterAndFormatMessage.contains('\u202e'))
+        assertFalse(delimiterAndFormatMessage.contains('\u2028'))
+        assertFalse(delimiterAndFormatMessage.contains('\u2029'))
+        assertFalse(delimiterAndFormatMessage.contains(supplementaryFormat))
+
+        val maximumEscapeMessage = workflowPresetDeleteConfirmationMessage(
+            WorkflowPreset(
+                "\u202e".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS),
+                privateDescription,
+                WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+            ),
+        )
+        assertFalse(maximumEscapeMessage.contains('\u202e'))
+        assertTrue(maximumEscapeMessage.length <= MAX_WORKFLOW_PRESET_DELETE_CONFIRMATION_CHARS)
+
+        val splitPairMessage = workflowPresetDeleteConfirmationMessage(
+            WorkflowPreset(
+                "x".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS - 1) + supplementaryFormat,
+                privateDescription,
+                WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+            ),
+        )
+        assertTrue(splitPairMessage.contains("x".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS - 1)))
+        assertFalse(splitPairMessage.contains(supplementaryFormat))
+        assertFalse(splitPairMessage.contains("\\ud804"))
+
+        val overlongName = "\n" + "x".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS + 20) + "\r"
+        val defensiveMessage = workflowPresetDeleteConfirmationMessage(
+            WorkflowPreset(
+                overlongName,
+                privateDescription,
+                WorkflowPresetDefinition(httpSearch = SavedHttpSearch()),
+            ),
+        )
+        assertTrue(defensiveMessage.contains("x".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS - 1)))
+        assertFalse(defensiveMessage.contains("x".repeat(MAX_WORKFLOW_PRESET_NAME_CHARS)))
+        assertFalse(defensiveMessage.contains(privateDescription))
+        assertFalse(defensiveMessage.any(Char::isISOControl))
+        assertTrue(defensiveMessage.length <= MAX_WORKFLOW_PRESET_DELETE_CONFIRMATION_CHARS)
+    }
+
+    @Test
+    fun `declining delete confirmation preserves the selected preset without status mutation`() {
+        val selected = preset("Keep me", "must remain")
+        val management = InMemoryManagement(mutableListOf(selected))
+        var offeredPreset: WorkflowPreset? = null
+        lateinit var panel: WorkflowPresetPanel
+        SwingUtilities.invokeAndWait {
+            panel = WorkflowPresetPanel(
+                management = management,
+                parentComponent = JPanel(),
+                deleteConfirmation = WorkflowPresetDeleteConfirmation { _, preset ->
+                    offeredPreset = preset
+                    false
+                },
+            )
+        }
+
+        try {
+            val refresh = panel.named<JButton>("refreshWorkflowPresetsButton")
+            val edit = panel.named<JButton>("editWorkflowPresetButton")
+            val delete = panel.named<JButton>("deleteWorkflowPresetButton")
+            val table = panel.named<JTable>("workflowPresetTable")
+            val status = panel.named<JTextArea>("workflowPresetStatusText")
+            SwingUtilities.invokeAndWait { refresh.doClick() }
+            await { table.rowCount == 1 && refresh.isEnabled }
+
+            var statusBefore = ""
+            SwingUtilities.invokeAndWait {
+                table.setRowSelectionInterval(0, 0)
+                assertTrue(edit.isEnabled)
+                assertTrue(delete.isEnabled)
+                statusBefore = status.text
+                delete.doClick()
+            }
+
+            assertEquals(selected, offeredPreset)
+            assertEquals(0, management.deleteCalls.get())
+            assertEquals(listOf(selected), management.snapshot())
+            SwingUtilities.invokeAndWait {
+                assertEquals(1, table.rowCount)
+                assertEquals(statusBefore, status.text)
+                assertTrue(edit.isEnabled)
+                assertTrue(delete.isEnabled)
+            }
         } finally {
             panel.cancelBackgroundWorkAndAwait()
         }
@@ -301,6 +452,7 @@ class WorkflowPresetPanelTest {
     private class InMemoryManagement(initial: MutableList<WorkflowPreset>) : WorkflowPresetManagement {
         private val presets = initial
         val workerThreads = CopyOnWriteArrayList<String>()
+        val deleteCalls = AtomicInteger()
 
         @Synchronized
         override fun list(): LocalWorkflowPresetListResult {
@@ -327,6 +479,7 @@ class WorkflowPresetPanelTest {
         @Synchronized
         override fun delete(name: String): LocalWorkflowPresetMutationResult {
             workerThreads += Thread.currentThread().name
+            deleteCalls.incrementAndGet()
             val deleted = presets.removeIf { workflowPresetNameKey(it.name) == workflowPresetNameKey(name) }
             return LocalWorkflowPresetMutationResult(LocalWorkflowPresetStatus.OK, deleted = deleted)
         }
