@@ -5,7 +5,12 @@ import burp.api.montoya.persistence.PersistedObject
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import org.junit.jupiter.api.Test
@@ -167,7 +172,7 @@ class ToolServicesTest {
         val index = services.httpMetadataIndex
 
         try {
-            services.withOrganizerMutation {
+            services.withOrganizerMutation("") {
                 assertFailsWith<HttpMetadataIndexChangingException> { index.observeCurrentProject() }
             }
         } finally {
@@ -186,10 +191,76 @@ class ToolServicesTest {
         var sideEffects = 0
 
         assertFailsWith<OrganizerMutationNotStartedException> {
-            services.withOrganizerMutation { sideEffects++ }
+            services.withOrganizerMutation("") { sideEffects++ }
         }
 
         assertEquals(0, sideEffects)
+    }
+
+    @Test
+    fun `Organizer mutation rechecks the project after waiting for the barrier`() = runBlocking {
+        val api = mockk<MontoyaApi>(relaxed = true)
+        val project = mockk<burp.api.montoya.project.Project>()
+        var currentProjectId = "project-a"
+        every { api.project() } returns project
+        every { project.id() } answers { currentProjectId }
+        val services = ToolServices(
+            api,
+            WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+        )
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var sideEffects = 0
+
+        try {
+            val first = async(start = CoroutineStart.UNDISPATCHED) {
+                services.withOrganizerMutation("project-a") {
+                    firstEntered.complete(Unit)
+                    releaseFirst.await()
+                }
+            }
+            firstEntered.await()
+            val failure = supervisorScope {
+                val waiting = async(start = CoroutineStart.UNDISPATCHED) {
+                    services.withOrganizerMutation("project-a") { sideEffects++ }
+                }
+
+                currentProjectId = "project-b"
+                releaseFirst.complete(Unit)
+                first.await()
+                assertFailsWith<OrganizerProjectMismatchBeforeMutationException> { waiting.await() }
+            }
+
+            assertEquals("project-b", failure.currentProjectId)
+            assertEquals(0, sideEffects)
+        } finally {
+            releaseFirst.complete(Unit)
+            services.close()
+        }
+    }
+
+    @Test
+    fun `active context project lookup cancellation is definitely not started`() = runBlocking {
+        val api = mockk<MontoyaApi>(relaxed = true)
+        val project = mockk<burp.api.montoya.project.Project>()
+        every { api.project() } returns project
+        every { project.id() } throws CancellationException("Burp project lookup cancelled")
+        val services = ToolServices(
+            api,
+            WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+        )
+        var sideEffects = 0
+
+        try {
+            val failure = assertFailsWith<OrganizerMutationNotStartedException> {
+                services.withOrganizerMutation("project-a") { sideEffects++ }
+            }
+
+            assertIs<CancellationException>(failure.cause)
+            assertEquals(0, sideEffects)
+        } finally {
+            services.close()
+        }
     }
 
     @Test

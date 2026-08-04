@@ -5,6 +5,7 @@ import burp.api.montoya.core.BurpSuiteEdition
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -15,6 +16,9 @@ private const val PROJECT_BOUNDARY_CLOSE_WAIT_MILLIS = 2_000L
 
 internal class OrganizerMutationNotStartedException(cause: Exception) :
     IllegalStateException("Organizer mutation did not start", cause)
+
+internal class OrganizerProjectMismatchBeforeMutationException(val currentProjectId: String) :
+    IllegalStateException("Burp project changed before the Organizer mutation started")
 
 private data class InitializedToolServices(
     val scannerAudits: ScannerAuditService?,
@@ -71,14 +75,24 @@ internal class ToolServices(
 
     fun performanceSnapshot(): HistoryPerformanceSnapshot = historyPerformanceDiagnostics.snapshot()
 
-    suspend fun withOrganizerMutation(block: suspend () -> Unit) {
+    suspend fun withOrganizerMutation(expectedProjectId: String, block: suspend () -> Unit) {
         var started = false
         try {
             httpMetadataIndex.withMutation {
+                currentCoroutineContext().ensureActive()
+                val currentProjectId = api.project().id()
+                currentCoroutineContext().ensureActive()
+                if (currentProjectId != expectedProjectId) {
+                    throw OrganizerProjectMismatchBeforeMutationException(currentProjectId)
+                }
                 started = true
                 block()
             }
         } catch (failure: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw failure
+            if (!started) throw OrganizerMutationNotStartedException(failure)
+            throw failure
+        } catch (failure: OrganizerProjectMismatchBeforeMutationException) {
             throw failure
         } catch (failure: Exception) {
             if (!started) throw OrganizerMutationNotStartedException(failure)

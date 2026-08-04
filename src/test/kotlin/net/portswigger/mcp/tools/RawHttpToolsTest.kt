@@ -61,7 +61,7 @@ class RawHttpToolsTest {
         every { api.project() } returns project
         every { project.id() } answers { currentProjectId }
         config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
-        service = RawHttpActionService(api, config) { block -> block() }
+        service = RawHttpActionService(api, config) { _, block -> block() }
         mockkStatic(HttpService::class)
         mockkStatic(HttpRequest::class)
         mockkStatic(RequestOptions::class)
@@ -374,7 +374,7 @@ class RawHttpToolsTest {
         val fixture = http1Fixture()
         val events = mutableListOf<String>()
         var fail = false
-        val measuredService = RawHttpActionService(api, config) { mutation ->
+        val measuredService = RawHttpActionService(api, config) { _, mutation ->
             events += "begin"
             try {
                 mutation()
@@ -382,8 +382,13 @@ class RawHttpToolsTest {
                 events += "end"
             }
         }
-        val unavailableService = RawHttpActionService(api, config) {
+        val unavailableService = RawHttpActionService(api, config) { _, _ ->
             throw OrganizerMutationNotStartedException(IllegalStateException("closed"))
+        }
+        var mismatchExpectedProjectId: String? = null
+        val projectMismatchService = RawHttpActionService(api, config) { expectedProjectId, _ ->
+            mismatchExpectedProjectId = expectedProjectId
+            throw OrganizerProjectMismatchBeforeMutationException("project-new")
         }
         val organizer = mockk<Organizer>()
         every { api.organizer() } returns organizer
@@ -398,12 +403,17 @@ class RawHttpToolsTest {
         val uncertain = measuredService.route(input)
         val invalid = measuredService.route(input.copy(tabName = "not-allowed"))
         val unavailable = unavailableService.route(input)
+        val projectMismatch = projectMismatchService.route(input)
 
         assertEquals(HttpMessageActionStatus.OK, completed.status)
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
         assertEquals(HttpMessageActionStatus.BURP_ERROR, unavailable.status)
         assertEquals(HttpMessageExecutionState.NOT_STARTED, unavailable.executionState)
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, projectMismatch.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, projectMismatch.executionState)
+        assertEquals("project-new", projectMismatch.projectId)
+        assertEquals("project-raw", mismatchExpectedProjectId)
         assertEquals(listOf("begin", "send", "end", "begin", "send", "end"), events)
         verify(exactly = 2) { organizer.sendToOrganizer(fixture.request) }
     }
@@ -412,7 +422,7 @@ class RawHttpToolsTest {
     fun `raw cancellation while waiting to enter the Organizer barrier prevents the side effect`() = runBlocking {
         val fixture = http1Fixture()
         val barrierEntered = CompletableDeferred<Unit>()
-        val blockedService = RawHttpActionService(api, config) {
+        val blockedService = RawHttpActionService(api, config) { _, _ ->
             barrierEntered.complete(Unit)
             awaitCancellation()
         }

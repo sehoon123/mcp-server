@@ -81,7 +81,7 @@ class HttpMessageActionsTest {
         every { api.proxy() } returns proxy
         every { api.logging() } returns logging
         config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
-        service = HttpMessageActionService(api, config) { block -> block() }
+        service = HttpMessageActionService(api, config) { _, block -> block() }
     }
 
     @AfterEach
@@ -203,6 +203,47 @@ class HttpMessageActionsTest {
         assertTrue(result.changes.orEmpty().contains("set header x-test"))
         assertTrue(result.changes.orEmpty().contains("replace body (5 bytes"))
         verify(exactly = 1) { intruder.sendToIntruder(finalRequest, "patched") }
+    }
+
+    @Test
+    fun `successive sparse patches restart from the stored source request`() = runBlocking {
+        val item = mockk<ProxyHttpRequestResponse>()
+        val original = request(method = "GET")
+        val firstDerived = request(method = "POST")
+        val secondDerived = request(method = "GET")
+        every { original.withMethod("POST") } returns firstDerived
+        every { original.withAddedHeader("X-Second", "yes") } returns secondDerived
+        every { item.id() } returns 19
+        every { item.request() } returns original
+        every { item.response() } returns null
+        every { item.httpService() } returns original.httpService()
+        filteredHistory(item)
+        val intruder = mockk<Intruder>(relaxed = true)
+        every { api.intruder() } returns intruder
+        val ref = HttpMessageReference(HttpMessageSource.PROXY, "19")
+
+        val first = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = ref,
+                patch = HttpRequestPatch(method = "POST"),
+            )
+        )
+        val second = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = ref,
+                patch = HttpRequestPatch(addHeaders = listOf(HttpHeaderMutation("X-Second", "yes"))),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.OK, first.status)
+        assertEquals(HttpMessageActionStatus.OK, second.status)
+        verify(exactly = 1) { original.withMethod("POST") }
+        verify(exactly = 1) { original.withAddedHeader("X-Second", "yes") }
+        verify(exactly = 0) { firstDerived.withAddedHeader(any(), any()) }
+        verify(exactly = 1) { intruder.sendToIntruder(firstDerived) }
+        verify(exactly = 1) { intruder.sendToIntruder(secondDerived) }
     }
 
     @Test
@@ -381,7 +422,7 @@ class HttpMessageActionsTest {
     @Test
     fun `Organizer action preserves an unmodified source response inside the mutation barrier`() = runBlocking {
         val events = mutableListOf<String>()
-        val measuredService = HttpMessageActionService(api, config) { mutation ->
+        val measuredService = HttpMessageActionService(api, config) { _, mutation ->
             events += "begin"
             try {
                 mutation()
@@ -421,7 +462,7 @@ class HttpMessageActionsTest {
     @Test
     fun `Organizer barrier distinguishes rejection before execution from uncertain execution`() = runBlocking {
         val events = mutableListOf<String>()
-        val measuredService = HttpMessageActionService(api, config) { mutation ->
+        val measuredService = HttpMessageActionService(api, config) { _, mutation ->
             events += "begin"
             try {
                 mutation()
@@ -429,8 +470,13 @@ class HttpMessageActionsTest {
                 events += "end"
             }
         }
-        val unavailableService = HttpMessageActionService(api, config) {
+        val unavailableService = HttpMessageActionService(api, config) { _, _ ->
             throw OrganizerMutationNotStartedException(IllegalStateException("closed"))
+        }
+        var mismatchExpectedProjectId: String? = null
+        val projectMismatchService = HttpMessageActionService(api, config) { expectedProjectId, _ ->
+            mismatchExpectedProjectId = expectedProjectId
+            throw OrganizerProjectMismatchBeforeMutationException("project-new")
         }
         val organizer = mockk<Organizer>()
         val item = mockk<OrganizerItem>()
@@ -467,11 +513,21 @@ class HttpMessageActionsTest {
                 ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
             )
         )
+        val projectMismatch = projectMismatchService.sendToOrganizer(
+            SendToOrganizerFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
+            )
+        )
 
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
         assertEquals(HttpMessageActionStatus.BURP_ERROR, unavailable.status)
         assertEquals(HttpMessageExecutionState.NOT_STARTED, unavailable.executionState)
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, projectMismatch.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, projectMismatch.executionState)
+        assertEquals("project-new", projectMismatch.projectId)
+        assertEquals("project-123", mismatchExpectedProjectId)
         assertEquals(listOf("begin", "send", "end"), events)
         verify(exactly = 1) { organizer.sendToOrganizer(sourceRequest) }
     }
@@ -479,7 +535,7 @@ class HttpMessageActionsTest {
     @Test
     fun `cancellation while waiting to enter the Organizer barrier prevents the side effect`() = runBlocking {
         val barrierEntered = CompletableDeferred<Unit>()
-        val blockedService = HttpMessageActionService(api, config) {
+        val blockedService = HttpMessageActionService(api, config) { _, _ ->
             barrierEntered.complete(Unit)
             awaitCancellation()
         }

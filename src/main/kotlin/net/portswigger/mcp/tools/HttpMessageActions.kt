@@ -343,7 +343,7 @@ data class HttpMessageActionResult(
 internal class HttpMessageActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
-    private val withOrganizerMutation: suspend (suspend () -> Unit) -> Unit,
+    private val withOrganizerMutation: suspend (String, suspend () -> Unit) -> Unit,
 ) {
     private val resolver = HttpMessageResolver(api, config)
 
@@ -582,7 +582,7 @@ internal class HttpMessageActionService(
         } else {
             null
         }
-        withOrganizerMutation {
+        withOrganizerMutation(input.projectId) {
             if (envelope != null) {
                 api.organizer().sendToOrganizer(envelope)
             } else {
@@ -654,6 +654,8 @@ internal class HttpMessageActionService(
         callContext.ensureActive()
         val preserved = try {
             execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
+        } catch (e: OrganizerProjectMismatchBeforeMutationException) {
+            return projectMismatch(ref, destination, e.currentProjectId)
         } catch (e: OrganizerMutationNotStartedException) {
             runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "execution not started")) }
             return burpError(projectId, ref, destination, e)
@@ -771,16 +773,22 @@ internal class HttpMessageActionService(
             return burpError(expectedProjectId, ref, destination, e)
         }
         if (currentProjectId == expectedProjectId) return null
-        return HttpMessageActionResult(
-            status = HttpMessageActionStatus.PROJECT_MISMATCH,
-            executionState = HttpMessageExecutionState.NOT_STARTED,
-            projectId = currentProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
-            ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
-            destination = destination,
-            patchApplied = false,
-            error = "Burp project changed before the request action executed",
-        )
+        return projectMismatch(ref, destination, currentProjectId)
     }
+
+    private fun projectMismatch(
+        ref: HttpMessageReference,
+        destination: HttpMessageActionDestination,
+        currentProjectId: String,
+    ) = HttpMessageActionResult(
+        status = HttpMessageActionStatus.PROJECT_MISMATCH,
+        executionState = HttpMessageExecutionState.NOT_STARTED,
+        projectId = currentProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
+        ref = HttpMessageReference(ref.source, ref.id.take(MAX_HTTP_REFERENCE_ID_CHARS)),
+        destination = destination,
+        patchApplied = false,
+        error = "Burp project changed before the request action executed",
+    )
 
     private suspend fun approveOutboundNetworkAction(patched: PatchedRequest): Boolean {
         val service = patched.service
