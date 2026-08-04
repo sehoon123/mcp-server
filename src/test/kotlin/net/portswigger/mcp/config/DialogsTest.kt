@@ -20,6 +20,13 @@ class DialogsTest {
     }
 
     @Test
+    fun `input dialogs require a nonblank accessible title`() {
+        assertFailsWith<IllegalArgumentException> {
+            Dialogs.showInputDialog(null, "Enter value", " ")
+        }
+    }
+
+    @Test
     fun `approval choices keep full labels at normal and enlarged UI font sizes`() {
         runOnEdt {
             val originalFont = UIManager.getFont("Label.font") ?: Font("Dialog", Font.PLAIN, 14)

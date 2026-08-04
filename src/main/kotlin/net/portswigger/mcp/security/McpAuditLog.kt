@@ -109,6 +109,7 @@ internal fun encodeBoundedAuditRecords(
 internal interface McpAuditSink : AutoCloseable {
     fun append(record: McpAuditRecord)
     fun recordLocalEvent(tool: String, outcome: String)
+    fun recordAuditDisabled() = recordLocalEvent("audit_logging", "disabled")
     fun snapshot(limit: Int = DEFAULT_AUDIT_RETENTION_ENTRIES): List<McpAuditRecord>
     fun size(): Int
     fun clear()
@@ -157,16 +158,20 @@ internal class PersistentMcpAuditLog(
     }
 
     override fun append(record: McpAuditRecord) {
-        runCatching { appendSafely(record) }
+        appendWithPolicy(record, requireEnabled = true)
+    }
+
+    private fun appendWithPolicy(record: McpAuditRecord, requireEnabled: Boolean) {
+        runCatching { appendSafely(record, requireEnabled) }
             .onFailure { error ->
                 runCatching { logging.logToError("MCP audit append failed: ${safeExceptionSummary(error)}") }
             }
     }
 
-    private fun appendSafely(record: McpAuditRecord) {
-        if (!config.auditLoggingEnabled || closed.get()) return
+    private fun appendSafely(record: McpAuditRecord, requireEnabled: Boolean) {
+        if (closed.get() || (requireEnabled && !config.auditLoggingEnabled)) return
         synchronized(lock) {
-            if (closed.get() || !config.auditLoggingEnabled) return
+            if (closed.get() || (requireEnabled && !config.auditLoggingEnabled)) return
             val now = clock.millis()
             pruneExpiredLocked(now)
             records.addLast(sanitizeRecord(record, now))
@@ -177,19 +182,23 @@ internal class PersistentMcpAuditLog(
     }
 
     override fun recordLocalEvent(tool: String, outcome: String) {
-        append(
-            McpAuditRecord(
-                timestampEpochMillis = clock.millis(),
-                sessionCorrelation = correlateSession("local-ui"),
-                tool = tool,
-                readOnly = false,
-                argumentKeys = emptyList(),
-                approvals = emptyList(),
-                durationMillis = 0,
-                outcome = outcome,
-            )
-        )
+        append(localEventRecord(tool, outcome))
     }
+
+    override fun recordAuditDisabled() {
+        appendWithPolicy(localEventRecord("audit_logging", "disabled"), requireEnabled = false)
+    }
+
+    private fun localEventRecord(tool: String, outcome: String) = McpAuditRecord(
+        timestampEpochMillis = clock.millis(),
+        sessionCorrelation = correlateSession("local-ui"),
+        tool = tool,
+        readOnly = false,
+        argumentKeys = emptyList(),
+        approvals = emptyList(),
+        durationMillis = 0,
+        outcome = outcome,
+    )
 
     override fun snapshot(limit: Int): List<McpAuditRecord> = synchronized(lock) {
         pruneExpiredAndScheduleLocked()

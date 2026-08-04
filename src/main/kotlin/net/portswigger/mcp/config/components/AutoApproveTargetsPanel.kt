@@ -11,6 +11,7 @@ import javax.swing.JOptionPane.*
 
 class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
 
+    private val statusLabel = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
     private var listenerHandle: ListenerHandle? = null
     private var refreshListener: (() -> Unit)? = null
 
@@ -66,6 +67,7 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
 
         val buttonsPanel = createButtonsPanel(targetsList, listModel)
         add(buttonsPanel)
+        add(statusLabel)
     }
 
     private fun createTargetsList(listModel: DefaultListModel<String>): JList<String> {
@@ -161,12 +163,10 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
                     when (e.keyCode) {
                         KeyEvent.VK_DELETE, KeyEvent.VK_BACK_SPACE -> {
                             if (selectedIndex >= 0 && selectedIndex < model.size) {
-                                try {
+                                runTargetMutation("Could not remove the auto-approved target") {
                                     removeTarget(selectedIndex, listModel)
-                                    e.consume()
-                                } catch (ex: Exception) {
-                                    ex.printStackTrace()
                                 }
+                                e.consume()
                             }
                         }
                     }
@@ -211,13 +211,14 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
             addActionListener {
                 val input = Dialogs.showInputDialog(
                     findBurpFrame(),
-                    "Enter target (hostname or hostname:port):\nExamples: example.com, localhost:8080, *.api.com"
+                    "Enter target (hostname or hostname:port):\nExamples: example.com, localhost:8080, *.api.com",
+                    "Add auto-approved HTTP target",
                 )
 
                 if (!input.isNullOrBlank()) {
                     val trimmed = input.trim()
                     if (TargetValidation.isValidTarget(trimmed)) {
-                        addTarget(trimmed)
+                        runTargetMutation("Could not save the auto-approved target") { addTarget(trimmed) }
                     } else {
                         Dialogs.showMessageDialog(
                             findBurpFrame(),
@@ -233,7 +234,9 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
             addActionListener {
                 val selectedIndex = targetsList.selectedIndex
                 if (selectedIndex >= 0) {
-                    removeTarget(selectedIndex, listModel)
+                    runTargetMutation("Could not remove the auto-approved target") {
+                        removeTarget(selectedIndex, listModel)
+                    }
                 }
             }
         }
@@ -248,13 +251,22 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
                 )
 
                 if (result == YES_OPTION) {
-                    clearAllTargets()
+                    runTargetMutation("Could not clear the auto-approved targets", ::clearAllTargets)
                 }
             }
         }
 
         return AdaptiveButtonPanel(listOf(addButton, removeButton, clearButton)).apply {
             border = BorderFactory.createEmptyBorder(Design.Spacing.SM, 0, 0, 0)
+        }
+    }
+
+    private fun runTargetMutation(failureStatus: String, action: () -> Unit) {
+        try {
+            action()
+            statusLabel.updateContent(" ")
+        } catch (_: Exception) {
+            statusLabel.updateContent(failureStatus)
         }
     }
 

@@ -359,54 +359,55 @@ class ConfigUi internal constructor(
         CoroutineScope(Dispatchers.Swing).launch {
             if (statePublicationClosed.get()) return@launch
             suppressToggleEvents = true
-
-            val nextDoctorListenerCode = state.toDoctorListenerCode()
-            if (nextDoctorListenerCode != lastDoctorListenerCode) {
-                lastDoctorListenerCode = nextDoctorListenerCode
-                if (::clientSetupPanel.isInitialized) {
-                    clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
-                }
-            }
-
-            val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
-            if (::advancedOptionsPanel.isInitialized) {
-                advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
-            }
-
-            when (state) {
-                ServerState.Starting, ServerState.Stopping -> {
-                    enabledToggle.isEnabled = false
+            try {
+                val nextDoctorListenerCode = state.toDoctorListenerCode()
+                if (nextDoctorListenerCode != lastDoctorListenerCode) {
+                    lastDoctorListenerCode = nextDoctorListenerCode
+                    if (::clientSetupPanel.isInitialized) {
+                        clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+                    }
                 }
 
-                ServerState.Running -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(true, animate = false)
+                val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
+                if (::advancedOptionsPanel.isInitialized) {
+                    advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
                 }
 
-                ServerState.Stopped -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(false, animate = false)
-                }
-
-                is ServerState.Failed -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(false, animate = false)
-
-                    val friendlyMessage = when (state.exception) {
-                        is UnresolvedAddressException -> "Unable to resolve address"
-                        is McpServerStartupException -> safeSingleLine(
-                            state.exception.message ?: "MCP server startup failed"
-                        )
-                        else -> safeExceptionSummary(state.exception)
+                when (state) {
+                    ServerState.Starting, ServerState.Stopping -> {
+                        enabledToggle.isEnabled = false
                     }
 
-                    Dialogs.showMessageDialog(
-                        panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
-                    )
-                }
-            }
+                    ServerState.Running -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(true, animate = false)
+                    }
 
-            suppressToggleEvents = false
+                    ServerState.Stopped -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(false, animate = false)
+                    }
+
+                    is ServerState.Failed -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(false, animate = false)
+
+                        val friendlyMessage = when (state.exception) {
+                            is UnresolvedAddressException -> "Unable to resolve address"
+                            is McpServerStartupException -> safeSingleLine(
+                                state.exception.message ?: "MCP server startup failed"
+                            )
+                            else -> safeExceptionSummary(state.exception)
+                        }
+
+                        Dialogs.showMessageDialog(
+                            panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
+                        )
+                    }
+                }
+            } finally {
+                suppressToggleEvents = false
+            }
         }
     }
 

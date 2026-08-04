@@ -114,6 +114,19 @@ class ServerConfigurationPanelTest {
 
             exercise("Enable tools that can edit your config") { config.configEditingTooling }
             exercise("Always allow all outbound HTTP requests") { !config.requireHttpRequestApproval }
+            exercise("Require approval for request routing and derived-request actions") {
+                !config.requireRequestActionApproval
+            }
+            exercise("Require approval for Target scope changes") { !config.requireScopeChangeApproval }
+            exercise("Require approval for project data access") { !config.requireDataAccessApproval }
+            exercise("Always allow HTTP history access") { config.alwaysAllowHttpHistory }
+            exercise("Always allow Site Map access") { config.alwaysAllowSiteMap }
+            exercise("Always allow WebSocket history access") { config.alwaysAllowWebSocketHistory }
+            exercise("Always allow Organizer access") { config.alwaysAllowOrganizer }
+            exercise("Always allow Scanner issue access") { config.alwaysAllowScannerIssues }
+            exercise("Always allow Collaborator interaction access") {
+                config.alwaysAllowCollaboratorInteractions
+            }
             exercise("Filter config credentials") { !config.filterConfigCredentials }
 
             config.requireHttpRequestApproval = false
@@ -121,7 +134,7 @@ class ServerConfigurationPanelTest {
             SwingUtilities.invokeAndWait { }
             assertTrue(checkBoxes.getValue("Always allow all outbound HTTP requests").isSelected)
 
-            io.mockk.verify(exactly = 6) {
+            io.mockk.verify(exactly = 24) {
                 Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
             }
         } finally {
@@ -190,6 +203,49 @@ class ServerConfigurationPanelTest {
         } finally {
             unmockkObject(Dialogs)
         }
+    }
+
+    @Test
+    fun `failed safe approval writes restore the effective persisted selection`() {
+        fun exercise(
+            label: String,
+            key: String,
+            initialValue: Boolean,
+            expectedSelectionAfterClick: Boolean,
+        ) {
+            val config = config(
+                booleanOverrides = mapOf(key to initialValue),
+                failingBooleanKey = key,
+            )
+            lateinit var panel: ServerConfigurationPanel
+            SwingUtilities.invokeAndWait {
+                panel = ServerConfigurationPanel(
+                    config = config,
+                    enabledToggle = Design.createToggleSwitch(true) {},
+                    validationErrorLabel = WarningLabel(),
+                )
+            }
+            val checkBox = descendants(panel)
+                .filterIsInstance<JCheckBox>()
+                .single { it.text == label }
+
+            SwingUtilities.invokeAndWait { checkBox.doClick() }
+
+            assertTrue(checkBox.isSelected == expectedSelectionAfterClick, label)
+        }
+
+        exercise(
+            label = "Require approval for request routing and derived-request actions",
+            key = "requireRequestActionApproval",
+            initialValue = false,
+            expectedSelectionAfterClick = false,
+        )
+        exercise(
+            label = "Always allow HTTP history access",
+            key = "_alwaysAllowHttpHistory",
+            initialValue = true,
+            expectedSelectionAfterClick = true,
+        )
     }
 
     @Test

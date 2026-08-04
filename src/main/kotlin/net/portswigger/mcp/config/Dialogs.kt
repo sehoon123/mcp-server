@@ -45,9 +45,11 @@ object Dialogs {
         return result.toString()
     }
 
-    private fun createDialog(parent: Component?): JDialog {
+    private fun createDialog(parent: Component?, title: String): JDialog {
+        require(title.isNotBlank()) { "Dialog title must not be blank" }
         val parentWindow = parent?.let(SwingUtilities::getWindowAncestor)
-        return JDialog(parentWindow, "", Dialog.ModalityType.APPLICATION_MODAL).apply {
+        return JDialog(parentWindow, title, Dialog.ModalityType.APPLICATION_MODAL).apply {
+            accessibleContext.accessibleName = title
             background = Design.Colors.surface
             defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
             isResizable = true
@@ -68,7 +70,13 @@ object Dialogs {
     fun showMessageDialog(
         parent: Component?, message: String, messageType: Int
     ) {
-        val dialog = createDialog(parent)
+        val title = when (messageType) {
+            JOptionPane.ERROR_MESSAGE -> "MCP error"
+            JOptionPane.WARNING_MESSAGE -> "MCP warning"
+            JOptionPane.INFORMATION_MESSAGE -> "MCP information"
+            else -> "MCP message"
+        }
+        val dialog = createDialog(parent, title)
 
         val iconLabel = when (messageType) {
             JOptionPane.ERROR_MESSAGE -> JLabel("⚠").apply {
@@ -140,11 +148,7 @@ object Dialogs {
         optionType: Int,
         title: String,
     ): Int {
-        require(title.isNotBlank()) { "Confirmation dialog title must not be blank" }
-        val dialog = createDialog(parent).apply {
-            this.title = title
-            accessibleContext.accessibleName = title
-        }
+        val dialog = createDialog(parent, title)
         var result = JOptionPane.CANCEL_OPTION
 
         val messageLabel = WrappingText(
@@ -222,9 +226,9 @@ object Dialogs {
     }
 
     fun showInputDialog(
-        parent: Component?, message: String
+        parent: Component?, message: String, title: String
     ): String? {
-        val dialog = createDialog(parent)
+        val dialog = createDialog(parent, title)
         var result: String? = null
 
         val messageLabel = WrappingText(
@@ -234,6 +238,7 @@ object Dialogs {
         )
 
         val inputField = JTextField(20).apply {
+            accessibleContext.accessibleName = title
             font = Design.Typography.bodyLarge
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Design.Colors.outline, 1), BorderFactory.createEmptyBorder(
@@ -362,7 +367,7 @@ object Dialogs {
         requestContent: String? = null,
         api: MontoyaApi? = null
     ): Int {
-        val dialog = createDialog(parent)
+        val dialog = createDialog(parent, "MCP approval required")
         var result = -1
 
         val messageArea = JTextArea(message).apply {

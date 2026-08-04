@@ -247,6 +247,22 @@ class McpAuditLogTest {
     }
 
     @Test
+    fun `successful audit disable retains one terminal bounded event`() {
+        val fixture = auditFixture()
+        fixture.config.auditLoggingEnabled = false
+
+        fixture.log.recordAuditDisabled()
+        fixture.log.recordLocalEvent("ignored_after_disable", "completed")
+        fixture.log.flush()
+
+        val record = fixture.log.snapshot().single()
+        assertEquals("audit_logging", record.tool)
+        assertEquals("disabled", record.outcome)
+        assertFalse((fixture.storage.getValue("redactedAuditV1") as String).contains("ignored_after_disable"))
+        fixture.log.close()
+    }
+
+    @Test
     fun `disabled logging records nothing and clear removes persisted records`() {
         val fixture = auditFixture()
         fixture.config.auditLoggingEnabled = false
