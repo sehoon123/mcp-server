@@ -172,6 +172,14 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 
 - Start with one direct sentence that says what the tool does and identifies the data source or destination that
   distinguishes it from neighboring tools.
+- For overlapping tools, put the selection boundary first: say when to prefer this tool, when to use its raw or
+  reference-based counterpart, and whether an already-produced stable reference should be reused instead of searched
+  for again.
+- Put cross-tool sequencing in the MCP initialize `instructions` field, while keeping each individual description
+  self-contained enough for clients that ignore server instructions or load tools selectively. Do not require a read
+  step when a later action can consume the producing reference directly.
+- For sparse optional objects, document omission semantics both on the tool and the property. State whether each call
+  starts from a fresh source, whether changes accumulate, and how empty or explicit values differ from omission.
 - State network transmission, Burp mutation, routing-only behavior, required approval or access policy, and ambiguous
   execution retry guidance whenever they affect safe tool selection. Tool annotations reinforce these facts but do not
   replace accurate prose.
@@ -188,9 +196,11 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 Review descriptions through `tools/list` and prompt descriptions through `prompts/list`. Test both positive contract
 phrases and the absence of known misleading wording.
 
-References: [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
-[MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts), and
-[MCP client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices).
+References: [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
+[MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts),
+[MCP client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices),
+[Anthropic tool definitions](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/implement-tool-use), and
+[OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).
 
 ### 2. Select accurate tool annotations
 

@@ -45,6 +45,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
+import net.portswigger.mcp.MCP_SERVER_INSTRUCTIONS
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
@@ -493,7 +494,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "20c78ef615bf895f54ee7e21948e871d6af2661e7acb889a2219bbdbf153798d",
+            "cf8c175df36b30197331749f68755f69d32dc23e1238104ae826063549d9a520",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -510,13 +511,45 @@ class ToolsKtTest {
                 )
             }
         }
+        assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
+        assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
+        assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
+        assertTrue(description("send_raw_http_request").contains("Fallback only"))
+        assertTrue(description("route_raw_http_request").contains("Fallback only"))
         assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder routing is unsupported"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
         assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
+        assertTrue(description("search_http_messages").contains("call-start project"))
         assertTrue(description("search_http_messages").contains("items=[] with hasMore=true"))
         assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
+        assertTrue(description("search_http_messages").contains("{source,id}"))
+        assertTrue(description("get_http_message").contains("search_http_messages"))
+        assertTrue(description("get_http_message").contains("nextOffsetBytes as offset"))
+        assertTrue(description("get_http_message").contains("not required before the from-ID action tools"))
+        assertTrue(description("send_http_request_from_id").contains("Each call restarts from the stored source"))
+        assertTrue(description("send_http_request_from_id").contains("patches never accumulate"))
+        assertTrue(description("route_http_message_from_id").contains("Each call restarts from the stored source"))
+        assertTrue(description("route_http_message_from_id").contains("patches never accumulate"))
+        listOf("send_http_request_from_id", "route_http_message_from_id").forEach { toolName ->
+            val properties = requireNotNull(tools[toolName]).inputSchema.properties.orEmpty()
+            assertTrue(
+                properties.getValue("ref").jsonObject.getValue("description").jsonPrimitive.content
+                    .contains("search_http_messages"),
+                "$toolName.ref must identify the producing search",
+            )
+            val patchDescription =
+                properties.getValue("patch").jsonObject.getValue("description").jsonPrimitive.content
+            assertTrue(
+                patchDescription.contains("patches are not cumulative"),
+                "$toolName.patch must disclose fresh-source semantics",
+            )
+            assertTrue(
+                patchDescription.contains("omission or {} makes no request changes"),
+                "$toolName.patch must distinguish omission and an empty sparse patch",
+            )
+        }
         assertTrue(description("correlate_http_activity").contains("ranked related events"))
         assertTrue(description("correlate_http_activity").contains("never change the explicit delta"))
         assertTrue(description("correlate_http_activity").contains("establish no identity, chronology, causality"))
@@ -2142,7 +2175,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "48fd062e6e524b6bb3bb24b6560b10cb8b09291cdd205144f50dc27a87b8185d",
+                "696c4db6b75357a499dd6401a613f4e793f770afc0897326bfd97e286b189980",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->

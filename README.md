@@ -437,15 +437,22 @@ denial, missing explicit or selected related record, accessor failure, or cancel
 
 ## Stable-ID request actions
 
-Copy `projectId` and the complete `{source, id}` reference from `search_http_messages`; do not reconstruct the original
-HTTP message in the model. Two structured tools resolve the current Burp item and fail closed if its project or opaque
-Site Map identity no longer matches:
+For existing Burp traffic, the preferred autonomous flow is `search_http_messages` → optional `get_http_message` → a
+from-ID action with only changed `patch` fields. Reuse `projectId` and the complete `{source, id}` reference from the
+search or another producing result; do not reconstruct the original HTTP message in the model. `get_http_message` is
+needed only when compact search metadata is insufficient, because both action tools resolve the current Burp item and
+fail closed if its project or opaque Site Map identity no longer matches:
 
 - `send_http_request_from_id` replays one request to its original network destination.
 - `route_http_message_from_id` routes one request to exactly one `repeater`, `intruder`, or `organizer` destination.
 
+The server also advertises this sequence through MCP initialize `instructions`; clients that ignore that field still
+receive self-contained guidance in each tool description.
+
 An optional `patch` can change the method or path; remove, set, or add headers; remove, set, or add typed URL/body/cookie/
-XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Body replacement cannot be mixed with
+XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Omitted fields inherit the stored request.
+Every action resolves that stored source again, so patches do not accumulate across calls; a later variant must include
+any earlier deltas it still needs, without repeating unchanged request data. Body replacement cannot be mixed with
 body-backed parameter mutations. The destination service cannot be changed by a patch, so the approved Burp request
 remains bound to its original host, port, and TLS mode.
 
