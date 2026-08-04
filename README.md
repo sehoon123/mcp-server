@@ -501,9 +501,10 @@ stored values fail closed and are preserved rather than overwritten.
 The **Workflow Preset Manager** in Burp's **MCP Bridge** tab uses the same synchronized project-backed store as those
 four MCP tools. It can create, inspect, update, delete, and refresh the three safe definition types without executing a
 preset or reading traffic. The structured editor intentionally has no project-ID, cursor, stable-reference,
-connection-ID, traffic/result, content-predicate, credential, or token field. A project transition after a possible
-write is reported as uncertain and requires an explicit refresh before retrying. The manager adds no MCP tool, resource,
-prompt, route, or dynamic catalog entry.
+connection-ID, traffic/result, content-predicate, credential, or token field. Before deletion, the confirmation identifies
+the selected preset by its bounded name and type without including its description or saved input values. A project
+transition after a possible write is reported as uncertain and requires an explicit refresh before retrying. The manager
+adds no MCP tool, resource, prompt, route, or dynamic catalog entry.
 
 ## Scope, comparison, and focused Scanner audits
 

@@ -5,6 +5,7 @@ import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetStatus
+import net.portswigger.mcp.presets.MAX_WORKFLOW_PRESET_NAME_CHARS
 import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetManagement
 import net.portswigger.mcp.presets.WorkflowPresetType
@@ -30,16 +31,87 @@ import javax.swing.SwingUtilities
 import javax.swing.table.AbstractTableModel
 
 private const val PRESET_PANEL_TEXT_FALLBACK_WIDTH = 480
+internal const val MAX_WORKFLOW_PRESET_DELETE_CONFIRMATION_CHARS = 640
 
 internal fun interface WorkflowPresetDeleteConfirmation {
     fun confirm(parent: JComponent, preset: WorkflowPreset): Boolean
+}
+
+internal fun workflowPresetDeleteConfirmationMessage(preset: WorkflowPreset): String {
+    val safeName = boundedPresetNameForConfirmation(preset.name)
+    return (
+        "Delete the workflow preset \"$safeName\" (${preset.definition.kind().displayName()})? " +
+            "This changes only the current Burp project's saved settings and does not execute traffic."
+    ).also { message ->
+        check(message.length <= MAX_WORKFLOW_PRESET_DELETE_CONFIRMATION_CHARS) {
+            "workflow preset delete confirmation exceeded its fixed bound"
+        }
+        check(
+            message.codePoints().noneMatch { codePoint ->
+                Character.isISOControl(codePoint) || presetNameCodePointRequiresEscape(codePoint)
+            },
+        ) {
+            "workflow preset delete confirmation contained non-rendering text"
+        }
+    }
+}
+
+private fun boundedPresetNameForConfirmation(name: String): String = buildString {
+    val rawLimit = minOf(name.length, MAX_WORKFLOW_PRESET_NAME_CHARS)
+    var index = 0
+    while (index < rawLimit) {
+        val first = name[index]
+        if (
+            Character.isHighSurrogate(first) &&
+            index + 1 == rawLimit &&
+            rawLimit < name.length &&
+            Character.isLowSurrogate(name[rawLimit])
+        ) {
+            break
+        }
+        val codePoint = if (
+            Character.isHighSurrogate(first) &&
+            index + 1 < rawLimit &&
+            Character.isLowSurrogate(name[index + 1])
+        ) {
+            Character.toCodePoint(first, name[index + 1])
+        } else {
+            first.code
+        }
+        index += Character.charCount(codePoint)
+        when {
+            Character.isISOControl(codePoint) -> Unit
+            codePoint == '\\'.code -> append("\\\\")
+            codePoint == '"'.code -> append("\\\"")
+            presetNameCodePointRequiresEscape(codePoint) -> appendUnicodeEscape(codePoint)
+            else -> appendCodePoint(codePoint)
+        }
+    }
+}
+
+private fun presetNameCodePointRequiresEscape(codePoint: Int): Boolean = when (Character.getType(codePoint)) {
+    Character.FORMAT.toInt(),
+    Character.LINE_SEPARATOR.toInt(),
+    Character.PARAGRAPH_SEPARATOR.toInt(),
+    Character.SURROGATE.toInt() -> true
+    else -> false
+}
+
+private fun StringBuilder.appendUnicodeEscape(codePoint: Int) {
+    if (codePoint <= 0xffff) {
+        append("\\u")
+        append(codePoint.toString(16).padStart(4, '0'))
+    } else {
+        append("\\U")
+        append(codePoint.toString(16).padStart(8, '0'))
+    }
 }
 
 private object SwingWorkflowPresetDeleteConfirmation : WorkflowPresetDeleteConfirmation {
     override fun confirm(parent: JComponent, preset: WorkflowPreset): Boolean =
         Dialogs.showConfirmDialog(
             parent,
-            "Delete the selected workflow preset? This changes only the current Burp project's saved settings and does not execute traffic.",
+            workflowPresetDeleteConfirmationMessage(preset),
             javax.swing.JOptionPane.YES_NO_OPTION,
         ) == javax.swing.JOptionPane.YES_OPTION
 }

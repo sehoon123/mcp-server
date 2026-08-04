@@ -344,10 +344,12 @@ category.
 The v4.12 native manager and the four MCP tools share the exact same `WorkflowPresetStore` instance. Native list/save/delete
 operations recheck the current project and expose only closed local statuses; they never execute a preset or return traffic.
 Malformed or unknown storage remains preserved, and a possible write followed by cancellation or a project transition is
-`UNCERTAIN` and must be manually reconciled. Keep `LocalWorkflowPresetManager` independent of MCP SDK request,
-transport, and result classes: a future released Kotlin SDK migration should replace only the tool/transport adapters,
-not fork the persistence, validation, project-boundary, or Swing-management logic. Do not add dynamic resources,
-subscriptions, prompts, or catalog entries for the native manager.
+`UNCERTAIN` and must be manually reconciled. Native delete confirmation must identify the selected target with a bounded,
+control-free preset name and type while omitting the description and saved input values; keep the safe negative action as
+the dialog default. Keep `LocalWorkflowPresetManager` independent of MCP SDK request, transport, and result classes: a
+future released Kotlin SDK migration should replace only the tool/transport adapters, not fork the persistence,
+validation, project-boundary, or Swing-management logic. Do not add dynamic resources, subscriptions, prompts, or catalog
+entries for the native manager.
 
 ## Resources and prompts
 
