@@ -283,7 +283,7 @@ class ClientSetupPanelTest {
             val installSnapshots = AtomicInteger()
             val executions = AtomicInteger()
             lateinit var panel: ClientSetupPanel
-            every { Dialogs.showConfirmDialog(any(), any(), any()) } answers {
+            every { Dialogs.showConfirmDialog(any(), any(), any(), any()) } answers {
                 panel.cancelBackgroundWork()
                 javax.swing.JOptionPane.YES_OPTION
             }

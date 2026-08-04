@@ -46,7 +46,7 @@ object Dialogs {
     }
 
     private fun createDialog(parent: Component?): JDialog {
-        val parentWindow = SwingUtilities.getWindowAncestor(parent)
+        val parentWindow = parent?.let(SwingUtilities::getWindowAncestor)
         return JDialog(parentWindow, "", Dialog.ModalityType.APPLICATION_MODAL).apply {
             background = Design.Colors.surface
             defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
@@ -135,9 +135,16 @@ object Dialogs {
     }
 
     fun showConfirmDialog(
-        parent: Component?, message: String, optionType: Int
+        parent: Component?,
+        message: String,
+        optionType: Int,
+        title: String,
     ): Int {
-        val dialog = createDialog(parent)
+        require(title.isNotBlank()) { "Confirmation dialog title must not be blank" }
+        val dialog = createDialog(parent).apply {
+            this.title = title
+            accessibleContext.accessibleName = title
+        }
         var result = JOptionPane.CANCEL_OPTION
 
         val messageLabel = WrappingText(

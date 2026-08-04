@@ -5,6 +5,7 @@ import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.DEFAULT_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.MAX_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.MIN_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.McpConfig
@@ -21,7 +22,6 @@ import java.time.Instant
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
-import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JLabel
 import javax.swing.JOptionPane
@@ -154,7 +154,8 @@ internal class DiagnosticsPanel(
         ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        val resetSessionApprovalsButton = JButton("Reset active session approvals").apply {
+        val resetSessionApprovalsButton = Design.createOutlinedButton("Reset active session approvals").apply {
+            accessibleContext.accessibleDescription = "Remove all in-memory MCP session approval grants"
             addActionListener {
                 runCatching { clearSessionApprovals() }
                     .onSuccess { cleared ->
@@ -167,15 +168,16 @@ internal class DiagnosticsPanel(
                     }
             }
         }
-        val resetPersistentApprovalsButton = JButton("Reset all persistent approvals...").apply {
+        val resetPersistentApprovalsButton = Design.createOutlinedButton("Reset all persistent approvals...").apply {
+            accessibleContext.accessibleDescription =
+                "After confirmation, restore persistent MCP approval policies to prompt-by-default"
             addActionListener {
-                val choice = JOptionPane.showConfirmDialog(
+                val choice = Dialogs.showConfirmDialog(
                     this@DiagnosticsPanel,
                     "Restore all MCP approval policies to prompt-by-default? " +
                         "This disables YOLO mode and clears saved HTTP targets and all persistent approval bypasses.",
-                    "Reset persistent MCP approvals",
                     JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE,
+                    "Reset persistent MCP approvals",
                 )
                 if (choice == JOptionPane.OK_OPTION) {
                     runCatching {
@@ -194,25 +196,33 @@ internal class DiagnosticsPanel(
         add(AdaptiveButtonPanel(listOf(resetSessionApprovalsButton, resetPersistentApprovalsButton)))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        val refreshButton = JButton("Refresh").apply { addActionListener { refresh() } }
-        val copyDiagnosticsButton = JButton("Copy redacted diagnostics").apply {
+        val refreshButton = Design.createOutlinedButton("Refresh").apply {
+            accessibleContext.accessibleDescription = "Refresh the displayed redacted MCP diagnostics"
+            addActionListener { refresh() }
+        }
+        val copyDiagnosticsButton = Design.createOutlinedButton("Copy redacted diagnostics").apply {
+            accessibleContext.accessibleDescription =
+                "Copy the displayed redacted MCP diagnostics to the system clipboard"
             addActionListener { copyToClipboard(diagnosticsArea.text, "Diagnostics copied") }
         }
-        val copyAuditButton = JButton("Copy recent redacted audit").apply {
+        val copyAuditButton = Design.createOutlinedButton("Copy recent redacted audit").apply {
+            accessibleContext.accessibleDescription =
+                "Copy up to 100 recent redacted MCP audit records to the system clipboard"
             addActionListener {
                 val exported = auditLog.exportJsonLines(100)
                 if (exported.isEmpty()) statusLabel.updateContent("No audit records to copy")
                 else copyToClipboard(exported, "Recent redacted audit copied")
             }
         }
-        val clearAuditButton = JButton("Clear audit...").apply {
+        val clearAuditButton = Design.createSemanticOutlinedButton("Clear audit...") { Design.Colors.error }.apply {
+            accessibleContext.accessibleDescription =
+                "After confirmation, permanently delete all persisted MCP audit records"
             addActionListener {
-                val choice = JOptionPane.showConfirmDialog(
+                val choice = Dialogs.showConfirmDialog(
                     this@DiagnosticsPanel,
                     "Delete all persisted MCP audit records? This cannot be undone.",
-                    "Clear MCP audit",
                     JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE,
+                    "Clear MCP audit",
                 )
                 if (choice == JOptionPane.OK_OPTION) {
                     auditLog.clear()

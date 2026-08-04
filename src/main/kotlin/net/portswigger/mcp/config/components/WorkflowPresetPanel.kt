@@ -113,6 +113,7 @@ private object SwingWorkflowPresetDeleteConfirmation : WorkflowPresetDeleteConfi
             parent,
             workflowPresetDeleteConfirmationMessage(preset),
             javax.swing.JOptionPane.YES_NO_OPTION,
+            "Delete workflow preset",
         ) == javax.swing.JOptionPane.YES_OPTION
 }
 

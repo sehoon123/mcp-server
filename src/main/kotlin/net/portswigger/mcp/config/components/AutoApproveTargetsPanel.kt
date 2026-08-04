@@ -241,7 +241,10 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
         val clearButton = Design.createOutlinedButton("Clear All").apply {
             addActionListener {
                 val result = Dialogs.showConfirmDialog(
-                    findBurpFrame(), "Remove all auto-approved targets?", YES_NO_OPTION
+                    this@AutoApproveTargetsPanel,
+                    "Remove all auto-approved targets?",
+                    YES_NO_OPTION,
+                    "Clear auto-approved targets",
                 )
 
                 if (result == YES_OPTION) {
