@@ -18,6 +18,7 @@ import net.portswigger.mcp.providers.ConnectionDoctor
 import net.portswigger.mcp.providers.DoctorExchange
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyJarManager
+import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -358,11 +359,13 @@ class ConfigUiTest {
             )
         }
 
-        mockkStatic(JOptionPane::class)
+        mockkObject(Dialogs)
         try {
             val confirmation = AtomicInteger(JOptionPane.CANCEL_OPTION)
             every {
-                JOptionPane.showConfirmDialog(any(), any(), any(), any(), any())
+                Dialogs.showConfirmDialog(
+                    any(), any(), JOptionPane.OK_CANCEL_OPTION, "Rotate local bearer token"
+                )
             } answers { confirmation.get() }
             val buttons = ui.component.descendants().filterIsInstance<JButton>().toList()
             val runDoctor = buttons.single { it.name == "runConnectionDoctorButton" }
@@ -388,7 +391,41 @@ class ConfigUiTest {
             }
             assertEquals(1, exchanges.get())
         } finally {
-            unmockkStatic(JOptionPane::class)
+            unmockkObject(Dialogs)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `failed state dialog exception does not suppress later server toggles`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        val ui = ConfigUi(config, emptyList())
+        val toggles = AtomicInteger()
+        ui.onEnabledToggled { toggles.incrementAndGet() }
+
+        mockkObject(Dialogs)
+        try {
+            every { Dialogs.showMessageDialog(any(), any(), any()) } throws
+                IllegalStateException("dialog unavailable")
+
+            ui.updateServerState(ServerState.Failed(IllegalStateException("listener failure")))
+            SwingUtilities.invokeAndWait { }
+            val enabledToggle = ui.component.descendants().filterIsInstance<ToggleSwitch>().single()
+            SwingUtilities.invokeAndWait {
+                enabledToggle.actionMap.get("toggle").actionPerformed(null)
+            }
+
+            assertEquals(1, toggles.get())
+        } finally {
+            unmockkObject(Dialogs)
             ui.cleanup()
         }
     }
@@ -509,7 +546,7 @@ class ConfigUiTest {
     }
 
     @Test
-    fun `allow all HTTP requests checkbox inversely controls the secure approval policy`() {
+    fun `confirmed allow all HTTP requests checkbox inversely controls the secure approval policy`() {
         val booleans = mutableMapOf("requireHttpRequestApproval" to true)
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } answers { booleans[firstArg()] }
@@ -523,7 +560,11 @@ class ConfigUiTest {
         )
         val ui = ConfigUi(config, emptyList())
 
+        mockkObject(Dialogs)
         try {
+            every {
+                Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
+            } returns JOptionPane.YES_OPTION
             val checkbox = ui.component.descendants()
                 .filterIsInstance<JCheckBox>()
                 .single { it.text == "Always allow all outbound HTTP requests" }
@@ -537,7 +578,11 @@ class ConfigUiTest {
             SwingUtilities.invokeAndWait { checkbox.doClick() }
             assertFalse(checkbox.isSelected)
             assertTrue(config.requireHttpRequestApproval)
+            verify(exactly = 1) {
+                Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
+            }
         } finally {
+            unmockkObject(Dialogs)
             ui.cleanup()
         }
     }
@@ -580,6 +625,92 @@ class ConfigUiTest {
     }
 
     @Test
+    fun `sensitive Advanced and Diagnostics actions expose focus and consequence descriptions`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        val ui = ConfigUi(config, emptyList())
+
+        try {
+            val buttons = ui.component.descendants().filterIsInstance<JButton>().associateBy { it.text }
+            listOf(
+                "Copy local bearer token",
+                "Rotate local bearer token...",
+                "Reset active session approvals",
+                "Reset all persistent approvals...",
+                "Refresh",
+                "Copy redacted diagnostics",
+                "Copy recent redacted audit",
+                "Clear audit...",
+            ).forEach { label ->
+                val button = buttons.getValue(label)
+                assertTrue(button.isFocusPainted, "$label must retain visible keyboard focus")
+                assertTrue(
+                    !button.accessibleContext.accessibleDescription.isNullOrBlank(),
+                    "$label must describe its consequence",
+                )
+            }
+        } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `clear audit requires explicit confirmation`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        val auditLog = mockk<McpAuditSink>(relaxed = true)
+        val ui = ConfigUi(
+            config = config,
+            providers = emptyList(),
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = auditLog,
+            proxyProvenance = null,
+            proxyVerified = false,
+            clearSessionApprovals = { 0 },
+        )
+        var choice = JOptionPane.CANCEL_OPTION
+
+        mockkObject(Dialogs)
+        try {
+            every {
+                Dialogs.showConfirmDialog(
+                    any(),
+                    match { it.contains("cannot be undone") },
+                    JOptionPane.OK_CANCEL_OPTION,
+                    "Clear MCP audit",
+                )
+            } answers { choice }
+            val button = ui.component.descendants()
+                .filterIsInstance<JButton>()
+                .single { it.text == "Clear audit..." }
+
+            SwingUtilities.invokeAndWait { button.doClick() }
+            verify(exactly = 0) { auditLog.clear() }
+
+            choice = JOptionPane.OK_OPTION
+            SwingUtilities.invokeAndWait { button.doClick() }
+            verify(exactly = 1) { auditLog.clear() }
+        } finally {
+            unmockkObject(Dialogs)
+            ui.cleanup()
+        }
+    }
+
+    @Test
     fun `persistent approval reset button restores secure config and visible controls`() {
         val booleans = mutableMapOf(
             "requireHttpRequestApproval" to false,
@@ -606,10 +737,12 @@ class ConfigUiTest {
             net.portswigger.mcp.testPreferences(),
         )
         val ui = ConfigUi(config, emptyList())
-        mockkStatic(JOptionPane::class)
+        mockkObject(Dialogs)
         try {
             every {
-                JOptionPane.showConfirmDialog(any(), any(), any(), any(), any())
+                Dialogs.showConfirmDialog(
+                    any(), any(), JOptionPane.OK_CANCEL_OPTION, "Reset persistent MCP approvals"
+                )
             } returns JOptionPane.OK_OPTION
             val button = ui.component.descendants()
                 .filterIsInstance<JButton>()
@@ -635,7 +768,82 @@ class ConfigUiTest {
             assertTrue(checkboxes.getValue("Require approval for Target scope changes").isSelected)
             assertTrue(checkboxes.getValue("Require approval for project data access").isSelected)
         } finally {
-            unmockkStatic(JOptionPane::class)
+            unmockkObject(Dialogs)
+            ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `partial persistent approval reset reconciles every visible effective policy`() {
+        val booleans = mutableMapOf(
+            "requireHttpRequestApproval" to false,
+            "requireRequestActionApproval" to false,
+            "requireScopeChangeApproval" to false,
+            "requireDataAccessApproval" to false,
+            "_alwaysAllowHttpHistory" to true,
+            "_alwaysAllowSiteMap" to true,
+            "_alwaysAllowWebSocketHistory" to true,
+            "_alwaysAllowOrganizer" to true,
+            "_alwaysAllowScannerIssues" to true,
+            "_alwaysAllowCollaboratorInteractions" to true,
+        )
+        val strings = mutableMapOf("_autoApproveTargets" to "example.com")
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { booleans[firstArg()] }
+        every { storage.setBoolean(any(), any()) } answers {
+            val key = firstArg<String>()
+            val value = secondArg<Boolean>()
+            if (key == "requireScopeChangeApproval" && value) {
+                throw IllegalStateException("private storage failure")
+            }
+            booleans[key] = value
+        }
+        every { storage.getString(any()) } answers { strings[firstArg()] }
+        every { storage.setString(any(), any()) } answers { strings[firstArg()] = secondArg() }
+        every { storage.getInteger(any()) } returns null
+        val config = McpConfig(
+            storage,
+            mockk<Logging>(relaxed = true),
+            net.portswigger.mcp.testPreferences(),
+        )
+        val ui = ConfigUi(config, emptyList())
+        mockkObject(Dialogs)
+        try {
+            every {
+                Dialogs.showConfirmDialog(
+                    any(), any(), JOptionPane.OK_CANCEL_OPTION, "Reset persistent MCP approvals"
+                )
+            } returns JOptionPane.OK_OPTION
+            val button = ui.component.descendants()
+                .filterIsInstance<JButton>()
+                .single { it.text == "Reset all persistent approvals..." }
+
+            SwingUtilities.invokeAndWait { button.doClick() }
+            SwingUtilities.invokeAndWait { }
+
+            assertTrue(config.requireHttpRequestApproval)
+            assertTrue(config.requireRequestActionApproval)
+            assertFalse(config.requireScopeChangeApproval)
+            assertTrue(config.requireDataAccessApproval)
+            assertFalse(config.alwaysAllowHttpHistory)
+            assertFalse(config.alwaysAllowSiteMap)
+            assertFalse(config.alwaysAllowWebSocketHistory)
+            assertFalse(config.alwaysAllowOrganizer)
+            assertFalse(config.alwaysAllowScannerIssues)
+            assertFalse(config.alwaysAllowCollaboratorInteractions)
+            val checkboxes = ui.component.descendants().filterIsInstance<JCheckBox>().associateBy { it.text }
+            assertFalse(checkboxes.getValue("Always allow all outbound HTTP requests").isSelected)
+            assertTrue(checkboxes.getValue("Require approval for request routing and derived-request actions").isSelected)
+            assertFalse(checkboxes.getValue("Require approval for Target scope changes").isSelected)
+            assertTrue(checkboxes.getValue("Require approval for project data access").isSelected)
+            assertFalse(checkboxes.getValue("Always allow HTTP history access").isSelected)
+            assertTrue(checkboxes.getValue("Always allow HTTP history access").isEnabled)
+            assertTrue(
+                ui.component.descendants().filterIsInstance<WrappingText>()
+                    .any { it.text.contains("Could not reset persistent approvals") }
+            )
+        } finally {
+            unmockkObject(Dialogs)
             ui.cleanup()
         }
     }

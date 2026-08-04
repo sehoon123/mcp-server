@@ -384,8 +384,8 @@ internal fun Server.registerTools(
         httpMessageSearchService,
         services.historyPerformanceDiagnostics,
     )
-    val httpMessageActionService = HttpMessageActionService(api, config, services::markOrganizerChanged)
-    val rawHttpActionService = RawHttpActionService(api, config, services::markOrganizerChanged)
+    val httpMessageActionService = HttpMessageActionService(api, config, services::withOrganizerMutation)
+    val rawHttpActionService = RawHttpActionService(api, config, services::withOrganizerMutation)
     val httpMessageReadService = HttpMessageReadService(api, config)
     val webSocketMessageSearchService = WebSocketMessageSearchService(
         api,

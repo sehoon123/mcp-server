@@ -580,7 +580,13 @@ internal class ClientSetupPanel(
         if (closed.get() || actionInProgress || selectedDefinition().id != ClientSetupId.CLAUDE_DESKTOP) return
 
         provider.confirmationText?.let { confirmation ->
-            if (Dialogs.showConfirmDialog(parentComponent, confirmation, YES_NO_OPTION) != YES_OPTION) return
+            val result = Dialogs.showConfirmDialog(
+                parentComponent,
+                confirmation,
+                YES_NO_OPTION,
+                "Install Claude Desktop configuration",
+            )
+            if (result != YES_OPTION) return
         }
         if (closed.get() || actionInProgress || selectedDefinition().id != ClientSetupId.CLAUDE_DESKTOP) return
         val snapshot = try {

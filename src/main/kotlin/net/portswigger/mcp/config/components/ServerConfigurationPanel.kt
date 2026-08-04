@@ -4,7 +4,6 @@ import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.ToggleSwitch
-import net.portswigger.mcp.security.findBurpFrame
 import java.awt.FlowLayout
 import java.awt.event.ItemEvent
 import javax.swing.*
@@ -29,6 +28,7 @@ class ServerConfigurationPanel(
     private lateinit var requestActionApprovalCheckBox: JCheckBox
     private lateinit var scopeChangeApprovalCheckBox: JCheckBox
     private lateinit var dataAccessApprovalCheckBox: JCheckBox
+    private var refreshingPersistentApprovalControls = false
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -65,7 +65,12 @@ class ServerConfigurationPanel(
         val configEditingToolingCheckBox = createCheckBoxWithSubtitle(
             "Enable tools that can edit your config",
             "WARNING: Can execute code",
-            config.configEditingTooling
+            config.configEditingTooling,
+            unsafeSelection = true,
+            unsafeConfirmationTitle = "Enable configuration-editing tools",
+            unsafeConfirmation = "These MCP tools can import Burp project or user configuration and may execute " +
+                "code through Burp configuration. Enable configuration-editing tools?",
+            currentValue = { config.configEditingTooling },
         ) { config.configEditingTooling = it }
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
@@ -74,6 +79,11 @@ class ServerConfigurationPanel(
             "Always allow all outbound HTTP requests",
             "WARNING: Disables per-target approval for every destination",
             !config.requireHttpRequestApproval,
+            unsafeSelection = true,
+            unsafeConfirmationTitle = "Allow all outbound HTTP requests",
+            unsafeConfirmation = "This allows every authenticated MCP session to send outbound HTTP requests " +
+                "to any destination without per-target approval. Always allow all outbound HTTP requests?",
+            currentValue = { !config.requireHttpRequestApproval },
             onChange = { allowAll -> config.requireHttpRequestApproval = !allowAll },
             onCreated = { allowAllHttpRequestsCheckBox = it },
         )
@@ -81,13 +91,23 @@ class ServerConfigurationPanel(
         add(createVerticalStrut(Design.Spacing.MD))
 
         requestActionApprovalCheckBox = createStandardCheckBox(
-            "Require approval for request routing and derived-request actions", config.requireRequestActionApproval
+            text = "Require approval for request routing and derived-request actions",
+            initialValue = config.requireRequestActionApproval,
+            unsafeConfirmationTitle = "Disable request-action approval",
+            unsafeConfirmation = "Authenticated MCP sessions may route requests and create derived requests " +
+                "without another local prompt. Disable approval for request routing and derived-request actions?",
+            currentValue = { config.requireRequestActionApproval },
         ) { config.requireRequestActionApproval = it }
         add(requestActionApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         scopeChangeApprovalCheckBox = createStandardCheckBox(
-            "Require approval for Target scope changes", config.requireScopeChangeApproval
+            text = "Require approval for Target scope changes",
+            initialValue = config.requireScopeChangeApproval,
+            unsafeConfirmationTitle = "Disable Target scope-change approval",
+            unsafeConfirmation = "Authenticated MCP sessions may change Burp Target scope without another local " +
+                "prompt. Disable approval for Target scope changes?",
+            currentValue = { config.requireScopeChangeApproval },
         ) { config.requireScopeChangeApproval = it }
         add(scopeChangeApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
@@ -97,45 +117,73 @@ class ServerConfigurationPanel(
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowHttpHistoryCheckBox = createIndentedCheckBox(
-            "Always allow HTTP history access", config.alwaysAllowHttpHistory, config.requireDataAccessApproval
+            text = "Always allow HTTP history access",
+            initialValue = config.alwaysAllowHttpHistory,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow HTTP history access",
+            unsafeConfirmation = "Authenticated MCP sessions may read HTTP history without another local prompt. " +
+                "Always allow HTTP history access?",
+            currentValue = { config.alwaysAllowHttpHistory },
         ) { config.alwaysAllowHttpHistory = it }
         add(alwaysAllowHttpHistoryCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowSiteMapCheckBox = createIndentedCheckBox(
-            "Always allow Site Map access", config.alwaysAllowSiteMap, config.requireDataAccessApproval
+            text = "Always allow Site Map access",
+            initialValue = config.alwaysAllowSiteMap,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow Site Map access",
+            unsafeConfirmation = "Authenticated MCP sessions may read Site Map items without another local prompt. " +
+                "Always allow Site Map access?",
+            currentValue = { config.alwaysAllowSiteMap },
         ) { config.alwaysAllowSiteMap = it }
         add(alwaysAllowSiteMapCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowWebSocketHistoryCheckBox = createIndentedCheckBox(
-            "Always allow WebSocket history access",
-            config.alwaysAllowWebSocketHistory,
-            config.requireDataAccessApproval
+            text = "Always allow WebSocket history access",
+            initialValue = config.alwaysAllowWebSocketHistory,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow WebSocket history access",
+            unsafeConfirmation = "Authenticated MCP sessions may read WebSocket history without another local prompt. " +
+                "Always allow WebSocket history access?",
+            currentValue = { config.alwaysAllowWebSocketHistory },
         ) { config.alwaysAllowWebSocketHistory = it }
         add(alwaysAllowWebSocketHistoryCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowOrganizerCheckBox = createIndentedCheckBox(
-            "Always allow Organizer access",
-            config.alwaysAllowOrganizer,
-            config.requireDataAccessApproval
+            text = "Always allow Organizer access",
+            initialValue = config.alwaysAllowOrganizer,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow Organizer access",
+            unsafeConfirmation = "Authenticated MCP sessions may read Organizer items without another local prompt. " +
+                "Always allow Organizer access?",
+            currentValue = { config.alwaysAllowOrganizer },
         ) { config.alwaysAllowOrganizer = it }
         add(alwaysAllowOrganizerCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowScannerIssuesCheckBox = createIndentedCheckBox(
-            "Always allow Scanner issue access",
-            config.alwaysAllowScannerIssues,
-            config.requireDataAccessApproval
+            text = "Always allow Scanner issue access",
+            initialValue = config.alwaysAllowScannerIssues,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow Scanner issue access",
+            unsafeConfirmation = "Authenticated MCP sessions may read Scanner issues without another local prompt. " +
+                "Always allow Scanner issue access?",
+            currentValue = { config.alwaysAllowScannerIssues },
         ) { config.alwaysAllowScannerIssues = it }
         add(alwaysAllowScannerIssuesCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
 
         alwaysAllowCollaboratorInteractionsCheckBox = createIndentedCheckBox(
-            "Always allow Collaborator interaction access",
-            config.alwaysAllowCollaboratorInteractions,
-            config.requireDataAccessApproval
+            text = "Always allow Collaborator interaction access",
+            initialValue = config.alwaysAllowCollaboratorInteractions,
+            enabled = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Always allow Collaborator interaction access",
+            unsafeConfirmation = "Authenticated MCP sessions may read Collaborator interactions without another " +
+                "local prompt. Always allow Collaborator interaction access?",
+            currentValue = { config.alwaysAllowCollaboratorInteractions },
         ) { config.alwaysAllowCollaboratorInteractions = it }
         add(alwaysAllowCollaboratorInteractionsCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
@@ -143,7 +191,12 @@ class ServerConfigurationPanel(
         val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
             "Filter config credentials",
             "Hides sensitive data in config files (Platform Authentication, socks proxy, etc.)",
-            config.filterConfigCredentials
+            config.filterConfigCredentials,
+            unsafeSelection = false,
+            unsafeConfirmationTitle = "Disable configuration credential filtering",
+            unsafeConfirmation = "This can expose credentials from Burp configuration files to an authenticated " +
+                "MCP client. Disable configuration credential filtering?",
+            currentValue = { config.filterConfigCredentials },
         ) { config.filterConfigCredentials = it }
         add(filterConfigCredentialsCheckBox)
 
@@ -174,7 +227,7 @@ class ServerConfigurationPanel(
         }
 
         val confirmed = Dialogs.showConfirmDialog(
-            findBurpFrame(),
+            this@ServerConfigurationPanel,
             "YOLO mode bypasses every MCP approval prompt, including outbound traffic, project-data reads, " +
                 "request routing, Target scope changes, Scanner actions, configuration access, editor changes, " +
                 "and Burp global-control changes.\n\nAn authenticated MCP client may read sensitive data, send " +
@@ -182,6 +235,7 @@ class ServerConfigurationPanel(
                 "operation bounds, bearer authentication, and Emergency read-only mode remain active.\n\n" +
                 "Enable YOLO mode?",
             JOptionPane.YES_NO_OPTION,
+            "Enable YOLO mode",
         )
         if (confirmed == JOptionPane.YES_OPTION) {
             persistYoloMode(true)
@@ -220,7 +274,13 @@ class ServerConfigurationPanel(
 
     private fun createDataAccessApprovalCheckBox(): JCheckBox {
         return createStandardCheckBox(
-            "Require approval for project data access", config.requireDataAccessApproval
+            text = "Require approval for project data access",
+            initialValue = config.requireDataAccessApproval,
+            unsafeConfirmationTitle = "Disable project-data approval",
+            unsafeConfirmation = "Authenticated MCP sessions may read every supported Burp project-data source " +
+                "without another local prompt. Disable approval for project data access?",
+            currentValue = { config.requireDataAccessApproval },
+            onSettled = ::refreshPersistentApprovalControls,
         ) { enabled ->
             config.requireDataAccessApproval = enabled
             if (!enabled) {
@@ -230,31 +290,21 @@ class ServerConfigurationPanel(
                 config.alwaysAllowOrganizer = false
                 config.alwaysAllowScannerIssues = false
                 config.alwaysAllowCollaboratorInteractions = false
-                alwaysAllowHttpHistoryCheckBox.isSelected = false
-                alwaysAllowSiteMapCheckBox.isSelected = false
-                alwaysAllowWebSocketHistoryCheckBox.isSelected = false
-                alwaysAllowOrganizerCheckBox.isSelected = false
-                alwaysAllowScannerIssuesCheckBox.isSelected = false
-                alwaysAllowCollaboratorInteractionsCheckBox.isSelected = false
             }
-            alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
-            alwaysAllowSiteMapCheckBox.isEnabled = enabled
-            alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
-            alwaysAllowOrganizerCheckBox.isEnabled = enabled
-            alwaysAllowScannerIssuesCheckBox.isEnabled = enabled
-            alwaysAllowCollaboratorInteractionsCheckBox.isEnabled = enabled
         }
     }
 
     fun updateDataAccessCheckboxes() {
         SwingUtilities.invokeLater {
-            dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
-            alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
-            alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
-            alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
-            alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
-            alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
-            alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+            synchronizeApprovalControls {
+                dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
+                alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
+                alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
+                alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
+                alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+                alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+                alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+            }
             updateDataAccessEnabledState(config.requireDataAccessApproval)
         }
     }
@@ -264,16 +314,18 @@ class ServerConfigurationPanel(
     }
 
     private fun refreshPersistentApprovalControls() {
-        allowAllHttpRequestsCheckBox.isSelected = !config.requireHttpRequestApproval
-        requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
-        scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
-        dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
-        alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
-        alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
-        alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
-        alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
-        alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
-        alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+        synchronizeApprovalControls {
+            allowAllHttpRequestsCheckBox.isSelected = !config.requireHttpRequestApproval
+            requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+            scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
+            dataAccessApprovalCheckBox.isSelected = config.requireDataAccessApproval
+            alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
+            alwaysAllowSiteMapCheckBox.isSelected = config.alwaysAllowSiteMap
+            alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
+            alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+            alwaysAllowScannerIssuesCheckBox.isSelected = config.alwaysAllowScannerIssues
+            alwaysAllowCollaboratorInteractionsCheckBox.isSelected = config.alwaysAllowCollaboratorInteractions
+        }
 
         val yoloEnabled = config.approvalYoloMode
         yoloModeButton.text = if (yoloEnabled) "Disable YOLO mode" else "Enable YOLO mode..."
@@ -313,32 +365,53 @@ class ServerConfigurationPanel(
 
     fun updateRequestActionApprovalCheckbox() {
         SwingUtilities.invokeLater {
-            requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+            synchronizeApprovalControls {
+                requestActionApprovalCheckBox.isSelected = config.requireRequestActionApproval
+            }
         }
     }
 
     fun updateScopeChangeApprovalCheckbox() {
         SwingUtilities.invokeLater {
-            scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
+            synchronizeApprovalControls {
+                scopeChangeApprovalCheckBox.isSelected = config.requireScopeChangeApproval
+            }
         }
     }
 
     private fun createStandardCheckBox(
-        text: String, initialValue: Boolean, onChange: (Boolean) -> Unit
+        text: String,
+        initialValue: Boolean,
+        unsafeConfirmationTitle: String,
+        unsafeConfirmation: String,
+        currentValue: () -> Boolean,
+        onSettled: () -> Unit = {},
+        onChange: (Boolean) -> Unit,
     ): JCheckBox {
         return JCheckBox(text).apply {
             alignmentX = LEFT_ALIGNMENT
             isSelected = initialValue
             font = Design.Typography.bodyLarge
             foreground = Design.Colors.onSurface
-            addItemListener { event ->
-                onChange(event.stateChange == ItemEvent.SELECTED)
-            }
+            bindPersistentSelection(
+                unsafeSelection = false,
+                unsafeConfirmationTitle = unsafeConfirmationTitle,
+                unsafeConfirmation = unsafeConfirmation,
+                currentValue = currentValue,
+                onSettled = onSettled,
+                onChange = onChange,
+            )
         }
     }
 
     private fun createIndentedCheckBox(
-        text: String, initialValue: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit
+        text: String,
+        initialValue: Boolean,
+        enabled: Boolean,
+        unsafeConfirmationTitle: String,
+        unsafeConfirmation: String,
+        currentValue: () -> Boolean,
+        onChange: (Boolean) -> Unit,
     ): JCheckBox {
         return JCheckBox(text).apply {
             alignmentX = LEFT_ALIGNMENT
@@ -347,9 +420,13 @@ class ServerConfigurationPanel(
             font = Design.Typography.bodyMedium
             foreground = Design.Colors.onSurfaceVariant
             border = BorderFactory.createEmptyBorder(0, Design.Spacing.LG, 0, 0)
-            addItemListener { event ->
-                onChange(event.stateChange == ItemEvent.SELECTED)
-            }
+            bindPersistentSelection(
+                unsafeSelection = true,
+                unsafeConfirmationTitle = unsafeConfirmationTitle,
+                unsafeConfirmation = unsafeConfirmation,
+                currentValue = currentValue,
+                onChange = onChange,
+            )
         }
     }
 
@@ -357,6 +434,10 @@ class ServerConfigurationPanel(
         mainText: String,
         subtitleText: String,
         initialValue: Boolean,
+        unsafeSelection: Boolean,
+        unsafeConfirmationTitle: String,
+        unsafeConfirmation: String,
+        currentValue: () -> Boolean,
         onCreated: (JCheckBox) -> Unit = {},
         onChange: (Boolean) -> Unit,
     ): JPanel {
@@ -366,9 +447,13 @@ class ServerConfigurationPanel(
             font = Design.Typography.bodyLarge
             foreground = Design.Colors.onSurface
             accessibleContext.accessibleDescription = subtitleText
-            addItemListener { event ->
-                onChange(event.stateChange == ItemEvent.SELECTED)
-            }
+            bindPersistentSelection(
+                unsafeSelection = unsafeSelection,
+                unsafeConfirmationTitle = unsafeConfirmationTitle,
+                unsafeConfirmation = unsafeConfirmation,
+                currentValue = currentValue,
+                onChange = onChange,
+            )
         }
 
         onCreated(checkBox)
@@ -384,6 +469,65 @@ class ServerConfigurationPanel(
             add(checkBox)
             add(subtitle)
         }
+    }
+
+    private fun JCheckBox.bindPersistentSelection(
+        unsafeSelection: Boolean,
+        unsafeConfirmationTitle: String,
+        unsafeConfirmation: String,
+        currentValue: () -> Boolean,
+        onSettled: () -> Unit = {},
+        onChange: (Boolean) -> Unit,
+    ) {
+        var restoringSelection = false
+
+        fun restoreEffectiveSelection(fallback: Boolean) {
+            restoringSelection = true
+            try {
+                isSelected = runCatching(currentValue).getOrDefault(fallback)
+            } finally {
+                restoringSelection = false
+            }
+        }
+
+        addItemListener { event ->
+            if (restoringSelection || refreshingPersistentApprovalControls) return@addItemListener
+            val selected = event.stateChange == ItemEvent.SELECTED
+            if (selected == unsafeSelection &&
+                !confirmUnsafeSelection(unsafeConfirmationTitle, unsafeConfirmation)
+            ) {
+                restoreEffectiveSelection(!selected)
+                return@addItemListener
+            }
+            try {
+                onChange(selected)
+            } catch (_: Exception) {
+                restoreEffectiveSelection(!selected)
+            } finally {
+                onSettled()
+            }
+        }
+    }
+
+    private fun synchronizeApprovalControls(block: () -> Unit) {
+        val wasRefreshing = refreshingPersistentApprovalControls
+        refreshingPersistentApprovalControls = true
+        try {
+            block()
+        } finally {
+            refreshingPersistentApprovalControls = wasRefreshing
+        }
+    }
+
+    private fun confirmUnsafeSelection(title: String, message: String): Boolean = try {
+        Dialogs.showConfirmDialog(
+            this@ServerConfigurationPanel,
+            message,
+            JOptionPane.YES_NO_OPTION,
+            title,
+        ) == JOptionPane.YES_OPTION
+    } catch (_: Exception) {
+        false
     }
 
 }

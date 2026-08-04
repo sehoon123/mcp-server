@@ -27,7 +27,14 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import burp.api.montoya.sitemap.SiteMap
 import burp.api.montoya.websocket.Direction
+import io.modelcontextprotocol.kotlin.sdk.server.ClientConnection
+import io.modelcontextprotocol.kotlin.sdk.server.Server
+import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.mockk.*
@@ -631,6 +638,105 @@ class ToolsKtTest {
                 result?.structuredContent?.get("projectId"),
                 "$toolName must not echo caller-forged projectId before capture",
             )
+        }
+    }
+
+    @Test
+    fun `registered Organizer routes retain the shared mutation guard`() = runBlocking {
+        val project = mockk<burp.api.montoya.project.Project>()
+        val proxy = mockk<Proxy>()
+        val item = mockk<ProxyHttpRequestResponse>()
+        val storedRequest = mockk<HttpRequest>()
+        val rawRequest = mockk<HttpRequest>()
+        val storedBytes = montoyaBytes(byteArrayOf())
+        val rawBody = montoyaBytes(byteArrayOf())
+        val service = mockk<burp.api.montoya.http.HttpService>()
+        val organizer = mockk<Organizer>(relaxed = true)
+        every { api.project() } returns project
+        every { project.id() } returns "project-wiring"
+        every { api.proxy() } returns proxy
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 91
+        every { item.request() } returns storedRequest
+        every { item.response() } returns null
+        every { item.httpService() } returns service
+        every { storedRequest.toByteArray() } returns storedBytes
+        every { storedRequest.bodyOffset() } returns 48
+        every { storedRequest.body() } returns storedBytes
+        every { storedRequest.toString() } returns "GET /stored HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        every { storedRequest.httpService() } returns service
+        every { storedRequest.method() } returns "GET"
+        every { storedRequest.path() } returns "/stored"
+        every { storedRequest.httpVersion() } returns "HTTP/1.1"
+        every { service.host() } returns "example.test"
+        every { service.port() } returns 443
+        every { service.secure() } returns true
+        every { HttpRequest.httpRequest(any(), any<String>()) } returns rawRequest
+        every { rawRequest.bodyOffset() } returns 48
+        every { rawRequest.body() } returns rawBody
+        every { api.organizer() } returns organizer
+
+        val registeredServer = Server(
+            serverInfo = Implementation("organizer-wiring-test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        val services = ToolServices(api, WorkflowPresetStore(workflowStorage))
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "organizer-wiring-session"
+        }
+        registeredServer.registerTools(api, config, services)
+        services.close()
+
+        try {
+            suspend fun invoke(name: String, arguments: JsonObject) =
+                registeredServer.tools.getValue(name).handler(
+                    connection,
+                    CallToolRequest(CallToolRequestParams(name, arguments)),
+                )
+
+            val rawResult = invoke(
+                "route_raw_http_request",
+                JsonObject(
+                    mapOf(
+                        "destination" to JsonPrimitive("organizer"),
+                        "protocol" to JsonPrimitive("http_1"),
+                        "http1" to JsonObject(
+                            mapOf("content" to JsonPrimitive("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")),
+                        ),
+                        "targetHostname" to JsonPrimitive("example.test"),
+                        "targetPort" to JsonPrimitive(443),
+                        "usesHttps" to JsonPrimitive(true),
+                    ),
+                ),
+            )
+            val storedResult = invoke(
+                "route_http_message_from_id",
+                JsonObject(
+                    mapOf(
+                        "projectId" to JsonPrimitive("project-wiring"),
+                        "ref" to JsonObject(
+                            mapOf(
+                                "source" to JsonPrimitive("proxy"),
+                                "id" to JsonPrimitive("91"),
+                            ),
+                        ),
+                        "destination" to JsonPrimitive("organizer"),
+                    ),
+                ),
+            )
+
+            listOf(rawResult, storedResult).forEach { result ->
+                assertEquals(true, result.isError)
+                assertEquals("burp_error", result.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            }
+            verify(exactly = 0) { organizer.sendToOrganizer(any<HttpRequest>()) }
+        } finally {
+            registeredServer.unbindToolRuntimePolicy()
+            registeredServer.close()
         }
     }
 

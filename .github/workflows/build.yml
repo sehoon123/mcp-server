@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/streamable-http, perf/runtime-optimization, feat/stable-history-access, feat/http-message-search]
+    branches: [main, feat/streamable-http, perf/runtime-optimization, feat/stable-history-access, feat/http-message-search, v4.12-http-tool-guidance]
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
           cache-dependency-path: .github/conformance/package-lock.json
 

@@ -5,6 +5,7 @@ import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.config.DEFAULT_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.MAX_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.MIN_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.McpConfig
@@ -21,7 +22,6 @@ import java.time.Instant
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
-import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JLabel
 import javax.swing.JOptionPane
@@ -77,42 +77,44 @@ internal class DiagnosticsPanel(
         add(Design.createSectionLabel("Diagnostics and Safety"))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        add(JCheckBox("Emergency read-only mode").apply {
-            isOpaque = false
-            isSelected = config.emergencyReadOnlyMode
-            alignmentX = LEFT_ALIGNMENT
-            accessibleContext.accessibleDescription =
-                "Blocks tools that are not explicitly marked read-only"
-            addActionListener {
-                config.emergencyReadOnlyMode = isSelected
+        add(createSecurityToggle(
+            text = "Emergency read-only mode",
+            description = "Blocks tools that are not explicitly marked read-only",
+            initialValue = config.emergencyReadOnlyMode,
+            unsafeConfirmationTitle = "Disable Emergency read-only mode",
+            unsafeConfirmation = "Authenticated MCP sessions may use mutation and active-action tools again. " +
+                "Disable Emergency read-only mode?",
+            currentValue = { config.emergencyReadOnlyMode },
+            failureStatus = "Could not update Emergency read-only mode",
+            onChange = { config.emergencyReadOnlyMode = it },
+            onPersisted = { enabled ->
                 auditLog.recordLocalEvent(
                     tool = "emergency_read_only_mode",
-                    outcome = if (isSelected) "enabled" else "disabled",
+                    outcome = if (enabled) "enabled" else "disabled",
                 )
-                refresh()
-            }
-        })
+            },
+        ))
         add(WrappingText("Blocks tools that are not explicitly marked read-only."))
         add(WrappingText(
             "Existing Scanner work is not cancelled; new mutation, routing, generation, and active actions are blocked."
         ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        add(JCheckBox("Persist bounded redacted MCP audit records").apply {
-            isOpaque = false
-            isSelected = config.auditLoggingEnabled
-            alignmentX = LEFT_ALIGNMENT
-            addActionListener {
-                if (isSelected) {
-                    config.auditLoggingEnabled = true
-                    auditLog.recordLocalEvent("audit_logging", "enabled")
-                } else {
-                    auditLog.recordLocalEvent("audit_logging", "disabled")
-                    config.auditLoggingEnabled = false
-                }
-                refresh()
-            }
-        })
+        add(createSecurityToggle(
+            text = "Persist bounded redacted MCP audit records",
+            description = "Retains bounded, redacted records of MCP activity in Burp settings",
+            initialValue = config.auditLoggingEnabled,
+            unsafeConfirmationTitle = "Disable MCP audit persistence",
+            unsafeConfirmation = "Future MCP activity will not be retained in the bounded redacted audit. " +
+                "Disable MCP audit persistence?",
+            currentValue = { config.auditLoggingEnabled },
+            failureStatus = "Could not update MCP audit persistence",
+            onChange = { config.auditLoggingEnabled = it },
+            onPersisted = { enabled ->
+                if (enabled) auditLog.recordLocalEvent("audit_logging", "enabled")
+                else auditLog.recordAuditDisabled()
+            },
+        ))
 
         val retentionPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
@@ -154,7 +156,8 @@ internal class DiagnosticsPanel(
         ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        val resetSessionApprovalsButton = JButton("Reset active session approvals").apply {
+        val resetSessionApprovalsButton = Design.createOutlinedButton("Reset active session approvals").apply {
+            accessibleContext.accessibleDescription = "Remove all in-memory MCP session approval grants"
             addActionListener {
                 runCatching { clearSessionApprovals() }
                     .onSuccess { cleared ->
@@ -167,25 +170,27 @@ internal class DiagnosticsPanel(
                     }
             }
         }
-        val resetPersistentApprovalsButton = JButton("Reset all persistent approvals...").apply {
+        val resetPersistentApprovalsButton = Design.createOutlinedButton("Reset all persistent approvals...").apply {
+            accessibleContext.accessibleDescription =
+                "After confirmation, restore persistent MCP approval policies to prompt-by-default"
             addActionListener {
-                val choice = JOptionPane.showConfirmDialog(
+                val choice = Dialogs.showConfirmDialog(
                     this@DiagnosticsPanel,
                     "Restore all MCP approval policies to prompt-by-default? " +
                         "This disables YOLO mode and clears saved HTTP targets and all persistent approval bypasses.",
-                    "Reset persistent MCP approvals",
                     JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE,
+                    "Reset persistent MCP approvals",
                 )
                 if (choice == JOptionPane.OK_OPTION) {
-                    runCatching {
-                        config.resetPersistentApprovals()
+                    val reset = runCatching { config.resetPersistentApprovals() }
+                    val reconciled = runCatching {
                         onPersistentApprovalsReset()
-                    }.onSuccess {
+                        refresh()
+                    }
+                    if (reset.isSuccess && reconciled.isSuccess) {
                         auditLog.recordLocalEvent("persistent_approvals", "reset_to_prompt")
                         statusLabel.updateContent("Persistent approvals reset to prompt-by-default")
-                        refresh()
-                    }.onFailure {
+                    } else {
                         statusLabel.updateContent("Could not reset persistent approvals")
                     }
                 }
@@ -194,25 +199,33 @@ internal class DiagnosticsPanel(
         add(AdaptiveButtonPanel(listOf(resetSessionApprovalsButton, resetPersistentApprovalsButton)))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
-        val refreshButton = JButton("Refresh").apply { addActionListener { refresh() } }
-        val copyDiagnosticsButton = JButton("Copy redacted diagnostics").apply {
+        val refreshButton = Design.createOutlinedButton("Refresh").apply {
+            accessibleContext.accessibleDescription = "Refresh the displayed redacted MCP diagnostics"
+            addActionListener { refresh() }
+        }
+        val copyDiagnosticsButton = Design.createOutlinedButton("Copy redacted diagnostics").apply {
+            accessibleContext.accessibleDescription =
+                "Copy the displayed redacted MCP diagnostics to the system clipboard"
             addActionListener { copyToClipboard(diagnosticsArea.text, "Diagnostics copied") }
         }
-        val copyAuditButton = JButton("Copy recent redacted audit").apply {
+        val copyAuditButton = Design.createOutlinedButton("Copy recent redacted audit").apply {
+            accessibleContext.accessibleDescription =
+                "Copy up to 100 recent redacted MCP audit records to the system clipboard"
             addActionListener {
                 val exported = auditLog.exportJsonLines(100)
                 if (exported.isEmpty()) statusLabel.updateContent("No audit records to copy")
                 else copyToClipboard(exported, "Recent redacted audit copied")
             }
         }
-        val clearAuditButton = JButton("Clear audit...").apply {
+        val clearAuditButton = Design.createSemanticOutlinedButton("Clear audit...") { Design.Colors.error }.apply {
+            accessibleContext.accessibleDescription =
+                "After confirmation, permanently delete all persisted MCP audit records"
             addActionListener {
-                val choice = JOptionPane.showConfirmDialog(
+                val choice = Dialogs.showConfirmDialog(
                     this@DiagnosticsPanel,
                     "Delete all persisted MCP audit records? This cannot be undone.",
-                    "Clear MCP audit",
                     JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE,
+                    "Clear MCP audit",
                 )
                 if (choice == JOptionPane.OK_OPTION) {
                     auditLog.clear()
@@ -223,6 +236,52 @@ internal class DiagnosticsPanel(
         }
         add(AdaptiveButtonPanel(listOf(refreshButton, copyDiagnosticsButton, copyAuditButton, clearAuditButton)))
         add(statusLabel)
+    }
+
+    private fun createSecurityToggle(
+        text: String,
+        description: String,
+        initialValue: Boolean,
+        unsafeConfirmationTitle: String,
+        unsafeConfirmation: String,
+        currentValue: () -> Boolean,
+        failureStatus: String,
+        onChange: (Boolean) -> Unit,
+        onPersisted: (Boolean) -> Unit,
+    ): JCheckBox = JCheckBox(text).apply {
+        isOpaque = false
+        isSelected = initialValue
+        alignmentX = LEFT_ALIGNMENT
+        accessibleContext.accessibleDescription = description
+        addActionListener {
+            val selected = isSelected
+            if (!selected && !confirmUnsafeSelection(unsafeConfirmationTitle, unsafeConfirmation)) {
+                isSelected = runCatching(currentValue).getOrDefault(true)
+                return@addActionListener
+            }
+            try {
+                onChange(selected)
+            } catch (_: Exception) {
+                isSelected = runCatching(currentValue).getOrDefault(!selected)
+                statusLabel.updateContent(failureStatus)
+                refresh()
+                return@addActionListener
+            }
+            statusLabel.updateContent(" ")
+            onPersisted(selected)
+            refresh()
+        }
+    }
+
+    private fun confirmUnsafeSelection(title: String, message: String): Boolean = try {
+        Dialogs.showConfirmDialog(
+            this@DiagnosticsPanel,
+            message,
+            JOptionPane.YES_NO_OPTION,
+            title,
+        ) == JOptionPane.YES_OPTION
+    } catch (_: Exception) {
+        false
     }
 
     private fun refresh() {

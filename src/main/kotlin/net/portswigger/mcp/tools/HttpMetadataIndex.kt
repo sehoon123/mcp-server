@@ -426,7 +426,7 @@ internal class HttpMetadataIndex(
         changeSignals.revision(source.source.metadataChangeSource()) == source.sourceRevision
     }
 
-    /** Prevents snapshots from being built or returned while an MCP project/Scope mutation is executing. */
+    /** Prevents snapshots during an MCP project/Scope/Organizer mutation. Must not be nested on this index. */
     suspend fun <T> withMutation(block: suspend () -> T): T = mutationLock.withLock {
         beginMutation()
         try {

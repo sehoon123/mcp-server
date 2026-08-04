@@ -29,8 +29,10 @@ import burp.api.montoya.repeater.Repeater
 import burp.api.montoya.sitemap.SiteMap
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
@@ -79,7 +81,7 @@ class HttpMessageActionsTest {
         every { api.proxy() } returns proxy
         every { api.logging() } returns logging
         config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
-        service = HttpMessageActionService(api, config)
+        service = HttpMessageActionService(api, config) { _, block -> block() }
     }
 
     @AfterEach
@@ -201,6 +203,47 @@ class HttpMessageActionsTest {
         assertTrue(result.changes.orEmpty().contains("set header x-test"))
         assertTrue(result.changes.orEmpty().contains("replace body (5 bytes"))
         verify(exactly = 1) { intruder.sendToIntruder(finalRequest, "patched") }
+    }
+
+    @Test
+    fun `successive sparse patches restart from the stored source request`() = runBlocking {
+        val item = mockk<ProxyHttpRequestResponse>()
+        val original = request(method = "GET")
+        val firstDerived = request(method = "POST")
+        val secondDerived = request(method = "GET")
+        every { original.withMethod("POST") } returns firstDerived
+        every { original.withAddedHeader("X-Second", "yes") } returns secondDerived
+        every { item.id() } returns 19
+        every { item.request() } returns original
+        every { item.response() } returns null
+        every { item.httpService() } returns original.httpService()
+        filteredHistory(item)
+        val intruder = mockk<Intruder>(relaxed = true)
+        every { api.intruder() } returns intruder
+        val ref = HttpMessageReference(HttpMessageSource.PROXY, "19")
+
+        val first = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = ref,
+                patch = HttpRequestPatch(method = "POST"),
+            )
+        )
+        val second = service.sendToIntruder(
+            SendToIntruderFromId(
+                projectId = "project-123",
+                ref = ref,
+                patch = HttpRequestPatch(addHeaders = listOf(HttpHeaderMutation("X-Second", "yes"))),
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.OK, first.status)
+        assertEquals(HttpMessageActionStatus.OK, second.status)
+        verify(exactly = 1) { original.withMethod("POST") }
+        verify(exactly = 1) { original.withAddedHeader("X-Second", "yes") }
+        verify(exactly = 0) { firstDerived.withAddedHeader(any(), any()) }
+        verify(exactly = 1) { intruder.sendToIntruder(firstDerived) }
+        verify(exactly = 1) { intruder.sendToIntruder(secondDerived) }
     }
 
     @Test
@@ -377,9 +420,16 @@ class HttpMessageActionsTest {
     }
 
     @Test
-    fun `Organizer action preserves an unmodified source response`() = runBlocking {
+    fun `Organizer action preserves an unmodified source response inside the mutation barrier`() = runBlocking {
         val events = mutableListOf<String>()
-        val measuredService = HttpMessageActionService(api, config) { events += "signal" }
+        val measuredService = HttpMessageActionService(api, config) { _, mutation ->
+            events += "begin"
+            try {
+                mutation()
+            } finally {
+                events += "end"
+            }
+        }
         val organizer = mockk<Organizer>()
         val item = mockk<OrganizerItem>()
         val sourceRequest = request()
@@ -404,15 +454,30 @@ class HttpMessageActionsTest {
 
         assertEquals(HttpMessageActionStatus.OK, result.status)
         assertEquals(true, result.preservedResponseInOrganizer)
-        assertEquals(listOf("signal", "send"), events)
+        assertEquals(listOf("begin", "send", "end"), events)
         verify(exactly = 1) { organizer.sendToOrganizer(item) }
         verify(exactly = 0) { organizer.sendToOrganizer(any<HttpRequest>()) }
     }
 
     @Test
-    fun `Organizer signal precedes an uncertain call and invalid input never signals`() = runBlocking {
-        var signals = 0
-        val measuredService = HttpMessageActionService(api, config) { signals++ }
+    fun `Organizer barrier distinguishes rejection before execution from uncertain execution`() = runBlocking {
+        val events = mutableListOf<String>()
+        val measuredService = HttpMessageActionService(api, config) { _, mutation ->
+            events += "begin"
+            try {
+                mutation()
+            } finally {
+                events += "end"
+            }
+        }
+        val unavailableService = HttpMessageActionService(api, config) { _, _ ->
+            throw OrganizerMutationNotStartedException(IllegalStateException("closed"))
+        }
+        var mismatchExpectedProjectId: String? = null
+        val projectMismatchService = HttpMessageActionService(api, config) { expectedProjectId, _ ->
+            mismatchExpectedProjectId = expectedProjectId
+            throw OrganizerProjectMismatchBeforeMutationException("project-new")
+        }
         val organizer = mockk<Organizer>()
         val item = mockk<OrganizerItem>()
         val sourceRequest = request()
@@ -425,7 +490,10 @@ class HttpMessageActionsTest {
         every { item.request() } returns sourceRequest
         every { item.response() } returns null
         every { item.httpService() } returns sourceRequest.httpService()
-        every { organizer.sendToOrganizer(sourceRequest) } throws IllegalStateException("uncertain")
+        every { organizer.sendToOrganizer(sourceRequest) } answers {
+            events += "send"
+            throw IllegalStateException("uncertain")
+        }
 
         val uncertain = measuredService.sendToOrganizer(
             SendToOrganizerFromId(
@@ -439,11 +507,65 @@ class HttpMessageActionsTest {
                 ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
             )
         )
+        val unavailable = unavailableService.sendToOrganizer(
+            SendToOrganizerFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
+            )
+        )
+        val projectMismatch = projectMismatchService.sendToOrganizer(
+            SendToOrganizerFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "15"),
+            )
+        )
 
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
-        assertEquals(1, signals)
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, unavailable.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, unavailable.executionState)
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, projectMismatch.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, projectMismatch.executionState)
+        assertEquals("project-new", projectMismatch.projectId)
+        assertEquals("project-123", mismatchExpectedProjectId)
+        assertEquals(listOf("begin", "send", "end"), events)
         verify(exactly = 1) { organizer.sendToOrganizer(sourceRequest) }
+    }
+
+    @Test
+    fun `cancellation while waiting to enter the Organizer barrier prevents the side effect`() = runBlocking {
+        val barrierEntered = CompletableDeferred<Unit>()
+        val blockedService = HttpMessageActionService(api, config) { _, _ ->
+            barrierEntered.complete(Unit)
+            awaitCancellation()
+        }
+        val organizer = mockk<Organizer>()
+        val item = mockk<OrganizerItem>()
+        val sourceRequest = request()
+        every { api.organizer() } returns organizer
+        every { organizer.items(any()) } answers {
+            val filter = firstArg<burp.api.montoya.organizer.OrganizerItemFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 16
+        every { item.request() } returns sourceRequest
+        every { item.response() } returns null
+        every { item.httpService() } returns sourceRequest.httpService()
+
+        val call = async {
+            blockedService.sendToOrganizer(
+                SendToOrganizerFromId(
+                    projectId = "project-123",
+                    ref = HttpMessageReference(HttpMessageSource.ORGANIZER, "16"),
+                )
+            )
+        }
+        barrierEntered.await()
+        call.cancel()
+
+        assertFailsWith<CancellationException> { call.await() }
+        verify(exactly = 0) { organizer.sendToOrganizer(any<HttpRequest>()) }
+        verify(exactly = 0) { organizer.sendToOrganizer(any<OrganizerItem>()) }
     }
 
     @Test
