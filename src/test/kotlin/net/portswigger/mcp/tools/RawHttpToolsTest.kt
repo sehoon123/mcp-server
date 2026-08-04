@@ -20,8 +20,10 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
@@ -59,7 +61,7 @@ class RawHttpToolsTest {
         every { api.project() } returns project
         every { project.id() } answers { currentProjectId }
         config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
-        service = RawHttpActionService(api, config)
+        service = RawHttpActionService(api, config) { block -> block() }
         mockkStatic(HttpService::class)
         mockkStatic(HttpRequest::class)
         mockkStatic(RequestOptions::class)
@@ -368,11 +370,21 @@ class RawHttpToolsTest {
     }
 
     @Test
-    fun `raw Organizer routing signals immediately before success and uncertain failure`() = runBlocking {
+    fun `raw Organizer routing distinguishes barrier rejection from uncertain execution`() = runBlocking {
         val fixture = http1Fixture()
         val events = mutableListOf<String>()
         var fail = false
-        val measuredService = RawHttpActionService(api, config) { events += "signal" }
+        val measuredService = RawHttpActionService(api, config) { mutation ->
+            events += "begin"
+            try {
+                mutation()
+            } finally {
+                events += "end"
+            }
+        }
+        val unavailableService = RawHttpActionService(api, config) {
+            throw OrganizerMutationNotStartedException(IllegalStateException("closed"))
+        }
         val organizer = mockk<Organizer>()
         every { api.organizer() } returns organizer
         every { organizer.sendToOrganizer(fixture.request) } answers {
@@ -385,12 +397,35 @@ class RawHttpToolsTest {
         fail = true
         val uncertain = measuredService.route(input)
         val invalid = measuredService.route(input.copy(tabName = "not-allowed"))
+        val unavailable = unavailableService.route(input)
 
         assertEquals(HttpMessageActionStatus.OK, completed.status)
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, uncertain.status)
         assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, invalid.status)
-        assertEquals(listOf("signal", "send", "signal", "send"), events)
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, unavailable.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, unavailable.executionState)
+        assertEquals(listOf("begin", "send", "end", "begin", "send", "end"), events)
         verify(exactly = 2) { organizer.sendToOrganizer(fixture.request) }
+    }
+
+    @Test
+    fun `raw cancellation while waiting to enter the Organizer barrier prevents the side effect`() = runBlocking {
+        val fixture = http1Fixture()
+        val barrierEntered = CompletableDeferred<Unit>()
+        val blockedService = RawHttpActionService(api, config) {
+            barrierEntered.complete(Unit)
+            awaitCancellation()
+        }
+        val organizer = mockk<Organizer>()
+        every { api.organizer() } returns organizer
+        val input = defaultHttp1Route().copy(destination = RawHttpRouteDestination.ORGANIZER)
+
+        val call = async { blockedService.route(input) }
+        barrierEntered.await()
+        call.cancel()
+
+        assertFailsWith<CancellationException> { call.await() }
+        verify(exactly = 0) { organizer.sendToOrganizer(fixture.request) }
     }
 
     @Test

@@ -343,7 +343,7 @@ data class HttpMessageActionResult(
 internal class HttpMessageActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
-    private val organizerChanged: () -> Unit = {},
+    private val withOrganizerMutation: suspend (suspend () -> Unit) -> Unit,
 ) {
     private val resolver = HttpMessageResolver(api, config)
 
@@ -582,22 +582,14 @@ internal class HttpMessageActionService(
         } else {
             null
         }
-        if (envelope != null) {
-            markOrganizerChanged()
-            api.organizer().sendToOrganizer(envelope)
-        } else {
-            markOrganizerChanged()
-            api.organizer().sendToOrganizer(patched.request)
+        withOrganizerMutation {
+            if (envelope != null) {
+                api.organizer().sendToOrganizer(envelope)
+            } else {
+                api.organizer().sendToOrganizer(patched.request)
+            }
         }
         envelope != null
-    }
-
-    private fun markOrganizerChanged() {
-        try {
-            organizerChanged()
-        } catch (_: Exception) {
-            // Invalidation diagnostics must never prevent the already-approved side effect.
-        }
     }
 
     private suspend fun route(
@@ -607,7 +599,7 @@ internal class HttpMessageActionService(
         destination: HttpMessageActionDestination,
         tabName: String?,
         insertionPointSelectors: List<HttpInsertionPointSelector>? = null,
-        execute: (ResolvedHttpMessage, PatchedRequest, String?, PreparedInsertionPoints?) -> Boolean,
+        execute: suspend (ResolvedHttpMessage, PatchedRequest, String?, PreparedInsertionPoints?) -> Boolean,
     ): HttpMessageActionResult {
         val normalizedTabName = try {
             normalizeTabName(tabName)
@@ -662,6 +654,9 @@ internal class HttpMessageActionService(
         callContext.ensureActive()
         val preserved = try {
             execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
+        } catch (e: OrganizerMutationNotStartedException) {
+            runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "execution not started")) }
+            return burpError(projectId, ref, destination, e)
         } catch (e: CancellationException) {
             if (!callContext.isActive) throw e
             runCatching { api.logging().logToError(auditLine(destination, resolved, patched, "cancelled after execution began")) }

@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.portswigger.mcp.config.Dialogs
 import javax.swing.SwingUtilities
+import kotlin.coroutines.resumeWithException
 
 /** Serializes all security approval modals and disposes the active modal when its MCP call is cancelled. */
 internal object SwingApprovalGate {
@@ -19,8 +20,13 @@ internal object SwingApprovalGate {
             }
             SwingUtilities.invokeLater ui@{
                 if (!continuation.isActive) return@ui
-                val result = showDialog()
-                if (continuation.isActive) continuation.resume(result) { _, _, _ -> }
+                try {
+                    val result = showDialog()
+                    if (continuation.isActive) continuation.resume(result) { _, _, _ -> }
+                } catch (failure: Throwable) {
+                    if (continuation.isActive) continuation.resumeWithException(failure)
+                    if (failure is Error) throw failure
+                }
             }
         }
     }

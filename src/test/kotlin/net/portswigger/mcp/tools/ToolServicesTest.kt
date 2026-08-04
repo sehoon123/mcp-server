@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertSame
@@ -155,6 +156,40 @@ class ToolServicesTest {
             stateLock.unlock()
         }
         index.close()
+    }
+
+    @Test
+    fun `Organizer mutation enters the real metadata barrier`() = runBlocking {
+        val services = ToolServices(
+            mockk<MontoyaApi>(relaxed = true),
+            WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+        )
+        val index = services.httpMetadataIndex
+
+        try {
+            services.withOrganizerMutation {
+                assertFailsWith<HttpMetadataIndexChangingException> { index.observeCurrentProject() }
+            }
+        } finally {
+            services.close()
+        }
+    }
+
+    @Test
+    fun `Organizer mutation rejected after close never runs its side effect`() = runBlocking {
+        val services = ToolServices(
+            mockk<MontoyaApi>(relaxed = true),
+            WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+        )
+        services.httpMetadataIndex // Initialize the index so close tombstones the same instance.
+        services.close()
+        var sideEffects = 0
+
+        assertFailsWith<OrganizerMutationNotStartedException> {
+            services.withOrganizerMutation { sideEffects++ }
+        }
+
+        assertEquals(0, sideEffects)
     }
 
     @Test
