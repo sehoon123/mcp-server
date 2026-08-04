@@ -437,15 +437,22 @@ denial, missing explicit or selected related record, accessor failure, or cancel
 
 ## Stable-ID request actions
 
-Copy `projectId` and the complete `{source, id}` reference from `search_http_messages`; do not reconstruct the original
-HTTP message in the model. Two structured tools resolve the current Burp item and fail closed if its project or opaque
-Site Map identity no longer matches:
+For existing Burp traffic, the preferred autonomous flow is `search_http_messages` → optional `get_http_message` → a
+from-ID action with only changed `patch` fields. Reuse `projectId` and the complete `{source, id}` reference from the
+search or another producing result; do not reconstruct the original HTTP message in the model. `get_http_message` is
+needed only when compact search metadata is insufficient, because both action tools resolve the current Burp item and
+fail closed if its project or opaque Site Map identity no longer matches:
 
 - `send_http_request_from_id` replays one request to its original network destination.
 - `route_http_message_from_id` routes one request to exactly one `repeater`, `intruder`, or `organizer` destination.
 
+The server also advertises this sequence through MCP initialize `instructions`; clients that ignore that field still
+receive self-contained guidance in each tool description.
+
 An optional `patch` can change the method or path; remove, set, or add headers; remove, set, or add typed URL/body/cookie/
-XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Body replacement cannot be mixed with
+XML/multipart/JSON parameters; or replace the body as UTF-8 text or base64. Omitted fields inherit the stored request.
+Every action resolves that stored source again, so patches do not accumulate across calls; a later variant must include
+any earlier deltas it still needs, without repeating unchanged request data. Body replacement cannot be mixed with
 body-backed parameter mutations. The destination service cannot be changed by a patch, so the approved Burp request
 remains bound to its original host, port, and TLS mode.
 
@@ -501,9 +508,10 @@ stored values fail closed and are preserved rather than overwritten.
 The **Workflow Preset Manager** in Burp's **MCP Bridge** tab uses the same synchronized project-backed store as those
 four MCP tools. It can create, inspect, update, delete, and refresh the three safe definition types without executing a
 preset or reading traffic. The structured editor intentionally has no project-ID, cursor, stable-reference,
-connection-ID, traffic/result, content-predicate, credential, or token field. A project transition after a possible
-write is reported as uncertain and requires an explicit refresh before retrying. The manager adds no MCP tool, resource,
-prompt, route, or dynamic catalog entry.
+connection-ID, traffic/result, content-predicate, credential, or token field. Before deletion, the confirmation identifies
+the selected preset by its bounded name and type without including its description or saved input values. A project
+transition after a possible write is reported as uncertain and requires an explicit refresh before retrying. The manager
+adds no MCP tool, resource, prompt, route, or dynamic catalog entry.
 
 ## Scope, comparison, and focused Scanner audits
 
@@ -645,8 +653,9 @@ requests. Never commit the token to a repository.
 
 The **Client Setup Center** in Burp's **MCP Bridge** tab provides a read-only preview for exactly five clients:
 Claude Desktop, Claude Code, VS Code / GitHub Copilot, Cursor, and OpenAI Codex. Preview and copy actions
-never include the current bearer token or resolved local filesystem paths. Refresh the preview after changing the host
-or port.
+never include the current bearer token or resolved local filesystem paths. After changing the host or port, either use
+the separate **Refresh preview** action, or choose **Refresh and copy configuration** to validate, render, and copy in
+one activation. Invalid endpoint input leaves the preview unavailable and copies nothing.
 
 Only **Claude Desktop** has an automatic client-configuration action, which reuses the existing verified, backed-up,
 atomic installer. The other four entries are preview-and-copy only: set their environment variable or password input
@@ -659,9 +668,13 @@ selection or redirects) against a validated numeric-loopback endpoint only when 
 endpoint of the in-process listener reported as `running`; it discards the response body and creates no MCP session.
 Its controlled result can show whether the current credential reached the expected local admission guard, but it does
 not perform a full MCP handshake and cannot prove that a third-party client's configuration is correct. Safe copied
-evidence contains only categorical listener/probe results—never the endpoint, bearer, response, exception, project
-data, or local path. Running the check intentionally increments the local request counter and updates last-activity and
-peak-in-flight metrics; a rejected credential also increments the authentication-rejection counter.
+evidence contains only a fixed local-admission scope marker and categorical listener/probe results—never the endpoint,
+bearer, response, exception, project data, or local path. The panel invalidates a displayed result and disables evidence
+copying after the displayed endpoint changes, the listener state changes, or a credential rotation is attempted; run a
+new check after the local context is current. Doctor check and evidence-copy status is reported separately from client
+installation and proxy-extraction status, so selecting another client does not rewrite the current Doctor result or
+status. Running the check intentionally increments the local request counter and updates last-activity and peak-in-flight
+metrics; a rejected credential also increments the authentication-rejection counter.
 
 The following examples are alternatives. Configure only the clients you actually use, and verify the example against
 the documentation for your installed client version before applying it.
@@ -889,7 +902,8 @@ listener. A `401 Unauthorized` after rotation almost always means one side still
 ### Connection troubleshooting
 
 Start with **Run Connection Doctor** in the Client Setup Center. A passing admission result is intentionally narrower
-than end-to-end client health; continue with the client-specific checks below if the client still cannot connect.
+than end-to-end client health; continue with the client-specific checks below if the client still cannot connect. Copied
+safe evidence carries a fixed local-admission-only scope marker and states that an external client was not tested.
 
 - A `401` means the bearer header is missing, malformed, or stale. Copy the current token, restart the Burp listener,
   and update or reinstall the client.

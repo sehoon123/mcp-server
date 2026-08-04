@@ -50,9 +50,13 @@ private val HTTP_TOKEN_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 data class SendHttpRequestFromId(
     @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
+    @JsonSchemaMetadata(
+        description = "Complete {source, id} reference from search_http_messages or another producing result; it must belong to projectId."
+    )
     val ref: HttpMessageReference,
-    @JsonSchemaMetadata(description = "Bounded immutable request mutations.")
+    @JsonSchemaMetadata(
+        description = "Optional bounded changes applied to a fresh copy of the stored request; omitted fields inherit the stored source, patches are not cumulative, and omission or {} makes no request changes."
+    )
     val patch: HttpRequestPatch? = null,
     @JsonSchemaMetadata(description = "HTTP protocol mode.", defaultJson = "\"original\"")
     val httpMode: HttpReplayMode? = null,
@@ -82,11 +86,15 @@ enum class HttpMessageRouteDestination {
 data class RouteHttpMessageFromId(
     @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
-    @JsonSchemaMetadata(description = "Existing project-scoped HTTP message reference.")
+    @JsonSchemaMetadata(
+        description = "Complete {source, id} reference from search_http_messages or another producing result; it must belong to projectId."
+    )
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(description = "Single Burp tool destination for this action.")
     val destination: HttpMessageRouteDestination,
-    @JsonSchemaMetadata(description = "Optional structured request changes applied to the routed copy; this does not send it.")
+    @JsonSchemaMetadata(
+        description = "Optional bounded changes applied to a fresh copy of the stored request; omitted fields inherit the stored source, patches are not cumulative, omission or {} makes no request changes, and this does not send it."
+    )
     val patch: HttpRequestPatch? = null,
     @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
     val tabName: String? = null,

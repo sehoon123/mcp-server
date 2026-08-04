@@ -405,7 +405,7 @@ internal fun Server.registerTools(
     val burpOptionsService = BurpOptionsService(api, config, services.httpMetadataIndex)
 
     mcpStructuredToolWithContext<SendRawHttpRequest, RawHttpActionResult>(
-        description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+        description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. Fallback only: prefer send_http_request_from_id when a stored reference exists. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.send(input)
@@ -413,7 +413,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, or Organizer without sending it. The derived-request/routing policy applies. The call binds to the Burp project current when execution starts and returns that projectId. No Proxy or Site Map history is added; HTTP/2 Intruder routing is unsupported. If executionState is uncertain, the destination item may exist; do not retry automatically.",
+        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, or Organizer without sending it. Fallback only: prefer route_http_message_from_id when a stored reference exists. The derived-request/routing policy applies. The call binds to the Burp project current when execution starts and returns that projectId. No Proxy or Site Map history is added; HTTP/2 Intruder routing is unsupported. If executionState is uncertain, the destination item may exist; do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.route(input)
@@ -507,7 +507,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Search Proxy, Site Map, or Organizer in the project current at call start; Proxy is default and the rechecked projectId is returned. Source-access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and content inspection to 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor, omitting filters or repeating them exactly. MCP sends are absent unless Burp recorded them.",
+        description = "Find Proxy (default), Site Map, or Organizer messages in the call-start project when no reusable ref exists; returned projectId and each {source,id} ref feed reads and from-ID actions. Source-access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and content inspection to 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor, omitting filters or repeating them exactly. MCP sends are absent unless Burp recorded them.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageSearchService.search(input) { progress, total, message ->
@@ -583,7 +583,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
-        description = "Read metadata or a selected request or response part from a stored Proxy, Site Map, or Organizer message. Source-access approval and matching project ID apply; content is bounded and byte-paginated.",
+        description = "Optional bounded read of one stored Proxy, Site Map, or Organizer message: metadata (default) or one selected request or response part. Pass the projectId and complete {source,id} ref from search_http_messages unchanged. Source-access approval and matching project ID apply; content is byte-paginated, defaulting to 32 KiB and capped at 256 KiB, so pass returned nextOffsetBytes as offset while hasMore is true. Nothing is sent or changed, and this read is not required before the from-ID action tools.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageReadService.read(input)
@@ -591,7 +591,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SendHttpRequestFromId, HttpMessageActionResult>(
-        description = "Send one stored HTTP request, optionally with bounded changes. Source access, the derived-request/request-action policy, and the independent outbound-target policy apply; each policy may allow without prompting. Redirects are rejected and direct MCP sends are not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+        description = "Send one stored HTTP request, optionally with a bounded patch. Each call restarts from the stored source, so omitted patch fields inherit it and patches never accumulate; the destination service cannot change. Source access, the derived-request/request-action policy, and the independent outbound-target policy apply; each may allow without prompting. Redirects are rejected; MCP sends are not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.send(input)
@@ -599,7 +599,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteHttpMessageFromId, HttpMessageActionResult>(
-        description = "Open one stored HTTP request in Repeater, Intruder, or Organizer, optionally after bounded structured changes. Source-access and routing approvals apply; no Intruder attack is started. Routing only opens the destination tab or Organizer item; it sends no network traffic. If executionState is uncertain, do not retry automatically.",
+        description = "Open one stored HTTP request in Repeater, Intruder, or Organizer, optionally after a bounded structured patch. Each call restarts from the stored source, so omitted patch fields inherit it and patches never accumulate. tabName is Repeater/Intruder-only and insertionPoints Intruder-only. Source-access and routing approvals apply; no Intruder attack is started. Routing only opens the destination tab or Organizer item; it sends no network traffic. If executionState is uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.route(input)
