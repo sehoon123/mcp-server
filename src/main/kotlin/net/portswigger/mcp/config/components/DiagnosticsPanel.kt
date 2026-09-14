@@ -11,6 +11,7 @@ import net.portswigger.mcp.config.MIN_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ProxyProvenance
 import net.portswigger.mcp.security.McpAuditSink
+import net.portswigger.mcp.security.boundedAuditRetentionEntries
 import net.portswigger.mcp.tools.HISTORY_PERFORMANCE_BUCKET_UPPER_MILLIS
 import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import net.portswigger.mcp.security.safeSingleLine
@@ -19,6 +20,7 @@ import java.awt.Font
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -42,6 +44,8 @@ internal class DiagnosticsPanel(
     private val onPersistentApprovalsReset: () -> Unit = {},
     private val edtWatchdogProvider: () -> EdtWatchdogSnapshot = { EdtWatchdogSnapshot() },
 ) : JPanel() {
+    private val closed = AtomicBoolean(false)
+    private val activityPanel = AuditActivityPanel()
     private val diagnosticsArea = JTextArea(13, 64)
     private val statusLabel = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
     private val refreshTimer = Timer(1_000) { refresh() }
@@ -62,6 +66,7 @@ internal class DiagnosticsPanel(
     }
 
     fun cleanup() {
+        closed.set(true)
         refreshTimer.stop()
     }
 
@@ -199,6 +204,9 @@ internal class DiagnosticsPanel(
         add(AdaptiveButtonPanel(listOf(resetSessionApprovalsButton, resetPersistentApprovalsButton)))
         add(Box.createVerticalStrut(Design.Spacing.SM))
 
+        add(activityPanel)
+        add(Box.createVerticalStrut(Design.Spacing.SM))
+
         val refreshButton = Design.createOutlinedButton("Refresh").apply {
             accessibleContext.accessibleDescription = "Refresh the displayed redacted MCP diagnostics"
             addActionListener { refresh() }
@@ -285,6 +293,10 @@ internal class DiagnosticsPanel(
     }
 
     private fun refresh() {
+        if (closed.get()) return
+        runCatching { auditLog.snapshot(config.boundedAuditRetentionEntries()) }
+            .onSuccess(activityPanel::refresh)
+            .onFailure { activityPanel.unavailable() }
         diagnosticsArea.text = runCatching {
             formatMcpDiagnostics(
                 diagnostics = diagnosticsProvider(),

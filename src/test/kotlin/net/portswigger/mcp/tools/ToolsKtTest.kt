@@ -487,6 +487,43 @@ class ToolsKtTest {
     }
 
     @Test
+    fun `JSON comparison and saved comparison preset return the same bounded wire result`() = runBlocking {
+        val items = listOf("{\"x\":\"PRIVATE_LEFT\"}", "{\"x\":\"PRIVATE_RIGHT\"}").mapIndexed { index, body ->
+            mockk<ProxyHttpRequestResponse>().also { item ->
+                stubProxyHistorySummary(item, index + 1)
+                val response = mockk<burp.api.montoya.http.message.responses.HttpResponse>()
+                every { response.body() } returns montoyaBytes(body.toByteArray())
+                every { item.response() } returns response
+            }
+        }
+        every { api.proxy().history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            items.filter(filter::matches)
+        }
+        val refs = listOf(mapOf("source" to "proxy", "id" to "1"), mapOf("source" to "proxy", "id" to "2"))
+        val direct = client.callTool("compare_http_messages", mapOf(
+            "projectId" to "project-default", "refs" to refs, "part" to "response_json",
+        ))
+        val result = requireNotNull(direct?.structuredContent)
+        assertEquals("ok", result["status"]?.jsonPrimitive?.content)
+        assertEquals(false, result["allEqual"]?.jsonPrimitive?.boolean)
+        val json = result.getValue("jsonComparison").jsonObject
+        assertEquals("ok", json["status"]?.jsonPrimitive?.content)
+        assertEquals("/x", json.getValue("differences").jsonArray.single().jsonObject["path"]?.jsonPrimitive?.content)
+        assertFalse(direct.toString().contains("PRIVATE_"))
+        val saved = client.callTool("save_workflow_preset", mapOf(
+            "projectId" to "project-default", "name" to "JSON comparison",
+            "definition" to mapOf("httpComparison" to mapOf("part" to "response_json")),
+        ))
+        assertEquals("ok", saved?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        val executed = client.callTool("execute_workflow_preset", mapOf(
+            "projectId" to "project-default", "name" to "JSON comparison", "refs" to refs,
+        ))
+        assertEquals(result, executed?.structuredContent?.get("httpComparison"))
+        assertFalse(executed.toString().contains("PRIVATE_"))
+    }
+
+    @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(21, tools.size)
@@ -501,7 +538,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "cf8c175df36b30197331749f68755f69d32dc23e1238104ae826063549d9a520",
+            "27e0c5d5468b7d2b83629a7b273a79ea126af25ffbe0eb2421ad6656f1b06715",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -1946,7 +1983,14 @@ class ToolsKtTest {
 
         val comparison = tools.single { it.name == "compare_http_messages" }
         assertEquals(setOf("projectId", "refs"), comparison.inputSchema.required?.toSet())
-        assertTrue(comparison.inputSchema.properties?.get("part").toString().contains("response_body"))
+        listOf("response_body", "request_json", "response_json").forEach { part ->
+            assertTrue(comparison.inputSchema.properties?.get("part").toString().contains(part))
+        }
+        val jsonComparisonSchema = comparison.outputSchema?.properties?.get("jsonComparison").toString()
+        assertTrue(jsonComparisonSchema.contains("\"maxItems\":32"))
+        assertTrue(jsonComparisonSchema.contains("\"maxLength\":512"))
+        assertTrue(jsonComparisonSchema.contains("duplicate_key"))
+        assertTrue(jsonComparisonSchema.contains("limit_exceeded"))
         assertTrue(comparison.inputSchema.properties?.get("excerptEncoding").toString().contains("base64"))
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
@@ -1958,6 +2002,8 @@ class ToolsKtTest {
         assertTrue(definitionSchema.contains("httpSearch"))
         assertTrue(definitionSchema.contains("webSocketSearch"))
         assertTrue(definitionSchema.contains("httpComparison"))
+        assertTrue(definitionSchema.contains("request_json"))
+        assertTrue(definitionSchema.contains("response_json"))
         listOf("projectId", "cursor", "refs", "text", "regex", "searchIn", "caseSensitive", "webSocketId").forEach {
             assertFalse(definitionSchema.contains("\"$it\":"), "saved definition must not expose $it")
         }
@@ -2281,7 +2327,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "696c4db6b75357a499dd6401a613f4e793f770afc0897326bfd97e286b189980",
+                "2076d114df9e12351569caff6c24490b251d626a65f67d32f9798cf99c0b6d82",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->

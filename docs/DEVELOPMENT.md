@@ -16,7 +16,7 @@ release prerequisite.
 - JDK 21 or newer to launch Gradle; production bytecode targets Java 21.
 - Git.
 - Node.js 22 only when running the external MCP conformance tools locally.
-- Burp Suite Community or Professional for manual extension testing. Professional is required for Scanner and
+- Burp Suite Community or Professional, with Montoya API build baseline `2026.7`, for manual extension testing. Professional is required for Scanner and
   Collaborator paths.
 
 Always use the checked-in Gradle wrapper:
@@ -38,7 +38,12 @@ A release-like local verification is:
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
+bash scripts/test-release-version.sh
 ```
+
+`verifyReleaseVersion` rejects Gradle/BApp version drift before tests or packaging. The packaged JAR version is checked
+again by `embedProxyJar`; the SBOM version comes from the same Gradle property. This is local consistency validation,
+not authorization to bypass the immutable release-line identity or SerialVersion predecessor checks.
 
 Run one test class while iterating:
 
@@ -400,6 +405,9 @@ perform hidden side effects.
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
   no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
   evidence must retain a fixed, value-free scope marker stating local admission only and external client not tested.
+- `AuditActivityPanel` displays only sanitized `McpAuditSink.snapshot()` records. Reuse the diagnostics timer, cap the
+  view at the configured retention, keep numeric sorting and literal filtering, preserve selected-record identity across
+  refreshes, clear failed snapshots, and suppress reads after cleanup. Do not add traffic getters or another store.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.
@@ -412,6 +420,16 @@ perform hidden side effects.
 ./gradlew test
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
 ```
+
+On macOS, if the default Java temporary directory includes the `/var` symlink, use a physical temporary path for tests:
+
+```bash
+JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/private/tmp ./gradlew test
+```
+
+The private-file tests intentionally reject symlinked ancestors; do not relax the production path guard to accommodate
+a temporary-directory alias. Offscreen Swing layout tests explicitly invalidate width-dependent layout caches before
+measuring; their clipping assertions still apply at 100%, 150%, and 200% in both themes.
 
 The test tree includes service-level MockK tests, real CIO lifecycle tests, Streamable HTTP integration tests, stdio proxy
 end-to-end tests, security approval tests, schema/catalog tests, provider/config tests, and reproducibility checks in CI.

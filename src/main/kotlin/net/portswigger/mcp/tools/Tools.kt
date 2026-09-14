@@ -561,7 +561,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CompareHttpMessages, CompareHttpMessagesResult>(
-        description = "Compare selected parts of 2–8 stored HTTP messages without returning complete messages. Source-access approval applies, and no traffic or mutation occurs. If allEqual is null, inspected prefixes matched but at least one part was truncated.",
+        description = "Compare parts of 2–8 stored HTTP messages under source-access approval; no traffic or mutation occurs. request_json/response_json return bounded field-path differences without scalar values. allEqual is JSON structural equality in JSON modes (check jsonComparison.status), otherwise byte equality; null means the selected comparison is incomplete or unavailable.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageComparisonService.compare(input)

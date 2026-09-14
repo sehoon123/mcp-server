@@ -306,6 +306,80 @@ class HttpMessageComparisonTest {
         assertEquals(1, approvals)
     }
 
+    @Test
+    fun `JSON body modes return structural equality without raw excerpts headers or native analysis`() = runBlocking {
+        val first = proxyItem(1, """{"a":1,"b":"PRIVATE_VALUE"}""")
+        val second = proxyItem(2, """{ "b": "PRIVATE_VALUE", "a": 1 }""")
+        stubProxyHistory(first, second)
+        val result = service.compare(CompareHttpMessages("project-123", refs(1, 2), HttpComparisonPart.RESPONSE_JSON))
+        assertEquals(HttpComparisonStatus.OK, result.status)
+        assertEquals(true, result.allEqual)
+        assertEquals(HttpJsonComparisonStatus.OK, result.jsonComparison?.status)
+        assertNull(result.contentDifference)
+        assertNull(result.headerComparison)
+        assertNull(result.responseVariations)
+        assertTrue(result.items.map { it.inspectedSha256 }.distinct().size == 2)
+        assertFalse(result.toString().contains("PRIVATE_VALUE"))
+        verify(exactly = 0) { http.createResponseVariationsAnalyzer() }
+        val firstResponse = first.response()!!
+        verify(exactly = 0) { firstResponse.toByteArray() }
+
+        val requestOnly = proxyItem(3, null)
+        val requestOther = proxyItem(4, null)
+        every { requestOnly.request().body() } returns montoyaBytes("{\"x\":1}".toByteArray())
+        every { requestOther.request().body() } returns montoyaBytes("{\"x\":2}".toByteArray())
+        stubProxyHistory(requestOnly, requestOther)
+        val requests = service.compare(CompareHttpMessages("project-123", refs(3, 4), HttpComparisonPart.REQUEST_JSON))
+        assertEquals(false, requests.allEqual)
+        assertEquals("/x", requests.jsonComparison?.differences?.single()?.path)
+        assertNull(requests.contentDifference)
+    }
+
+    @Test
+    fun `JSON byte cap and malformed complete input are explicitly unknown`() = runBlocking {
+        val oversized = "{}" + " ".repeat(MAX_JSON_COMPARISON_BYTES)
+        val first = proxyItem(1, oversized)
+        val second = proxyItem(2, oversized)
+        stubProxyHistory(first, second)
+        val body = first.response()!!.body()
+        val result = service.compare(CompareHttpMessages("project-123", refs(1, 2), HttpComparisonPart.RESPONSE_JSON))
+        assertEquals(HttpJsonComparisonStatus.INPUT_TRUNCATED, result.jsonComparison?.status)
+        assertNull(result.allEqual)
+        assertTrue(result.items.all { it.truncated && it.inspectedBytes == MAX_JSON_COMPARISON_BYTES })
+        verify(exactly = 0) { body.getBytes() }
+        verify(exactly = 1) { body.subArray(0, MAX_JSON_COMPARISON_BYTES) }
+        stubProxyHistory(proxyItem(1, "not JSON"), proxyItem(2, "not JSON"))
+        val invalid = service.compare(CompareHttpMessages("project-123", refs(1, 2), HttpComparisonPart.RESPONSE_JSON))
+        assertEquals(HttpComparisonStatus.OK, invalid.status)
+        assertEquals(HttpJsonComparisonStatus.INVALID_JSON, invalid.jsonComparison?.status)
+        assertNull(invalid.allEqual)
+        assertNull(invalid.contentDifference)
+    }
+
+    @Test
+    fun `JSON results retain data approval and are discarded after a project transition`() = runBlocking {
+        service = HttpMessageComparisonService(api, config(requireDataApproval = true))
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig) = false
+        }
+        val input = CompareHttpMessages("project-123", refs(1, 2), HttpComparisonPart.RESPONSE_JSON)
+        assertEquals(HttpComparisonStatus.ACCESS_DENIED, service.compare(input).status)
+        verify(exactly = 0) { proxy.history(any()) }
+
+        service = HttpMessageComparisonService(api, config(requireDataApproval = false))
+        val first = proxyItem(1, "{\"x\":1}")
+        stubProxyHistory(first, proxyItem(2, "{\"x\":2}"))
+        val response = first.response()!!
+        val body = response.body()
+        var currentProject = "project-123"
+        every { project.id() } answers { currentProject }
+        every { response.body() } answers { currentProject = "other-project"; body }
+        val moved = service.compare(input)
+        assertEquals(HttpComparisonStatus.PROJECT_MISMATCH, moved.status)
+        assertNull(moved.jsonComparison)
+        assertTrue(moved.items.isEmpty())
+    }
+
     private fun config(requireDataApproval: Boolean): McpConfig {
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } answers {

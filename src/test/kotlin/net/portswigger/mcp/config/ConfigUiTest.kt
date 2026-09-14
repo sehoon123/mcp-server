@@ -764,7 +764,7 @@ class ConfigUiTest {
             assertFalse(config.alwaysAllowCollaboratorInteractions)
             val checkboxes = ui.component.descendants().filterIsInstance<JCheckBox>().associateBy { it.text }
             assertFalse(checkboxes.getValue("Always allow all outbound HTTP requests").isSelected)
-            assertTrue(checkboxes.getValue("Require approval for request routing and derived-request actions").isSelected)
+            assertTrue(checkboxes.getValue("Require approval for routing and derived requests").isSelected)
             assertTrue(checkboxes.getValue("Require approval for Target scope changes").isSelected)
             assertTrue(checkboxes.getValue("Require approval for project data access").isSelected)
         } finally {
@@ -833,7 +833,7 @@ class ConfigUiTest {
             assertFalse(config.alwaysAllowCollaboratorInteractions)
             val checkboxes = ui.component.descendants().filterIsInstance<JCheckBox>().associateBy { it.text }
             assertFalse(checkboxes.getValue("Always allow all outbound HTTP requests").isSelected)
-            assertTrue(checkboxes.getValue("Require approval for request routing and derived-request actions").isSelected)
+            assertTrue(checkboxes.getValue("Require approval for routing and derived requests").isSelected)
             assertFalse(checkboxes.getValue("Require approval for Target scope changes").isSelected)
             assertTrue(checkboxes.getValue("Require approval for project data access").isSelected)
             assertFalse(checkboxes.getValue("Always allow HTTP history access").isSelected)

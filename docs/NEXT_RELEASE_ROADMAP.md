@@ -1,6 +1,7 @@
 # Active release roadmap
 
-**Status date:** 2026-08-01<br>
+**Status date:** 2026-09-14<br>
+**Current development candidate:** `4.12.0-rc.1` (local preparation; publication gates remain open)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
 **Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
@@ -468,10 +469,16 @@ aliases or families.
 
 ## v4.12.0 — Local Client Setup and No-growth Workflow UX
 
-Development begins on advancing `main` under `4.12.0-dev.1` while the next stable release remains `v4.11.0` on the
-protected `release/v4.11` lineage. No v4.12 commit may be merged or cherry-picked into that release branch. The v4.12
-candidate `SerialVersion` is intentionally deferred until the v4.11 line is complete; select it as one greater than the
-maximum SerialVersion of every published release with the same BApp UUID, including non-ancestor tags.
+Development began on advancing `main` under `4.12.0-dev.1`; the current working candidate is `4.12.0-rc.1`.
+The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
+cherry-picked into that release branch. RC1 locally increments `SerialVersion` from 12 to 13, but this is not a frozen
+release identity: before signing, reconcile it against every same-UUID predecessor, including the non-ancestor v4.11
+stable release. The checked-in draft gate still blocks v4.12 until that predecessor bridge is separately reviewed and
+pinned. No earlier candidate's vulnerability, smoke, or publication evidence validates RC1.
+
+RC1 adds a native redacted activity table inspired by reburp's activity-log usability, using the existing audit snapshot,
+retention, and diagnostics timer rather than recording raw API/target traffic. It also checks Gradle/BApp/JAR version
+parity during ordinary builds. See [the RC1 fragment](releases/4.12.0-rc.1.md) for compatibility and outstanding gates.
 
 Milestone order:
 

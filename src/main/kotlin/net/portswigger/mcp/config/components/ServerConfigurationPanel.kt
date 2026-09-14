@@ -91,7 +91,7 @@ class ServerConfigurationPanel(
         add(createVerticalStrut(Design.Spacing.MD))
 
         requestActionApprovalCheckBox = createStandardCheckBox(
-            text = "Require approval for request routing and derived-request actions",
+            text = "Require approval for routing and derived requests",
             initialValue = config.requireRequestActionApproval,
             unsafeConfirmationTitle = "Disable request-action approval",
             unsafeConfirmation = "Authenticated MCP sessions may route requests and create derived requests " +

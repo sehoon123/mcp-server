@@ -6,6 +6,9 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
+**Current source version: `4.12.0-rc.1` — release candidate, not a published stable release.**
+See the [RC1 changes and remaining release gates](docs/releases/4.12.0-rc.1.md).
+
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**
 transport exclusively. Ordinary calls use JSON over `POST /mcp`; the same endpoint retains Streamable HTTP's optional
@@ -55,7 +58,7 @@ client-liveness, and capacity-pressure safeguards.
 - Project-scoped saved HTTP/WebSocket metadata-search and HTTP comparison presets with runtime-only cursors/references
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
 - Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
-- Explicit Target scope checks/updates and bounded HTTP message comparison from stable references
+- Explicit Target scope checks/updates and bounded HTTP message comparison from stable references, including JSON field-path differences without scalar values
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
 - Project and user configuration tools with recursive API-key, token, Cookie, authorization, and certificate/private-key filtering
@@ -238,6 +241,20 @@ users who intentionally want to disable per-target request prompts.
 
 ## Build and install
 
+### Compatibility
+
+| Component | RC1 baseline |
+| --- | --- |
+| Burp Suite | Community or Professional; Montoya API build baseline `2026.7` |
+| Java | JDK 21+ to build; Java 21 bytecode |
+| MCP Kotlin SDK | `0.14.0` |
+| Negotiated MCP revisions | `2025-03-26`, `2025-06-18`, `2025-11-25` |
+| Client transport | Streamable HTTP, or stdio through the embedded proxy |
+
+The API build baseline is not a substitute for exact-candidate testing in both Burp editions. RC1 still requires that
+manual validation and the protected release gates before publication. Gradle checks BApp version parity before tests
+and packaging, then verifies the version in the completed extension JAR; the SBOM uses the same Gradle version.
+
 ### Install a release
 
 Starting with v4.8, download `independent-mcp-bridge-all.jar` and `SHA256SUMS` from the matching entry on the
@@ -326,6 +343,15 @@ request/response bodies, header values, credentials, paths, or raw exception mes
 debounced and stored in Burp extension data with a 1 MiB document cap. **Copy recent redacted audit** exports at most
 100 complete JSONL records and 64 KiB of text. Disabling logging preserves existing records; **Clear audit...** deletes
 them after confirmation.
+
+**Recent redacted activity** displays the retained audit snapshot directly in Burp, newest first. Sort by time, tool,
+outcome, numeric duration, access classification, or session correlation; filter tool/outcome/session using
+case-insensitive literal text. Select a row to inspect its redacted metadata, including declared argument names and
+approval decisions. The view reuses the existing one-second diagnostics refresh and retention cap (at most 1,000
+records), preserves selection and the selected detail's reading position while that record remains visible, and clears
+stale data if audit reads fail. **Clear filter** restores the view without deleting records; filtering cannot hide an
+**Audit unavailable** status. It adds no traffic capture, persistence store, MCP tool, or endpoint. Existing audit copy
+and confirmed clear controls still apply.
 
 Emergency read-only mode is a local safety interlock, not a replacement for Scope, approval, or authentication policy.
 Read and comparison tools continue to work and retain their normal data-access approvals. Request sending, routing,
@@ -484,7 +510,7 @@ Each action returns structured `status` and `executionState`. `not_started` is s
 show the exact resulting request and a normalized change summary when request-action approval is enabled. The dialog
 provides **Allow Once**, **Allow for This Session**, **Always Allow**, and **Deny**. The session choice retains no
 request or target value and expires with that MCP session. Always Allow intentionally disables future routing and
-exact derived-request prompts until `Require approval for request routing and derived-request actions` is re-enabled in
+exact derived-request prompts until `Require approval for routing and derived requests` is re-enabled in
 the MCP Bridge tab. Outbound-target approval remains independent. Audit
 lines contain only source/reference, target, byte count, patch flag, destination, and outcome; request bodies and header
 values are not logged.
@@ -526,8 +552,39 @@ and uncertain-result handling remain active even when prompts are disabled. Scop
 
 `compare_http_messages` compares 2–8 Proxy, Site Map, or Organizer references. It returns bounded inspected-byte hashes,
 header invariants/variants, a first-difference excerpt for two messages, and optional Burp response-variation attributes.
-The default per-message inspection limit is 256 KiB and the maximum is 1 MiB. `allEqual: null` means the inspected
-prefixes matched but truncation prevents a complete equality claim.
+The default per-message inspection limit is 256 KiB and the maximum is 1 MiB. In byte-oriented modes, `allEqual: null`
+means the inspected prefixes matched but truncation prevents a complete equality claim.
+
+For API response review, set `part: "response_json"` (or `"request_json"` for request bodies). These modes compare stored
+UTF-8 JSON bodies structurally, ignoring whitespace and object-member order while preserving array order and comparing
+number literals exactly (`1` differs from `1.0`). They reuse the same source approvals and final project checks, send no
+traffic, and skip header comparison, raw excerpts, and Burp response-variation analysis. No decompression or character-set
+conversion is attempted.
+
+```json
+{
+  "projectId": "<current projectId>",
+  "refs": [{"source": "proxy", "id": "42"}, {"source": "proxy", "id": "43"}],
+  "part": "response_json"
+}
+```
+
+`jsonComparison.differences` reports `added`, `removed`, or `changed` RFC 6901 paths and the zero-based `refIndex` compared
+against `refs[0]`. An empty path denotes the root; array indices are positional, not a minimal edit script. Scalar values
+are omitted, but paths contain the actual member names and should still be treated as project data. JSON-mode `allEqual`
+mirrors `jsonComparison.equal`: use it only with `jsonComparison.status: "ok"`. The outer `status: "ok"` alone is not a
+JSON validation result.
+
+Work is capped at 64 KiB per body (or the caller's smaller limit), depth 32, and 10,000 validation/comparison node visits
+per call, with a conservative structural-token guard before parsing. Invalid UTF-8/JSON, unpaired Unicode escapes, duplicate keys (including
+escaped spellings), incomplete bodies, and exhausted work limits produce explicit JSON status and unknown equality,
+never a partial-equality claim. At most 32 differences and 512 characters per pointer are returned; overlong pointers
+are omitted rather than shortened. `differencesTruncated` reports output omissions separately from equality.
+
+Save either JSON part in an ordinary HTTP-comparison workflow preset to reuse it from MCP or select **Request JSON body**
+/ **Response JSON body** in the native editor. References remain runtime-only. The preview shows the effective 64 KiB cap
+and that excerpt/header/variation settings are unused. Before downgrading to a build without these enum values, remove or
+convert JSON-mode presets using the current build; older strict preset readers preserve but cannot decode such entries.
 
 `analyze_http_session_security` passively analyzes 1–32 distinct ordered references as a proposed flow. Analyzer logic
 reads bounded header evidence but no message bodies or authentication values. To preserve v4.8 Site Map stable IDs and

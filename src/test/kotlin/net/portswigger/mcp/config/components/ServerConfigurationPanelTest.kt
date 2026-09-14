@@ -63,7 +63,7 @@ class ServerConfigurationPanelTest {
             assertTrue(yoloButton.text == "Disable YOLO mode")
             val granularApproval = descendants(panel)
                 .filterIsInstance<JCheckBox>()
-                .single { it.text == "Require approval for request routing and derived-request actions" }
+                .single { it.text == "Require approval for routing and derived requests" }
             assertFalse(granularApproval.isEnabled)
             assertTrue(config.requireRequestActionApproval)
 
@@ -114,7 +114,7 @@ class ServerConfigurationPanelTest {
 
             exercise("Enable tools that can edit your config") { config.configEditingTooling }
             exercise("Always allow all outbound HTTP requests") { !config.requireHttpRequestApproval }
-            exercise("Require approval for request routing and derived-request actions") {
+            exercise("Require approval for routing and derived requests") {
                 !config.requireRequestActionApproval
             }
             exercise("Require approval for Target scope changes") { !config.requireScopeChangeApproval }
@@ -235,7 +235,7 @@ class ServerConfigurationPanelTest {
         }
 
         exercise(
-            label = "Require approval for request routing and derived-request actions",
+            label = "Require approval for routing and derived requests",
             key = "requireRequestActionApproval",
             initialValue = false,
             expectedSelectionAfterClick = false,
@@ -297,7 +297,7 @@ class ServerConfigurationPanelTest {
         assertTrue(yoloButton.isEnabled)
         val granularApproval = descendants(panel)
             .filterIsInstance<JCheckBox>()
-            .single { it.text == "Require approval for request routing and derived-request actions" }
+            .single { it.text == "Require approval for routing and derived requests" }
         assertFalse(granularApproval.isEnabled)
     }
 

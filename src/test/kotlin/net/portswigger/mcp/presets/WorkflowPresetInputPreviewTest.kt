@@ -88,6 +88,27 @@ class WorkflowPresetInputPreviewTest {
         assertFalse(preview.contains("private-header-vector"))
     }
 
+    @Test
+    fun `JSON comparison preview shows the effective cap and excludes inactive byte comparison options`() {
+        listOf(HttpComparisonPart.REQUEST_JSON, HttpComparisonPart.RESPONSE_JSON).forEach { part ->
+            val preview = WorkflowPreset(
+                name = "JSON changes",
+                definition = WorkflowPresetDefinition(httpComparison = SavedHttpComparison(
+                    part = part,
+                    limitBytesPerMessage = 1_048_576,
+                    ignoreHeaders = listOf("private-header-vector"),
+                    includeResponseVariations = true,
+                )),
+            ).executionNeutralInputPreview()
+            assertTrue(preview.contains("JSON body"))
+            assertTrue(preview.contains("bytes per message 65536"))
+            assertTrue(preview.contains("JSON paths only"))
+            assertTrue(preview.contains("are not used"))
+            assertFalse(preview.contains("private-header-vector"))
+            assertTrue(preview.length <= MAX_WORKFLOW_PRESET_INPUT_PREVIEW_CHARS)
+        }
+    }
+
     private fun assertPrivateValuesAbsent(preview: String) {
         listOf(
             "private-name-vector",

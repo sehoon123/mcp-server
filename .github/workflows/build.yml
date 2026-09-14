@@ -56,6 +56,9 @@ jobs:
           python3 scripts/test-rc-observation-contract.py
           python3 scripts/test-release-vulnerability-gate.py
 
+      - name: Verify release version parity and mismatch rejection
+        run: bash scripts/test-release-version.sh
+
       - name: Run tests
         run: ./gradlew test
 
