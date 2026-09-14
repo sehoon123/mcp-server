@@ -119,6 +119,22 @@ private fun HistoryReadStatus.isMcpError(): Boolean = when (this) {
     else -> false
 }
 
+private fun NativeToolStatus.isMcpError(): Boolean = when (this) {
+    NativeToolStatus.INVALID_ARGUMENT,
+    NativeToolStatus.INVALID_ID,
+    NativeToolStatus.NOT_FOUND,
+    NativeToolStatus.LIMIT_EXCEEDED,
+    NativeToolStatus.PROJECT_MISMATCH,
+    NativeToolStatus.STALE_STATE,
+    NativeToolStatus.BURP_ERROR,
+    NativeToolStatus.EXECUTION_UNCERTAIN -> true
+
+    NativeToolStatus.OK,
+    NativeToolStatus.ACCESS_DENIED,
+    NativeToolStatus.DISABLED,
+    NativeToolStatus.NOT_AVAILABLE -> false
+}
+
 private fun CollaboratorToolStatus.isMcpError(): Boolean = when (this) {
     CollaboratorToolStatus.INVALID_ARGUMENT,
     CollaboratorToolStatus.PROJECT_MISMATCH,
@@ -403,6 +419,9 @@ internal fun Server.registerTools(
         httpMessageComparisonService,
     )
     val burpOptionsService = BurpOptionsService(api, config, services.httpMetadataIndex)
+    val nativeHttpRankingService = NativeHttpRankingService(api, config)
+    val httpAnnotationService = HttpAnnotationService(api, config, services::withOrganizerMutation)
+    val localCommandService = services.localCommands(config)
 
     mcpStructuredToolWithContext<SendRawHttpRequest, RawHttpActionResult>(
         description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. Fallback only: prefer send_http_request_from_id when a stored reference exists. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
@@ -413,10 +432,34 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, or Organizer without sending it. Fallback only: prefer route_http_message_from_id when a stored reference exists. The derived-request/routing policy applies. The call binds to the Burp project current when execution starts and returns that projectId. No Proxy or Site Map history is added; HTTP/2 Intruder routing is unsupported. If executionState is uncertain, the destination item may exist; do not retry automatically.",
+        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, Organizer, Comparer, or Decoder without network transmission. Fallback only: prefer route_http_message_from_id for stored traffic. Routing approval and project binding apply. No history is added; HTTP/2 Intruder is unsupported. Comparer/Decoder receive only the request bytes. If executionState is uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.route(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+    }
+
+    mcpStructuredToolWithContext<RankHttpMessages, RankHttpMessagesResult>(
+        description = "Apply Burp's native anomaly ranking to an explicit project-bound set of 1–32 stored HTTP messages. Source access applies; request and response bytes are privately bounded to 2 MiB each and 16 MiB total. Ranks are relative ordinals for exactly this set, not severity, confidence, or vulnerability evidence. No traffic or mutation occurs, and the native ranking call has no interruptible deadline.",
+        annotations = READ_ONLY_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = nativeHttpRankingService.rank(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+    }
+
+    mcpStructuredToolWithContext<AnnotateHttpMessages, AnnotateHttpMessagesResult>(
+        description = "Replace, append, or clear notes and set or clear highlight colors on 1–16 explicit stored HTTP records. Source access and sensitive-action approval apply, current annotations are rechecked before mutation, and the project is fenced. The batch is not atomic: executionState=uncertain means a prefix or one field may have changed; reconcile manually and never retry automatically.",
+        annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = httpAnnotationService.annotate(input)
+        StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+    }
+
+    mcpStructuredToolWithContext<ExecuteLocalCommand, ExecuteLocalCommandResult>(
+        description = "Execute one direct argv or explicitly shell-interpreted local command through Burp's native command utility. The local code-execution toggle and per-call sensitive approval are mandatory unless YOLO bypasses only the prompt; Emergency read-only blocks invocation. Native timeout options apply, but only the MCP preview is output-bounded and an already started process is outside project fencing. Never retry an uncertain result.",
+        annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
+    ) { input ->
+        val output = localCommandService.execute(input)
         StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
     }
 
@@ -435,6 +478,57 @@ internal fun Server.registerTools(
     }
 
     if (api.burpSuite().version().edition() == BurpSuiteEdition.PROFESSIONAL) {
+        val requestExecutionService = services.requestExecutions(config)
+        val bambdaService = services.bambdas(config)
+
+        mcpStructuredToolWithContext<StartHttpRequestExecution, HttpRequestExecutionActionResult>(
+            description = "Create a Professional-only native Request Execution Engine, queue 1–16 bounded stored or raw requests, and start sending immediately. Source, derived-request, outbound-target, and batch approvals apply; project binding and aggregate limits remain active. The returned extension-owned handle supports bounded queue/status/control calls. If executionState is uncertain, requests may have started; never retry automatically.",
+            annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = requestExecutionService.start(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
+        mcpStructuredToolWithContext<QueueHttpRequestExecution, HttpRequestExecutionActionResult>(
+            description = "Queue 1–16 additional bounded stored or raw requests into a running extension-owned Request Execution Engine handle, up to 64 total. All source, derived-request, outbound-target, batch, and project checks run before native queueing. Queueing is not atomic; an uncertain result may have queued a prefix and must not be retried automatically.",
+            annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = requestExecutionService.queue(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
+        mcpStructuredToolWithContext<GetHttpRequestExecution, HttpRequestExecutionStatusResult>(
+            description = "Read live stats and bounded completion-order metadata for an extension-owned Request Execution Engine handle. Optionally wait up to 30 seconds. Request and response content is never returned or retained by this extension; native results are dropped after metadata capture. This does not send, queue, pause, resume, cancel, or delete anything.",
+            annotations = READ_ONLY_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = requestExecutionService.get(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
+        mcpStructuredToolWithContext<ControlHttpRequestExecution, HttpRequestExecutionActionResult>(
+            description = "Pause, resume, cancel, or cancel-and-delete one extension-owned Request Execution Engine handle after sensitive approval and project recheck. Emergency read-only blocks every control, including cancellation; project changes and extension unload independently attempt cleanup. An uncertain result may already have applied the control and must not be retried automatically.",
+            annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = requestExecutionService.control(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
+        mcpStructuredToolWithContext<ImportBambda, BambdaImportResult>(
+            description = "Import bounded bare Java source as a Professional Repeater CUSTOM_ACTION Bambda with a deterministic name-derived ID. At most 32 distinct MCP-imported IDs are retained per extension lifetime; reimport replaces one without consuming another slot. The local code-execution toggle and sensitive approval apply, but imported code can later run outside MCP request, project, outbound, and emergency-read-only fences. Inspect the full local approval preview; never retry an uncertain import automatically.",
+            annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = bambdaService.import(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
+        mcpStructuredToolWithContext<GenerateBambdaChain, GenerateBambdaChainResult>(
+            description = "Generate and immediately import a bounded Professional Repeater CUSTOM_ACTION Bambda that sends 1–8 fixed-target steps, extracts values, and injects later headers. The 32-distinct-ID extension-lifetime import cap applies. This is not a preview: the same code-execution toggle, replacement semantics, and approval as import_bambda apply. Running or auto-running the imported action occurs outside MCP outbound/project fences.",
+            annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = bambdaService.generateAndImport(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
         val scannerIssueSearchService = ScannerIssueSearchService(
             api,
             config,
@@ -599,7 +693,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteHttpMessageFromId, HttpMessageActionResult>(
-        description = "Open one stored HTTP request in Repeater, Intruder, or Organizer, optionally after a bounded structured patch. Each call restarts from the stored source, so omitted patch fields inherit it and patches never accumulate. tabName is Repeater/Intruder-only and insertionPoints Intruder-only. Source-access and routing approvals apply; no Intruder attack is started. Routing only opens the destination tab or Organizer item; it sends no network traffic. If executionState is uncertain, do not retry automatically.",
+        description = "Open one stored HTTP request in Repeater, Intruder, Organizer, Comparer, or Decoder, optionally after a bounded patch. Each call restarts from the stored source, so patches never accumulate. tabName is Repeater/Intruder-only and insertionPoints Intruder-only. Source and routing approvals apply; it sends no network traffic or starts an Intruder attack. Comparer/Decoder receive only request bytes. If executionState is uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.route(input)

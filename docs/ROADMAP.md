@@ -46,7 +46,7 @@ authentication, authorization, TLS, and destination design rather than relaxing 
 
 Implemented for stable-ID and focused active actions:
 
-- HTTP replay, Repeater/Intruder/Organizer routing, scope mutation, focused Scanner start/cancel, comparison, and
+- HTTP replay, Repeater/Intruder/Organizer/Comparer/Decoder routing, scope mutation, focused Scanner start/cancel, comparison, and
   Collaborator reads carry explicit annotations.
 - Approval shows the source reference, immutable destination service, normalized patch or scope/insertion-point summary,
   and exact resulting request where applicable.
@@ -60,9 +60,10 @@ Implemented for stable-ID and focused active actions:
 - Active Scanner audits reject out-of-scope references and require semantic insertion points; task lookup/cancellation is
   restricted to random IDs created by this extension instance.
 
-Unified raw Repeater/Intruder/Organizer routing uses the shared request-routing approval gate and executes one
-destination per call. Configuration imports, task engine state, Proxy Intercept, and configuration exports use explicit
-sensitive-action approval and accurate annotations.
+Unified raw Repeater/Intruder/Organizer/Comparer/Decoder routing uses the shared request-routing approval gate and executes one
+destination per call. HTTP annotation, Request Execution batch/control, configuration imports, task engine state, Proxy
+Intercept, and configuration exports use explicit sensitive-action approval and accurate annotations. Bambda and local
+command tools additionally require a separate disabled-by-default code-execution switch.
 
 Implemented globally for v2.1.1:
 
@@ -342,9 +343,9 @@ Implemented on the v4.11 development branch:
 - Results preserve caller order, expose only available Proxy capture times, return complete bounded metadata-count
   deltas, and treat cross-source matches as invocation-local similarity rather than identity, chronology, causality, or
   vulnerability evidence. Records are never deduplicated.
-- The development catalogs contain 21 Community tools and 28 Professional tools. The shell-replaceable local
-  transformation/random generators and focus-dependent active-editor read/write tools are no longer advertised. Prompts,
-  resources, URI templates, cursors, and retained tool schemas remain unchanged; clients must reconnect and rediscover.
+- The v4.11 development catalogs contain 21 Community tools and 28 Professional tools. The shell-replaceable local
+  transformation/random generators and focus-dependent active-editor tools are no longer advertised. Prompts, resources,
+  URI templates, cursors, and retained tool schemas remain unchanged.
 
 In development for v4.12 milestones 1–3:
 
@@ -365,8 +366,22 @@ In development for v4.12 milestones 1–3:
   only the bounded currently visible append-stable range and freeze their continuation snapshot; they expressly do not
   establish regression, removal, in-place change, complete history, or causality.
 - These additions preserve the exact 21 Community / 28 Professional tool names and add no prompt, resource, template,
-  capability, route, alias, or tool. Persistence and native management remain independent of the current Kotlin MCP SDK
-  adapter so a future released SDK migration does not require a second store or UI implementation.
+  capability, route, alias, or tool at their milestone checkpoints. Persistence and native management remain independent
+  of the current Kotlin MCP SDK adapter so a future released SDK migration does not require a second store or UI
+  implementation.
+
+Implemented in later v4.12 milestones:
+
+- Request-only Comparer and Decoder destinations extend the two existing route tools without adding aliases or network
+  transmission.
+- Native anomaly ranking and notes/highlight mutation add three Community-visible tools together with disabled-by-default
+  direct/system-shell execution. Professional additionally adds four Request Execution Engine lifecycle tools and two
+  Repeater custom-action Bambda tools.
+- The resulting development catalogs contain 24 Community tools and 37 Professional tools. Prompts, resources, URI
+  templates, and dependencies remain unchanged; clients must reconnect and rediscover.
+- Request Execution state is capped by request count, cumulative bytes, handle count, project lifecycle, metadata-only
+  result capture, and cleanup reservations. Bambda/Shell authority remains separately opt-in and explicitly unconfined
+  after native execution starts.
 
 Implemented incrementally through v4.3.2:
 
@@ -401,8 +416,9 @@ The near-term order is gate-driven:
    regression, reproducibility, SBOM/legal, and Community/Professional gates pass.
 4. Keep v4.10 demand-driven and prefer measured scale/soak work or one separately reviewed client/operator UX problem.
 5. Advance v4.12 on `main` in this order: five-client Setup Center and Connection Doctor, native local preset manager,
-   bounded related-traffic mode, bounded Scanner delta mode, then Burp-backed measured performance work. Keep the
-   catalog at 21/28 and do not merge these commits into protected `release/v4.11`.
+   bounded related-traffic and Scanner-delta modes, request-only Comparer/Decoder handoff, then explicitly bounded native
+   ranking/annotation and opt-in execution surfaces. Freeze the resulting 24/37 catalog and do not merge these commits
+   into protected `release/v4.11`.
 6. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
    approval entry gates are satisfied; require modern conformance and the supported-client matrix before beta/RC, as
    defined in [V5_READINESS.md](V5_READINESS.md) and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md).
@@ -414,10 +430,13 @@ Do not create a parallel raw JSON-RPC dispatcher while the official server lifec
 | Order | Change | Benefit | Risk/effort |
 |---|---|---|---|
 | 1 | Unified HTTP search, Site Map reads, project-scoped references | High daily-use and token improvement; implemented | Medium |
-| 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer | High-use workflow; implemented with bounded structured patches and approvals | Medium |
+| 2 | Stable-ID request mutation and routing to HTTP/Repeater/Intruder/Organizer/Comparer/Decoder | High-use workflow; implemented with bounded structured patches and approvals | Medium |
 | 3 | Scope query and management | Implemented with normalization, approval, verification, and uncertain partial-state reporting | Low–medium |
 | 4 | Focused audit and Scanner task lifecycle | Implemented for passive evidence and explicit active insertion points; crawl remains deferred | High |
 | 5 | Structured comparison and Intruder insertion points | Implemented with bounded diff/variation output and semantic selectors | Medium–high |
+| 6 | Native RankingUtils and stable-reference annotations | Implemented with explicit sets, byte limits, stale-state checks, and approval | Medium |
+| 7 | Professional Request Execution Engine lifecycle | Implemented with cumulative bounds, metadata-only retention, and cleanup reservations | High |
+| 8 | Opt-in Repeater Bambda and ShellUtils execution | Implemented behind a separate local switch and per-call approval; native effects remain unconfined after start | High |
 | 6 | Collaborator waits and bounded interaction reads | Implemented with progress, cancellation, filters, slicing, and concurrency limits | Medium |
 | 7 | Body-free metadata index and attack-surface summary | Implemented with project/source/memory/output bounds and advisory warm-search hints | Medium |
 | 8 | Cookie/session and active WebSocket lifecycles | Broader authenticated and WebSocket testing | High |

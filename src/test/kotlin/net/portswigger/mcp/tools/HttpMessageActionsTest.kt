@@ -1,7 +1,9 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.comparer.Comparer
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.decoder.Decoder
 import burp.api.montoya.core.Range
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
@@ -120,11 +122,94 @@ class HttpMessageActionsTest {
     }
 
     @Test
+    fun `Comparer and Decoder route only the exact bounded request bytes`() = runBlocking {
+        val fixture = proxyFixture(43)
+        filteredHistory(fixture.item)
+        val requestBytes = mockk<MontoyaByteArray>()
+        every { requestBytes.length() } returns 64
+        every { fixture.request.toByteArray() } returns requestBytes
+        val comparer = mockk<Comparer>(relaxed = true)
+        val decoder = mockk<Decoder>(relaxed = true)
+        every { api.comparer() } returns comparer
+        every { api.decoder() } returns decoder
+
+        val compared = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "43"),
+                destination = HttpMessageRouteDestination.COMPARER,
+            )
+        )
+        val decoded = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = HttpMessageReference(HttpMessageSource.PROXY, "43"),
+                destination = HttpMessageRouteDestination.DECODER,
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.OK, compared.status)
+        assertEquals(HttpMessageActionDestination.COMPARER, compared.destination)
+        assertEquals(HttpMessageExecutionState.COMPLETED, compared.executionState)
+        assertEquals(64, compared.requestBytes)
+        assertEquals(HttpMessageActionStatus.OK, decoded.status)
+        assertEquals(HttpMessageActionDestination.DECODER, decoded.destination)
+        assertEquals(HttpMessageExecutionState.COMPLETED, decoded.executionState)
+        assertEquals(64, decoded.requestBytes)
+        verify(exactly = 1) { comparer.sendToComparer(requestBytes) }
+        verify(exactly = 1) { decoder.sendToDecoder(requestBytes) }
+        verify(exactly = 2) { fixture.request.toByteArray() }
+        verify(exactly = 0) { api.http() }
+    }
+
+    @Test
+    fun `Comparer byte preparation failures stay not-started and project changes prevent handoff`() = runBlocking {
+        val failedFixture = proxyFixture(44)
+        val changedFixture = proxyFixture(45)
+        filteredHistory(failedFixture.item, changedFixture.item)
+        every { failedFixture.request.toByteArray() } throws IllegalStateException("PRIVATE_BYTE_FAILURE")
+        val requestBytes = mockk<MontoyaByteArray>()
+        every { requestBytes.length() } returns 64
+        var currentProjectId = "project-123"
+        every { project.id() } answers { currentProjectId }
+        every { changedFixture.request.toByteArray() } answers {
+            currentProjectId = "replacement-project"
+            requestBytes
+        }
+        val comparer = mockk<Comparer>(relaxed = true)
+        every { api.comparer() } returns comparer
+
+        val failed = service.route(
+            RouteHttpMessageFromId(
+                "project-123",
+                HttpMessageReference(HttpMessageSource.PROXY, "44"),
+                HttpMessageRouteDestination.COMPARER,
+            )
+        )
+        val changed = service.route(
+            RouteHttpMessageFromId(
+                "project-123",
+                HttpMessageReference(HttpMessageSource.PROXY, "45"),
+                HttpMessageRouteDestination.COMPARER,
+            )
+        )
+
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, failed.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, failed.executionState)
+        assertFalse(failed.error.orEmpty().contains("PRIVATE_BYTE_FAILURE"))
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, changed.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, changed.executionState)
+        assertEquals("replacement-project", changed.projectId)
+        verify(exactly = 0) { comparer.sendToComparer(any()) }
+    }
+
+    @Test
     fun `unified routing rejects destination specific fields before source access`() = runBlocking {
+        val ref = HttpMessageReference(HttpMessageSource.PROXY, "42")
         val repeater = service.route(
             RouteHttpMessageFromId(
                 projectId = "project-123",
-                ref = HttpMessageReference(HttpMessageSource.PROXY, "42"),
+                ref = ref,
                 destination = HttpMessageRouteDestination.REPEATER,
                 insertionPoints = listOf(HttpInsertionPointSelector(HttpInsertionPointKind.BODY)),
             )
@@ -132,17 +217,33 @@ class HttpMessageActionsTest {
         val organizer = service.route(
             RouteHttpMessageFromId(
                 projectId = "project-123",
-                ref = HttpMessageReference(HttpMessageSource.PROXY, "42"),
+                ref = ref,
                 destination = HttpMessageRouteDestination.ORGANIZER,
                 tabName = "unsupported",
             )
         )
+        val comparer = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = ref,
+                destination = HttpMessageRouteDestination.COMPARER,
+                tabName = "unsupported",
+            )
+        )
+        val decoder = service.route(
+            RouteHttpMessageFromId(
+                projectId = "project-123",
+                ref = ref,
+                destination = HttpMessageRouteDestination.DECODER,
+                insertionPoints = listOf(HttpInsertionPointSelector(HttpInsertionPointKind.BODY)),
+            )
+        )
 
-        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, repeater.status)
-        assertEquals(HttpMessageExecutionState.NOT_STARTED, repeater.executionState)
-        assertNull(repeater.projectId)
-        assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, organizer.status)
-        assertNull(organizer.projectId)
+        listOf(repeater, organizer, comparer, decoder).forEach { result ->
+            assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            assertNull(result.projectId)
+        }
         verify(exactly = 0) { proxy.history(any()) }
     }
 

@@ -1,7 +1,9 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.comparer.Comparer
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.decoder.Decoder
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
@@ -287,6 +289,71 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
         assertTrue(result.error.orEmpty().contains("denied"))
         verify(exactly = 0) { api.repeater() }
+    }
+
+    @Test
+    fun `raw Comparer and Decoder routing hands off only the bounded request bytes`() = runBlocking {
+        val fixture = http1Fixture()
+        val requestBytes = mockk<MontoyaByteArray>()
+        every { requestBytes.length() } returns 48
+        every { fixture.request.toByteArray() } returns requestBytes
+        val comparer = mockk<Comparer>(relaxed = true)
+        val decoder = mockk<Decoder>(relaxed = true)
+        every { api.comparer() } returns comparer
+        every { api.decoder() } returns decoder
+
+        val compared = service.route(defaultHttp1Route().copy(destination = RawHttpRouteDestination.COMPARER))
+        val decoded = service.route(defaultHttp1Route().copy(destination = RawHttpRouteDestination.DECODER))
+
+        assertEquals(HttpMessageActionStatus.OK, compared.status)
+        assertEquals(HttpMessageActionDestination.COMPARER, compared.destination)
+        assertEquals(HttpMessageExecutionState.COMPLETED, compared.executionState)
+        assertEquals(HttpMessageActionStatus.OK, decoded.status)
+        assertEquals(HttpMessageActionDestination.DECODER, decoded.destination)
+        assertEquals(HttpMessageExecutionState.COMPLETED, decoded.executionState)
+        verify(exactly = 1) { comparer.sendToComparer(requestBytes) }
+        verify(exactly = 1) { decoder.sendToDecoder(requestBytes) }
+        verify(exactly = 2) { fixture.request.toByteArray() }
+        verify(exactly = 0) { api.http() }
+    }
+
+    @Test
+    fun `raw Comparer byte preparation failures stay not-started and project changes prevent handoff`() = runBlocking {
+        val failedFixture = http1Fixture()
+        every { failedFixture.request.toByteArray() } throws IllegalStateException("PRIVATE_BYTE_FAILURE")
+        val failed = service.route(defaultHttp1Route().copy(destination = RawHttpRouteDestination.COMPARER))
+
+        val changedFixture = http1Fixture()
+        val requestBytes = mockk<MontoyaByteArray>()
+        every { requestBytes.length() } returns 48
+        every { changedFixture.request.toByteArray() } answers {
+            currentProjectId = "replacement-project"
+            requestBytes
+        }
+        val comparer = mockk<Comparer>(relaxed = true)
+        every { api.comparer() } returns comparer
+        val changed = service.route(defaultHttp1Route().copy(destination = RawHttpRouteDestination.COMPARER))
+
+        assertEquals(HttpMessageActionStatus.BURP_ERROR, failed.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, failed.executionState)
+        assertTrue(!failed.error.orEmpty().contains("PRIVATE_BYTE_FAILURE"))
+        assertEquals(HttpMessageActionStatus.PROJECT_MISMATCH, changed.status)
+        assertEquals(HttpMessageExecutionState.NOT_STARTED, changed.executionState)
+        assertEquals("replacement-project", changed.projectId)
+        verify(exactly = 0) { comparer.sendToComparer(any()) }
+    }
+
+    @Test
+    fun `raw Comparer and Decoder reject tab names before request construction`() = runBlocking {
+        listOf(RawHttpRouteDestination.COMPARER, RawHttpRouteDestination.DECODER).forEach { destination ->
+            val result = service.route(defaultHttp1Route(tabName = "unsupported").copy(destination = destination))
+            assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
+            assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+        }
+
+        verify(exactly = 0) { HttpService.httpService(any(), any(), any()) }
+        verify(exactly = 0) { api.comparer() }
+        verify(exactly = 0) { api.decoder() }
     }
 
     @Test

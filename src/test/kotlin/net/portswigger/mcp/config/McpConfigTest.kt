@@ -40,6 +40,16 @@ class McpConfigTest {
     }
 
     @Test
+    fun `code execution tooling is disabled by default and persists explicit opt in`() {
+        assertFalse(config.codeExecutionTooling)
+
+        config.codeExecutionTooling = true
+
+        assertTrue(config.codeExecutionTooling)
+        verify { persistedObject.setBoolean("codeExecutionTooling", true) }
+    }
+
+    @Test
     fun `addAutoApproveTarget should add new target`() {
         val result = config.addAutoApproveTarget("example.com")
 

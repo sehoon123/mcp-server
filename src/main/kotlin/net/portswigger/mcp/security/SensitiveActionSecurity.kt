@@ -52,6 +52,12 @@ enum class SensitiveActionAuditOperation(val auditKind: String) {
     USER_OPTIONS_WRITE("sensitive_action:user_options_write"),
     TASK_EXECUTION_ENGINE("sensitive_action:task_execution_engine"),
     PROXY_INTERCEPT("sensitive_action:proxy_intercept"),
+    HTTP_ANNOTATION("sensitive_action:http_annotation"),
+    REQUEST_EXECUTION_START("sensitive_action:request_execution_start"),
+    REQUEST_EXECUTION_QUEUE("sensitive_action:request_execution_queue"),
+    REQUEST_EXECUTION_CONTROL("sensitive_action:request_execution_control"),
+    BAMBDA_IMPORT("sensitive_action:bambda_import"),
+    SHELL_EXECUTION("sensitive_action:shell_execution"),
 }
 
 /** Approval gate for Scanner starts and sensitive Burp mutations that never support persistent approval. */

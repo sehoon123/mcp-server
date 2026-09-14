@@ -89,6 +89,12 @@ enum class RawHttpRouteDestination {
 
     @SerialName("organizer")
     ORGANIZER,
+
+    @SerialName("comparer")
+    COMPARER,
+
+    @SerialName("decoder")
+    DECODER,
 }
 
 @Serializable
@@ -107,7 +113,7 @@ data class RouteRawHttpRequest(
     val targetPort: Int,
     @JsonSchemaMetadata(description = "Connect to the destination using TLS.")
     val usesHttps: Boolean,
-    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
+    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer, Comparer, and Decoder.", maxLength = 128)
     val tabName: String? = null,
 )
 
@@ -151,7 +157,7 @@ internal class RawHttpActionService(
             return invalid(input.protocol, HttpMessageActionDestination.HTTP, target, e.message.orEmpty())
         }
         val prepared = try {
-            prepare(
+            prepareRawHttpRequest(
                 input.protocol,
                 input.http1,
                 input.http2,
@@ -290,8 +296,12 @@ internal class RawHttpActionService(
         } catch (e: IllegalArgumentException) {
             return invalid(input.protocol, destination, target, e.message.orEmpty())
         }
-        if (input.destination == RawHttpRouteDestination.ORGANIZER && tabName != null) {
-            return invalid(input.protocol, destination, target, "tabName is not supported for Organizer")
+        if (
+            input.destination != RawHttpRouteDestination.REPEATER &&
+            input.destination != RawHttpRouteDestination.INTRUDER &&
+            tabName != null
+        ) {
+            return invalid(input.protocol, destination, target, "tabName is supported only for Repeater or Intruder")
         }
         if (input.destination == RawHttpRouteDestination.INTRUDER && input.protocol == RawHttpProtocol.HTTP_2) {
             return invalid(
@@ -302,7 +312,7 @@ internal class RawHttpActionService(
             )
         }
         val prepared = try {
-            prepare(
+            prepareRawHttpRequest(
                 input.protocol,
                 input.http1,
                 input.http2,
@@ -360,6 +370,33 @@ internal class RawHttpActionService(
             )
         }
 
+        val routedRequestBytes = if (
+            input.destination == RawHttpRouteDestination.COMPARER ||
+            input.destination == RawHttpRouteDestination.DECODER
+        ) {
+            try {
+                prepared.request.toByteArray().also {
+                    check(it.length() <= MAX_ACTION_REQUEST_BYTES) { "routed request bytes exceed the action limit" }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return burpError(input.protocol, destination, target, e)
+            }
+        } else {
+            null
+        }
+        if (routedRequestBytes != null) {
+            preExecutionProjectResult(
+                expectedProjectId,
+                input.protocol,
+                destination,
+                target,
+                prepared.requestBytes,
+                tabName,
+            )?.let { return it }
+        }
+
         val callContext = currentCoroutineContext()
         callContext.ensureActive()
         try {
@@ -375,6 +412,10 @@ internal class RawHttpActionService(
                 RawHttpRouteDestination.ORGANIZER -> withOrganizerMutation(expectedProjectId) {
                     api.organizer().sendToOrganizer(prepared.request)
                 }
+                RawHttpRouteDestination.COMPARER ->
+                    api.comparer().sendToComparer(requireNotNull(routedRequestBytes))
+                RawHttpRouteDestination.DECODER ->
+                    api.decoder().sendToDecoder(requireNotNull(routedRequestBytes))
             }
         } catch (e: OrganizerProjectMismatchBeforeMutationException) {
             return projectMismatch(
@@ -462,13 +503,13 @@ internal class RawHttpActionService(
     }
 }
 
-private data class PreparedRawHttpRequest(
+internal data class PreparedRawHttpRequest(
     val request: HttpRequest,
     val review: String,
     val requestBytes: Int,
 )
 
-private class RawHttpInputValidationException(message: String) : IllegalArgumentException(message)
+internal class RawHttpInputValidationException(message: String) : IllegalArgumentException(message)
 
 private inline fun requireRawHttpInput(condition: Boolean, lazyMessage: () -> String) {
     if (!condition) throw RawHttpInputValidationException(lazyMessage())
@@ -480,14 +521,13 @@ private inline fun <T> validateRawHttpInput(block: () -> T): T = try {
     throw RawHttpInputValidationException(e.message.orEmpty())
 }
 
-private fun prepare(
+internal fun validateRawHttpRequestInput(
     protocol: RawHttpProtocol,
     http1: RawHttp1Input?,
     http2: RawHttp2Input?,
     targetHostname: String,
     targetPort: Int,
-    usesHttps: Boolean,
-): PreparedRawHttpRequest {
+) {
     when (protocol) {
         RawHttpProtocol.HTTP_1 -> requireRawHttpInput(http1 != null && http2 == null) {
             "protocol=http_1 requires only the http1 object"
@@ -497,20 +537,28 @@ private fun prepare(
         }
     }
     validateRawHttpInput { validateRawTarget(targetHostname, targetPort) }
-    val normalizedHttp1 = if (protocol == RawHttpProtocol.HTTP_1) {
+    if (protocol == RawHttpProtocol.HTTP_1) {
         val content = requireNotNull(http1).content
         requireRawHttpInput(content.isNotEmpty() && content.length <= MAX_RAW_HTTP1_CHARS) {
             "HTTP/1 content must contain 1 to $MAX_RAW_HTTP1_CHARS characters"
         }
-        normalizeHttpContent(content)
     } else {
-        null
-    }
-    if (protocol == RawHttpProtocol.HTTP_2) {
         requireNotNull(http2).also { input ->
             validateRawHttpInput { validateRawHttp2Input(input.pseudoHeaders, input.headers, input.requestBody) }
         }
     }
+}
+
+internal fun prepareRawHttpRequest(
+    protocol: RawHttpProtocol,
+    http1: RawHttp1Input?,
+    http2: RawHttp2Input?,
+    targetHostname: String,
+    targetPort: Int,
+    usesHttps: Boolean,
+): PreparedRawHttpRequest {
+    validateRawHttpRequestInput(protocol, http1, http2, targetHostname, targetPort)
+    val normalizedHttp1 = http1?.content?.let(::normalizeHttpContent)
 
     // All caller validation above is deliberately separated from Montoya construction/accessor calls below.
     // A Montoya IllegalArgumentException is a private-safe Burp failure, not caller-authored validation text.
@@ -556,18 +604,24 @@ private fun RawHttpRouteDestination.toActionDestination(): HttpMessageActionDest
     RawHttpRouteDestination.REPEATER -> HttpMessageActionDestination.REPEATER
     RawHttpRouteDestination.INTRUDER -> HttpMessageActionDestination.INTRUDER
     RawHttpRouteDestination.ORGANIZER -> HttpMessageActionDestination.ORGANIZER
+    RawHttpRouteDestination.COMPARER -> HttpMessageActionDestination.COMPARER
+    RawHttpRouteDestination.DECODER -> HttpMessageActionDestination.DECODER
 }
 
 private fun RawHttpRouteDestination.approvalLabel(): String = when (this) {
     RawHttpRouteDestination.REPEATER -> "create a Repeater tab"
     RawHttpRouteDestination.INTRUDER -> "create an Intruder tab"
     RawHttpRouteDestination.ORGANIZER -> "send this request to Organizer"
+    RawHttpRouteDestination.COMPARER -> "open this request in Comparer"
+    RawHttpRouteDestination.DECODER -> "open this request in Decoder"
 }
 
 private fun RawHttpRouteDestination.auditOperation(): RequestRoutingAuditOperation = when (this) {
     RawHttpRouteDestination.REPEATER -> RequestRoutingAuditOperation.REPEATER
     RawHttpRouteDestination.INTRUDER -> RequestRoutingAuditOperation.INTRUDER
     RawHttpRouteDestination.ORGANIZER -> RequestRoutingAuditOperation.ORGANIZER
+    RawHttpRouteDestination.COMPARER -> RequestRoutingAuditOperation.COMPARER
+    RawHttpRouteDestination.DECODER -> RequestRoutingAuditOperation.DECODER
 }
 
 private fun normalizeRawTabName(tabName: String?): String? = tabName?.also {

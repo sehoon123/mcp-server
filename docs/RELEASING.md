@@ -424,13 +424,20 @@ At minimum, exercise the 11 required scenarios:
    another restart;
 3. native Streamable HTTP initialize, initialized notification, ping, list, call, and authenticated DELETE;
 4. stdio proxy initialize, one read call, one action denial, and graceful EOF cleanup;
-5. exact Community tool/resource/prompt catalog and Professional-only gating;
-6. Professional Scanner and Collaborator paths for every release that claims Professional support;
-7. Repeater/Intruder/Organizer routing without hidden network transmission;
-8. stable-ID outbound replay with independent exact-request and outbound-target authorization;
-9. large history/issue reads confirming bounds and cancellation without UI stalls;
-10. audit, diagnostics, and error paths confirming no credentials, bodies, paths, or header values leak; and
-11. extension unload while a cancellable background operation is active.
+5. release-line-selected exact Community tool/resource/prompt catalog and Professional-only gating; v4.12 additionally
+   verifies native ranking, annotation, local-command, Request Execution, and Bambda schemas and availability;
+6. Professional Scanner/Collaborator paths plus Request Execution start/queue/status/pause/resume/cancel/delete and
+   raw/generated Repeater Bambda import, compile, and disposable run for releases that advertise them;
+7. Repeater/Intruder/Organizer/Comparer/Decoder routing without hidden network transmission, plus exact-record
+   notes/highlight mutation, stale-edit rejection, and partial-write reconciliation;
+8. stable-ID outbound replay and Request Execution stored/raw batches with independent exact-request, batch, and
+   outbound-target authorization and cumulative count/byte limits;
+9. large history/issue/ranking-set reads confirming bounds and cancellation without UI stalls;
+10. audit, diagnostics, code-execution toggle/approval/emergency precedence, direct argv, disposable system-shell
+    timeout/error, and error paths confirming no credentials, bodies, commands, environments, paths, or header values
+    enter permanent evidence; and
+11. extension unload while a cancellable background operation and a retained Request Execution handle are active,
+    including bounded cleanup-reservation behavior when native cancellation is not yet confirmed.
 
 A smoke test is invalid if the JAR digest differs from the draft asset. A timeout, missing report, failed fresh-project
 baseline, completed-before-barrier call, `BLOCKED`, or `NOT RUN` result is not a pass. Do not dispatch the

@@ -13,12 +13,13 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from exact_smoke_contract import (  # noqa: E402
-    EDITION_CATALOG_COUNTS,
+    edition_catalog_counts,
     evidence_index_from_snapshots,
     json_object_from_bytes,
     normalize_relative_path,
     protected_workflow_results,
     require_absent_below_root,
+    requires_v412_catalog_schema,
     scan_evidence_snapshots,
     sha256_below_root,
     snapshot_evidence_files,
@@ -51,7 +52,7 @@ def validate_preflight(
     jar_sha256: str,
     version: str,
 ) -> None:
-    expected_counts = EDITION_CATALOG_COUNTS[edition]
+    expected_counts = edition_catalog_counts(requires_v412_catalog_schema(version))[edition]
     if type(report.get("schemaVersion")) is not int or report.get("schemaVersion") != 1:
         raise HarnessError("edition preflight has an unsupported schema")
     expected = {

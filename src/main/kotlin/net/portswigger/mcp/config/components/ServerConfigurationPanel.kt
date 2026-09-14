@@ -75,6 +75,19 @@ class ServerConfigurationPanel(
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
+        val codeExecutionToolingCheckBox = createCheckBoxWithSubtitle(
+            "Enable Bambda and local command tools",
+            "DANGER: Imports or executes arbitrary code",
+            config.codeExecutionTooling,
+            unsafeSelection = true,
+            unsafeConfirmationTitle = "Enable code-execution tools",
+            unsafeConfirmation = "These MCP tools can import arbitrary Bambda code into Burp and execute operating-system " +
+                "commands as your user. Every call still requires approval unless YOLO mode is enabled. Enable them?",
+            currentValue = { config.codeExecutionTooling },
+        ) { config.codeExecutionTooling = it }
+        add(codeExecutionToolingCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
         val allowAllHttpRequestsPanel = createCheckBoxWithSubtitle(
             "Always allow all outbound HTTP requests",
             "WARNING: Disables per-target approval for every destination",
@@ -229,9 +242,10 @@ class ServerConfigurationPanel(
         val confirmed = Dialogs.showConfirmDialog(
             this@ServerConfigurationPanel,
             "YOLO mode bypasses every MCP approval prompt, including outbound traffic, project-data reads, " +
-                "request routing, Target scope changes, Scanner actions, configuration access, editor changes, " +
-                "and Burp global-control changes.\n\nAn authenticated MCP client may read sensitive data, send " +
-                "network requests, and mutate Burp state without another prompt. Validation, project binding, " +
+                "request routing, Target scope changes, Scanner actions, configuration access, code execution, " +
+                "editor changes, and Burp global-control changes.\n\nAn authenticated MCP client may read sensitive data, " +
+                "send network requests, execute enabled code, and mutate Burp state without another prompt. " +
+                "Validation, project binding, " +
                 "operation bounds, bearer authentication, and Emergency read-only mode remain active.\n\n" +
                 "Enable YOLO mode?",
             JOptionPane.YES_NO_OPTION,

@@ -23,7 +23,6 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.RequestActionSecurity
 import net.portswigger.mcp.security.RequestRoutingAuditOperation
-import net.portswigger.mcp.security.recordCurrentToolApproval
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -80,6 +79,12 @@ enum class HttpMessageRouteDestination {
 
     @SerialName("organizer")
     ORGANIZER,
+
+    @SerialName("comparer")
+    COMPARER,
+
+    @SerialName("decoder")
+    DECODER,
 }
 
 @Serializable
@@ -96,7 +101,7 @@ data class RouteHttpMessageFromId(
         description = "Optional bounded changes applied to a fresh copy of the stored request; omitted fields inherit the stored source, patches are not cumulative, omission or {} makes no request changes, and this does not send it."
     )
     val patch: HttpRequestPatch? = null,
-    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer.", maxLength = 128)
+    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer, Comparer, and Decoder.", maxLength = 128)
     val tabName: String? = null,
     @JsonSchemaMetadata(description = "Optional semantic Intruder insertion points; rejected for other destinations.", minItems = 1, maxItems = 32)
     val insertionPoints: List<HttpInsertionPointSelector>? = null,
@@ -303,6 +308,12 @@ enum class HttpMessageActionDestination {
 
     @SerialName("organizer")
     ORGANIZER,
+
+    @SerialName("comparer")
+    COMPARER,
+
+    @SerialName("decoder")
+    DECODER,
 }
 
 @Serializable
@@ -534,6 +545,50 @@ internal class HttpMessageActionService(
                 sendToOrganizer(SendToOrganizerFromId(input.projectId, input.ref, input.patch))
             }
         }
+
+        HttpMessageRouteDestination.COMPARER -> {
+            if (input.tabName != null || input.insertionPoints != null) {
+                invalidArgument(
+                    null,
+                    input.ref,
+                    HttpMessageActionDestination.COMPARER,
+                    "tabName and insertionPoints are not supported for the Comparer destination",
+                )
+            } else {
+                route(
+                    input.projectId,
+                    input.ref,
+                    input.patch,
+                    HttpMessageActionDestination.COMPARER,
+                    null,
+                ) { _, _, _, _, requestBytes ->
+                    api.comparer().sendToComparer(requireNotNull(requestBytes))
+                    false
+                }
+            }
+        }
+
+        HttpMessageRouteDestination.DECODER -> {
+            if (input.tabName != null || input.insertionPoints != null) {
+                invalidArgument(
+                    null,
+                    input.ref,
+                    HttpMessageActionDestination.DECODER,
+                    "tabName and insertionPoints are not supported for the Decoder destination",
+                )
+            } else {
+                route(
+                    input.projectId,
+                    input.ref,
+                    input.patch,
+                    HttpMessageActionDestination.DECODER,
+                    null,
+                ) { _, _, _, _, requestBytes ->
+                    api.decoder().sendToDecoder(requireNotNull(requestBytes))
+                    false
+                }
+            }
+        }
     }
 
     suspend fun createRepeaterTab(input: CreateRepeaterTabFromId): HttpMessageActionResult = route(
@@ -542,7 +597,7 @@ internal class HttpMessageActionService(
         patch = input.patch,
         destination = HttpMessageActionDestination.REPEATER,
         tabName = input.tabName,
-    ) { _, patched, tabName, _ ->
+    ) { _, patched, tabName, _, _ ->
         if (tabName == null) api.repeater().sendToRepeater(patched.request)
         else api.repeater().sendToRepeater(patched.request, tabName)
         false
@@ -555,7 +610,7 @@ internal class HttpMessageActionService(
         destination = HttpMessageActionDestination.INTRUDER,
         tabName = input.tabName,
         insertionPointSelectors = input.insertionPoints,
-    ) { _, patched, tabName, preparedInsertionPoints ->
+    ) { _, patched, tabName, preparedInsertionPoints, _ ->
         if (preparedInsertionPoints == null) {
             if (tabName == null) api.intruder().sendToIntruder(patched.request)
             else api.intruder().sendToIntruder(patched.request, tabName)
@@ -576,7 +631,7 @@ internal class HttpMessageActionService(
         patch = input.patch,
         destination = HttpMessageActionDestination.ORGANIZER,
         tabName = null,
-    ) { resolved, patched, _, _ ->
+    ) { resolved, patched, _, _, _ ->
         val envelope = if (!patched.changed && resolved.response != null) {
             resolved.envelope ?: MontoyaHttpRequestResponse.httpRequestResponse(patched.request, resolved.response)
         } else {
@@ -599,7 +654,13 @@ internal class HttpMessageActionService(
         destination: HttpMessageActionDestination,
         tabName: String?,
         insertionPointSelectors: List<HttpInsertionPointSelector>? = null,
-        execute: suspend (ResolvedHttpMessage, PatchedRequest, String?, PreparedInsertionPoints?) -> Boolean,
+        execute: suspend (
+            ResolvedHttpMessage,
+            PatchedRequest,
+            String?,
+            PreparedInsertionPoints?,
+            MontoyaByteArray?,
+        ) -> Boolean,
     ): HttpMessageActionResult {
         val normalizedTabName = try {
             normalizeTabName(tabName)
@@ -650,10 +711,31 @@ internal class HttpMessageActionService(
             )
         }
 
+        val routedRequestBytes = if (
+            destination == HttpMessageActionDestination.COMPARER ||
+            destination == HttpMessageActionDestination.DECODER
+        ) {
+            try {
+                patched.request.toByteArray().also {
+                    check(it.length() <= MAX_ACTION_REQUEST_BYTES) { "routed request bytes exceed the action limit" }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return burpError(projectId, ref, destination, e)
+            }
+        } else {
+            null
+        }
+        if (routedRequestBytes != null) {
+            currentCoroutineContext().ensureActive()
+            recheckProject(projectId, ref, destination)?.let { return it }
+        }
+
         val callContext = currentCoroutineContext()
         callContext.ensureActive()
         val preserved = try {
-            execute(resolved, patched, normalizedTabName, preparedInsertionPoints)
+            execute(resolved, patched, normalizedTabName, preparedInsertionPoints, routedRequestBytes)
         } catch (e: OrganizerProjectMismatchBeforeMutationException) {
             return projectMismatch(ref, destination, e.currentProjectId)
         } catch (e: OrganizerMutationNotStartedException) {
@@ -806,26 +888,20 @@ internal class HttpMessageActionService(
         patched: PatchedRequest,
         changes: String = patched.summary,
     ): Boolean {
-        val auditOperation = destination.routingAuditOperation()
-        if (!config.requireRequestActionApproval) {
-            recordCurrentToolApproval(auditOperation?.auditKind ?: "request_routing", "policy_allow")
-            return true
-        }
         val service = patched.service
-        return RequestActionSecurity.checkPermission(
+        return RequestActionSecurity.checkPermissionLazy(
             action = destination.approvalLabel(),
             source = "${resolved.ref.source.serialName()}:${resolved.ref.id}",
             target = "${service.host()}:${service.port()} (${if (service.secure()) "HTTPS" else "HTTP"})",
             changes = changes,
-            requestContent = patched.requestContent,
             config = config,
             api = api,
-            auditOperation = auditOperation,
-        )
+            auditOperation = destination.routingAuditOperation(),
+        ) { patched.requestContent }
     }
 }
 
-private class PatchedRequest(
+internal class PatchedRequest(
     val request: HttpRequest,
     val service: HttpService,
     val target: HttpActionTarget,
@@ -836,13 +912,13 @@ private class PatchedRequest(
     val requestContent: String by lazy(LazyThreadSafetyMode.NONE) { request.toString() }
 }
 
-private class HttpRequestPatchValidationException(message: String) : IllegalArgumentException(message)
+internal class HttpRequestPatchValidationException(message: String) : IllegalArgumentException(message)
 
 private inline fun requirePatchInput(condition: Boolean, lazyMessage: () -> String) {
     if (!condition) throw HttpRequestPatchValidationException(lazyMessage())
 }
 
-private fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): PatchedRequest {
+internal fun applyPatch(original: HttpRequest, patch: HttpRequestPatch?): PatchedRequest {
     val immutableTarget = original.httpService().toActionTarget()
     val originalBytes = requestByteLength(original)
     require(originalBytes <= MAX_ACTION_REQUEST_BYTES) {
@@ -1126,6 +1202,8 @@ private fun HttpMessageActionDestination.approvalLabel(): String = when (this) {
     HttpMessageActionDestination.REPEATER -> "create a Repeater tab from this request"
     HttpMessageActionDestination.INTRUDER -> "send this request to Intruder"
     HttpMessageActionDestination.ORGANIZER -> "send this request to Organizer"
+    HttpMessageActionDestination.COMPARER -> "open this request in Comparer"
+    HttpMessageActionDestination.DECODER -> "open this request in Decoder"
 }
 
 private fun HttpMessageActionDestination.routingAuditOperation(): RequestRoutingAuditOperation? = when (this) {
@@ -1133,6 +1211,8 @@ private fun HttpMessageActionDestination.routingAuditOperation(): RequestRouting
     HttpMessageActionDestination.REPEATER -> RequestRoutingAuditOperation.REPEATER
     HttpMessageActionDestination.INTRUDER -> RequestRoutingAuditOperation.INTRUDER
     HttpMessageActionDestination.ORGANIZER -> RequestRoutingAuditOperation.ORGANIZER
+    HttpMessageActionDestination.COMPARER -> RequestRoutingAuditOperation.COMPARER
+    HttpMessageActionDestination.DECODER -> RequestRoutingAuditOperation.DECODER
 }
 
 private fun HttpMessageActionService.resolutionFailure(
@@ -1274,7 +1354,7 @@ private fun uncertain(
 
 private fun safeException(error: Exception): String = safeExceptionSummary(error)
 
-private fun HttpService.toActionTarget() = HttpActionTarget(
+internal fun HttpService.toActionTarget() = HttpActionTarget(
     host().take(MAX_HTTP_SEARCH_HOST_CHARS),
     port(),
     secure(),

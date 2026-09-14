@@ -155,16 +155,63 @@ def scanner_tool() -> dict:
     }
 
 
-def catalog(edition: str) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    expected = contract.EDITION_CATALOG_IDENTIFIERS[edition]
-    tools = [
-        correlation_tool()
-        if name == "correlate_http_activity"
-        else scanner_tool()
-        if name == "get_scanner_issues"
-        else {"name": name}
-        for name in sorted(expected["tools"])
-    ]
+def native_v412_tool(name: str) -> dict | None:
+    annotations = {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}
+    if name == "rank_http_messages":
+        return {
+            "name": name,
+            "annotations": {"readOnlyHint": True, "destructiveHint": False},
+            "inputSchema": {"properties": {"refs": {"type": "array", "maxItems": 32}}},
+        }
+    if name == "annotate_http_messages":
+        return {
+            "name": name,
+            "annotations": {"readOnlyHint": False, "destructiveHint": True},
+            "inputSchema": {"properties": {"refs": {"type": "array", "maxItems": 16}}},
+        }
+    if name == "execute_local_command":
+        return {
+            "name": name,
+            "annotations": annotations,
+            "inputSchema": {"properties": {}},
+            "outputSchema": {"properties": {"output": {"type": ["string", "null"], "maxLength": 65_536}}},
+        }
+    if name == "start_http_request_execution":
+        return {
+            "name": name,
+            "annotations": annotations,
+            "inputSchema": {"properties": {"requests": {"type": "array", "maxItems": 16}}},
+        }
+    if name == "get_http_request_execution":
+        return {
+            "name": name,
+            "annotations": {"readOnlyHint": True, "destructiveHint": False},
+            "inputSchema": {"properties": {}},
+            "outputSchema": {"properties": {"results": {"type": "array", "maxItems": 64}}},
+        }
+    if name in {"import_bambda", "generate_bambda_chain"}:
+        return {"name": name, "annotations": annotations, "inputSchema": {"properties": {}}}
+    return None
+
+
+def catalog(
+    edition: str,
+    require_v412: bool = True,
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    approved = (
+        contract.EDITION_CATALOG_IDENTIFIERS
+        if require_v412
+        else contract.LEGACY_EDITION_CATALOG_IDENTIFIERS
+    )
+    expected = approved[edition]
+    tools = []
+    for name in sorted(expected["tools"]):
+        if name == "correlate_http_activity":
+            tools.append(correlation_tool())
+        elif name == "get_scanner_issues":
+            tools.append(scanner_tool())
+        else:
+            tools.append(native_v412_tool(name) or {"name": name})
     prompts = [{"name": name} for name in sorted(expected["prompts"])]
     resources = [{"uri": uri} for uri in sorted(expected["resources"])]
     resource_templates = [
@@ -285,7 +332,7 @@ def build_finalizer_fixture(root: pathlib.Path) -> tuple[str, str, str]:
             token_file.chmod(0o600)
     jar = hashlib.sha256(candidate.read_bytes()).hexdigest()
 
-    for edition, expected in contract.EDITION_CATALOG_COUNTS.items():
+    for edition, expected in contract.edition_catalog_counts(False).items():
         report = {
             "schemaVersion": 1,
             "status": "passed",
@@ -821,6 +868,18 @@ class ExactSmokeContractTest(unittest.TestCase):
         with self.assertRaises(HarnessError):
             contract.validate_catalog("professional", tools, prompts, resources, templates)
 
+        community_tools, prompts, resources, templates = catalog("community")
+        rank = next(tool for tool in community_tools if tool.get("name") == "rank_http_messages")
+        rank["inputSchema"]["properties"]["refs"]["maxItems"] = 33
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("community", community_tools, prompts, resources, templates)
+
+        professional_tools, prompts, resources, templates = catalog("professional")
+        execution = next(tool for tool in professional_tools if tool.get("name") == "start_http_request_execution")
+        execution["inputSchema"]["properties"]["requests"]["maxItems"] = 17
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("professional", professional_tools, prompts, resources, templates)
+
         for edition in contract.EDITION_CATALOG_IDENTIFIERS:
             tools, prompts, resources, templates = catalog(edition)
             with self.assertRaises(HarnessError):
@@ -914,7 +973,9 @@ class ExactSmokeContractTest(unittest.TestCase):
             contract.requires_v412_catalog_schema("4.12.0\nprivate")
 
         for edition in contract.EDITION_CATALOG_COUNTS:
-            tools, prompts, resources, templates = json.loads(json.dumps(catalog(edition)))
+            tools, prompts, resources, templates = json.loads(
+                json.dumps(catalog(edition, require_v412=False))
+            )
             correlation = next(tool for tool in tools if tool.get("name") == "correlate_http_activity")
             correlation["inputSchema"]["properties"].pop("relatedTraffic")
             correlation.pop("outputSchema")
@@ -923,8 +984,15 @@ class ExactSmokeContractTest(unittest.TestCase):
                 scanner.clear()
                 scanner["name"] = "get_scanner_issues"
 
-            result = contract.validate_catalog(edition, tools, prompts, resources, templates)
-            self.assertEqual(contract.EDITION_CATALOG_COUNTS[edition], result["counts"])
+            result = contract.validate_catalog(
+                edition,
+                tools,
+                prompts,
+                resources,
+                templates,
+                require_v412_schema=False,
+            )
+            self.assertEqual(contract.LEGACY_EDITION_CATALOG_COUNTS[edition], result["counts"])
             with self.assertRaises(HarnessError):
                 contract.validate_catalog(
                     edition,
@@ -936,6 +1004,20 @@ class ExactSmokeContractTest(unittest.TestCase):
                 )
         with self.assertRaises(HarnessError):
             contract.validate_catalog("community", *catalog("community"), require_v412_schema="true")
+
+    def test_finalizer_selects_catalog_counts_from_the_candidate_release_line(self):
+        finalizer = load_finalizer_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source, jar, _ = build_finalizer_fixture(root)
+            report = json.loads((root / "evidence/community-preflight.json").read_text(encoding="utf-8"))
+            report["expectedServerVersion"] = "4.12.0-rc.1"
+            report["catalog"]["counts"] = contract.EDITION_CATALOG_COUNTS["community"]
+
+            finalizer.validate_preflight(report, "community", source, jar, "4.12.0-rc.1")
+            report["catalog"]["counts"] = contract.LEGACY_EDITION_CATALOG_COUNTS["community"]
+            with self.assertRaises(HarnessError):
+                finalizer.validate_preflight(report, "community", source, jar, "4.12.0-rc.1")
 
     def test_catalog_response_rejects_pagination_instead_of_attesting_only_the_first_page(self):
         response = {"result": {"tools": [{"name": "one"}]}}

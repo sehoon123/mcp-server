@@ -12,6 +12,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
@@ -26,6 +27,25 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ToolServicesTest {
+    @Test
+    fun `native execution services survive listener registration and reject access after close`() {
+        val services = ToolServices(
+            mockk<MontoyaApi>(relaxed = true),
+            WorkflowPresetStore(mockk<PersistedObject>(relaxed = true)),
+        )
+        val firstConfig = mockk<McpConfig>(relaxed = true)
+        val secondConfig = mockk<McpConfig>(relaxed = true)
+
+        assertSame(services.localCommands(firstConfig), services.localCommands(secondConfig))
+        assertSame(services.bambdas(firstConfig), services.bambdas(secondConfig))
+        assertSame(services.requestExecutions(firstConfig), services.requestExecutions(secondConfig))
+
+        services.close()
+        assertFailsWith<IllegalStateException> { services.localCommands(firstConfig) }
+        assertFailsWith<IllegalStateException> { services.bambdas(firstConfig) }
+        assertFailsWith<IllegalStateException> { services.requestExecutions(firstConfig) }
+    }
+
     @Test
     fun `project reset does not initialize unused lazy services`() = runBlocking {
         val api = mockk<MontoyaApi>(relaxed = true)

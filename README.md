@@ -48,7 +48,7 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 28 tools on Professional and 21 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 37 tools on Professional and 24 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
@@ -57,7 +57,10 @@ client-liveness, and capacity-pressure safeguards.
 - Value-free passive HTTP session-security analysis over up to 32 distinct stable references
 - Project-scoped saved HTTP/WebSocket metadata-search and HTTP comparison presets with runtime-only cursors/references
 - Proxy, WebSocket, Organizer, Site Map, and Scanner summaries with stable IDs and bounded detail reads
-- Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, and Organizer routing
+- Project-scoped request replay and structured mutation from stable IDs, with Repeater, Intruder, Organizer, Comparer, and Decoder routing
+- Native anomaly ranking over explicit bounded reference sets and approval-gated notes/highlight mutation
+- Opt-in local command execution through ShellUtils, with exact local review and a bounded MCP output preview
+- Professional Request Execution Engine lifecycle tools and opt-in Repeater custom-action Bambda import/chain generation
 - Explicit Target scope checks/updates and bounded HTTP message comparison from stable references, including JSON field-path differences without scalar values
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
@@ -88,7 +91,7 @@ or other argument values.
 ### v4 catalog
 
 Version 3.1 provided one compatibility window for seven deprecated v3 names. Version 4 removes those names and replaces
-the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 21 Community tools:
+the offset-based WebSocket list with `search_websocket_messages`. The current catalog contains 24 Community tools:
 
 | Removed v3 names | v4 replacement |
 |---|---|
@@ -103,22 +106,57 @@ The common catalog is `send_raw_http_request`, `route_raw_http_request`, `get_bu
 `update_scope`, `compare_http_messages`, `analyze_http_session_security`, `save_workflow_preset`,
 `list_workflow_presets`, `delete_workflow_preset`, `execute_workflow_preset`, `get_http_message`,
 `send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
-and `set_burp_control_state`.
+`set_burp_control_state`, `rank_http_messages`, `annotate_http_messages`, and `execute_local_command`.
 
-Burp Professional adds seven tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
+Burp Professional adds thirteen tools: four Request Execution Engine tools—`start_http_request_execution`,
+`queue_http_request_execution`, `get_http_request_execution`, and `control_http_request_execution`—plus
+`import_bambda`, `generate_bambda_chain`, and the seven existing tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 28 total. Individual WebSocket and Scanner
-issue reads require `projectId`; v3 aliases are not advertised. The local-only `transform_data` and
-`generate_random_string` utilities and the focus-dependent active-editor read/write tools are no longer advertised;
-use local shell utilities or Burp's editor UI instead. Clients must reconnect and rediscover capabilities after upgrading.
-Some client hosts flatten the three fixed MCP resources into their callable UI, so Professional may visually show 31
-entries (28 tools plus 3 resources); the protocol `tools/list` catalog remains exactly 28.
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 37 total. Request Execution and Repeater
+custom-action Bambda tools are Professional-only. Individual WebSocket and Scanner issue reads require `projectId`; v3
+aliases are not advertised. The local-only `transform_data` and `generate_random_string` utilities and the
+focus-dependent active-editor read/write tools remain removed. Clients must reconnect and rediscover capabilities after
+upgrading. Some client hosts flatten the three fixed MCP resources into their callable UI, so Professional may visually
+show 40 entries (37 tools plus 3 resources); the protocol `tools/list` catalog remains exactly 37.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
 classification; HTTP/2-to-Intruder routing is unsupported. Safe-regex HTTP and
 WebSocket searches use 10,000-record/32 MiB budgets and conservative regex validation. HTTP regex search deliberately
 bypasses metadata-index hints.
+
+### Native ranking, annotations, execution, and code import
+
+`rank_http_messages` sends exactly 1–32 distinct stable references to Burp's native anomaly ranking utility after the
+normal source approvals. Every request and response is capped at 2 MiB and the exact set at 16 MiB. Returned ordinals
+are sorted, relative only to that set, and are not severity or vulnerability scores. The native ranking call is
+synchronous and has no interruptible deadline; cancellation and a final project check are observed before output.
+
+`annotate_http_messages` updates notes and/or highlight colors for 1–16 distinct stable records. Notes can be replaced,
+appended after one newline, or cleared; `highlight: "none"` clears highlighting. The selected records and their current
+annotations are re-resolved inside the mutation barrier after local approval. A concurrent edit produces `stale_state`
+instead of being overwritten. Montoya exposes separate note/color setters rather than a transaction, so a failure after
+one setter or record may return `execution_uncertain`; reconcile in Burp and do not retry automatically.
+
+Professional adds an extension-owned Request Execution Engine lifecycle. `start_http_request_execution` accepts 1–16
+nested stored-reference or raw requests, validates and approves the whole batch, preserves the existing derived-request
+and outbound-target gates, and starts Burp's native engine. `queue_http_request_execution` adds at most 16 at a time;
+one handle accepts at most 64 requests and 16 MiB cumulatively. At most four active, completed, or cleanup-pending
+handles count against capacity. `get_http_request_execution` can wait up to 30 seconds and returns only live counters and
+completion-order label/status/length metadata; response handlers drop native request/response results after capturing
+that metadata. `control_http_request_execution` pauses, resumes, cancels, or cancel-and-deletes. Project transitions and
+extension shutdown attempt cancellation; a cleanup whose completion is not confirmed continues consuming capacity.
+
+`execute_local_command` uses Montoya ShellUtils for one direct argv or explicit system-shell command, serializes MCP
+command calls, and applies a native timeout of at most 120 seconds. Command/environment input is shown exactly in the
+local approval preview. The returned MCP preview is capped at 64 KiB, but ShellUtils materializes its complete native
+string first; this is not a process-output or heap cap. Commands run with Burp's OS permissions and are not project
+scoped. Professional-only `import_bambda` wraps bounded Java source as a Repeater `CUSTOM_ACTION` with a deterministic
+name-derived ID, while `generate_bambda_chain` generates and immediately imports a 1–8-step fixed-target action. At
+most 32 distinct MCP-imported IDs are retained per extension lifetime; replacing one does not consume another slot. Imported/auto-running Bambda code and already-started child processes execute outside later MCP
+project, outbound-approval, toggle, and Emergency read-only checks. Both tool families therefore remain disabled until
+the local operator explicitly enables **Bambda and local command tools**; every invocation still requires sensitive
+action approval unless YOLO mode is active.
 
 ### v4.1 structured results
 
@@ -314,14 +352,14 @@ Open the **MCP Bridge** tab in Burp:
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
-- Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items.
-- **Enable YOLO mode...** is a local, persistent master override for every MCP approval prompt, including sensitive configuration, Scanner, editor, and Burp global-control actions. Enabling it requires one warning confirmation. It preserves the granular policies shown below it and resumes them when disabled. An authenticated client can read sensitive data, send traffic, and mutate Burp state without another prompt while the mode is active. Authentication, input validation, project binding, operation bounds, execution-state handling, and Emergency read-only mode remain active.
+- Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items. Bambda import and local commands additionally require the disabled-by-default **Enable Bambda and local command tools** switch.
+- **Enable YOLO mode...** is a local, persistent master override for every MCP approval prompt, including sensitive configuration, Scanner, code-execution, editor, and Burp global-control actions. Enabling it requires one warning confirmation. It preserves the granular policies shown below it and resumes them when disabled. An authenticated client can read sensitive data, send traffic, execute separately enabled code, and mutate Burp state without another prompt while the mode is active. Authentication, input validation, project binding, operation bounds, execution-state handling, and Emergency read-only mode remain active. YOLO mode cannot enable the separate code-execution toggle.
 - `Always allow all outbound HTTP requests` is off by default. Enabling it requires a local confirmation; use it only when every destination may permanently bypass per-target **Allow Once / Allow All for This Session / Always Allow Host / Always Allow Host:Port / Deny** review. Target syntax validation and all other tool safeguards remain active.
 - Request-routing/derived-request and Target scope dialogs offer **Allow Once / Allow for This Session / Always Allow / Deny**. The request-action session grant never replaces independent outbound-target approval. Project-data dialogs offer the same session lifetime for one data source at a time. Re-enable the corresponding approval checkbox to restore prompts after a persistent Always Allow choice. Configuration, Scanner, editor, and other global-state mutations require explicit **Allow Once / Deny** approval unless YOLO mode is active.
 - Use **Reset active session approvals** to revoke future use of all memory-only grants without cancelling already-started operations. Use **Reset all persistent approvals...** to disable YOLO mode and restore every saved HTTP, routing, Scope, and project-data approval bypass to prompt-by-default.
-- Disabling request-action, Target scope, or project-data approval; enabling a per-source **Always allow** policy or configuration-editing tools; and disabling configuration credential filtering, Emergency read-only mode, or audit persistence each require a local confirmation. Returning any of these settings to its safer state does not prompt.
+- Disabling request-action, Target scope, or project-data approval; enabling a per-source **Always allow** policy, configuration-editing tools, or Bambda/local-command tools; and disabling configuration credential filtering, Emergency read-only mode, or audit persistence each require a local confirmation. Returning any of these settings to its safer state does not prompt.
 - Use **Diagnostics and Safety** to inspect listener/session/admission, event-stream/liveness, and session-cleanup counters plus verified embedded-proxy provenance, copy a redacted diagnostic report, and manage the bounded audit trail. If the configured port is occupied, startup reports the numeric local endpoint rather than an internal coroutine-cancellation message.
-- Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. This takes effect immediately for new calls, but it does not cancel Scanner work that Burp has already started.
+- Enable **Emergency read-only mode** to block every tool not explicitly annotated read-only. Services recheck it adjacent to new annotation, request-execution, Bambda, and command side effects. It attempts to cancel retained request executions on project cleanup, but cannot undo annotations, imported or auto-running Bambdas, completed commands, child-process effects, requests already started by Burp, or Scanner work already running.
 
 The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
 support a remote listener; do not weaken the bind or use an unauthenticated forwarding proxy.
@@ -355,8 +393,9 @@ and confirmed clear controls still apply.
 
 Emergency read-only mode is a local safety interlock, not a replacement for Scope, approval, or authentication policy.
 Read and comparison tools continue to work and retain their normal data-access approvals. Request sending, routing,
-payload generation, Scope/config/editor/global-state changes, Scanner start/cancel, and every other non-read-only tool
-are rejected before tool input is executed.
+payload generation, annotation, Request Execution Engine mutation, Bambda import, local commands,
+Scope/config/editor/global-state changes, Scanner start/cancel, and every other non-read-only tool are rejected before
+tool input is executed. Already-started native work is not retroactively undone.
 
 ## Unified HTTP search
 
@@ -394,7 +433,7 @@ values are never added to the index.
 
 Use `send_raw_http_request` for new raw traffic. It accepts exactly one HTTP/1.1 or HTTP/2 variant, uses an explicit
 Montoya protocol mode, denies redirects, and bounds response timeout/body output. It does not automatically add completed
-exchanges to Site Map because Montoya has no atomic project-bound add. Use `route_raw_http_request` for exactly one Repeater, Intruder, or Organizer destination. Both
+exchanges to Site Map because Montoya has no atomic project-bound add. Use `route_raw_http_request` for exactly one Repeater, Intruder, Organizer, Comparer, or Decoder destination. Both
 return structured execution state; `uncertain` means the side effect may exist and must not be retried automatically.
 The older protocol- and destination-specific names were removed in v4.
 
@@ -470,7 +509,11 @@ needed only when compact search metadata is insufficient, because both action to
 fail closed if its project or opaque Site Map identity no longer matches:
 
 - `send_http_request_from_id` replays one request to its original network destination.
-- `route_http_message_from_id` routes one request to exactly one `repeater`, `intruder`, or `organizer` destination.
+- `route_http_message_from_id` routes one request to exactly one `repeater`, `intruder`, `organizer`, `comparer`, or `decoder` destination.
+
+Comparer and Decoder routing hands only the approved request bytes to Burp's native UI. It does not include the stored
+response, return comparison/decoding output, send network traffic, or start an Intruder attack. Call the route separately
+for each request that should appear in Comparer.
 
 The server also advertises this sequence through MCP initialize `instructions`; clients that ignore that field still
 receive self-contained guidance in each tool description.
@@ -497,7 +540,7 @@ remains bound to its original host, port, and TLS mode.
 Source and resulting requests are capped at 2 MiB; replacement bodies at 1 MiB; header and parameter mutations at 64
 each. `route_http_message_from_id` with `destination: "intruder"` can additionally resolve up to 32 semantic parameter,
 header-value, or whole-body insertion points; clients cannot supply raw byte offsets. `tabName` is accepted only for
-Repeater or Intruder, and `insertionPoints` only for Intruder. HTTP replay defaults to the source protocol, rejects every
+Repeater or Intruder, and `insertionPoints` only for Intruder; neither field applies to Organizer, Comparer, or Decoder. HTTP replay defaults to the source protocol, rejects every
 automatic redirect mode because redirected destinations cannot be reviewed separately, uses a 30-second response timeout,
 and returns at most an 8 KiB body preview by default (64 KiB maximum). Responses are not automatically added to Site
 Map because Montoya does not provide an atomic project-bound add; `recordedInSiteMap` remains false and `recordedRef`

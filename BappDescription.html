@@ -22,7 +22,7 @@
 
 <h2>Features</h2>
 <ul>
-	<li>Expose a compact v4 catalog of 28 Professional tools (21 on Community), with output schemas and structured content on every tool</li>
+	<li>Expose a bounded v4 catalog of 37 Professional tools (24 on Community), with output schemas and structured content on every tool</li>
 	<li>Read project-bound HTTP, WebSocket, and Scanner references through MCP-native resources, plus four Community and five Professional reusable prompts</li>
 	<li>Copy canonical project-scoped MCP references from official Burp context menus without copying raw traffic, credentials, endpoints, or local paths</li>
 	<li>Send or route exactly one bounded HTTP/1.1 or HTTP/2 request through unified, approval-aware tools with structured execution state</li>
@@ -37,7 +37,10 @@
 	<li>Check or update Target scope with Allow Once, Allow for This Session, Always Allow, and Deny controls, a schema-enforced exactly-one-of URL/reference constraint per target, and compare bounded HTTP messages by stable reference</li>
 	<li>Search Professional Scanner summaries with signed cursors and bounded append-stable delta reads that do not claim regression, removal, or in-place change; run focused scoped audits with explicit insertion points, owned cancellation, project-bound cleanup, and bounded orphan expiry</li>
 	<li>Generate and long-poll bounded Burp Collaborator interactions with progress and cancellation (Professional only)</li>
-	<li>Create Repeater tabs and send requests to Intruder with optional semantic insertion points</li>
+	<li>Open bounded request bytes in Repeater, Intruder, Organizer, Comparer, or Decoder without hidden network transmission; Intruder supports optional semantic insertion points</li>
+	<li>Rank explicit bounded HTTP reference sets with native anomaly ordinals and update notes/highlights behind project, source, approval, stale-state, and partial-execution guards</li>
+	<li>Start, extend, inspect, pause, resume, cancel, and delete bounded extension-owned Request Execution Engine runs (Professional only), retaining metadata rather than response content</li>
+	<li>Import Repeater custom-action Bambdas, generate fixed-target chains (Professional only), or execute local direct/system-shell commands only after a disabled-by-default code-execution toggle and local approval</li>
 	<li>Export and modify project and user configuration through level-selecting JSON tools with recursive filtering for common credentials, authorization headers, cookies, and private certificate material</li>
 	<li>Control proxy intercept and task execution through one bounded global-control tool</li>
 	<li>Return machine-readable status, retry guidance, and uncertain execution state from configuration and control tools</li>
@@ -49,14 +52,14 @@
 	<li>Separate advanced/manual extraction of the packaged stdio proxy for independently managed stdio clients</li>
 	<li>Native project-local Workflow Preset Manager for structured HTTP metadata search, WebSocket metadata search, and HTTP comparison settings; management never executes traffic or expands the MCP catalog</li>
 	<li>Configurable target, stable-ID action, Scope, and source-specific project-data approvals with memory-only session choices, explicit reset controls, and an unchecked-by-default persistent allow-all outbound request control</li>
-	<li>Interact with Organizer entries</li>
+	<li>Search and read Organizer entries through project-scoped stable references</li>
 </ul>
 
 <h2>Usage</h2>
 <ol>
 	<li>Navigate to the "MCP Bridge" tab, confirm the displayed extension version, and enable the MCP server. An occupied local
 		port is reported as an endpoint conflict rather than an internal coroutine cancellation.</li>
-	<li>Configure security settings including auto-approve targets and configuration editing permissions. Copy the local
+	<li>Configure security settings including auto-approve targets, configuration editing permissions, and the separate disabled-by-default Bambda/local-command switch. Imported or auto-running Bambdas and already-started processes can outlive later MCP project, outbound-approval, toggle, and Emergency read-only checks. Copy the local
 		bearer token under Advanced Options for native HTTP clients. Use Diagnostics and Safety to inspect redacted runtime
 		state, reset session or persistent approvals, manage audit retention, or block non-read-only tool calls immediately.</li>
 	<li>Use the Client Setup Center to preview one of the five supported client configurations, run the bounded Connection

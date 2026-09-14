@@ -210,9 +210,13 @@ class McpAuditLogTest {
         val fixture = auditFixture()
         fixture.config.approvalYoloMode = true
         val api = mockk<MontoyaApi>()
-        val handler = mockk<SensitiveActionApprovalHandler>()
-        val originalHandler = SensitiveActionSecurity.approvalHandler
-        SensitiveActionSecurity.approvalHandler = handler
+        val sensitiveHandler = mockk<SensitiveActionApprovalHandler>()
+        val routingHandler = mockk<RequestActionApprovalHandler>()
+        val originalSensitiveHandler = SensitiveActionSecurity.approvalHandler
+        val originalRoutingHandler = RequestActionSecurity.approvalHandler
+        SensitiveActionSecurity.approvalHandler = sensitiveHandler
+        RequestActionSecurity.approvalHandler = routingHandler
+        var requestMaterialized = false
         try {
             val invocation = newToolAuditInvocation(
                 sink = fixture.log,
@@ -232,17 +236,67 @@ class McpAuditLogTest {
                         auditOperation = SensitiveActionAuditOperation.PROXY_INTERCEPT,
                     )
                 )
+                listOf(
+                    SensitiveActionAuditOperation.HTTP_ANNOTATION,
+                    SensitiveActionAuditOperation.REQUEST_EXECUTION_START,
+                    SensitiveActionAuditOperation.BAMBDA_IMPORT,
+                    SensitiveActionAuditOperation.SHELL_EXECUTION,
+                ).forEach { operation ->
+                    assertTrue(
+                        SensitiveActionSecurity.checkPermission(
+                            action = "perform a bounded native action",
+                            summary = "bounded summary",
+                            api = api,
+                            config = fixture.config,
+                            auditOperation = operation,
+                        )
+                    )
+                }
+                listOf(
+                    RequestRoutingAuditOperation.COMPARER,
+                    RequestRoutingAuditOperation.DECODER,
+                    RequestRoutingAuditOperation.REQUEST_EXECUTION,
+                ).forEach { operation ->
+                    assertTrue(
+                        RequestActionSecurity.checkPermissionLazy(
+                            action = "open request in native tool",
+                            source = "proxy:1",
+                            target = "example.test:443",
+                            changes = "none",
+                            config = fixture.config,
+                            api = api,
+                            auditOperation = operation,
+                        ) {
+                            requestMaterialized = true
+                            "GET / HTTP/1.1\r\n\r\n"
+                        }
+                    )
+                }
             }
             invocation.complete("completed")
             fixture.log.flush()
 
             assertEquals(
-                McpAuditApproval("sensitive_action:proxy_intercept", "yolo_allow"),
-                fixture.log.snapshot().single().approvals.single(),
+                listOf(
+                    McpAuditApproval("sensitive_action:proxy_intercept", "yolo_allow"),
+                    McpAuditApproval("sensitive_action:http_annotation", "yolo_allow"),
+                    McpAuditApproval("sensitive_action:request_execution_start", "yolo_allow"),
+                    McpAuditApproval("sensitive_action:bambda_import", "yolo_allow"),
+                    McpAuditApproval("sensitive_action:shell_execution", "yolo_allow"),
+                    McpAuditApproval("request_routing:comparer", "yolo_allow"),
+                    McpAuditApproval("request_routing:decoder", "yolo_allow"),
+                    McpAuditApproval("request_execution:derived_request", "yolo_allow"),
+                ),
+                fixture.log.snapshot().single().approvals,
             )
-            coVerify(exactly = 0) { handler.requestApproval(any(), any(), any(), any(), any()) }
+            assertFalse(requestMaterialized)
+            coVerify(exactly = 0) { sensitiveHandler.requestApproval(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) {
+                routingHandler.requestApproval(any(), any(), any(), any(), any(), any(), any())
+            }
         } finally {
-            SensitiveActionSecurity.approvalHandler = originalHandler
+            SensitiveActionSecurity.approvalHandler = originalSensitiveHandler
+            RequestActionSecurity.approvalHandler = originalRoutingHandler
         }
     }
 

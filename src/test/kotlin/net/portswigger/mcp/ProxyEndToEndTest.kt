@@ -203,6 +203,9 @@ class ProxyEndToEndTest {
                 setOf(
                     "send_raw_http_request",
                     "route_raw_http_request",
+                    "rank_http_messages",
+                    "annotate_http_messages",
+                    "execute_local_command",
                     "get_burp_options",
                     "set_burp_options",
                     "search_http_messages",

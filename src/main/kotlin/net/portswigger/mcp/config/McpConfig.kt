@@ -35,6 +35,7 @@ class McpConfig(
 
     var enabled by storage.boolean(true)
     var configEditingTooling by storage.boolean(false)
+    var codeExecutionTooling by storage.boolean(false)
     var host by storage.string("127.0.0.1")
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(true)

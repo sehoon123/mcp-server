@@ -93,7 +93,9 @@ internal const val MCP_SERVER_INSTRUCTIONS =
         "search_http_messages. Use get_http_message only when compact metadata is insufficient. Send variants via " +
         "send_http_request_from_id or route via route_http_message_from_id, passing only changed patch fields. " +
         "Omitted fields come from the stored source; every call restarts there, so patches are not cumulative. Never " +
-        "rebuild stored traffic as raw HTTP; use raw tools only for genuinely new requests."
+        "rebuild stored traffic as raw HTTP; use raw tools only for genuinely new requests. Reuse explicit refs for " +
+        "native ranking, annotation, and Professional request execution. Invoke Bambda or local-command tools only " +
+        "when the user explicitly requests code execution and the Burp operator enabled that separate capability."
 internal const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
 internal const val MCP_MAX_SESSION_ID_CHARS = 128
 private const val MCP_PROTOCOL_VERSION_HEADER = "Mcp-Protocol-Version"

@@ -45,7 +45,7 @@ locally assembled corrective artifact or reuse RC evidence as stable exact-byte 
 | `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
 | `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
 | `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, seven-day attested observation, fresh stable evidence |
-| `v4.12.0` | Local client setup and no-growth workflow UX | Five-client Setup Center; bounded Connection Doctor; later existing-surface enhancements | Exact 21/28 catalogs, privacy/lifecycle/accessibility and real-client evidence |
+| `v4.12.0` | Native utilities, execution workflows, and local client UX | Five-client Setup Center; bounded native ranking/annotation; opt-in execution surfaces | Exact 24/37 catalogs, privacy/lifecycle/accessibility and real-client evidence |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
 ## v4.8.0 — Independent Trust Baseline
@@ -62,7 +62,7 @@ Required work:
 - make request-routing and outbound-network authority independent;
 - require outbound-target approval immediately before every network transmission;
 - keep exact derived-request review as an additional gate when enabled;
-- ensure a session grant for Repeater, Intruder, or Organizer never grants network transmission;
+- ensure a session grant for Repeater, Intruder, Organizer, Comparer, or Decoder never grants network transmission;
 - capture and recheck the Burp project across approvals, source snapshots, materialization, and side effects;
 - add final project checks to Scanner/search/comparison/scope success paths;
 - decide and document persistent hostname approval behavior when DNS answers or network class change.
@@ -467,7 +467,7 @@ aliases or families.
 - [x] The release-control track keeps the MCP surface unchanged at 21 Community / 28 Professional tools and allows
   unrelated post-anchor development to continue on `main` without entering v4.11 stable evidence.
 
-## v4.12.0 — Local Client Setup and No-growth Workflow UX
+## v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
 Development began on advancing `main` under `4.12.0-dev.1`; the current working candidate is `4.12.0-rc.1`.
 The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
@@ -493,6 +493,8 @@ Milestone order:
    with bounded delta behavior. Do not add aliases or new tools for either feature.
 4. Run live Burp-backed 10k/50k/100k measurement before any Montoya parallelization or performance claim, and optimize
    only extension-owned measured hotspots.
+5. Extend only the two existing request-routing tools with request-only Comparer and Decoder handoff; add no tool alias,
+   response/body-part selector, result reader, or automatic follow-up action.
 
 Milestone 1 preserves every MCP tool, prompt, resource, URI, template, schema, capability, and route behavior. The exact
 catalog remains 21 Community / 28 Professional. It persists no selected client, probe result, endpoint, credential, or
@@ -633,6 +635,53 @@ or credential. It adds no resource, tool, alias, prompt, URI, template, capabili
 - [x] No latency, percentile, throughput, Burp-product benchmark, optimization, improvement, or Montoya parallelization
   claim is made until accepted live rows identify an extension-owned hotspot and bounded before/after evidence exists.
 
+### v4.12.0 milestone 5 native tool handoff gate
+
+The existing `route_raw_http_request` and `route_http_message_from_id` destination enums additionally accept `comparer`
+and `decoder`. Both paths keep the 2 MiB request bound, project checks, request-routing approval/audit category, emergency
+read-only interlock, and conservative uncertain-execution result. They pass only the selected or patched request bytes to
+Burp's native UI. No response bytes, decoded/comparison result, network transmission, background state, or new MCP name is
+added. This adopts the useful handoff idea from reburp while retaining this bridge's authenticated stable-reference and
+approval boundaries.
+
+- [x] Community/Professional remain exactly 21/28; only the schemas and descriptions of existing routing/shared-result
+  tools change, with reviewed catalog fingerprints.
+- [x] Service and registered-wire tests cover both destinations on raw and stored-reference paths, approval denial,
+  emergency read-only blocking, destination-specific field rejection, and request-only byte handoff.
+- [ ] Community and Professional exact-candidate smoke confirms both native tabs receive the intended request and no
+  response or network action before this change is release evidence.
+
+### v4.12.0 milestone 6 native utilities and execution gate
+
+This later milestone intentionally supersedes the milestone-5 no-growth checkpoint after the user requested every
+previously deferred reburp-derived category. Community adds `rank_http_messages`, `annotate_http_messages`, and
+`execute_local_command`. Professional additionally adds four Request Execution Engine lifecycle tools and two Repeater
+custom-action Bambda tools. The exact catalogs are now 24 Community / 37 Professional; prompts, resources, URI templates,
+and dependencies remain unchanged.
+
+- [x] Native anomaly ranking accepts only 1–32 canonically distinct stable references, preserves source approval, enforces
+  2 MiB request/response and 16 MiB set limits, sorts Burp ordinals, and states that the result is relative rather than
+  severity or vulnerability evidence.
+- [x] Annotation updates re-resolve 1–16 records and compare notes/highlights inside the shared mutation barrier after
+  approval. Project/emergency checks precede each setter; stale state fails closed and partial note/color or batch writes
+  return `execution_uncertain` without rollback or automatic retry.
+- [x] Professional Request Execution handles support start, bounded live queue, metadata-only status/await, pause, resume,
+  cancel, and cancel-and-delete. Each run is capped at 64 cumulative requests and 16 MiB, four retained or
+  cleanup-pending runs count against capacity, response content is dropped, and project/extension cleanup attempts
+  cancellation without claiming completion prematurely.
+- [x] Bambda import/chain and direct/system-shell command execution require a separate disabled-by-default local
+  code-execution switch. Bambda state is capped at 32 distinct MCP-imported IDs per extension lifetime, with same-ID
+  replacement reusing capacity. YOLO can bypass the per-call prompt but cannot enable that switch; Emergency read-only is
+  rechecked adjacent to invocation. Approval/audit never stores source, command, environment, request, or response values.
+- [x] Catalog/schema, service, approval denial, canonical identity, aggregate-bound, project-transition, emergency,
+  result-retention, generator escaping, and lifecycle tests pass with reviewed 24/37 fingerprints.
+- [ ] Exact-candidate Professional smoke proves Request Execution start/queue/status/control and generated/raw Repeater
+  Bambda import/compile/run behavior. Community and Professional smoke prove RankingUtils, live annotations, direct argv,
+  system-shell timeout/error behavior, and code-execution toggle/emergency precedence. Use disposable data and commands.
+- [ ] Documented acceptance explicitly acknowledges that ShellUtils materializes full output before MCP truncation and
+  that imported/auto-running Bambda code, child processes, and already-started native requests are not retroactively
+  confined by project switches, outbound policy changes, toggle-off, or Emergency read-only.
+
 ## v5.0.0 — Modern MCP gate
 
 There is no target date. [V5_READINESS.md](V5_READINESS.md) and
@@ -666,7 +715,7 @@ The following are not part of v4.8 or v4.9:
 - weakening loopback, bearer, Host, or Origin checks;
 - automatic redirect following for reviewed requests;
 - automatic retry of an uncertain side effect;
-- autonomous crawling, exploit chains, or active WebSocket sending;
+- autonomous crawling or active WebSocket sending outside the explicitly bounded Request Execution/Bambda surfaces;
 - resource subscriptions before bounded SDK lifecycle support;
 - a custom partial v5 dispatcher beside the official SDK;
 - agent-selected or automatically enabled persistent approval;
@@ -738,7 +787,7 @@ or an open release-blocking P0/P1 exists. Other suggested labels remain:
 | `DIAG-001` | Bounded negotiated-protocol distribution counters |
 | `UX-001` | Select one measured client/operator UX problem for separate review |
 
-### Milestone: v4.12.0 — Local Client Setup and No-growth Workflow UX
+### Milestone: v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
 | ID | Issue |
 | --- | --- |
@@ -748,6 +797,11 @@ or an open release-blocking P0/P1 exists. Other suggested labels remain:
 | `CORR-012` | Related-traffic mode on existing correlation tool |
 | `SCAN-012` | Delta mode on existing Scanner surface |
 | `PERF-012` | Burp-backed measurement before extension-owned optimization |
+| `RANK-012` | Explicit-set native anomaly ranking with aggregate byte bounds |
+| `ANNOTATE-012` | Stable-reference notes/highlight mutation with stale-state protection |
+| `EXEC-012` | Professional Request Execution Engine ownership, lifecycle, and cleanup reservations |
+| `BAMBDA-012` | Opt-in Professional Repeater custom-action import and generated chain |
+| `SHELL-012` | Opt-in direct/system-shell execution with exact approval preview and bounded MCP output |
 
 ### Milestone: v5.0.0 — Modern MCP gate
 

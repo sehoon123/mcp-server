@@ -113,6 +113,7 @@ class ServerConfigurationPanelTest {
             }
 
             exercise("Enable tools that can edit your config") { config.configEditingTooling }
+            exercise("Enable Bambda and local command tools") { config.codeExecutionTooling }
             exercise("Always allow all outbound HTTP requests") { !config.requireHttpRequestApproval }
             exercise("Require approval for routing and derived requests") {
                 !config.requireRequestActionApproval
@@ -134,7 +135,7 @@ class ServerConfigurationPanelTest {
             SwingUtilities.invokeAndWait { }
             assertTrue(checkBoxes.getValue("Always allow all outbound HTTP requests").isSelected)
 
-            io.mockk.verify(exactly = 24) {
+            io.mockk.verify(exactly = 26) {
                 Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
             }
         } finally {

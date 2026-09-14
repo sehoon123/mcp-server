@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.core.Annotations
 import burp.api.montoya.http.message.HttpRequestResponse as MontoyaHttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
@@ -32,6 +33,7 @@ internal enum class HttpSourceMetadataSelection {
     NONE,
     FULL,
     PROXY_CAPTURE_TIME,
+    ANNOTATIONS,
 }
 
 internal data class ResolvedHttpMessage(
@@ -39,6 +41,7 @@ internal data class ResolvedHttpMessage(
     val request: HttpRequest,
     val response: HttpResponse?,
     val envelope: MontoyaHttpRequestResponse?,
+    val annotations: Annotations? = null,
     val sourceMetadata: ResolvedHttpSourceMetadata? = null,
 )
 
@@ -381,9 +384,17 @@ internal class HttpMessageResolver(
                             HttpSourceMetadataSelection.PROXY_CAPTURE_TIME -> ResolvedHttpSourceMetadata(
                                 proxyCaptureTimeEpochMillis = item.time().toInstant().toEpochMilli(),
                             )
+                            HttpSourceMetadataSelection.ANNOTATIONS -> null
                         }
                         ResolvedItemOutcome.Found(
-                            ResolvedHttpMessage(validated.ref, request, item.response(), null, sourceMetadata),
+                            ResolvedHttpMessage(
+                                validated.ref,
+                                request,
+                                item.response(),
+                                null,
+                                if (sourceMetadataSelection == HttpSourceMetadataSelection.ANNOTATIONS) item.annotations() else null,
+                                sourceMetadata,
+                            ),
                         )
                     }
                 }
@@ -400,7 +411,14 @@ internal class HttpMessageResolver(
                             ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
                         } else null
                         ResolvedItemOutcome.Found(
-                            ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata),
+                            ResolvedHttpMessage(
+                                validated.ref,
+                                request,
+                                item.response(),
+                                item,
+                                if (sourceMetadataSelection == HttpSourceMetadataSelection.ANNOTATIONS) item.annotations() else null,
+                                sourceMetadata,
+                            ),
                         )
                     }
                 }
@@ -425,7 +443,14 @@ internal class HttpMessageResolver(
                             )
                         } else null
                         ResolvedItemOutcome.Found(
-                            ResolvedHttpMessage(validated.ref, request, item.response(), item, sourceMetadata),
+                            ResolvedHttpMessage(
+                                validated.ref,
+                                request,
+                                item.response(),
+                                item,
+                                if (sourceMetadataSelection == HttpSourceMetadataSelection.ANNOTATIONS) item.annotations() else null,
+                                sourceMetadata,
+                            ),
                         )
                     }
                 }
@@ -548,7 +573,7 @@ private fun validateReference(ref: HttpMessageReference): ValidatedHttpReference
     }
 }
 
-private fun isValidProjectId(projectId: String): Boolean =
+internal fun isValidProjectId(projectId: String): Boolean =
     projectId.isNotEmpty() && projectId.length <= MAX_HTTP_REFERENCE_PROJECT_ID_CHARS && projectId.none(Char::isISOControl)
 
 private fun invalidIdMessage(source: HttpMessageSource): String = when (source) {

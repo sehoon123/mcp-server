@@ -2,10 +2,12 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine
+import burp.api.montoya.comparer.Comparer
 import burp.api.montoya.collaborator.*
 import burp.api.montoya.core.Annotations
 import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.decoder.Decoder
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
@@ -99,6 +101,9 @@ private val EXPECTED_COMMUNITY_TOOL_NAMES = setOf(
     "search_websocket_messages",
     "get_websocket_message_by_id",
     "set_burp_control_state",
+    "rank_http_messages",
+    "annotate_http_messages",
+    "execute_local_command",
 )
 
 private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_NAMES + setOf(
@@ -109,6 +114,12 @@ private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_NAMES + s
     "cancel_scanner_audit",
     "generate_collaborator_payload",
     "get_collaborator_interactions",
+    "start_http_request_execution",
+    "queue_http_request_execution",
+    "get_http_request_execution",
+    "control_http_request_execution",
+    "import_bambda",
+    "generate_bambda_chain",
 )
 
 class ToolsKtTest {
@@ -137,6 +148,8 @@ class ToolsKtTest {
     private val config: McpConfig
     private val mockHeaders = mutableListOf<HttpHeader>()
     private var requireDataAccessApproval = false
+    private var requireRequestActionApproval = false
+    private var emergencyReadOnlyMode = false
     private lateinit var originalRequestActionHandler: RequestActionApprovalHandler
     private lateinit var originalSensitiveActionHandler: SensitiveActionApprovalHandler
     private val catalogJson = Json { encodeDefaults = true; explicitNulls = true }
@@ -144,11 +157,12 @@ class ToolsKtTest {
     init {
         val persistedObject = mockk<PersistedObject>().apply {
             every { getBoolean("enabled") } returns true
-            every { getBoolean("emergencyReadOnlyMode") } returns false
+            every { getBoolean("emergencyReadOnlyMode") } answers { emergencyReadOnlyMode }
             every { getBoolean("configEditingTooling") } returns true
+            every { getBoolean("codeExecutionTooling") } returns true
             every { getBoolean("filterConfigCredentials") } returns false
             every { getBoolean("requireHttpRequestApproval") } returns false
-            every { getBoolean("requireRequestActionApproval") } returns false
+            every { getBoolean("requireRequestActionApproval") } answers { requireRequestActionApproval }
             every { getBoolean("requireDataAccessApproval") } answers { requireDataAccessApproval }
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
             every { getBoolean("_alwaysAllowSiteMap") } returns false
@@ -160,8 +174,10 @@ class ToolsKtTest {
             every { getString("_autoApproveTargets") } returns ""
             every { getInteger("port") } returns testPort
             every { setBoolean(any(), any()) } answers {
-                if (firstArg<String>() == "requireDataAccessApproval") {
-                    requireDataAccessApproval = secondArg()
+                when (firstArg<String>()) {
+                    "requireDataAccessApproval" -> requireDataAccessApproval = secondArg()
+                    "requireRequestActionApproval" -> requireRequestActionApproval = secondArg()
+                    "emergencyReadOnlyMode" -> emergencyReadOnlyMode = secondArg()
                 }
             }
             every { setString(any(), any()) } returns Unit
@@ -281,6 +297,7 @@ class ToolsKtTest {
             "host" -> 253
             "name" -> 512
             "customData" -> 1_024
+            "output" -> 65_536
             "notes" -> if ("webSocketId" in siblings) 2_000 else 512
             else -> error("$path.$name has a truncation flag but no explicit expected bound")
         }
@@ -432,6 +449,8 @@ class ToolsKtTest {
     @BeforeEach
     fun setup() {
         requireDataAccessApproval = false
+        requireRequestActionApproval = false
+        emergencyReadOnlyMode = false
         originalRequestActionHandler = RequestActionSecurity.approvalHandler
         originalSensitiveActionHandler = SensitiveActionSecurity.approvalHandler
         RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
@@ -526,7 +545,7 @@ class ToolsKtTest {
     @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
-        assertEquals(21, tools.size)
+        assertEquals(24, tools.size)
         assertEquals(EXPECTED_COMMUNITY_TOOL_NAMES, tools.keys)
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
@@ -538,7 +557,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "27e0c5d5468b7d2b83629a7b273a79ea126af25ffbe0eb2421ad6656f1b06715",
+            "575dd9844a0b285f71b73dcf7f4585b5d7439c321a67d7512a8b51164f5337ea",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -558,10 +577,13 @@ class ToolsKtTest {
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
+        assertTrue(MCP_SERVER_INSTRUCTIONS.contains("explicitly requests code execution"))
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
         assertTrue(description("send_raw_http_request").contains("Fallback only"))
         assertTrue(description("route_raw_http_request").contains("Fallback only"))
-        assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder routing is unsupported"))
+        assertTrue(description("route_raw_http_request").contains("Comparer, or Decoder"))
+        assertTrue(description("route_raw_http_request").contains("Comparer/Decoder receive only the request bytes"))
+        assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder is unsupported"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
         assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
         assertTrue(description("search_http_messages").contains("call-start project"))
@@ -576,6 +598,8 @@ class ToolsKtTest {
         assertTrue(description("send_http_request_from_id").contains("patches never accumulate"))
         assertTrue(description("route_http_message_from_id").contains("Each call restarts from the stored source"))
         assertTrue(description("route_http_message_from_id").contains("patches never accumulate"))
+        assertTrue(description("route_http_message_from_id").contains("Comparer, or Decoder"))
+        assertTrue(description("route_http_message_from_id").contains("Comparer/Decoder receive only request bytes"))
         listOf("send_http_request_from_id", "route_http_message_from_id").forEach { toolName ->
             val properties = requireNotNull(tools[toolName]).inputSchema.properties.orEmpty()
             assertTrue(
@@ -608,6 +632,20 @@ class ToolsKtTest {
         assertTrue(description("send_http_request_from_id").contains("independent outbound-target policy"))
         assertTrue(description("search_websocket_messages").contains("items=[] with hasMore=true"))
         assertTrue(description("set_burp_control_state").contains("intentionally not project-scoped"))
+        assertTrue(description("rank_http_messages").contains("relative ordinals"))
+        assertTrue(description("rank_http_messages").contains("no interruptible deadline"))
+        assertTrue(description("annotate_http_messages").contains("not atomic"))
+        assertTrue(description("execute_local_command").contains("only the MCP preview is output-bounded"))
+        val rankTool = tools.getValue("rank_http_messages")
+        assertEquals(true, rankTool.annotations?.readOnlyHint)
+        assertTrue(rankTool.inputSchema.properties?.get("refs").toString().contains("\"maxItems\":32"))
+        val annotationTool = tools.getValue("annotate_http_messages")
+        assertEquals(false, annotationTool.annotations?.readOnlyHint)
+        assertTrue(annotationTool.inputSchema.properties?.get("refs").toString().contains("\"maxItems\":16"))
+        val shellTool = tools.getValue("execute_local_command")
+        assertEquals(true, shellTool.annotations?.openWorldHint)
+        assertEquals(true, shellTool.annotations?.destructiveHint)
+        assertTrue(shellTool.outputSchema?.properties?.get("output").toString().contains("\"maxLength\":65536"))
 
         val catalogText = tools.values.joinToString("\n") { it.description.orEmpty() }
         listOf(
@@ -939,6 +977,151 @@ class ToolsKtTest {
             assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals(listOf(":method", ":path"), headers.captured.take(2).map { it.name() })
             verify(exactly = 1) { repeater.sendToRepeater(request, "v4") }
+        }
+
+        @Test
+        fun `registered raw and stored routes hand request bytes to Comparer and Decoder behind policy gates`() = runBlocking {
+            val rawHttp1 = mockk<HttpRequest>()
+            val rawHttp2 = mockk<HttpRequest>()
+            val storedRequest = mockk<HttpRequest>()
+            val emptyBody = montoyaBytes(byteArrayOf())
+            val rawHttp1Bytes = montoyaBytes("raw-http1".toByteArray())
+            val rawHttp2Bytes = montoyaBytes("raw-http2".toByteArray())
+            val storedBytes = montoyaBytes("stored".toByteArray())
+            listOf(rawHttp1, rawHttp2, storedRequest).forEach { request ->
+                every { request.bodyOffset() } returns 64
+                every { request.body() } returns emptyBody
+            }
+            every { rawHttp1.toByteArray() } returns rawHttp1Bytes
+            every { rawHttp2.toByteArray() } returns rawHttp2Bytes
+            every { storedRequest.toByteArray() } returns storedBytes
+            every { HttpRequest.httpRequest(any(), any<String>()) } returns rawHttp1
+            every { HttpRequest.http2Request(any(), any<List<HttpHeader>>(), any<String>()) } returns rawHttp2
+
+            val storedService = mockk<burp.api.montoya.http.HttpService>()
+            every { storedService.host() } returns "example.test"
+            every { storedService.port() } returns 443
+            every { storedService.secure() } returns true
+            every { storedRequest.httpService() } returns storedService
+            every { storedRequest.method() } returns "GET"
+            every { storedRequest.path() } returns "/stored"
+            every { storedRequest.httpVersion() } returns "HTTP/1.1"
+            every { storedRequest.toString() } returns "GET /stored HTTP/1.1\r\nHost: example.test\r\n\r\n"
+            val proxy = mockk<Proxy>()
+            val item = mockk<ProxyHttpRequestResponse>()
+            every { api.proxy() } returns proxy
+            every { item.id() } returns 77
+            every { item.request() } returns storedRequest
+            every { item.response() } returns null
+            every { proxy.history(any()) } answers {
+                val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+                listOf(item).filter(filter::matches)
+            }
+
+            val comparer = mockk<Comparer>(relaxed = true)
+            val decoder = mockk<Decoder>(relaxed = true)
+            every { api.comparer() } returns comparer
+            every { api.decoder() } returns decoder
+            val rawBase = mapOf<String, Any>(
+                "targetHostname" to "example.test",
+                "targetPort" to 443,
+                "usesHttps" to true,
+            )
+            val rawHttp1Input = rawBase + mapOf(
+                "protocol" to "http_1",
+                "http1" to mapOf("content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"),
+            )
+            val rawHttp2Input = rawBase + mapOf(
+                "protocol" to "http_2",
+                "http2" to mapOf(
+                    "pseudoHeaders" to mapOf("method" to "GET", "path" to "/"),
+                    "headers" to emptyMap<String, String>(),
+                    "requestBody" to "",
+                ),
+            )
+            val storedBase = mapOf<String, Any>(
+                "projectId" to "project-default",
+                "ref" to mapOf("source" to "proxy", "id" to "77"),
+            )
+
+            val success = listOf(
+                client.callTool("route_raw_http_request", rawHttp1Input + ("destination" to "comparer")),
+                client.callTool("route_raw_http_request", rawHttp2Input + ("destination" to "decoder")),
+                client.callTool("route_http_message_from_id", storedBase + ("destination" to "comparer")),
+                client.callTool("route_http_message_from_id", storedBase + ("destination" to "decoder")),
+            )
+            assertEquals(
+                listOf("comparer", "decoder", "comparer", "decoder"),
+                success.map { result ->
+                    assertEquals(false, result?.isError)
+                    assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                    result?.structuredContent?.get("destination")?.jsonPrimitive?.content
+                },
+            )
+
+            requireRequestActionApproval = true
+            val approvalActions = mutableListOf<String>()
+            RequestActionSecurity.approvalHandler = object : RequestActionApprovalHandler {
+                override suspend fun requestApproval(
+                    action: String,
+                    source: String,
+                    target: String,
+                    changes: String,
+                    requestContent: String,
+                    config: McpConfig,
+                    api: MontoyaApi,
+                ): Boolean {
+                    approvalActions += action
+                    return false
+                }
+            }
+            val denied = listOf(
+                client.callTool("route_raw_http_request", rawHttp1Input + ("destination" to "comparer")),
+                client.callTool("route_raw_http_request", rawHttp2Input + ("destination" to "decoder")),
+                client.callTool("route_http_message_from_id", storedBase + ("destination" to "comparer")),
+                client.callTool("route_http_message_from_id", storedBase + ("destination" to "decoder")),
+            )
+            denied.forEach { result ->
+                assertEquals(false, result?.isError)
+                assertEquals("action_denied", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            }
+            assertEquals(
+                listOf(
+                    "open this request in Comparer",
+                    "open this request in Decoder",
+                    "open this request in Comparer",
+                    "open this request in Decoder",
+                ),
+                approvalActions,
+            )
+
+            emergencyReadOnlyMode = true
+            val blockedRaw = client.callTool(
+                "route_raw_http_request",
+                rawHttp1Input + ("destination" to "comparer"),
+            )
+            val blockedStored = client.callTool(
+                "route_http_message_from_id",
+                storedBase + ("destination" to "decoder"),
+            )
+            val blockedShell = client.callTool(
+                "execute_local_command",
+                mapOf("mode" to "direct", "command" to listOf("printf", "blocked")),
+            )
+            assertEquals(true, blockedRaw?.isError)
+            assertEquals(true, blockedStored?.isError)
+            assertEquals(true, blockedShell?.isError)
+
+            verify(exactly = 1) { comparer.sendToComparer(rawHttp1Bytes) }
+            verify(exactly = 1) { comparer.sendToComparer(storedBytes) }
+            verify(exactly = 1) { decoder.sendToDecoder(rawHttp2Bytes) }
+            verify(exactly = 1) { decoder.sendToDecoder(storedBytes) }
+            verify(exactly = 2) { HttpRequest.httpRequest(any(), any<String>()) }
+            verify(exactly = 2) { HttpRequest.http2Request(any(), any<List<HttpHeader>>(), any<String>()) }
+            verify(exactly = 4) { proxy.history(any()) }
+            verify(exactly = 0) { api.http() }
+            verify(exactly = 0) { api.utilities() }
         }
 
         @Test
@@ -1821,7 +2004,7 @@ class ToolsKtTest {
     @Test
     fun `scope comparison and enhanced action tools expose precise structured schemas`() = runBlocking {
         val tools = client.listTools()
-        assertEquals(21, tools.size)
+        assertEquals(24, tools.size)
         assertTrue(tools.all { it.annotations?.readOnlyHint != null }, "Every tool needs an explicit read-only classification")
         val toolNames = tools.mapTo(mutableSetOf()) { it.name }
         assertEquals(
@@ -1847,6 +2030,9 @@ class ToolsKtTest {
                 "search_websocket_messages",
                 "get_websocket_message_by_id",
                 "set_burp_control_state",
+                "rank_http_messages",
+                "annotate_http_messages",
+                "execute_local_command",
             ),
             toolNames,
         )
@@ -2111,6 +2297,9 @@ class ToolsKtTest {
         assertEquals(false, sessionAnalysis.annotations?.openWorldHint)
 
         val intruder = tools.single { it.name == "route_http_message_from_id" }
+        val storedDestinationSchema = intruder.inputSchema.properties?.get("destination").toString()
+        assertTrue(storedDestinationSchema.contains("comparer"))
+        assertTrue(storedDestinationSchema.contains("decoder"))
         val insertionSchema = intruder.inputSchema.properties?.get("insertionPoints").toString()
         assertTrue(insertionSchema.contains("parameter"))
         assertTrue(insertionSchema.contains("header"))
@@ -2140,7 +2329,10 @@ class ToolsKtTest {
         assertEquals(false, rawSend.annotations?.idempotentHint)
 
         val rawRoute = tools.single { it.name == "route_raw_http_request" }
-        assertTrue(rawRoute.inputSchema.properties?.get("destination").toString().contains("organizer"))
+        val rawDestinationSchema = rawRoute.inputSchema.properties?.get("destination").toString()
+        assertTrue(rawDestinationSchema.contains("organizer"))
+        assertTrue(rawDestinationSchema.contains("comparer"))
+        assertTrue(rawDestinationSchema.contains("decoder"))
         assertTrue(rawRoute.inputSchema.properties?.get("protocol").toString().contains("http_2"))
         assertEquals(false, rawRoute.annotations?.readOnlyHint)
         assertEquals(false, rawRoute.annotations?.destructiveHint)
@@ -2318,7 +2510,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(28, tools.size)
+            assertEquals(37, tools.size)
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertNonNullOutputFieldsAreRequired)
@@ -2327,7 +2519,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "2076d114df9e12351569caff6c24490b251d626a65f67d32f9798cf99c0b6d82",
+                "5452adeda8e4aae6b40212084b95b848d27e2611c23358461a7c13992d04ca7d",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
@@ -2338,6 +2530,19 @@ class ToolsKtTest {
                     )
                 }
             }
+
+            val executionStart = tools.single { it.name == "start_http_request_execution" }
+            assertEquals(false, executionStart.annotations?.readOnlyHint)
+            assertEquals(true, executionStart.annotations?.openWorldHint)
+            assertTrue(executionStart.inputSchema.properties?.get("requests").toString().contains("\"maxItems\":16"))
+            assertTrue(executionStart.inputSchema.properties?.get("requests").toString().contains("oneOf"))
+            val executionGet = tools.single { it.name == "get_http_request_execution" }
+            assertEquals(true, executionGet.annotations?.readOnlyHint)
+            assertTrue(executionGet.outputSchema?.properties?.get("results").toString().contains("\"maxItems\":64"))
+            val bambdaImport = tools.single { it.name == "import_bambda" }
+            assertEquals(false, bambdaImport.annotations?.readOnlyHint)
+            assertEquals(true, bambdaImport.annotations?.openWorldHint)
+            assertTrue(bambdaImport.description.orEmpty().contains("outside MCP request, project, outbound"))
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
@@ -2885,6 +3090,10 @@ class ToolsKtTest {
             assertFalse(tools.any { it.name == "get_scanner_issues" })
             assertFalse(tools.any { it.name == "generate_collaborator_payload" })
             assertFalse(tools.any { it.name == "get_collaborator_interactions" })
+            assertFalse(tools.any { it.name == "start_http_request_execution" })
+            assertFalse(tools.any { it.name == "import_bambda" })
+            assertTrue(tools.any { it.name == "rank_http_messages" })
+            assertTrue(tools.any { it.name == "execute_local_command" })
         }
 
         every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
@@ -2911,6 +3120,8 @@ class ToolsKtTest {
             assertTrue(tools.any { it.name == "get_scanner_issues" })
             assertTrue(tools.any { it.name == "generate_collaborator_payload" })
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })
+            assertTrue(tools.any { it.name == "start_http_request_execution" })
+            assertTrue(tools.any { it.name == "import_bambda" })
         }
     }
 }

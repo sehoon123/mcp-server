@@ -84,6 +84,9 @@ enum class RequestRoutingAuditOperation(val auditKind: String) {
     REPEATER("request_routing:repeater"),
     INTRUDER("request_routing:intruder"),
     ORGANIZER("request_routing:organizer"),
+    COMPARER("request_routing:comparer"),
+    DECODER("request_routing:decoder"),
+    REQUEST_EXECUTION("request_execution:derived_request"),
 }
 
 object RequestActionSecurity {
@@ -98,6 +101,25 @@ object RequestActionSecurity {
         config: McpConfig,
         api: MontoyaApi,
         auditOperation: RequestRoutingAuditOperation? = null,
+    ): Boolean = checkPermissionLazy(
+        action,
+        source,
+        target,
+        changes,
+        config,
+        api,
+        auditOperation,
+    ) { requestContent }
+
+    suspend fun checkPermissionLazy(
+        action: String,
+        source: String,
+        target: String,
+        changes: String,
+        config: McpConfig,
+        api: MontoyaApi,
+        auditOperation: RequestRoutingAuditOperation? = null,
+        requestContent: () -> String,
     ): Boolean {
         val auditKind = auditOperation?.auditKind ?: "request_routing"
         if (config.approvalYoloMode) {
@@ -112,7 +134,15 @@ object RequestActionSecurity {
             recordCurrentToolApproval(auditKind, "session_allow")
             return true
         }
-        val approved = approvalHandler.requestApproval(action, source, target, changes, requestContent, config, api)
+        val approved = approvalHandler.requestApproval(
+            action,
+            source,
+            target,
+            changes,
+            requestContent(),
+            config,
+            api,
+        )
         recordCurrentToolApproval(auditKind, if (approved) "user_allow" else "user_deny")
         return approved
     }

@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from live_mcp_harness import HarnessError, read_bounded_regular_file, sha256_file
 
-COMMON_TOOLS = frozenset(
+LEGACY_COMMON_TOOLS = frozenset(
     {
         "send_raw_http_request",
         "route_raw_http_request",
@@ -38,7 +38,7 @@ COMMON_TOOLS = frozenset(
         "set_burp_control_state",
     }
 )
-PROFESSIONAL_ONLY_TOOLS = frozenset(
+LEGACY_PROFESSIONAL_ONLY_TOOLS = frozenset(
     {
         "get_scanner_issues",
         "get_scanner_issue_by_id",
@@ -80,24 +80,56 @@ PROFESSIONAL_ONLY_RESOURCE_TEMPLATES = frozenset(
         "burp://scanner-issue/{projectId}/{id}/{field}/{evidenceIndex}",
     }
 )
-EDITION_CATALOG_IDENTIFIERS = {
-    "community": {
-        "tools": COMMON_TOOLS,
-        "prompts": COMMUNITY_PROMPTS,
-        "resources": FIXED_RESOURCES,
-        "resourceTemplates": COMMON_RESOURCE_TEMPLATES,
-    },
-    "professional": {
-        "tools": COMMON_TOOLS | PROFESSIONAL_ONLY_TOOLS,
-        "prompts": COMMUNITY_PROMPTS | PROFESSIONAL_ONLY_PROMPTS,
-        "resources": FIXED_RESOURCES,
-        "resourceTemplates": COMMON_RESOURCE_TEMPLATES | PROFESSIONAL_ONLY_RESOURCE_TEMPLATES,
-    },
-}
+COMMON_TOOLS = LEGACY_COMMON_TOOLS | frozenset(
+    {"rank_http_messages", "annotate_http_messages", "execute_local_command"}
+)
+PROFESSIONAL_ONLY_TOOLS = LEGACY_PROFESSIONAL_ONLY_TOOLS | frozenset(
+    {
+        "start_http_request_execution",
+        "queue_http_request_execution",
+        "get_http_request_execution",
+        "control_http_request_execution",
+        "import_bambda",
+        "generate_bambda_chain",
+    }
+)
+
+
+def _edition_catalogs(common_tools: frozenset[str], professional_tools: frozenset[str]) -> dict[str, dict[str, frozenset[str]]]:
+    return {
+        "community": {
+            "tools": common_tools,
+            "prompts": COMMUNITY_PROMPTS,
+            "resources": FIXED_RESOURCES,
+            "resourceTemplates": COMMON_RESOURCE_TEMPLATES,
+        },
+        "professional": {
+            "tools": common_tools | professional_tools,
+            "prompts": COMMUNITY_PROMPTS | PROFESSIONAL_ONLY_PROMPTS,
+            "resources": FIXED_RESOURCES,
+            "resourceTemplates": COMMON_RESOURCE_TEMPLATES | PROFESSIONAL_ONLY_RESOURCE_TEMPLATES,
+        },
+    }
+
+
+LEGACY_EDITION_CATALOG_IDENTIFIERS = _edition_catalogs(
+    LEGACY_COMMON_TOOLS,
+    LEGACY_PROFESSIONAL_ONLY_TOOLS,
+)
+EDITION_CATALOG_IDENTIFIERS = _edition_catalogs(COMMON_TOOLS, PROFESSIONAL_ONLY_TOOLS)
 EDITION_CATALOG_COUNTS = {
     edition: {catalog: len(identifiers) for catalog, identifiers in catalogs.items()}
     for edition, catalogs in EDITION_CATALOG_IDENTIFIERS.items()
 }
+LEGACY_EDITION_CATALOG_COUNTS = {
+    edition: {catalog: len(identifiers) for catalog, identifiers in catalogs.items()}
+    for edition, catalogs in LEGACY_EDITION_CATALOG_IDENTIFIERS.items()
+}
+
+
+def edition_catalog_counts(require_v412_schema: bool) -> dict[str, dict[str, int]]:
+    return EDITION_CATALOG_COUNTS if require_v412_schema else LEGACY_EDITION_CATALOG_COUNTS
+
 SMOKE_SCENARIO_KEYS = frozenset(
     {
         "boundedLargeDataAndCancellation",
@@ -490,6 +522,57 @@ def _validate_scanner_delta_schema(tool: dict[str, Any]) -> None:
             raise HarnessError("Scanner delta limitations changed")
 
 
+def _validate_v412_native_tools(edition: str, tools: list[dict[str, Any]]) -> None:
+    by_name = {tool.get("name"): tool for tool in tools}
+
+    def tool(name: str) -> dict[str, Any]:
+        value = by_name.get(name)
+        if not isinstance(value, dict):
+            raise HarnessError(f"{name} tool is absent or malformed")
+        return value
+
+    def properties(name: str) -> dict[str, Any]:
+        value = (tool(name).get("inputSchema") or {}).get("properties")
+        if not isinstance(value, dict):
+            raise HarnessError(f"{name} input schema was malformed")
+        return value
+
+    rank = tool("rank_http_messages")
+    if (rank.get("annotations") or {}).get("readOnlyHint") is not True:
+        raise HarnessError("native ranking read-only annotation changed")
+    _schema_bound(properties("rank_http_messages").get("refs"), "maxItems", 32, "native ranking refs")
+
+    annotate = tool("annotate_http_messages")
+    annotate_annotations = annotate.get("annotations") or {}
+    if annotate_annotations.get("readOnlyHint") is not False or annotate_annotations.get("destructiveHint") is not True:
+        raise HarnessError("HTTP annotation tool annotations changed")
+    _schema_bound(properties("annotate_http_messages").get("refs"), "maxItems", 16, "annotation refs")
+
+    shell = tool("execute_local_command")
+    shell_annotations = shell.get("annotations") or {}
+    if shell_annotations.get("readOnlyHint") is not False or shell_annotations.get("openWorldHint") is not True:
+        raise HarnessError("local command tool annotations changed")
+    shell_output = (shell.get("outputSchema") or {}).get("properties") or {}
+    _schema_bound(shell_output.get("output"), "maxLength", 65_536, "local command output")
+
+    if edition != "professional":
+        return
+    start = tool("start_http_request_execution")
+    start_annotations = start.get("annotations") or {}
+    if start_annotations.get("readOnlyHint") is not False or start_annotations.get("openWorldHint") is not True:
+        raise HarnessError("request execution start annotations changed")
+    _schema_bound(properties("start_http_request_execution").get("requests"), "maxItems", 16, "request execution start")
+    get_execution = tool("get_http_request_execution")
+    if (get_execution.get("annotations") or {}).get("readOnlyHint") is not True:
+        raise HarnessError("request execution status annotation changed")
+    execution_output = (get_execution.get("outputSchema") or {}).get("properties") or {}
+    _schema_bound(execution_output.get("results"), "maxItems", 64, "request execution results")
+    for name in ("import_bambda", "generate_bambda_chain"):
+        annotations = tool(name).get("annotations") or {}
+        if annotations.get("readOnlyHint") is not False or annotations.get("openWorldHint") is not True:
+            raise HarnessError("Bambda tool annotations changed")
+
+
 def validate_catalog(
     edition: str,
     tools: list[dict[str, Any]],
@@ -497,9 +580,14 @@ def validate_catalog(
     resources: list[dict[str, Any]],
     resource_templates: list[dict[str, Any]],
     *,
-    require_v412_schema: bool = False,
+    require_v412_schema: bool = True,
 ) -> dict[str, Any]:
-    expected_identifiers = EDITION_CATALOG_IDENTIFIERS.get(edition)
+    if not isinstance(require_v412_schema, bool):
+        raise HarnessError("catalog schema contract selector was invalid")
+    approved_catalogs = (
+        EDITION_CATALOG_IDENTIFIERS if require_v412_schema else LEGACY_EDITION_CATALOG_IDENTIFIERS
+    )
+    expected_identifiers = approved_catalogs.get(edition)
     if expected_identifiers is None:
         raise HarnessError("edition must be community or professional")
     catalogs = {
@@ -514,7 +602,7 @@ def validate_catalog(
     ):
         raise HarnessError("MCP catalogs were not arrays of objects")
     counts = {label: len(items) for label, (items, _) in catalogs.items()}
-    if counts != EDITION_CATALOG_COUNTS[edition]:
+    if counts != edition_catalog_counts(require_v412_schema)[edition]:
         raise HarnessError("catalog counts do not match the approved edition")
     for label, (items, field) in catalogs.items():
         actual = _catalog_identifiers(items, field, label)
@@ -524,16 +612,16 @@ def validate_catalog(
     correlation = next((tool for tool in tools if tool.get("name") == "correlate_http_activity"), None)
     if correlation is None:
         raise HarnessError("correlation tool is absent")
-    if not isinstance(require_v412_schema, bool):
-        raise HarnessError("catalog schema contract selector was invalid")
     _validate_correlation_schema(correlation, require_v412_schema)
     scanner = next((tool for tool in tools if tool.get("name") == "get_scanner_issues"), None)
     if edition == "professional" and scanner is None:
         raise HarnessError("Scanner issue tool is absent from Professional")
     if edition == "community" and scanner is not None:
         raise HarnessError("Scanner issue tool is present in Community")
-    if require_v412_schema and scanner is not None:
-        _validate_scanner_delta_schema(scanner)
+    if require_v412_schema:
+        if scanner is not None:
+            _validate_scanner_delta_schema(scanner)
+        _validate_v412_native_tools(edition, tools)
 
     return {
         "counts": counts,

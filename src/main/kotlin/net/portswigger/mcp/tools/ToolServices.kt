@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -23,6 +24,7 @@ internal class OrganizerProjectMismatchBeforeMutationException(val currentProjec
 private data class InitializedToolServices(
     val scannerAudits: ScannerAuditService?,
     val collaborator: CollaboratorToolService?,
+    val requestExecutions: HttpRequestExecutionService?,
     val httpMetadataIndex: HttpMetadataIndex?,
 )
 
@@ -41,6 +43,9 @@ internal class ToolServices(
     private val scannerAuditsDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         ScannerAuditService(api)
     }
+    private var requestExecutionService: HttpRequestExecutionService? = null
+    private var localCommandService: LocalCommandService? = null
+    private var bambdaService: BambdaService? = null
     private val httpMetadataIndexDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         HttpMetadataIndex(
             api,
@@ -65,6 +70,25 @@ internal class ToolServices(
     val collaborator: CollaboratorToolService get() = openService(collaboratorDelegate)
     val scannerAudits: ScannerAuditService get() = openService(scannerAuditsDelegate)
     val httpMetadataIndex: HttpMetadataIndex get() = openService(httpMetadataIndexDelegate)
+
+    fun requestExecutions(config: McpConfig): HttpRequestExecutionService = synchronized(lifecycleLock) {
+        check(!closed.get()) { "MCP tool services are closed" }
+        requestExecutionService?.also { it.updateConfig(config) }
+            ?: HttpRequestExecutionService(api, config).also { requestExecutionService = it }
+    }
+
+    fun localCommands(config: McpConfig): LocalCommandService = synchronized(lifecycleLock) {
+        check(!closed.get()) { "MCP tool services are closed" }
+        localCommandService?.also { it.updateConfig(config) }
+            ?: LocalCommandService(api, config).also { localCommandService = it }
+    }
+
+    fun bambdas(config: McpConfig): BambdaService = synchronized(lifecycleLock) {
+        check(!closed.get()) { "MCP tool services are closed" }
+        bambdaService?.also { it.updateConfig(config) }
+            ?: BambdaService(api, config).also { bambdaService = it }
+    }
+
     val httpSessionSecurityAnalyzer: HttpSessionSecurityAnalyzerService
         get() = openService(httpSessionSecurityAnalyzerDelegate)
 
@@ -128,6 +152,11 @@ internal class ToolServices(
                 coroutineContext.ensureActive()
                 if (closed.get()) return
             }
+            synchronized(lifecycleLock) { requestExecutionService }?.let {
+                it.resetForProjectBoundary()
+                currentCoroutineContext().ensureActive()
+                if (closed.get()) return
+            }
             if (httpMetadataIndexDelegate.isInitialized()) httpMetadataIndexDelegate.value.resetForProjectBoundary()
         } finally {
             projectBoundaryResetPermit.release()
@@ -176,6 +205,7 @@ internal class ToolServices(
             InitializedToolServices(
                 scannerAudits = if (scannerAuditsDelegate.isInitialized()) scannerAuditsDelegate.value else null,
                 collaborator = if (collaboratorDelegate.isInitialized()) collaboratorDelegate.value else null,
+                requestExecutions = requestExecutionService,
                 httpMetadataIndex = if (httpMetadataIndexDelegate.isInitialized()) {
                     httpMetadataIndexDelegate.value
                 } else {
@@ -191,6 +221,7 @@ internal class ToolServices(
             runCatching(metadataEventBridge::close)
             initialized.scannerAudits?.let { runCatching(it::close) }
             initialized.collaborator?.let { runCatching(it::close) }
+            initialized.requestExecutions?.let { runCatching(it::close) }
             runCatching(metadataChangeSignals::close)
             initialized.httpMetadataIndex?.let { runCatching(it::close) }
         }, "independent-mcp-tool-service-cleanup").apply {

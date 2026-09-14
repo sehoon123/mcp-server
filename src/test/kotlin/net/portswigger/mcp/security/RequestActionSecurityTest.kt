@@ -61,6 +61,36 @@ class RequestActionSecurityTest {
     }
 
     @Test
+    fun `lazy request content is materialized only when a prompt is required`() = runBlocking {
+        val handler = mockk<RequestActionApprovalHandler>()
+        RequestActionSecurity.approvalHandler = handler
+        var materializations = 0
+        val requestContent = {
+            materializations++
+            "GET / HTTP/1.1\r\n\r\n"
+        }
+
+        config.requireRequestActionApproval = false
+        assertTrue(
+            RequestActionSecurity.checkPermissionLazy(
+                "open in Comparer", "proxy:42", "example.test:443", "none", config, api,
+                RequestRoutingAuditOperation.COMPARER, requestContent,
+            )
+        )
+        assertTrue(materializations == 0)
+
+        config.requireRequestActionApproval = true
+        coEvery { handler.requestApproval(any(), any(), any(), any(), any(), any(), any()) } returns false
+        assertFalse(
+            RequestActionSecurity.checkPermissionLazy(
+                "open in Decoder", "proxy:42", "example.test:443", "none", config, api,
+                RequestRoutingAuditOperation.DECODER, requestContent,
+            )
+        )
+        assertTrue(materializations == 1)
+    }
+
+    @Test
     fun `enabled action approval forwards the normalized operation`() = runBlocking {
         val handler = mockk<RequestActionApprovalHandler>()
         RequestActionSecurity.approvalHandler = handler

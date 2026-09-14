@@ -17,7 +17,7 @@ release prerequisite.
 - Git.
 - Node.js 22 only when running the external MCP conformance tools locally.
 - Burp Suite Community or Professional, with Montoya API build baseline `2026.7`, for manual extension testing. Professional is required for Scanner and
-  Collaborator paths.
+  Collaborator, Request Execution Engine, and Repeater custom-action Bambda paths.
 
 Always use the checked-in Gradle wrapper:
 
@@ -95,10 +95,10 @@ bounded sequence.
 
 `KtorServerManager` owns listener start/stop/restart serialization, request admission, Streamable HTTP sessions, project
 epoch alignment, and the MCP SDK `Server`. A listener restart gets a new SDK server, while `ToolServices` retains the
-extension-lifetime services that must survive a restart. This includes the workflow-preset repository over the exact
-project-backed `extensionData()` instance created by `ExtensionBase`; it decodes on each access and does not cache or map
-project IDs. Project changes revoke sessions/approvals and reset project-bound state before new-project requests are
-admitted.
+extension-lifetime services that must survive a restart. This includes Request Execution ownership, Bambda/import and
+local-command serialization gates, and the workflow-preset repository over the exact project-backed `extensionData()` instance created by `ExtensionBase`; it decodes on each access and does not cache or map
+project IDs. Project changes revoke sessions/approvals, cancel or reserve cleanup capacity for extension-owned Request
+Execution Engine handles, and reset project-bound state before new-project requests are admitted.
 
 ### Source map
 
@@ -191,8 +191,8 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 - Put field-specific formats, conditional requirements, continuation examples, defaults, and bounds in that field's JSON
   Schema `description`. Use exact JSON field names, such as “pass returned `nextCursor` as `cursor`”.
 - Keep each catalog description self-contained and concise. The v4 catalog uses a project limit of 512 characters per
-  description because clients commonly inject all 24 or 31 definitions; this is a project convention, not an MCP wire
-  limit.
+  description because clients commonly inject all 24 Community or 37 Professional definitions; this is a project
+  convention, not an MCP wire limit.
 - Describe observable behavior, not Kotlin, Montoya, compatibility-version, or internal resolver boundaries. Never claim
   that prompt text technically enforces client/model behavior.
 - Keep input and output schemas precise enough that the model does not need implementation details in the catalog entry.
@@ -215,7 +215,7 @@ Reuse or add annotations in `McpTool.kt`:
 - network request: `HTTP_REQUEST_ACTION_ANNOTATIONS`
 - Burp routing without transmission: `REQUEST_ROUTING_TOOL_ANNOTATIONS`
 - scope/config/project mutation: a destructive mutation annotation
-- Scanner or Collaborator: open-world annotations matching the real side effects
+- Scanner, Collaborator, Request Execution Engine, Bambda, or local commands: destructive/open-world annotations matching the real side effects
 
 `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` are security and retry contracts, not UI labels.
 Do not mark an action idempotent unless repeating it after an ambiguous response is safe.
@@ -251,20 +251,23 @@ current implementation as proof that every gate is already independent.
 | --- | --- |
 | Proxy/Site Map/WebSocket/Organizer/Scanner/Collaborator read | `DataAccessSecurity` for that source |
 | Any network transmission | `HttpRequestSecurity` for the final service/target |
-| Repeater/Intruder/Organizer routing without transmission | `RequestActionSecurity` |
-| Exact derived-request review | `RequestActionSecurity`, in addition to any network gate |
+| Repeater/Intruder/Organizer/Comparer/Decoder routing without transmission | `RequestActionSecurity` |
+| Exact derived-request review, including stored Request Execution items | `RequestActionSecurity`, in addition to any network gate |
 | Target scope mutation | `ScopeActionSecurity` |
-| Config/control/editor/Scanner lifecycle mutation | `SensitiveActionSecurity` |
+| Annotation, Request Execution batch/control, config/control/editor/Scanner lifecycle mutation | `SensitiveActionSecurity` |
+| Bambda import or local command | Disabled-by-default `codeExecutionTooling` plus `SensitiveActionSecurity` |
 
 Approval categories are orthogonal. A request-routing session grant must not replace outbound-target approval, and data
 access must not imply mutation permission. Validate and render the exact normalized action before prompting, then recheck
-project and mutable state after the user returns from the dialog.
+project and mutable state after the user returns from the dialog. Comparer and Decoder destinations receive only the
+already-bounded request bytes; do not silently add response/body-part selection or return native UI results.
 
 The local **YOLO mode** is the one deliberate master override: after a Burp operator confirms it in the extension UI,
 every approval gate records `yolo_allow` and skips its prompt. It must remain off by default, persist-before-publish,
 fail closed when enabling cannot be stored, and preserve the granular policies that resume when the operator disables it.
 It does not bypass authentication, input and target validation, project checks, operation bounds, emergency read-only
-mode, execution-state truth, or separately disabled tool families. An MCP tool or client must never enable this mode.
+mode, execution-state truth, or separately disabled tool families. The code-execution toggle is rechecked after approval
+and adjacent to Bambda/Shell invocation. An MCP tool or client must never enable this mode.
 
 Session grants retain only fixed categories. Never add request bodies, URLs, target values, project IDs, or client data
 to session approval state.
@@ -298,7 +301,9 @@ A response-size cap is insufficient if the implementation first builds an unboun
 - Keep progress and audit events value-free or strictly redacted.
 
 Large-history APIs may still return a complete Montoya list. Make the extension's additional work bounded and expose
-staleness/truncation instead of pretending the source acquisition was constant cost.
+staleness/truncation instead of pretending the source acquisition was constant cost. Likewise, ShellUtils returns one
+complete native `String`; `outputLimitChars` bounds only the MCP preview and must never be described as a child-process
+output or heap cap.
 
 ### 7. Preserve cancellation and side-effect truth
 
