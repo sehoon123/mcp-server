@@ -1150,16 +1150,6 @@ private fun AuditIssue.matches(compiled: CompiledScannerIssueQuery): Boolean {
     return true
 }
 
-private fun ScannerIssuePageStatus.isMcpError(): Boolean = when (this) {
-    ScannerIssuePageStatus.INVALID_ARGUMENT,
-    ScannerIssuePageStatus.INVALID_CURSOR,
-    ScannerIssuePageStatus.STALE_CURSOR,
-    ScannerIssuePageStatus.PROJECT_MISMATCH,
-    ScannerIssuePageStatus.BURP_ERROR -> true
-
-    else -> false
-}
-
 private fun ScannerIssueSearchService.responseError(
     status: ScannerIssuePageStatus,
     error: String,
