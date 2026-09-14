@@ -36,7 +36,7 @@ data class CompareHttpMessages(
     val projectId: String,
     @JsonSchemaMetadata(description = "Two to eight stable HTTP message references.", minItems = 2, maxItems = 8)
     val refs: List<HttpMessageReference>,
-    @JsonSchemaMetadata(description = "Message part to compare.", defaultJson = "\"response\"")
+    @JsonSchemaMetadata(description = "Message part to compare. request_json/response_json compare complete UTF-8 JSON bodies (64 KiB cap), returning paths only, without excerpts or native variations. JSON allEqual ignores object-key order and whitespace; arrays and numeric literals remain order/lexically sensitive.", defaultJson = "\"response\"")
     val part: HttpComparisonPart? = null,
     @JsonSchemaMetadata(description = "Maximum bytes inspected per message.", minimum = 1, maximum = 1048576, defaultJson = "262144")
     val limitBytesPerMessage: Int? = null,
@@ -76,6 +76,12 @@ enum class HttpComparisonPart {
 
     @SerialName("response_body")
     RESPONSE_BODY,
+
+    @SerialName("request_json")
+    REQUEST_JSON,
+
+    @SerialName("response_json")
+    RESPONSE_JSON,
 }
 
 @Serializable
@@ -169,6 +175,7 @@ data class CompareHttpMessagesResult(
     val part: HttpComparisonPart,
     val refs: List<HttpMessageReference>,
     val items: List<HttpComparisonItem>,
+    @JsonSchemaMetadata(description = "For JSON modes, structural equality matching jsonComparison.equal; null means JSON could not be fully compared. Other modes use bounded byte equality, with null for matching truncated prefixes.")
     val allEqual: Boolean?,
     val inspectedBytes: Long,
     val headerComparison: HttpHeaderComparison? = null,
@@ -176,6 +183,8 @@ data class CompareHttpMessagesResult(
     val responseVariations: HttpResponseVariationSummary? = null,
     val errorRefIndex: Int? = null,
     val error: String? = null,
+    @JsonSchemaMetadata(description = "Present only for request_json/response_json. Check its status before using equality; outer status ok alone does not establish a successful JSON comparison.")
+    val jsonComparison: HttpJsonComparison? = null,
 )
 
 internal class HttpMessageComparisonService(
@@ -270,7 +279,11 @@ internal class HttpMessageComparisonService(
         try {
             messages.forEachIndexed { index, message ->
                 currentCoroutineContext().ensureActive()
-                val material = message.material(part, limit, ignoredHeaders)
+                val material = message.material(
+                    part,
+                    if (part.isJsonPart()) minOf(limit, MAX_JSON_COMPARISON_BYTES) else limit,
+                    ignoredHeaders,
+                )
                     ?: return comparisonError(
                         HttpComparisonStatus.PART_UNAVAILABLE,
                         input.projectId,
@@ -303,9 +316,14 @@ internal class HttpMessageComparisonService(
                 inspectedSha256 = sha256(material.bytes),
             )
         }
-        val allEqual = materials.knownEquality()
+        val jsonComparison = if (part.isJsonPart()) {
+            compareJsonBodies(materials.map { it.bytes }, materials.map { it.truncated })
+        } else null
+        val allEqual = if (part.isJsonPart()) jsonComparison?.equal else materials.knownEquality()
         val headerComparison = if (part.includesHeaders()) compareHeaders(materials) else null
-        val contentDifference = if (materials.size == 2) compareContent(materials[0], materials[1], encoding) else null
+        val contentDifference = if (materials.size == 2 && !part.isJsonPart()) {
+            compareContent(materials[0], materials[1], encoding)
+        } else null
         val variations = if ((input.includeResponseVariations ?: true) && part.isResponsePart()) {
             responseVariations(messages)
         } else {
@@ -346,6 +364,7 @@ internal class HttpMessageComparisonService(
             headerComparison = headerComparison,
             contentDifference = contentDifference,
             responseVariations = variations,
+            jsonComparison = jsonComparison,
         )
     }
 
@@ -436,7 +455,7 @@ private fun ResolvedHttpMessage.material(
             headers = request.headers()
         }
 
-        HttpComparisonPart.REQUEST_BODY -> {
+        HttpComparisonPart.REQUEST_BODY, HttpComparisonPart.REQUEST_JSON -> {
             selected = request.body()
             startLine = null
             headers = null
@@ -456,7 +475,7 @@ private fun ResolvedHttpMessage.material(
             headers = value.headers()
         }
 
-        HttpComparisonPart.RESPONSE_BODY -> {
+        HttpComparisonPart.RESPONSE_BODY, HttpComparisonPart.RESPONSE_JSON -> {
             val value = response ?: return null
             selected = value.body()
             startLine = null
@@ -621,8 +640,12 @@ private fun List<ComparisonMaterial>.knownEquality(): Boolean? {
 private fun HttpComparisonPart.includesHeaders(): Boolean = when (this) {
     HttpComparisonPart.REQUEST, HttpComparisonPart.REQUEST_HEADERS,
     HttpComparisonPart.RESPONSE, HttpComparisonPart.RESPONSE_HEADERS -> true
-    HttpComparisonPart.REQUEST_BODY, HttpComparisonPart.RESPONSE_BODY -> false
+    HttpComparisonPart.REQUEST_BODY, HttpComparisonPart.RESPONSE_BODY,
+    HttpComparisonPart.REQUEST_JSON, HttpComparisonPart.RESPONSE_JSON -> false
 }
+
+internal fun HttpComparisonPart?.isJsonPart(): Boolean =
+    this == HttpComparisonPart.REQUEST_JSON || this == HttpComparisonPart.RESPONSE_JSON
 
 private fun HttpComparisonPart.isResponsePart(): Boolean = when (this) {
     HttpComparisonPart.RESPONSE, HttpComparisonPart.RESPONSE_HEADERS, HttpComparisonPart.RESPONSE_BODY -> true

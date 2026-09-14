@@ -6,10 +6,26 @@ import org.junit.jupiter.api.Test
 import java.awt.Font
 import java.awt.GridLayout
 import javax.swing.JButton
+import javax.swing.JOptionPane
 import javax.swing.SwingUtilities
 import javax.swing.UIManager
+import kotlin.test.assertFailsWith
 
 class DialogsTest {
+    @Test
+    fun `confirmation dialogs require a nonblank accessible title`() {
+        assertFailsWith<IllegalArgumentException> {
+            Dialogs.showConfirmDialog(null, "Confirm?", JOptionPane.YES_NO_OPTION, " ")
+        }
+    }
+
+    @Test
+    fun `input dialogs require a nonblank accessible title`() {
+        assertFailsWith<IllegalArgumentException> {
+            Dialogs.showInputDialog(null, "Enter value", " ")
+        }
+    }
+
     @Test
     fun `approval choices keep full labels at normal and enlarged UI font sizes`() {
         runOnEdt {

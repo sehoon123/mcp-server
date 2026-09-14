@@ -63,10 +63,10 @@ object Design {
         val XL: Int get() = (32 * scaleFactor).toInt().coerceAtLeast(16)
     }
 
-    private fun calculateTextFitSize(button: JButton): Dimension {
+    private fun calculateTextFitSize(button: JButton, sizingText: String): Dimension {
         val font = Typography.labelLarge
         val metrics = button.getFontMetrics(font)
-        val textWidth = metrics.stringWidth(button.text)
+        val textWidth = metrics.stringWidth(sizingText)
         val textHeight = metrics.height
 
         val horizontalPadding = Spacing.LG * 2
@@ -100,13 +100,17 @@ object Design {
         }
     }
 
-    private fun applyButtonBaseStyle(button: JButton, customSize: Dimension?) {
+    private fun applyButtonBaseStyle(
+        button: JButton,
+        customSize: Dimension?,
+        sizingText: String = button.text,
+    ) {
         button.apply {
             font = Typography.labelLarge
             enableKeyboardActivation(this)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
-            val textFitSize = calculateTextFitSize(this)
+            val textFitSize = calculateTextFitSize(this, sizingText)
             minimumSize = textFitSize
             preferredSize = customSize ?: textFitSize
         }
@@ -133,17 +137,21 @@ object Design {
         }
     }
 
-    fun createOutlinedButton(text: String, customSize: Dimension? = null): JButton {
+    fun createOutlinedButton(
+        text: String,
+        customSize: Dimension? = null,
+        sizingText: String = text,
+    ): JButton {
         return object : JButton(text) {
             init {
                 updateColorsAndSizing()
-                applyButtonBaseStyle(this, customSize)
+                applyButtonBaseStyle(this, customSize, sizingText)
             }
 
             override fun updateUI() {
                 super.updateUI()
                 updateColorsAndSizing()
-                applyButtonBaseStyle(this, customSize)
+                applyButtonBaseStyle(this, customSize, sizingText)
             }
 
             private fun updateColorsAndSizing() {

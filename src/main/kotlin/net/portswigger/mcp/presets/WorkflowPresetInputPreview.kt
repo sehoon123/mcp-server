@@ -2,6 +2,8 @@ package net.portswigger.mcp.presets
 
 import net.portswigger.mcp.tools.HttpComparisonEncoding
 import net.portswigger.mcp.tools.HttpComparisonPart
+import net.portswigger.mcp.tools.MAX_JSON_COMPARISON_BYTES
+import net.portswigger.mcp.tools.isJsonPart
 import net.portswigger.mcp.tools.WebSocketSearchDirection
 
 internal const val MAX_WORKFLOW_PRESET_INPUT_PREVIEW_CHARS = 1_024
@@ -54,12 +56,17 @@ internal fun WorkflowPreset.executionNeutralInputPreview(): String {
                 projectId = WORKFLOW_PRESET_PREVIEW_PROJECT_ID,
                 refs = emptyList(),
             )
-            "Effective HTTP-comparison input: " +
-                "message part ${input.part.partPreview()}; " +
+            val options = if (input.part.isJsonPart()) {
+                val bytes = minOf(input.limitBytesPerMessage ?: MAX_JSON_COMPARISON_BYTES, MAX_JSON_COMPARISON_BYTES)
+                "bytes per message $bytes; JSON paths only; excerpts, ignored headers and response variations are not used. "
+            } else {
                 "bytes per message ${input.limitBytesPerMessage.limitPreview()}; " +
-                "excerpt encoding ${input.excerptEncoding.encodingPreview()}; " +
-                "ignored headers ${input.ignoreHeaders.countPreview()}; " +
-                "response variations ${input.includeResponseVariations.booleanPreview()}. " +
+                    "excerpt encoding ${input.excerptEncoding.encodingPreview()}; " +
+                    "ignored headers ${input.ignoreHeaders.countPreview()}; " +
+                    "response variations ${input.includeResponseVariations.booleanPreview()}. "
+            }
+            "Effective HTTP-comparison input: " +
+                "message part ${input.part.partPreview()}; " + options +
                 "Project identity and message references are supplied only at execution. " +
                 "This preview never reads or executes traffic."
         }
@@ -98,7 +105,7 @@ private fun WebSocketSearchDirection?.directionPreview(): String = when (this) {
     WebSocketSearchDirection.SERVER_TO_CLIENT -> "server to client"
 }
 
-private fun HttpComparisonPart?.partPreview(): String = when (this) {
+internal fun HttpComparisonPart?.partPreview(): String = when (this) {
     null -> "tool default"
     HttpComparisonPart.REQUEST -> "request"
     HttpComparisonPart.REQUEST_HEADERS -> "request headers"
@@ -106,6 +113,8 @@ private fun HttpComparisonPart?.partPreview(): String = when (this) {
     HttpComparisonPart.RESPONSE -> "response"
     HttpComparisonPart.RESPONSE_HEADERS -> "response headers"
     HttpComparisonPart.RESPONSE_BODY -> "response body"
+    HttpComparisonPart.REQUEST_JSON -> "request JSON body"
+    HttpComparisonPart.RESPONSE_JSON -> "response JSON body"
 }
 
 private fun HttpComparisonEncoding?.encodingPreview(): String = when (this) {

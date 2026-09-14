@@ -140,6 +140,7 @@ internal fun formatDoctorSummary(report: DoctorReport): String = when (report.pr
 
 internal fun formatDoctorEvidence(report: DoctorReport): String = buildString {
     appendLine("Connection Doctor safe evidence")
+    appendLine("Scope: LOCAL_ADMISSION_ONLY EXTERNAL_CLIENT_NOT_TESTED")
     appendLine("Listener: ${report.listenerOutcome()} ${report.listener}")
     append("Probe: ${report.probeOutcome()} ${report.probe}")
 }

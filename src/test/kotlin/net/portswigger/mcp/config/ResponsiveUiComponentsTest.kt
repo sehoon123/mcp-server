@@ -94,9 +94,14 @@ class ResponsiveUiComponentsTest {
                     .single { it.name == "workflowPresetStatusText" }
                 val presetTable = ui.component.descendants().filterIsInstance<JTable>()
                     .single { it.name == "workflowPresetTable" }
+                val auditTable = ui.component.descendants().filterIsInstance<JTable>()
+                    .single { it.name == "auditActivityTable" }
+                val auditFilter = ui.component.descendants().filterIsInstance<JTextField>()
+                    .single { it.name == "auditActivityFilter" }
                 val initialSize = preview.font.size
                 val initialPresetSize = presetStatus.font.size
                 val initialRowHeight = presetTable.rowHeight
+                val initialAuditRowHeight = auditTable.rowHeight
                 withUiFontScale(2f) {
                     SwingUtilities.updateComponentTreeUI(ui.component)
                     assertTrue(preview.font.size >= initialSize * 1.5)
@@ -107,6 +112,9 @@ class ResponsiveUiComponentsTest {
                     assertTrue(contrastRatio(presetStatus.foreground, Design.Colors.surface) >= 4.5)
                     assertTrue(presetTable.rowHeight >= initialRowHeight * 1.5)
                     assertEquals(presetTable.rowHeight * 6, presetTable.preferredScrollableViewportSize.height)
+                    assertTrue(auditTable.rowHeight >= initialAuditRowHeight * 1.5)
+                    assertEquals(auditTable.rowHeight * 6, auditTable.preferredScrollableViewportSize.height)
+                    assertTrue(auditFilter.parent.maximumSize.height >= auditFilter.preferredSize.height)
                 }
             } finally {
                 ui.cleanup()
@@ -278,6 +286,10 @@ class ResponsiveUiComponentsTest {
 
         try {
             ui.component.setSize(1_024, 720)
+            ui.component.descendants()
+                .filterIsInstance<JTextField>()
+                .single { it.name == "serverPortField" }
+                .text = "9877"
             repeat(5) { layoutRecursively(ui.component) }
 
             val columns = ui.component.descendants()
@@ -318,6 +330,10 @@ class ResponsiveUiComponentsTest {
                 .toList()
             assertTrue(buttons.isNotEmpty())
             buttons.forEach(::assertButtonTextFits)
+            val staleCopyButton = buttons
+                .filterIsInstance<JButton>()
+                .single { it.name == "copySetupPreviewButton" }
+            assertEquals("Refresh and copy configuration", staleCopyButton.text)
 
             ui.component.descendants()
                 .filterIsInstance<JLabel>()
@@ -450,6 +466,8 @@ class ResponsiveUiComponentsTest {
 }
 
 private fun layoutRecursively(container: Container) {
+    // Offscreen trees never become valid; refresh width-dependent BoxLayout caches as a real validation pass does.
+    container.invalidate()
     container.doLayout()
     container.components.filterIsInstance<Container>().forEach(::layoutRecursively)
 }

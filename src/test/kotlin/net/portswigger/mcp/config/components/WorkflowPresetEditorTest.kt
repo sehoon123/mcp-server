@@ -1,6 +1,9 @@
 package net.portswigger.mcp.config.components
 
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import net.portswigger.mcp.presets.SavedHttpComparison
+import net.portswigger.mcp.presets.toHttpComparisonInput
 import net.portswigger.mcp.presets.SavedHttpSearch
 import net.portswigger.mcp.presets.SavedWebSocketSearch
 import net.portswigger.mcp.presets.WorkflowPreset
@@ -45,14 +48,18 @@ class WorkflowPresetEditorTest {
                 includeResponseVariations = false,
             )),
         )
-        lateinit var form: WorkflowPresetEditorForm
-        var result: WorkflowPreset? = null
         SwingUtilities.invokeAndWait {
-            form = WorkflowPresetEditorForm(existing)
-            assertFalse(form.named<JTextField>("workflowPresetNameField").isEditable)
-            result = form.toPreset()
+            (listOf(null) + HttpComparisonPart.entries).forEach { part ->
+                val expected = existing.copy(definition = WorkflowPresetDefinition(
+                    httpComparison = existing.definition.httpComparison!!.copy(part = part),
+                ))
+                val form = WorkflowPresetEditorForm(expected)
+                assertFalse(form.named<JTextField>("workflowPresetNameField").isEditable)
+                assertEquals(expected, form.toPreset())
+                val stored = Json.decodeFromString<WorkflowPreset>(Json.encodeToString(form.toPreset()!!))
+                assertEquals(part, stored.definition.httpComparison!!.toHttpComparisonInput("runtime", emptyList()).part)
+            }
         }
-        assertEquals(existing, result)
     }
 
     @Test

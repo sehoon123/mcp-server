@@ -64,11 +64,17 @@ class ConfigUi internal constructor(
     )
 
     private val panel = JPanel(BorderLayout())
-    private val extensionVersion = runCatching { diagnosticsProvider().serverVersion }.getOrDefault("unknown")
+    private val initialDiagnosticsUiState = runCatching { diagnosticsProvider() }
+        .getOrNull()
+        ?.let { snapshot -> snapshot.serverVersion to doctorListenerCode(snapshot.state) }
+        ?: ("unknown" to DoctorListenerCode.UNAVAILABLE)
+    private val extensionVersion = initialDiagnosticsUiState.first
+    private var lastDoctorListenerCode = initialDiagnosticsUiState.second
     val component: JComponent get() = panel
 
     private val listenerHandles = CopyOnWriteArrayList<ListenerHandle>()
     private val cleanupStarted = AtomicBoolean()
+    private val statePublicationClosed = AtomicBoolean()
 
     private val enabledToggle: ToggleSwitch = Design.createToggleSwitch(false) { enabled ->
         if (suppressToggleEvents) return@createToggleSwitch
@@ -86,7 +92,13 @@ class ConfigUi internal constructor(
 
         validationErrorLabel.isVisible = false
         config.enabled = enabled
-        toggleListener?.invoke(enabled)
+        try {
+            if (::clientSetupPanel.isInitialized) {
+                clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+            }
+        } finally {
+            toggleListener?.invoke(enabled)
+        }
     }
     private val validationErrorLabel = WarningLabel()
     private val hostField = JTextField(15).apply { name = "serverHostField" }
@@ -142,6 +154,13 @@ class ConfigUi internal constructor(
             hostField = hostField,
             portField = portField,
             reinstallNotice = reinstallNotice,
+            onBearerTokenRotationAttempted = {
+                if (::clientSetupPanel.isInitialized) {
+                    clientSetupPanel.markDoctorResultStale(
+                        DoctorResultStaleReason.CREDENTIAL_ROTATION_ATTEMPTED,
+                    )
+                }
+            },
         )
 
         autoApproveTargetsPanel = AutoApproveTargetsPanel(config = config)
@@ -196,6 +215,8 @@ class ConfigUi internal constructor(
     }
 
     fun cleanup() {
+        // Publication stays terminal even if cleanup reports a failure and its teardown steps are retried.
+        statePublicationClosed.set(true)
         if (!cleanupStarted.compareAndSet(false, true)) return
         if (SwingUtilities.isEventDispatchThread()) {
             cleanupOnEdt()
@@ -334,48 +355,59 @@ class ConfigUi internal constructor(
     }
 
     fun updateServerState(state: ServerState) {
+        if (statePublicationClosed.get()) return
         CoroutineScope(Dispatchers.Swing).launch {
+            if (statePublicationClosed.get()) return@launch
             suppressToggleEvents = true
-
-            val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
-            if (::advancedOptionsPanel.isInitialized) {
-                advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
-            }
-
-            when (state) {
-                ServerState.Starting, ServerState.Stopping -> {
-                    enabledToggle.isEnabled = false
+            try {
+                val nextDoctorListenerCode = state.toDoctorListenerCode()
+                if (nextDoctorListenerCode != lastDoctorListenerCode) {
+                    lastDoctorListenerCode = nextDoctorListenerCode
+                    if (::clientSetupPanel.isInitialized) {
+                        clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+                    }
                 }
 
-                ServerState.Running -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(true, animate = false)
+                val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
+                if (::advancedOptionsPanel.isInitialized) {
+                    advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
                 }
 
-                ServerState.Stopped -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(false, animate = false)
-                }
-
-                is ServerState.Failed -> {
-                    enabledToggle.isEnabled = true
-                    enabledToggle.setState(false, animate = false)
-
-                    val friendlyMessage = when (state.exception) {
-                        is UnresolvedAddressException -> "Unable to resolve address"
-                        is McpServerStartupException -> safeSingleLine(
-                            state.exception.message ?: "MCP server startup failed"
-                        )
-                        else -> safeExceptionSummary(state.exception)
+                when (state) {
+                    ServerState.Starting, ServerState.Stopping -> {
+                        enabledToggle.isEnabled = false
                     }
 
-                    Dialogs.showMessageDialog(
-                        panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
-                    )
-                }
-            }
+                    ServerState.Running -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(true, animate = false)
+                    }
 
-            suppressToggleEvents = false
+                    ServerState.Stopped -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(false, animate = false)
+                    }
+
+                    is ServerState.Failed -> {
+                        enabledToggle.isEnabled = true
+                        enabledToggle.setState(false, animate = false)
+
+                        val friendlyMessage = when (state.exception) {
+                            is UnresolvedAddressException -> "Unable to resolve address"
+                            is McpServerStartupException -> safeSingleLine(
+                                state.exception.message ?: "MCP server startup failed"
+                            )
+                            else -> safeExceptionSummary(state.exception)
+                        }
+
+                        Dialogs.showMessageDialog(
+                            panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
+                        )
+                    }
+                }
+            } finally {
+                suppressToggleEvents = false
+            }
         }
     }
 
@@ -455,6 +487,14 @@ class ConfigUi internal constructor(
         val columnsPanel = ResponsiveColumnsPanel(leftPanel, rightPanel)
         panel.add(columnsPanel, BorderLayout.CENTER)
     }
+}
+
+private fun ServerState.toDoctorListenerCode(): DoctorListenerCode = when (this) {
+    ServerState.Starting -> DoctorListenerCode.STARTING
+    ServerState.Running -> DoctorListenerCode.RUNNING
+    ServerState.Stopping -> DoctorListenerCode.STOPPING
+    ServerState.Stopped -> DoctorListenerCode.STOPPED
+    is ServerState.Failed -> DoctorListenerCode.FAILED
 }
 
 internal fun formatMcpVersionLabel(version: String): String =

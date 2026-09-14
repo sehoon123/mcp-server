@@ -10,6 +10,7 @@ import net.portswigger.mcp.presets.WorkflowPreset
 import net.portswigger.mcp.presets.WorkflowPresetDefinition
 import net.portswigger.mcp.presets.WorkflowPresetType
 import net.portswigger.mcp.presets.executionNeutralInputPreview
+import net.portswigger.mcp.presets.partPreview
 import net.portswigger.mcp.presets.validateWorkflowPreset
 import net.portswigger.mcp.tools.HttpComparisonEncoding
 import net.portswigger.mcp.tools.HttpComparisonPart
@@ -178,10 +179,9 @@ internal class WorkflowPresetEditorForm(existing: WorkflowPreset?) : JPanel() {
     private val webSocketDefaultLimitField = editorField("workflowPresetWebSocketDefaultLimitField", 8)
 
     private val comparisonPart = JComboBox(
-        arrayOf(
-            "Use default", "Request", "Request headers", "Request body",
-            "Response", "Response headers", "Response body",
-        ),
+        arrayOf("Use default", *HttpComparisonPart.entries.map {
+            it.partPreview().replaceFirstChar(Char::uppercaseChar)
+        }.toTypedArray()),
     ).apply { name = "workflowPresetComparisonPartSelector" }
     private val comparisonLimitField = editorField("workflowPresetComparisonLimitField", 10)
     private val comparisonEncoding = JComboBox(arrayOf("Use default", "Text", "Base64")).apply {

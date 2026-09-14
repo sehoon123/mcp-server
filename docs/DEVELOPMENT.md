@@ -16,7 +16,7 @@ release prerequisite.
 - JDK 21 or newer to launch Gradle; production bytecode targets Java 21.
 - Git.
 - Node.js 22 only when running the external MCP conformance tools locally.
-- Burp Suite Community or Professional for manual extension testing. Professional is required for Scanner and
+- Burp Suite Community or Professional, with Montoya API build baseline `2026.7`, for manual extension testing. Professional is required for Scanner and
   Collaborator paths.
 
 Always use the checked-in Gradle wrapper:
@@ -38,7 +38,12 @@ A release-like local verification is:
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
+bash scripts/test-release-version.sh
 ```
+
+`verifyReleaseVersion` rejects Gradle/BApp version drift before tests or packaging. The packaged JAR version is checked
+again by `embedProxyJar`; the SBOM version comes from the same Gradle property. This is local consistency validation,
+not authorization to bypass the immutable release-line identity or SerialVersion predecessor checks.
 
 Run one test class while iterating:
 
@@ -172,6 +177,14 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 
 - Start with one direct sentence that says what the tool does and identifies the data source or destination that
   distinguishes it from neighboring tools.
+- For overlapping tools, put the selection boundary first: say when to prefer this tool, when to use its raw or
+  reference-based counterpart, and whether an already-produced stable reference should be reused instead of searched
+  for again.
+- Put cross-tool sequencing in the MCP initialize `instructions` field, while keeping each individual description
+  self-contained enough for clients that ignore server instructions or load tools selectively. Do not require a read
+  step when a later action can consume the producing reference directly.
+- For sparse optional objects, document omission semantics both on the tool and the property. State whether each call
+  starts from a fresh source, whether changes accumulate, and how empty or explicit values differ from omission.
 - State network transmission, Burp mutation, routing-only behavior, required approval or access policy, and ambiguous
   execution retry guidance whenever they affect safe tool selection. Tool annotations reinforce these facts but do not
   replace accurate prose.
@@ -188,9 +201,11 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 Review descriptions through `tools/list` and prompt descriptions through `prompts/list`. Test both positive contract
 phrases and the absence of known misleading wording.
 
-References: [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
-[MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts), and
-[MCP client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices).
+References: [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
+[MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts),
+[MCP client best practices](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices),
+[Anthropic tool definitions](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/implement-tool-use), and
+[OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).
 
 ### 2. Select accurate tool annotations
 
@@ -344,10 +359,12 @@ category.
 The v4.12 native manager and the four MCP tools share the exact same `WorkflowPresetStore` instance. Native list/save/delete
 operations recheck the current project and expose only closed local statuses; they never execute a preset or return traffic.
 Malformed or unknown storage remains preserved, and a possible write followed by cancellation or a project transition is
-`UNCERTAIN` and must be manually reconciled. Keep `LocalWorkflowPresetManager` independent of MCP SDK request,
-transport, and result classes: a future released Kotlin SDK migration should replace only the tool/transport adapters,
-not fork the persistence, validation, project-boundary, or Swing-management logic. Do not add dynamic resources,
-subscriptions, prompts, or catalog entries for the native manager.
+`UNCERTAIN` and must be manually reconciled. Native delete confirmation must identify the selected target with a bounded,
+control-free preset name and type while omitting the description and saved input values; keep the safe negative action as
+the dialog default. Keep `LocalWorkflowPresetManager` independent of MCP SDK request, transport, and result classes: a
+future released Kotlin SDK migration should replace only the tool/transport adapters, not fork the persistence,
+validation, project-boundary, or Swing-management logic. Do not add dynamic resources, subscriptions, prompts, or catalog
+entries for the native manager.
 
 ## Resources and prompts
 
@@ -367,17 +384,30 @@ perform hidden side effects.
 - Split workflows such as file chooser + copy into an EDT selection phase and a bounded background I/O phase.
 - Do not use an unowned `kotlin.concurrent.thread` for UI work. Panels that start jobs must own a bounded executor/job,
   disable duplicate actions, and cancel or ignore completion after `cleanup()`.
+- `ConfigUi` treats `cleanup()` as a terminal publication boundary: listener-state callbacks arriving afterward must not
+  mutate detached controls or open a dialog from the detached panel.
 - `ClientSetupPanel` owns one bounded worker for Claude installation, manual proxy extraction, and Connection Doctor.
   Capture host/port and any required credential once on the EDT, run I/O off the EDT, and cancel the panel before server
-  shutdown during extension unload so late callbacks cannot publish into disposed UI.
+  shutdown during extension unload so late callbacks cannot publish into disposed UI. Fence each Doctor run with an
+  opaque EDT-owned context generation, rotate it after endpoint edits, listener-state transitions, or credential-rotation
+  attempts, and publish completion only while the captured generation is still current; the fence must retain no context
+  values. Keep `doctorStatusText` independent from installation and proxy-extraction status: client selection and provider
+  actions must not rewrite Doctor result/status, while a stale transition must disable evidence copying and publish only
+  fixed, value-free Doctor status text.
 - `WorkflowPresetPanel` owns a separate single-worker bounded queue. Editor and confirmation snapshots stay on the EDT;
   project observation and persistence run off the EDT. Unload cancels and boundedly drains the worker before server
   shutdown, while every cleanup path suppresses late publication.
-- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. Only the
-  Claude Desktop action may invoke a native client writer; all other client entries remain preview-and-copy only.
+- Setup previews must contain only controlled placeholders—never a runtime bearer or resolved user path. After endpoint
+  edits, the combined refresh-and-copy action snapshots the displayed endpoint once on the EDT, renders through the same
+  safe catalog, and copies exactly the visible preview; validation failure must copy nothing. Only the Claude Desktop
+  action may invoke a native client writer; all other client entries remain preview-and-copy only.
 - Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
-  no redirects, discard the response body, close after the single request, and expose only closed result enums.
+  no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
+  evidence must retain a fixed, value-free scope marker stating local admission only and external client not tested.
+- `AuditActivityPanel` displays only sanitized `McpAuditSink.snapshot()` records. Reuse the diagnostics timer, cap the
+  view at the configured retention, keep numeric sorting and literal filtering, preserve selected-record identity across
+  refreshes, clear failed snapshots, and suppress reads after cleanup. Do not add traffic getters or another store.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.
@@ -390,6 +420,16 @@ perform hidden side effects.
 ./gradlew test
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
 ```
+
+On macOS, if the default Java temporary directory includes the `/var` symlink, use a physical temporary path for tests:
+
+```bash
+JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/private/tmp ./gradlew test
+```
+
+The private-file tests intentionally reject symlinked ancestors; do not relax the production path guard to accommodate
+a temporary-directory alias. Offscreen Swing layout tests explicitly invalidate width-dependent layout caches before
+measuring; their clipping assertions still apply at 100%, 150%, and 200% in both themes.
 
 The test tree includes service-level MockK tests, real CIO lifecycle tests, Streamable HTTP integration tests, stdio proxy
 end-to-end tests, security approval tests, schema/catalog tests, provider/config tests, and reproducibility checks in CI.

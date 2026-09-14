@@ -1,8 +1,15 @@
 package net.portswigger.mcp.config.components
 
+import burp.api.montoya.logging.Logging
+import burp.api.montoya.persistence.PersistedObject
+import io.mockk.*
 import net.portswigger.mcp.EdtWatchdogSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
+import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.config.Dialogs
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.providers.ProxyProvenance
+import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.tools.HISTORY_PERFORMANCE_BUCKET_COUNT
 import net.portswigger.mcp.tools.HistoryPerformanceMetric
 import net.portswigger.mcp.tools.HistoryPerformanceMetricSnapshot
@@ -11,8 +18,143 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
+import java.awt.Container
+import javax.swing.JCheckBox
+import javax.swing.JOptionPane
+import javax.swing.SwingUtilities
 
 class DiagnosticsPanelTest {
+    @Test
+    fun `diagnostic safety toggles confirm only unsafe transitions`() {
+        val config = config(
+            booleanOverrides = mapOf(
+                "emergencyReadOnlyMode" to true,
+                "auditLoggingEnabled" to true,
+            )
+        )
+        val auditLog = mockk<McpAuditSink>(relaxed = true)
+        val panel = DiagnosticsPanel(
+            config = config,
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = auditLog,
+            proxyProvenance = null,
+            proxyVerified = false,
+        )
+        val checkBoxes = descendants(panel).filterIsInstance<JCheckBox>().associateBy { it.text }
+        var choice = JOptionPane.NO_OPTION
+
+        mockkObject(Dialogs)
+        try {
+            every {
+                Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
+            } answers { choice }
+
+            fun exercise(label: String, effectiveValue: () -> Boolean) {
+                val checkBox = checkBoxes.getValue(label)
+                SwingUtilities.invokeAndWait { checkBox.doClick() }
+                assertTrue(checkBox.isSelected)
+                assertTrue(effectiveValue())
+
+                choice = JOptionPane.YES_OPTION
+                SwingUtilities.invokeAndWait { checkBox.doClick() }
+                assertFalse(checkBox.isSelected)
+                assertFalse(effectiveValue())
+
+                choice = JOptionPane.NO_OPTION
+                SwingUtilities.invokeAndWait { checkBox.doClick() }
+                assertTrue(checkBox.isSelected)
+                assertTrue(effectiveValue())
+            }
+
+            exercise("Emergency read-only mode") { config.emergencyReadOnlyMode }
+            exercise("Persist bounded redacted MCP audit records") { config.auditLoggingEnabled }
+
+            verify(exactly = 4) {
+                Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
+            }
+            verify(exactly = 1) { auditLog.recordAuditDisabled() }
+        } finally {
+            unmockkObject(Dialogs)
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `failed diagnostic safety writes restore effective state without success audit`() {
+        val config = config(
+            booleanOverrides = mapOf(
+                "emergencyReadOnlyMode" to false,
+                "auditLoggingEnabled" to false,
+            ),
+            failingBooleanKeys = setOf("emergencyReadOnlyMode", "auditLoggingEnabled"),
+        )
+        val auditLog = mockk<McpAuditSink>(relaxed = true)
+        val panel = DiagnosticsPanel(
+            config = config,
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = auditLog,
+            proxyProvenance = null,
+            proxyVerified = false,
+        )
+        val checkBoxes = descendants(panel).filterIsInstance<JCheckBox>().associateBy { it.text }
+
+        try {
+            SwingUtilities.invokeAndWait {
+                checkBoxes.getValue("Emergency read-only mode").doClick()
+                checkBoxes.getValue("Persist bounded redacted MCP audit records").doClick()
+            }
+
+            assertFalse(checkBoxes.getValue("Emergency read-only mode").isSelected)
+            assertFalse(checkBoxes.getValue("Persist bounded redacted MCP audit records").isSelected)
+            assertFalse(config.emergencyReadOnlyMode)
+            assertFalse(config.auditLoggingEnabled)
+            verify(exactly = 0) { auditLog.recordLocalEvent(any(), any()) }
+            verify(exactly = 0) { auditLog.recordAuditDisabled() }
+        } finally {
+            panel.cleanup()
+        }
+    }
+
+    @Test
+    fun `successful diagnostic safety write clears an earlier failure status`() {
+        val failingKeys = mutableSetOf("emergencyReadOnlyMode")
+        val config = config(
+            booleanOverrides = mapOf("emergencyReadOnlyMode" to false),
+            failingBooleanKeys = failingKeys,
+        )
+        val auditLog = mockk<McpAuditSink>(relaxed = true)
+        val panel = DiagnosticsPanel(
+            config = config,
+            diagnosticsProvider = ::unavailableMcpDiagnosticsSnapshot,
+            auditLog = auditLog,
+            proxyProvenance = null,
+            proxyVerified = false,
+        )
+        val checkBox = descendants(panel).filterIsInstance<JCheckBox>()
+            .single { it.text == "Emergency read-only mode" }
+
+        try {
+            SwingUtilities.invokeAndWait { checkBox.doClick() }
+            assertTrue(
+                descendants(panel).filterIsInstance<WrappingText>()
+                    .any { it.text == "Could not update Emergency read-only mode" }
+            )
+
+            failingKeys.clear()
+            SwingUtilities.invokeAndWait { checkBox.doClick() }
+
+            assertTrue(checkBox.isSelected)
+            assertFalse(
+                descendants(panel).filterIsInstance<WrappingText>()
+                    .any { it.text.startsWith("Could not update") }
+            )
+            verify(exactly = 1) { auditLog.recordLocalEvent("emergency_read_only_mode", "enabled") }
+        } finally {
+            panel.cleanup()
+        }
+    }
+
     @Test
     fun `diagnostics export contains provenance and counters but no credentials`() {
         val text = formatMcpDiagnostics(
@@ -138,5 +280,29 @@ class DiagnosticsPanelTest {
         assertFalse(text.contains("token="))
         assertFalse(text.contains("C:\\"))
         assertFalse(text.contains("/home/"))
+    }
+
+    private fun config(
+        booleanOverrides: Map<String, Boolean>,
+        failingBooleanKeys: Set<String> = emptySet(),
+    ): McpConfig {
+        val values = booleanOverrides.toMutableMap()
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } answers { values[firstArg()] }
+        every { storage.setBoolean(any(), any()) } answers {
+            val key = firstArg<String>()
+            if (key in failingBooleanKeys) throw IllegalStateException("storage unavailable")
+            values[key] = secondArg()
+        }
+        every { storage.getString(any()) } returns ""
+        every { storage.getInteger(any()) } returns null
+        return McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
+    }
+
+    private fun descendants(root: Container): Sequence<Component> = sequence {
+        for (component in root.components) {
+            yield(component)
+            if (component is Container) yieldAll(descendants(component))
+        }
     }
 }

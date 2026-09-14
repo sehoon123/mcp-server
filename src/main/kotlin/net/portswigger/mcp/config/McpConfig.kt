@@ -218,18 +218,31 @@ class McpConfig(
 
     /** Restores every persisted approval bypass to the secure prompt-by-default state. */
     fun resetPersistentApprovals() {
-        approvalYoloMode = false
-        requireHttpRequestApproval = true
-        clearAutoApproveTargets()
-        requireRequestActionApproval = true
-        requireScopeChangeApproval = true
-        requireDataAccessApproval = true
-        alwaysAllowHttpHistory = false
-        alwaysAllowSiteMap = false
-        alwaysAllowWebSocketHistory = false
-        alwaysAllowOrganizer = false
-        alwaysAllowScannerIssues = false
-        alwaysAllowCollaboratorInteractions = false
+        var firstFailure: Exception? = null
+        fun attempt(update: () -> Unit) {
+            try {
+                update()
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                if (firstFailure == null) firstFailure = failure
+            }
+        }
+
+        attempt { approvalYoloMode = false }
+        attempt { requireHttpRequestApproval = true }
+        attempt(::clearAutoApproveTargets)
+        attempt { requireRequestActionApproval = true }
+        attempt { requireScopeChangeApproval = true }
+        attempt { requireDataAccessApproval = true }
+        attempt { alwaysAllowHttpHistory = false }
+        attempt { alwaysAllowSiteMap = false }
+        attempt { alwaysAllowWebSocketHistory = false }
+        attempt { alwaysAllowOrganizer = false }
+        attempt { alwaysAllowScannerIssues = false }
+        attempt { alwaysAllowCollaboratorInteractions = false }
+
+        firstFailure?.let { throw it }
     }
 
     fun addTargetsChangeListener(listener: () -> Unit): ListenerHandle {

@@ -166,6 +166,39 @@ class McpConfigTest {
     }
 
     @Test
+    fun `persistent approval reset continues tightening after one write fails`() {
+        config.approvalYoloMode = true
+        config.requireHttpRequestApproval = false
+        config.addAutoApproveTarget("example.com")
+        config.requireRequestActionApproval = false
+        config.requireScopeChangeApproval = false
+        config.requireDataAccessApproval = false
+        config.alwaysAllowHttpHistory = true
+        config.alwaysAllowSiteMap = true
+        config.alwaysAllowWebSocketHistory = true
+        config.alwaysAllowOrganizer = true
+        config.alwaysAllowScannerIssues = true
+        config.alwaysAllowCollaboratorInteractions = true
+        val failure = IllegalStateException("storage unavailable")
+        every { persistedObject.setBoolean("requireScopeChangeApproval", true) } throws failure
+
+        assertSame(failure, assertThrows(IllegalStateException::class.java) { config.resetPersistentApprovals() })
+
+        assertFalse(config.approvalYoloMode)
+        assertTrue(config.requireHttpRequestApproval)
+        assertTrue(config.getAutoApproveTargetsList().isEmpty())
+        assertTrue(config.requireRequestActionApproval)
+        assertFalse(config.requireScopeChangeApproval)
+        assertTrue(config.requireDataAccessApproval)
+        assertFalse(config.alwaysAllowHttpHistory)
+        assertFalse(config.alwaysAllowSiteMap)
+        assertFalse(config.alwaysAllowWebSocketHistory)
+        assertFalse(config.alwaysAllowOrganizer)
+        assertFalse(config.alwaysAllowScannerIssues)
+        assertFalse(config.alwaysAllowCollaboratorInteractions)
+    }
+
+    @Test
     fun `YOLO mode reloads only an explicitly persisted enabled value`() {
         val persisted = mockk<PersistedObject>(relaxed = true)
         every { persisted.getBoolean("approvalYoloMode") } returns true

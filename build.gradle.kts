@@ -356,7 +356,32 @@ abstract class GenerateSbomTask : DefaultTask() {
     }
 }
 
+abstract class VerifyReleaseVersionTask : DefaultTask() {
+    @get:Input
+    abstract val releaseVersion: Property<String>
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val bappManifestFile: RegularFileProperty
+
+    @TaskAction
+    fun verify() {
+        val lines = bappManifestFile.get().asFile.readLines(Charsets.UTF_8)
+        if (lines.filter { it.startsWith("ScreenVersion:") } != listOf("ScreenVersion: ${releaseVersion.get()}")) {
+            throw GradleException("BApp ScreenVersion must match Gradle version ${releaseVersion.get()}")
+        }
+        val serial = lines.singleOrNull { it.startsWith("SerialVersion:") }
+            ?.removePrefix("SerialVersion:")?.trim()?.toIntOrNull()
+        if (serial == null || serial <= 0) {
+            throw GradleException("BApp SerialVersion must be one positive integer")
+        }
+    }
+}
+
 abstract class VerifyEmbeddedProxyJarTask : DefaultTask() {
+    @get:Input
+    abstract val releaseVersion: Property<String>
+
     @get:InputFile
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val extensionJarFile: RegularFileProperty
@@ -402,6 +427,10 @@ abstract class VerifyEmbeddedProxyJarTask : DefaultTask() {
             val manifestEntry = zip.getEntry("META-INF/MANIFEST.MF")
                 ?: throw GradleException("Missing extension manifest")
             val manifest = zip.getInputStream(manifestEntry).bufferedReader().use { it.readText() }
+            val attributes = manifest.byteInputStream(Charsets.UTF_8).use(::Manifest).mainAttributes
+            if (attributes.getValue("Implementation-Version") != releaseVersion.get()) {
+                throw GradleException("Packaged Implementation-Version does not match Gradle version")
+            }
             if (!manifest.contains("Implementation-Vendor: sehoon123")) {
                 throw GradleException("Extension manifest does not identify the independent distributor")
             }
@@ -474,7 +503,15 @@ application {
 }
 
 tasks {
+    val verifyReleaseVersion = register<VerifyReleaseVersionTask>("verifyReleaseVersion") {
+        group = "verification"
+        description = "Checks Gradle and BApp version consistency; does not authorize release publication."
+        releaseVersion.set(providers.gradleProperty("version"))
+        bappManifestFile.set(layout.projectDirectory.file("BappManifest.bmf"))
+    }
+
     test {
+        dependsOn(verifyReleaseVersion)
         useJUnitPlatform()
         // Mock-heavy Montoya integration suites can exceed Gradle's 512 MiB worker default on clean CI runners.
         maxHeapSize = "1g"
@@ -520,7 +557,7 @@ tasks {
     }
 
     shadowJar {
-        dependsOn(verifyProxyJar, "verifyLegalBundle")
+        dependsOn(verifyProxyJar, verifyReleaseVersion, "verifyLegalBundle")
         archiveClassifier.set("")
         archiveFileName.set("independent-mcp-bridge-all.jar")
         mergeServiceFiles()
@@ -565,8 +602,9 @@ tasks {
 
     register<VerifyEmbeddedProxyJarTask>("embedProxyJar") {
         group = "build"
-        description = "Builds the extension and verifies its embedded MCP proxy"
+        description = "Builds the extension and verifies its version and embedded MCP proxy"
         dependsOn(shadowJar)
+        releaseVersion.set(providers.gradleProperty("version"))
         extensionJarFile.set(shadowJar.flatMap { it.archiveFile })
         proxySourceFile.set(layout.projectDirectory.file("libs/mcp-proxy-source.txt"))
     }

@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicLongArray
 internal enum class MetadataChangeSource {
     PROXY_HTTP,
     SITE_MAP,
+    // Burp exposes no Organizer listener; MCP Organizer writes invalidate through HttpMetadataIndex.withMutation.
     ORGANIZER,
     WEBSOCKET,
     SCANNER_ISSUES,

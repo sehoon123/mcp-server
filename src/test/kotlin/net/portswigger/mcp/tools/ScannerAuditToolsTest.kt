@@ -2576,19 +2576,18 @@ class ScannerAuditToolsTest {
             }
         }
 
-        val cancellations = List(2) {
-            async(Dispatchers.Default) {
-                service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
-            }
+        val firstCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         }
-        withTimeout(5_000) {
-            firstApprovalEntered.await()
-            staleApprovalEntered.await()
+        withTimeout(10_000) { firstApprovalEntered.await() }
+        val staleCancellation = async(Dispatchers.Default) {
+            service.cancel(CancelScannerAudit("project-123", started.taskId!!), config)
         }
+        withTimeout(10_000) { staleApprovalEntered.await() }
         releaseFirstApproval.complete(Unit)
         withTimeout(10_000) { cancellationCommitted.await() }
         releaseStaleApproval.complete(Unit)
-        val results = cancellations.map { it.await() }
+        val results = listOf(firstCancellation, staleCancellation).map { it.await() }
         assertTrue(results.any { it.status == ScannerAuditToolStatus.PROJECT_MISMATCH })
         results.forEach { result ->
             assertTrue(

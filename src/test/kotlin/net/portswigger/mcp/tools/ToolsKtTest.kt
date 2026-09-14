@@ -27,7 +27,14 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity
 import burp.api.montoya.sitemap.SiteMap
 import burp.api.montoya.websocket.Direction
+import io.modelcontextprotocol.kotlin.sdk.server.ClientConnection
+import io.modelcontextprotocol.kotlin.sdk.server.Server
+import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.mockk.*
@@ -45,6 +52,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.KtorServerManager
+import net.portswigger.mcp.MCP_SERVER_INSTRUCTIONS
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
@@ -479,6 +487,43 @@ class ToolsKtTest {
     }
 
     @Test
+    fun `JSON comparison and saved comparison preset return the same bounded wire result`() = runBlocking {
+        val items = listOf("{\"x\":\"PRIVATE_LEFT\"}", "{\"x\":\"PRIVATE_RIGHT\"}").mapIndexed { index, body ->
+            mockk<ProxyHttpRequestResponse>().also { item ->
+                stubProxyHistorySummary(item, index + 1)
+                val response = mockk<burp.api.montoya.http.message.responses.HttpResponse>()
+                every { response.body() } returns montoyaBytes(body.toByteArray())
+                every { item.response() } returns response
+            }
+        }
+        every { api.proxy().history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            items.filter(filter::matches)
+        }
+        val refs = listOf(mapOf("source" to "proxy", "id" to "1"), mapOf("source" to "proxy", "id" to "2"))
+        val direct = client.callTool("compare_http_messages", mapOf(
+            "projectId" to "project-default", "refs" to refs, "part" to "response_json",
+        ))
+        val result = requireNotNull(direct?.structuredContent)
+        assertEquals("ok", result["status"]?.jsonPrimitive?.content)
+        assertEquals(false, result["allEqual"]?.jsonPrimitive?.boolean)
+        val json = result.getValue("jsonComparison").jsonObject
+        assertEquals("ok", json["status"]?.jsonPrimitive?.content)
+        assertEquals("/x", json.getValue("differences").jsonArray.single().jsonObject["path"]?.jsonPrimitive?.content)
+        assertFalse(direct.toString().contains("PRIVATE_"))
+        val saved = client.callTool("save_workflow_preset", mapOf(
+            "projectId" to "project-default", "name" to "JSON comparison",
+            "definition" to mapOf("httpComparison" to mapOf("part" to "response_json")),
+        ))
+        assertEquals("ok", saved?.structuredContent?.get("status")?.jsonPrimitive?.content)
+        val executed = client.callTool("execute_workflow_preset", mapOf(
+            "projectId" to "project-default", "name" to "JSON comparison", "refs" to refs,
+        ))
+        assertEquals(result, executed?.structuredContent?.get("httpComparison"))
+        assertFalse(executed.toString().contains("PRIVATE_"))
+    }
+
+    @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(21, tools.size)
@@ -493,7 +538,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "20c78ef615bf895f54ee7e21948e871d6af2661e7acb889a2219bbdbf153798d",
+            "27e0c5d5468b7d2b83629a7b273a79ea126af25ffbe0eb2421ad6656f1b06715",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -510,13 +555,45 @@ class ToolsKtTest {
                 )
             }
         }
+        assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
+        assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
+        assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
+        assertTrue(description("send_raw_http_request").contains("Fallback only"))
+        assertTrue(description("route_raw_http_request").contains("Fallback only"))
         assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder routing is unsupported"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
         assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
+        assertTrue(description("search_http_messages").contains("call-start project"))
         assertTrue(description("search_http_messages").contains("items=[] with hasMore=true"))
         assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
+        assertTrue(description("search_http_messages").contains("{source,id}"))
+        assertTrue(description("get_http_message").contains("search_http_messages"))
+        assertTrue(description("get_http_message").contains("nextOffsetBytes as offset"))
+        assertTrue(description("get_http_message").contains("not required before the from-ID action tools"))
+        assertTrue(description("send_http_request_from_id").contains("Each call restarts from the stored source"))
+        assertTrue(description("send_http_request_from_id").contains("patches never accumulate"))
+        assertTrue(description("route_http_message_from_id").contains("Each call restarts from the stored source"))
+        assertTrue(description("route_http_message_from_id").contains("patches never accumulate"))
+        listOf("send_http_request_from_id", "route_http_message_from_id").forEach { toolName ->
+            val properties = requireNotNull(tools[toolName]).inputSchema.properties.orEmpty()
+            assertTrue(
+                properties.getValue("ref").jsonObject.getValue("description").jsonPrimitive.content
+                    .contains("search_http_messages"),
+                "$toolName.ref must identify the producing search",
+            )
+            val patchDescription =
+                properties.getValue("patch").jsonObject.getValue("description").jsonPrimitive.content
+            assertTrue(
+                patchDescription.contains("patches are not cumulative"),
+                "$toolName.patch must disclose fresh-source semantics",
+            )
+            assertTrue(
+                patchDescription.contains("omission or {} makes no request changes"),
+                "$toolName.patch must distinguish omission and an empty sparse patch",
+            )
+        }
         assertTrue(description("correlate_http_activity").contains("ranked related events"))
         assertTrue(description("correlate_http_activity").contains("never change the explicit delta"))
         assertTrue(description("correlate_http_activity").contains("establish no identity, chronology, causality"))
@@ -598,6 +675,105 @@ class ToolsKtTest {
                 result?.structuredContent?.get("projectId"),
                 "$toolName must not echo caller-forged projectId before capture",
             )
+        }
+    }
+
+    @Test
+    fun `registered Organizer routes retain the shared mutation guard`() = runBlocking {
+        val project = mockk<burp.api.montoya.project.Project>()
+        val proxy = mockk<Proxy>()
+        val item = mockk<ProxyHttpRequestResponse>()
+        val storedRequest = mockk<HttpRequest>()
+        val rawRequest = mockk<HttpRequest>()
+        val storedBytes = montoyaBytes(byteArrayOf())
+        val rawBody = montoyaBytes(byteArrayOf())
+        val service = mockk<burp.api.montoya.http.HttpService>()
+        val organizer = mockk<Organizer>(relaxed = true)
+        every { api.project() } returns project
+        every { project.id() } returns "project-wiring"
+        every { api.proxy() } returns proxy
+        every { proxy.history(any()) } answers {
+            val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
+            listOf(item).filter(filter::matches)
+        }
+        every { item.id() } returns 91
+        every { item.request() } returns storedRequest
+        every { item.response() } returns null
+        every { item.httpService() } returns service
+        every { storedRequest.toByteArray() } returns storedBytes
+        every { storedRequest.bodyOffset() } returns 48
+        every { storedRequest.body() } returns storedBytes
+        every { storedRequest.toString() } returns "GET /stored HTTP/1.1\r\nHost: example.test\r\n\r\n"
+        every { storedRequest.httpService() } returns service
+        every { storedRequest.method() } returns "GET"
+        every { storedRequest.path() } returns "/stored"
+        every { storedRequest.httpVersion() } returns "HTTP/1.1"
+        every { service.host() } returns "example.test"
+        every { service.port() } returns 443
+        every { service.secure() } returns true
+        every { HttpRequest.httpRequest(any(), any<String>()) } returns rawRequest
+        every { rawRequest.bodyOffset() } returns 48
+        every { rawRequest.body() } returns rawBody
+        every { api.organizer() } returns organizer
+
+        val registeredServer = Server(
+            serverInfo = Implementation("organizer-wiring-test", "1"),
+            options = ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        val services = ToolServices(api, WorkflowPresetStore(workflowStorage))
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "organizer-wiring-session"
+        }
+        registeredServer.registerTools(api, config, services)
+        services.close()
+
+        try {
+            suspend fun invoke(name: String, arguments: JsonObject) =
+                registeredServer.tools.getValue(name).handler(
+                    connection,
+                    CallToolRequest(CallToolRequestParams(name, arguments)),
+                )
+
+            val rawResult = invoke(
+                "route_raw_http_request",
+                JsonObject(
+                    mapOf(
+                        "destination" to JsonPrimitive("organizer"),
+                        "protocol" to JsonPrimitive("http_1"),
+                        "http1" to JsonObject(
+                            mapOf("content" to JsonPrimitive("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")),
+                        ),
+                        "targetHostname" to JsonPrimitive("example.test"),
+                        "targetPort" to JsonPrimitive(443),
+                        "usesHttps" to JsonPrimitive(true),
+                    ),
+                ),
+            )
+            val storedResult = invoke(
+                "route_http_message_from_id",
+                JsonObject(
+                    mapOf(
+                        "projectId" to JsonPrimitive("project-wiring"),
+                        "ref" to JsonObject(
+                            mapOf(
+                                "source" to JsonPrimitive("proxy"),
+                                "id" to JsonPrimitive("91"),
+                            ),
+                        ),
+                        "destination" to JsonPrimitive("organizer"),
+                    ),
+                ),
+            )
+
+            listOf(rawResult, storedResult).forEach { result ->
+                assertEquals(true, result.isError)
+                assertEquals("burp_error", result.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("not_started", result.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            }
+            verify(exactly = 0) { organizer.sendToOrganizer(any<HttpRequest>()) }
+        } finally {
+            registeredServer.unbindToolRuntimePolicy()
+            registeredServer.close()
         }
     }
 
@@ -1807,7 +1983,14 @@ class ToolsKtTest {
 
         val comparison = tools.single { it.name == "compare_http_messages" }
         assertEquals(setOf("projectId", "refs"), comparison.inputSchema.required?.toSet())
-        assertTrue(comparison.inputSchema.properties?.get("part").toString().contains("response_body"))
+        listOf("response_body", "request_json", "response_json").forEach { part ->
+            assertTrue(comparison.inputSchema.properties?.get("part").toString().contains(part))
+        }
+        val jsonComparisonSchema = comparison.outputSchema?.properties?.get("jsonComparison").toString()
+        assertTrue(jsonComparisonSchema.contains("\"maxItems\":32"))
+        assertTrue(jsonComparisonSchema.contains("\"maxLength\":512"))
+        assertTrue(jsonComparisonSchema.contains("duplicate_key"))
+        assertTrue(jsonComparisonSchema.contains("limit_exceeded"))
         assertTrue(comparison.inputSchema.properties?.get("excerptEncoding").toString().contains("base64"))
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
@@ -1819,6 +2002,8 @@ class ToolsKtTest {
         assertTrue(definitionSchema.contains("httpSearch"))
         assertTrue(definitionSchema.contains("webSocketSearch"))
         assertTrue(definitionSchema.contains("httpComparison"))
+        assertTrue(definitionSchema.contains("request_json"))
+        assertTrue(definitionSchema.contains("response_json"))
         listOf("projectId", "cursor", "refs", "text", "regex", "searchIn", "caseSensitive", "webSocketId").forEach {
             assertFalse(definitionSchema.contains("\"$it\":"), "saved definition must not expose $it")
         }
@@ -2142,7 +2327,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "48fd062e6e524b6bb3bb24b6560b10cb8b09291cdd205144f50dc27a87b8185d",
+                "2076d114df9e12351569caff6c24490b251d626a65f67d32f9798cf99c0b6d82",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->

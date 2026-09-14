@@ -133,7 +133,7 @@ data class RawHttpActionResult(
 internal class RawHttpActionService(
     private val api: MontoyaApi,
     private val config: McpConfig,
-    private val organizerChanged: () -> Unit = {},
+    private val withOrganizerMutation: suspend (String, suspend () -> Unit) -> Unit,
 ) {
     suspend fun send(input: SendRawHttpRequest): RawHttpActionResult {
         val target = input.toTarget()
@@ -372,11 +372,21 @@ internal class RawHttpActionService(
                     if (tabName == null) api.intruder().sendToIntruder(prepared.request)
                     else api.intruder().sendToIntruder(prepared.request, tabName)
                 }
-                RawHttpRouteDestination.ORGANIZER -> {
-                    markOrganizerChanged()
+                RawHttpRouteDestination.ORGANIZER -> withOrganizerMutation(expectedProjectId) {
                     api.organizer().sendToOrganizer(prepared.request)
                 }
             }
+        } catch (e: OrganizerProjectMismatchBeforeMutationException) {
+            return projectMismatch(
+                input.protocol,
+                destination,
+                target,
+                prepared.requestBytes,
+                tabName,
+                e.currentProjectId,
+            )
+        } catch (e: OrganizerMutationNotStartedException) {
+            return burpError(input.protocol, destination, target, e)
         } catch (e: CancellationException) {
             if (!callContext.isActive) throw e
             return uncertain(input.protocol, destination, target, prepared.requestBytes, tabName, e, expectedProjectId)
@@ -402,14 +412,6 @@ internal class RawHttpActionService(
             requestBytes = prepared.requestBytes,
             tabName = tabName,
         )
-    }
-
-    private fun markOrganizerChanged() {
-        try {
-            organizerChanged()
-        } catch (_: Exception) {
-            // Invalidation diagnostics must never prevent the already-approved side effect.
-        }
     }
 
     private fun preExecutionProjectResult(

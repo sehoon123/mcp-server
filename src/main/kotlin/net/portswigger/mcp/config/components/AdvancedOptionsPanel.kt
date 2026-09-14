@@ -2,6 +2,7 @@ package net.portswigger.mcp.config.components
 
 import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
@@ -17,7 +18,8 @@ class AdvancedOptionsPanel(
     private val config: McpConfig,
     private val hostField: JTextField,
     private val portField: JTextField,
-    private val reinstallNotice: WarningLabel
+    private val reinstallNotice: WarningLabel,
+    private val onBearerTokenRotationAttempted: () -> Unit,
 ) : JPanel() {
     private val tokenStatus = WrappingText(" ", WrappingTextStyle.LABEL_MEDIUM)
 
@@ -57,7 +59,9 @@ class AdvancedOptionsPanel(
         ))
         add(createVerticalStrut(Design.Spacing.SM))
 
-        val copyTokenButton = JButton("Copy local bearer token").apply {
+        val copyTokenButton = Design.createOutlinedButton("Copy local bearer token").apply {
+            accessibleContext.accessibleDescription =
+                "Copy the installation-scoped local MCP bearer token to the system clipboard"
             addActionListener {
                 try {
                     copyTokenToClipboard(config.localBearerToken)
@@ -69,35 +73,25 @@ class AdvancedOptionsPanel(
                 }
             }
         }
-        val rotateTokenButton = JButton("Rotate local bearer token...").apply {
+        val rotateTokenButton = Design.createSemanticOutlinedButton(
+            "Rotate local bearer token...",
+        ) { Design.Colors.error }.apply {
+            name = "rotateLocalBearerTokenButton"
+            accessibleContext.accessibleDescription =
+                "After confirmation, replace the local bearer token and invalidate existing client credentials"
             addActionListener {
-                val confirmed = JOptionPane.showConfirmDialog(
+                val confirmed = Dialogs.showConfirmDialog(
                     this@AdvancedOptionsPanel,
                     "Existing native and stdio client credentials will stop working. " +
                         "After rotation, restart the MCP server and reinstall or update every client.",
-                    "Rotate local bearer token",
                     JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.WARNING_MESSAGE,
+                    "Rotate local bearer token",
                 )
                 if (confirmed == JOptionPane.OK_OPTION) {
-                    val token = try {
-                        config.rotateLocalBearerToken()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        tokenStatus.updateContent(
-                            "Token rotation could not be confirmed; re-copy or rotate before restarting the server"
-                        )
-                        return@addActionListener
-                    }
-                    reinstallNotice.isVisible = true
                     try {
-                        copyTokenToClipboard(token)
-                        tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        tokenStatus.updateContent("Token rotated; restart the server and update clients")
+                        rotateBearerToken()
+                    } finally {
+                        onBearerTokenRotationAttempted()
                     }
                 }
             }
@@ -105,6 +99,28 @@ class AdvancedOptionsPanel(
         add(AdaptiveButtonPanel(listOf(copyTokenButton, rotateTokenButton)))
         add(createVerticalStrut(Design.Spacing.SM))
         add(tokenStatus)
+    }
+
+    private fun rotateBearerToken() {
+        val token = try {
+            config.rotateLocalBearerToken()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            tokenStatus.updateContent(
+                "Token rotation could not be confirmed; re-copy or rotate before restarting the server"
+            )
+            return
+        }
+        reinstallNotice.isVisible = true
+        try {
+            copyTokenToClipboard(token)
+            tokenStatus.updateContent("Token rotated and copied; restart the server and update clients")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            tokenStatus.updateContent("Token rotated; restart the server and update clients")
+        }
     }
 
     private fun copyTokenToClipboard(token: String) {
