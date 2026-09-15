@@ -1,7 +1,7 @@
 # Active release roadmap
 
-**Status date:** 2026-09-14<br>
-**Current development candidate:** `4.12.0-rc.1` (local preparation; publication gates remain open)<br>
+**Status date:** 2026-09-15<br>
+**Current development candidate:** `4.12.0-rc.2` (local preparation; publication gates remain open)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
 **Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
@@ -45,7 +45,7 @@ locally assembled corrective artifact or reuse RC evidence as stable exact-byte 
 | `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
 | `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
 | `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, seven-day attested observation, fresh stable evidence |
-| `v4.12.0` | Native utilities, execution workflows, and local client UX | Five-client Setup Center; bounded native ranking/annotation; opt-in execution surfaces | Exact 24/37 catalogs, privacy/lifecycle/accessibility and real-client evidence |
+| `v4.12.0` | Native utilities, evidence reporting, and local client UX | Five-client Setup Center; bounded native utilities; opt-in execution; human-reviewed issue reporting | Exact 24/38 catalogs, privacy/lifecycle/accessibility and real-client evidence |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
 ## v4.8.0 — Independent Trust Baseline
@@ -469,7 +469,7 @@ aliases or families.
 
 ## v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
-Development began on advancing `main` under `4.12.0-dev.1`; the current working candidate is `4.12.0-rc.1`.
+Development began on advancing `main` under `4.12.0-dev.1`; the current working candidate is `4.12.0-rc.2`.
 The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
 cherry-picked into that release branch. RC1 locally increments `SerialVersion` from 12 to 13, but this is not a frozen
 release identity: before signing, reconcile it against every same-UUID predecessor, including the non-ancestor v4.11
@@ -478,7 +478,8 @@ pinned. No earlier candidate's vulnerability, smoke, or publication evidence val
 
 RC1 adds a native redacted activity table inspired by reburp's activity-log usability, using the existing audit snapshot,
 retention, and diagnostics timer rather than recording raw API/target traffic. It also checks Gradle/BApp/JAR version
-parity during ordinary builds. See [the RC1 fragment](releases/4.12.0-rc.1.md) for compatibility and outstanding gates.
+parity during ordinary builds. RC2 increments the local SerialVersion to 14 without changing RC1's signed identity.
+See [the RC2 fragment](releases/4.12.0-rc.2.md) for current compatibility and outstanding gates.
 
 Milestone order:
 
@@ -656,7 +657,7 @@ approval boundaries.
 This later milestone intentionally supersedes the milestone-5 no-growth checkpoint after the user requested every
 previously deferred reburp-derived category. Community adds `rank_http_messages`, `annotate_http_messages`, and
 `execute_local_command`. Professional additionally adds four Request Execution Engine lifecycle tools and two Repeater
-custom-action Bambda tools. The exact catalogs are now 24 Community / 37 Professional; prompts, resources, URI templates,
+custom-action Bambda tools. The RC1 catalogs are 24 Community / 37 Professional; prompts, resources, URI templates,
 and dependencies remain unchanged.
 
 - [x] Native anomaly ranking accepts only 1–32 canonically distinct stable references, preserves source approval, enforces
@@ -674,7 +675,13 @@ and dependencies remain unchanged.
   replacement reusing capacity. YOLO can bypass the per-call prompt but cannot enable that switch; Emergency read-only is
   rechecked adjacent to invocation. Approval/audit never stores source, command, environment, request, or response values.
 - [x] Catalog/schema, service, approval denial, canonical identity, aggregate-bound, project-transition, emergency,
-  result-retention, generator escaping, and lifecycle tests pass with reviewed 24/37 fingerprints.
+  result-retention, generator escaping, and lifecycle tests pass with reviewed RC1 24/37 fingerprints.
+
+RC2 adds bounded evidence/reporting only: strict complete-value JSON selection and runtime-only response keywords extend
+existing reads, while Professional adds human-reviewed issue submission from approved existing HTTP references. Its
+catalog is 24/38, with prompts/resources/templates and dependencies unchanged. Issue completion does not prove finding
+validity or persistence; exact-candidate native keyword and issue read-back smoke remain gates. No event timeline,
+subscription, compression framework, or additional send/scan workflow is introduced.
 - [ ] Exact-candidate Professional smoke proves Request Execution start/queue/status/control and generated/raw Repeater
   Bambda import/compile/run behavior. Community and Professional smoke prove RankingUtils, live annotations, direct argv,
   system-shell timeout/error behavior, and code-execution toggle/emergency precedence. Use disposable data and commands.

@@ -57,4 +57,5 @@ internal fun SavedHttpComparison.toHttpComparisonInput(
     excerptEncoding = excerptEncoding,
     ignoreHeaders = ignoreHeaders,
     includeResponseVariations = includeResponseVariations,
+    responseKeywords = null,
 )

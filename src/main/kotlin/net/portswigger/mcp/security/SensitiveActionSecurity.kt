@@ -53,6 +53,7 @@ enum class SensitiveActionAuditOperation(val auditKind: String) {
     TASK_EXECUTION_ENGINE("sensitive_action:task_execution_engine"),
     PROXY_INTERCEPT("sensitive_action:proxy_intercept"),
     HTTP_ANNOTATION("sensitive_action:http_annotation"),
+    SCANNER_ISSUE_CREATE("sensitive_action:scanner_issue_create"),
     REQUEST_EXECUTION_START("sensitive_action:request_execution_start"),
     REQUEST_EXECUTION_QUEUE("sensitive_action:request_execution_queue"),
     REQUEST_EXECUTION_CONTROL("sensitive_action:request_execution_control"),

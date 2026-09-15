@@ -425,9 +425,11 @@ At minimum, exercise the 11 required scenarios:
 3. native Streamable HTTP initialize, initialized notification, ping, list, call, and authenticated DELETE;
 4. stdio proxy initialize, one read call, one action denial, and graceful EOF cleanup;
 5. release-line-selected exact Community tool/resource/prompt catalog and Professional-only gating; v4.12 additionally
-   verifies native ranking, annotation, local-command, Request Execution, and Bambda schemas and availability;
+   verifies native ranking, annotation, local-command, Request Execution, and Bambda schemas and availability; RC2 adds
+   bounded JSON selection, response keyword analysis, and Professional issue reporting (24/38 rather than RC1's 24/37);
 6. Professional Scanner/Collaborator paths plus Request Execution start/queue/status/pause/resume/cancel/delete and
-   raw/generated Repeater Bambda import, compile, and disposable run for releases that advertise them;
+   raw/generated Repeater Bambda import, compile, and disposable run for releases that advertise them; for RC2, confirm
+   a human-reviewed issue's evidence and escaped fields in Burp rather than treating native add completion as persistence proof;
 7. Repeater/Intruder/Organizer/Comparer/Decoder routing without hidden network transmission, plus exact-record
    notes/highlight mutation, stale-edit rejection, and partial-write reconciliation;
 8. stable-ID outbound replay and Request Execution stored/raw batches with independent exact-request, batch, and

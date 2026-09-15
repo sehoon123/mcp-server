@@ -193,6 +193,7 @@ def main() -> int:
             resources,
             resource_templates,
             require_v412_schema=requires_v412_catalog_schema(args.expected_server_version),
+            server_version=args.expected_server_version,
         )
         initial_diagnostics, initial_diagnostics_text = read_bounded_diagnostics(observer)
         if initial_diagnostics.get("loadedArtifactSha256") != jar_sha256:

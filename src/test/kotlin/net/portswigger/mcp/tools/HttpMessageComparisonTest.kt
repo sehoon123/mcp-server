@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.http.message.responses.analysis.AttributeType
+import burp.api.montoya.http.message.responses.analysis.ResponseKeywordsAnalyzer
 import burp.api.montoya.http.message.responses.analysis.ResponseVariationsAnalyzer
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
@@ -14,6 +15,7 @@ import burp.api.montoya.project.Project
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
@@ -23,6 +25,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -235,6 +238,206 @@ class HttpMessageComparisonTest {
         assertEquals(listOf("content_type"), result.responseVariations?.invariantAttributes)
         assertFalse(result.responseVariations!!.skipped)
         verify(exactly = 2) { analyzer.updateWith(any()) }
+    }
+
+    @Test
+    fun `optional native response keywords use complete responses and return a bounded partition`() = runBlocking {
+        val first = proxyItem(1, "one alpha")
+        val second = proxyItem(2, "two beta")
+        stubProxyHistory(first, second)
+        val analyzer = mockk<ResponseKeywordsAnalyzer>(relaxed = true)
+        every { http.createResponseKeywordsAnalyzer(listOf("alpha", "beta", "common")) } returns analyzer
+        every { analyzer.variantKeywords() } returns setOf("alpha", "beta")
+        every { analyzer.invariantKeywords() } returns setOf("common")
+
+        val result = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE_BODY,
+                limitBytesPerMessage = 1,
+                includeResponseVariations = false,
+                responseKeywords = listOf("alpha", "beta", "common"),
+            )
+        )
+
+        assertEquals(listOf("alpha", "beta"), result.keywordAnalysis?.variantKeywords)
+        assertEquals(listOf("common"), result.keywordAnalysis?.invariantKeywords)
+        assertFalse(result.keywordAnalysis!!.skipped)
+        verify(exactly = 2) { analyzer.updateWith(any()) }
+    }
+
+    @Test
+    fun `omitted or invalid response keywords never invoke the native analyzer or source`() = runBlocking {
+        val first = proxyItem(1, "one")
+        val second = proxyItem(2, "two")
+        stubProxyHistory(first, second)
+        val omitted = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE_BODY,
+                includeResponseVariations = false,
+            )
+        )
+        assertNull(omitted.keywordAnalysis)
+        verify(exactly = 0) { http.createResponseKeywordsAnalyzer(any()) }
+
+        clearMocks(proxy, answers = false, recordedCalls = true)
+        val base = CompareHttpMessages(
+            "caller-forged",
+            refs(1, 2),
+            HttpComparisonPart.RESPONSE_BODY,
+            includeResponseVariations = false,
+        )
+        listOf(
+            base.copy(part = HttpComparisonPart.REQUEST_BODY, responseKeywords = listOf("alpha")),
+            base.copy(responseKeywords = emptyList()),
+            base.copy(responseKeywords = listOf("alpha", "alpha")),
+            base.copy(responseKeywords = listOf("bad\nvalue")),
+            base.copy(responseKeywords = List(33) { "keyword-$it" }),
+            base.copy(responseKeywords = listOf("x".repeat(257))),
+            base.copy(responseKeywords = List(32) { "${"x".repeat(128)}-$it" }),
+        ).forEach { input ->
+            val invalid = service.compare(input)
+            assertEquals(HttpComparisonStatus.INVALID_ARGUMENT, invalid.status)
+            assertNull(invalid.projectId)
+        }
+        verify(exactly = 0) { proxy.history(any()) }
+    }
+
+    @Test
+    fun `unexpected native keyword output is skipped without escaping values`() = runBlocking {
+        stubProxyHistory(proxyItem(1, "one"), proxyItem(2, "two"))
+        val analyzer = mockk<ResponseKeywordsAnalyzer>(relaxed = true)
+        every { http.createResponseKeywordsAnalyzer(listOf("expected")) } returns analyzer
+        every { analyzer.variantKeywords() } returns setOf("PRIVATE_UNEXPECTED")
+        every { analyzer.invariantKeywords() } returns emptySet()
+
+        val result = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE,
+                includeResponseVariations = false,
+                responseKeywords = listOf("expected"),
+            )
+        )
+
+        assertTrue(result.keywordAnalysis!!.skipped)
+        assertTrue(result.keywordAnalysis!!.variantKeywords.isEmpty())
+        assertFalse(result.toString().contains("PRIVATE_UNEXPECTED"))
+
+        val oversized = mockk<Set<String>>()
+        every { oversized.size } returns 33
+        every { analyzer.variantKeywords() } returns oversized
+        val bounded = service.compare(
+            CompareHttpMessages(
+                "project-123", refs(1, 2), HttpComparisonPart.RESPONSE_BODY,
+                includeResponseVariations = false, responseKeywords = listOf("expected"),
+            )
+        )
+        assertTrue(bounded.keywordAnalysis!!.skipped)
+        verify(exactly = 0) { oversized.iterator() }
+    }
+
+    @Test
+    fun `keyword native failures and full-response limits return fixed skipped summaries`() = runBlocking {
+        stubProxyHistory(proxyItem(1, "one"), proxyItem(2, "two"))
+        every { http.createResponseKeywordsAnalyzer(listOf("expected")) } throws
+            IllegalStateException("PRIVATE_NATIVE_FAILURE")
+        val failed = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE_BODY,
+                includeResponseVariations = false,
+                responseKeywords = listOf("expected"),
+            )
+        )
+        assertTrue(failed.keywordAnalysis!!.skipped)
+        assertEquals("Burp response keyword analysis was unavailable", failed.keywordAnalysis!!.reason)
+        assertFalse(failed.toString().contains("PRIVATE_NATIVE_FAILURE"))
+
+        val oversized = "x".repeat(1024 * 1024)
+        stubProxyHistory(proxyItem(1, oversized), proxyItem(2, "two"))
+        val bounded = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE_BODY,
+                limitBytesPerMessage = 1,
+                includeResponseVariations = false,
+                responseKeywords = listOf("expected"),
+            )
+        )
+        assertTrue(bounded.keywordAnalysis!!.skipped)
+        assertTrue(bounded.keywordAnalysis!!.reason.orEmpty().contains("1048576-byte keyword-analysis limit"))
+
+        val messages = (1..6).map { proxyItem(it, "x".repeat(800_000)) }
+        stubProxyHistory(*messages.toTypedArray())
+        val input = CompareHttpMessages(
+            "project-123", refs(1, 2, 3, 4, 5, 6), HttpComparisonPart.RESPONSE_BODY,
+            limitBytesPerMessage = 1, includeResponseVariations = false, responseKeywords = listOf("expected"),
+        )
+        val aggregate = service.compare(input)
+        assertTrue(aggregate.keywordAnalysis!!.skipped)
+        assertTrue(aggregate.keywordAnalysis!!.reason.orEmpty().contains("4194304-byte total"))
+
+        val firstResponse = messages.first().response()!!
+        every { firstResponse.bodyOffset() } returns -1
+        val invalidLength = service.compare(input)
+        assertTrue(invalidLength.keywordAnalysis!!.skipped)
+        assertEquals("a response reported an invalid byte length", invalidLength.keywordAnalysis!!.reason)
+    }
+
+    @Test
+    fun `project transition during keyword analysis discards native results`() = runBlocking {
+        stubProxyHistory(proxyItem(1, "one"), proxyItem(2, "two"))
+        var currentProject = "project-123"
+        every { project.id() } answers { currentProject }
+        val analyzer = mockk<ResponseKeywordsAnalyzer>(relaxed = true)
+        every { http.createResponseKeywordsAnalyzer(listOf("expected")) } returns analyzer
+        every { analyzer.updateWith(any()) } answers { currentProject = "other-project" }
+        every { analyzer.variantKeywords() } returns emptySet()
+        every { analyzer.invariantKeywords() } returns setOf("expected")
+
+        val result = service.compare(
+            CompareHttpMessages(
+                "project-123",
+                refs(1, 2),
+                HttpComparisonPart.RESPONSE,
+                includeResponseVariations = false,
+                responseKeywords = listOf("expected"),
+            )
+        )
+
+        assertEquals(HttpComparisonStatus.PROJECT_MISMATCH, result.status)
+        assertEquals("other-project", result.projectId)
+        assertNull(result.keywordAnalysis)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
+    fun `keyword analyzer cancellation propagates`() {
+        stubProxyHistory(proxyItem(1, "one"), proxyItem(2, "two"))
+        val analyzer = mockk<ResponseKeywordsAnalyzer>(relaxed = true)
+        every { http.createResponseKeywordsAnalyzer(listOf("expected")) } returns analyzer
+        every { analyzer.updateWith(any()) } throws CancellationException("cancelled")
+
+        assertFailsWith<CancellationException> {
+            runBlocking {
+                service.compare(
+                    CompareHttpMessages(
+                        "project-123",
+                        refs(1, 2),
+                        HttpComparisonPart.RESPONSE,
+                        includeResponseVariations = false,
+                        responseKeywords = listOf("expected"),
+                    )
+                )
+            }
+        }
     }
 
     @Test

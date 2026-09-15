@@ -191,7 +191,7 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 - Put field-specific formats, conditional requirements, continuation examples, defaults, and bounds in that field's JSON
   Schema `description`. Use exact JSON field names, such as “pass returned `nextCursor` as `cursor`”.
 - Keep each catalog description self-contained and concise. The v4 catalog uses a project limit of 512 characters per
-  description because clients commonly inject all 24 Community or 37 Professional definitions; this is a project
+  description because clients commonly inject all 24 Community or 38 Professional definitions; this is a project
   convention, not an MCP wire limit.
 - Describe observable behavior, not Kotlin, Montoya, compatibility-version, or internal resolver boundaries. Never claim
   that prompt text technically enforces client/model behavior.

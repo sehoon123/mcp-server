@@ -7,6 +7,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.safeExceptionSummary
@@ -29,6 +32,8 @@ data class GetHttpMessage(
     val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
+    @JsonSchemaMetadata(description = "Optional RFC 6901 pointer for a complete request_body or response_body JSON value. Empty selects the root. Offset must be zero and encoding must be text.", maxLength = 512)
+    val jsonPointer: String? = null,
 )
 
 @Serializable
@@ -90,6 +95,23 @@ data class UnifiedHttpMessageMetadata(
 )
 
 @Serializable
+enum class HttpJsonSelectionStatus {
+    @SerialName("found") FOUND,
+    @SerialName("missing") MISSING,
+    @SerialName("input_truncated") INPUT_TRUNCATED,
+    @SerialName("invalid_json") INVALID_JSON,
+    @SerialName("duplicate_key") DUPLICATE_KEY,
+    @SerialName("limit_exceeded") LIMIT_EXCEEDED,
+}
+
+@Serializable
+data class HttpJsonSelection(
+    val status: HttpJsonSelectionStatus,
+    @JsonSchemaMetadata(description = "Complete serialized selected JSON value when status is found; the string \"null\" is distinct from missing.", maxLength = 262144)
+    val valueJson: String? = null,
+)
+
+@Serializable
 data class GetHttpMessageResult(
     @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpMessageReadStatus,
@@ -98,6 +120,7 @@ data class GetHttpMessageResult(
     val part: String,
     val metadata: UnifiedHttpMessageMetadata? = null,
     val content: HistoryContentSlice? = null,
+    val jsonSelection: HttpJsonSelection? = null,
     val error: String? = null,
 )
 
@@ -112,11 +135,18 @@ internal class HttpMessageReadService(
         val normalizedOffset: Int
         val normalizedLimit: Int
         val normalizedEncoding: String
+        val normalizedJsonPointer: List<String>?
         try {
             normalizedPart = normalizeHttpPart(input.part)
             normalizedOffset = normalizeHistoryOffset(input.offset)
             normalizedLimit = normalizeHistoryLimit(input.limit)
             normalizedEncoding = normalizeHistoryEncoding(input.encoding)
+            normalizedJsonPointer = normalizeJsonPointer(
+                input.jsonPointer,
+                input.part,
+                normalizedOffset,
+                normalizedEncoding,
+            )
         } catch (e: IllegalArgumentException) {
             return readError(
                 status = HttpMessageReadStatus.INVALID_ARGUMENT,
@@ -131,7 +161,11 @@ internal class HttpMessageReadService(
             val resolution = resolver.resolve(
                 input.projectId,
                 input.ref,
-                sourceMetadata = HttpSourceMetadataSelection.FULL,
+                sourceMetadata = if (normalizedJsonPointer == null) {
+                    HttpSourceMetadataSelection.FULL
+                } else {
+                    HttpSourceMetadataSelection.NONE
+                },
             )
         ) {
             is HttpMessageBatchResolution.Found -> resolution
@@ -153,6 +187,7 @@ internal class HttpMessageReadService(
                 offset = normalizedOffset,
                 limit = normalizedLimit,
                 encoding = normalizedEncoding,
+                jsonPointer = normalizedJsonPointer,
             )
         } catch (e: CancellationException) {
             throw e
@@ -165,7 +200,7 @@ internal class HttpMessageReadService(
                 message = e.message.orEmpty(),
             )
         } catch (e: Exception) {
-            return readError(
+            readError(
                 status = HttpMessageReadStatus.BURP_ERROR,
                 projectId = found.projectId,
                 ref = input.ref,
@@ -200,16 +235,28 @@ internal class HttpMessageReadService(
     }
 }
 
-private fun readResolved(
+private suspend fun readResolved(
     projectId: String,
     resolved: ResolvedHttpMessage,
     part: String,
     offset: Int,
     limit: Int,
     encoding: String,
+    jsonPointer: List<String>?,
 ): GetHttpMessageResult {
     val request = resolved.request
     val response = resolved.response
+    if (jsonPointer != null) {
+        val body = if (part == "request_body") request.body() else response?.body()
+        return GetHttpMessageResult(
+            status = if (body == null) HttpMessageReadStatus.PART_UNAVAILABLE else HttpMessageReadStatus.OK,
+            projectId = projectId,
+            ref = resolved.ref,
+            part = part,
+            jsonSelection = body?.let { selectJson(it, jsonPointer, limit) },
+            error = if (body == null) "$part is not available" else null,
+        )
+    }
     val service = request.httpService()
     val rawUrl = request.url()
     val requestBody = request.body()
@@ -273,6 +320,104 @@ private fun readResolved(
         metadata = metadata,
         content = bytes.toHistorySlice(offset, limit, encoding),
     )
+}
+
+private fun normalizeJsonPointer(
+    pointer: String?,
+    explicitPart: String?,
+    offset: Int,
+    encoding: String,
+): List<String>? {
+    if (pointer == null) return null
+    require(pointer.length <= 512) { "jsonPointer exceeds the 512-character limit" }
+    require(explicitPart == "request_body" || explicitPart == "response_body") {
+        "jsonPointer requires an explicit request_body or response_body part"
+    }
+    require(offset == 0) { "jsonPointer does not support a nonzero offset" }
+    require(encoding == "text") { "jsonPointer supports only text encoding" }
+    if (pointer.isEmpty()) return emptyList()
+    require(pointer.startsWith('/')) { "jsonPointer must be empty or start with '/'" }
+    return pointer.substring(1).split('/').map { token ->
+        buildString(token.length) {
+            var index = 0
+            while (index < token.length) {
+                if (token[index] != '~') {
+                    append(token[index++])
+                    continue
+                }
+                require(index + 1 < token.length) { "jsonPointer contains an invalid escape" }
+                append(
+                    when (token[index + 1]) {
+                        '0' -> '~'
+                        '1' -> '/'
+                        else -> throw IllegalArgumentException("jsonPointer contains an invalid escape")
+                    }
+                )
+                index += 2
+            }
+        }
+    }
+}
+
+private suspend fun selectJson(
+    bytes: MontoyaByteArray,
+    pointer: List<String>,
+    limit: Int,
+): HttpJsonSelection {
+    val length = bytes.length()
+    require(length >= 0) { "Burp reported a negative JSON body length" }
+    if (length > MAX_JSON_COMPARISON_BYTES) {
+        return HttpJsonSelection(HttpJsonSelectionStatus.INPUT_TRUNCATED)
+    }
+    val raw = bytes.getBytes()
+    require(raw.size == length) { "Burp returned an inconsistent JSON body" }
+    var visits = 0
+    val parsed = try {
+        parseStrictJsonBody(raw) {
+            currentCoroutineContext().ensureActive()
+            if (++visits > 10_000) throw JsonSelectionLimitException()
+        }
+    } catch (_: JsonSelectionLimitException) {
+        return HttpJsonSelection(HttpJsonSelectionStatus.LIMIT_EXCEEDED)
+    }
+    val root = when (parsed) {
+        is StrictJsonParseResult.Parsed -> parsed.root
+        is StrictJsonParseResult.Failed -> return HttpJsonSelection(parsed.status.toSelectionStatus())
+    }
+    var selected: JsonElement = root
+    for (token in pointer) {
+        currentCoroutineContext().ensureActive()
+        selected = when (selected) {
+            is JsonObject -> selected[token] ?: return HttpJsonSelection(HttpJsonSelectionStatus.MISSING)
+            is JsonArray -> {
+                val index = token.toCanonicalArrayIndex()
+                    ?: return HttpJsonSelection(HttpJsonSelectionStatus.MISSING)
+                selected.getOrNull(index) ?: return HttpJsonSelection(HttpJsonSelectionStatus.MISSING)
+            }
+            else -> return HttpJsonSelection(HttpJsonSelectionStatus.MISSING)
+        }
+    }
+    val value = selected.toString()
+    if (value.toByteArray(Charsets.UTF_8).size > limit) {
+        return HttpJsonSelection(HttpJsonSelectionStatus.LIMIT_EXCEEDED)
+    }
+    return HttpJsonSelection(HttpJsonSelectionStatus.FOUND, value)
+}
+
+private class JsonSelectionLimitException : RuntimeException()
+
+private fun String.toCanonicalArrayIndex(): Int? = when {
+    this == "0" -> 0
+    isEmpty() || first() == '0' || any { it !in '0'..'9' } -> null
+    else -> toIntOrNull()?.takeIf { it >= 0 }
+}
+
+private fun HttpJsonComparisonStatus.toSelectionStatus(): HttpJsonSelectionStatus = when (this) {
+    HttpJsonComparisonStatus.OK -> error("successful parse has no failure status")
+    HttpJsonComparisonStatus.INPUT_TRUNCATED -> HttpJsonSelectionStatus.INPUT_TRUNCATED
+    HttpJsonComparisonStatus.INVALID_JSON -> HttpJsonSelectionStatus.INVALID_JSON
+    HttpJsonComparisonStatus.DUPLICATE_KEY -> HttpJsonSelectionStatus.DUPLICATE_KEY
+    HttpJsonComparisonStatus.LIMIT_EXCEEDED -> HttpJsonSelectionStatus.LIMIT_EXCEEDED
 }
 
 private fun HttpMessageResolutionStatus.toReadStatus(): HttpMessageReadStatus = when (this) {

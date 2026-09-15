@@ -156,6 +156,7 @@ def main() -> int:
                             "resourceTemplates",
                         ),
                         require_v412_schema=requires_v412_catalog_schema(args.expected_server_version),
+                        server_version=args.expected_server_version,
                     )
                     report["catalog"] = catalog
 

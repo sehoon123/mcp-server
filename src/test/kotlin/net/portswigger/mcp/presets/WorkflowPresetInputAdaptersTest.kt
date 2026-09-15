@@ -105,6 +105,8 @@ class WorkflowPresetInputAdaptersTest {
             includeResponseVariations = false,
         )
 
+        val mapped = saved.toHttpComparisonInput("project-vector", refs)
+        assertNull(mapped.responseKeywords)
         assertEquals(
             CompareHttpMessages(
                 projectId = "project-vector",
@@ -115,7 +117,7 @@ class WorkflowPresetInputAdaptersTest {
                 ignoreHeaders = saved.ignoreHeaders,
                 includeResponseVariations = saved.includeResponseVariations,
             ),
-            saved.toHttpComparisonInput("project-vector", refs),
+            mapped,
         )
     }
 

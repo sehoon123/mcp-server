@@ -6,8 +6,8 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0-rc.1` — release candidate, not a published stable release.**
-See the [RC1 changes and remaining release gates](docs/releases/4.12.0-rc.1.md).
+**Current source version: `4.12.0-rc.2` — release candidate, not a published stable release.**
+See the [RC2 changes and remaining release gates](docs/releases/4.12.0-rc.2.md).
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**
@@ -48,7 +48,7 @@ client-liveness, and capacity-pressure safeguards.
 
 - Single Streamable HTTP endpoint at `/mcp`
 - Automatic Claude Desktop configuration through the embedded stdio proxy
-- v4 compact catalog: 37 tools on Professional and 24 on Community, with an output schema and structured content on every tool
+- v4 compact catalog: 38 tools on Professional and 24 on Community, with an output schema and structured content on every tool
 - MCP-native read-only resources and reusable prompts, relayed by both native HTTP and the embedded stdio proxy
 - Unified HTTP/1.1 and HTTP/2 send/routing tools with target or request-routing approval controls
 - Unified compact HTTP search across Proxy history, Site Map, and Organizer with signed snapshot cursors
@@ -62,6 +62,8 @@ client-liveness, and capacity-pressure safeguards.
 - Opt-in local command execution through ShellUtils, with exact local review and a bounded MCP output preview
 - Professional Request Execution Engine lifecycle tools and opt-in Repeater custom-action Bambda import/chain generation
 - Explicit Target scope checks/updates and bounded HTTP message comparison from stable references, including JSON field-path differences without scalar values
+- Optional complete-response keyword analysis and strict RFC 6901 JSON field reads from approved stored evidence
+- Human-reviewed, approval-gated issue reporting from existing HTTP evidence without starting a scan (Professional)
 - Focused passive or insertion-point-limited active Scanner audits with extension-owned task status/cancellation (Professional)
 - Bounded Collaborator long polling with progress, cancellation, timestamp filtering, and detail slicing (Professional)
 - Project and user configuration tools with recursive API-key, token, Cookie, authorization, and certificate/private-key filtering
@@ -108,16 +110,16 @@ The common catalog is `send_raw_http_request`, `route_raw_http_request`, `get_bu
 `send_http_request_from_id`, `route_http_message_from_id`, `search_websocket_messages`, `get_websocket_message_by_id`,
 `set_burp_control_state`, `rank_http_messages`, `annotate_http_messages`, and `execute_local_command`.
 
-Burp Professional adds thirteen tools: four Request Execution Engine tools—`start_http_request_execution`,
+Burp Professional adds fourteen tools: four Request Execution Engine tools—`start_http_request_execution`,
 `queue_http_request_execution`, `get_http_request_execution`, and `control_http_request_execution`—plus
-`import_bambda`, `generate_bambda_chain`, and the seven existing tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
+`import_bambda`, `generate_bambda_chain`, `create_scanner_issue`, and the seven existing tools: `get_scanner_issues`, `get_scanner_issue_by_id`,
 `start_scanner_audit_from_ids`, `get_scanner_audit`, `cancel_scanner_audit`,
-`generate_collaborator_payload`, and `get_collaborator_interactions`, for 37 total. Request Execution and Repeater
+`generate_collaborator_payload`, and `get_collaborator_interactions`, for 38 total. Request Execution and Repeater
 custom-action Bambda tools are Professional-only. Individual WebSocket and Scanner issue reads require `projectId`; v3
 aliases are not advertised. The local-only `transform_data` and `generate_random_string` utilities and the
 focus-dependent active-editor read/write tools remain removed. Clients must reconnect and rediscover capabilities after
 upgrading. Some client hosts flatten the three fixed MCP resources into their callable UI, so Professional may visually
-show 40 entries (37 tools plus 3 resources); the protocol `tools/list` catalog remains exactly 37.
+show 41 entries (38 tools plus 3 resources); the protocol `tools/list` catalog remains exactly 38.
 
 The unified send tool always disables redirects, bounds its timeout and response preview, and reports ambiguous
 post-delivery failures as `execution_uncertain`. Unified routing preserves destination-specific approval and audit
@@ -157,6 +159,27 @@ most 32 distinct MCP-imported IDs are retained per extension lifetime; replacing
 project, outbound-approval, toggle, and Emergency read-only checks. Both tool families therefore remain disabled until
 the local operator explicitly enables **Bambda and local command tools**; every invocation still requires sensitive
 action approval unless YOLO mode is active.
+
+### Bounded evidence reading and reporting
+
+`get_http_message` accepts optional `jsonPointer` with an explicit `request_body` or `response_body`. It selects a
+complete RFC 6901 JSON value, not a truncated fragment. Full input must fit 64 KiB, depth 32, and 10,000 node visits;
+the selected UTF-8 value must fit `limit`. Empty pointer selects the root, `found` with `valueJson: "null"` differs from
+`missing`, and nonzero offsets/base64 are rejected. This branch returns no raw body or unrelated metadata. No decoding
+of compressed content is added.
+
+`compare_http_messages.responseKeywords` accepts 1–32 distinct keywords (256 characters each, 4,096 total), for response
+parts only. Burp analyzes complete stored responses, not just the comparison preview, under 1 MiB per-response and 4 MiB
+aggregate limits. Check `keywordAnalysis.skipped` before interpreting variant/invariant keywords. Keywords are runtime-only
+and are never saved in workflow presets.
+
+Professional-only `create_scanner_issue` submits one caller-authored finding with 1–8 existing HTTP references and required
+`humanReviewed: true` attestation. This flag is not proof of validation. Plain-text fields are HTML-escaped; complete
+request/response evidence is capped at 256 KiB per part and 1 MiB total. Source approval and sensitive-action review apply
+(the latter may be skipped by YOLO); exact fields, services and base64 evidence appear in the local preview, never the
+audit trail. The evidence is re-resolved after approval and checked for stale changes before submission. The tool sends
+nothing and starts no scan. Native completion is not independently verified persistence; inspect Burp before any manual
+retry, and never retry `execution_uncertain` automatically. A subsequent project switch cannot undo an accepted issue.
 
 ### v4.1 structured results
 

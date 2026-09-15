@@ -191,18 +191,43 @@ def native_v412_tool(name: str) -> dict | None:
         }
     if name in {"import_bambda", "generate_bambda_chain"}:
         return {"name": name, "annotations": annotations, "inputSchema": {"properties": {}}}
+    if name == "create_scanner_issue":
+        properties = {
+            "projectId": {"type": "string"}, "refs": {"type": "array", "minItems": 1, "maxItems": 8},
+            "name": {"type": "string", "maxLength": 256}, "detail": {"type": "string", "maxLength": 8_192},
+            "remediation": {"type": "string", "maxLength": 8_192}, "severity": {"type": "string"},
+            "confidence": {"type": "string"}, "humanReviewed": {"type": "boolean"},
+        }
+        return {
+            "name": name,
+            "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+            "inputSchema": {"properties": properties, "required": sorted(set(properties) - {"remediation"})},
+        }
+    if name in {"get_http_message", "compare_http_messages"}:
+        read = name == "get_http_message"
+        fields = {"status": {"type": "string"}, "valueJson": {"type": "string", "maxLength": 262_144}} if read else {
+            "variantKeywords": {"type": "array", "maxItems": 32},
+            "invariantKeywords": {"type": "array", "maxItems": 32},
+            "skipped": {"type": "boolean"}, "reason": {"type": "string"},
+        }
+        return {
+            "name": name, "annotations": {"readOnlyHint": True, "destructiveHint": False},
+            "inputSchema": {"properties": {
+                "jsonPointer": {"type": "string", "maxLength": 512},
+            } if read else {"responseKeywords": {"type": "array", "minItems": 1, "maxItems": 32}}},
+            "outputSchema": {"properties": {
+                "jsonSelection" if read else "keywordAnalysis": {"type": "object", "properties": fields},
+            }},
+        }
     return None
 
 
 def catalog(
     edition: str,
     require_v412: bool = True,
+    server_version: str | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    approved = (
-        contract.EDITION_CATALOG_IDENTIFIERS
-        if require_v412
-        else contract.LEGACY_EDITION_CATALOG_IDENTIFIERS
-    )
+    approved = contract.edition_catalog_identifiers(require_v412, server_version)
     expected = approved[edition]
     tools = []
     for name in sorted(expected["tools"]):
@@ -210,6 +235,8 @@ def catalog(
             tools.append(correlation_tool())
         elif name == "get_scanner_issues":
             tools.append(scanner_tool())
+        elif server_version == "4.12.0-rc.1" and name in {"get_http_message", "compare_http_messages"}:
+            tools.append({"name": name})
         else:
             tools.append(native_v412_tool(name) or {"name": name})
     prompts = [{"name": name} for name in sorted(expected["prompts"])]
@@ -1018,6 +1045,54 @@ class ExactSmokeContractTest(unittest.TestCase):
             report["catalog"]["counts"] = contract.LEGACY_EDITION_CATALOG_COUNTS["community"]
             with self.assertRaises(HarnessError):
                 finalizer.validate_preflight(report, "community", source, jar, "4.12.0-rc.1")
+
+    def test_rc1_catalog_is_preserved_and_rc2_requires_bounded_evidence_schemas(self):
+        for version, count in (("4.12.0-rc.1", 37), ("4.12.0-rc.2", 38), ("4.12.0", 38)):
+            values = catalog("professional", server_version=version)
+            result = contract.validate_catalog("professional", *values, server_version=version)
+            self.assertEqual(count, result["counts"]["tools"])
+            self.assertEqual(count, contract.edition_catalog_counts(True, version)["professional"]["tools"])
+        for edition in ("community", "professional"):
+            for name, schema, field in (
+                ("get_http_message", "inputSchema", "jsonPointer"),
+                ("get_http_message", "outputSchema", "jsonSelection"),
+                ("compare_http_messages", "inputSchema", "responseKeywords"),
+                ("compare_http_messages", "outputSchema", "keywordAnalysis"),
+            ):
+                values = catalog(edition, server_version="4.12.0-rc.1")
+                tool = next(tool for tool in values[0] if tool["name"] == name)
+                tool[schema] = {"properties": {field: {}}}
+                with self.assertRaises(HarnessError):
+                    contract.validate_catalog(edition, *values, server_version="4.12.0-rc.1")
+        finalizer = load_finalizer_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source, jar, _ = build_finalizer_fixture(root)
+            report = json.loads((root / "evidence/professional-preflight.json").read_text(encoding="utf-8"))
+            for version in ("4.12.0-rc.1", "4.12.0-rc.2"):
+                report["expectedServerVersion"] = version
+                report["catalog"]["counts"] = contract.edition_catalog_counts(True, version)["professional"]
+                finalizer.validate_preflight(report, "professional", source, jar, version)
+                report["catalog"]["counts"]["tools"] = 75 - report["catalog"]["counts"]["tools"]
+                with self.assertRaises(HarnessError):
+                    finalizer.validate_preflight(report, "professional", source, jar, version)
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("professional", *catalog("professional"), server_version="4.12.0-rc.1")
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("professional", *catalog("professional", server_version="4.12.0-rc.1"))
+        with self.assertRaises(HarnessError):
+            contract.validate_catalog("community", *catalog("community"), server_version="4.11.0")
+        for name, schema, field, mutation in (
+            ("get_http_message", "inputSchema", "jsonPointer", {"maxLength": 513}),
+            ("compare_http_messages", "inputSchema", "responseKeywords", {"maxItems": 33}),
+            ("create_scanner_issue", "inputSchema", "humanReviewed", {"type": "string"}),
+            ("create_scanner_issue", "inputSchema", "refs", {"maxItems": 9}),
+        ):
+            values = catalog("professional")
+            tool = next(item for item in values[0] if item["name"] == name)
+            tool[schema]["properties"][field].update(mutation)
+            with self.assertRaises(HarnessError):
+                contract.validate_catalog("professional", *values)
 
     def test_catalog_response_rejects_pagination_instead_of_attesting_only_the_first_page(self):
         response = {"result": {"tools": [{"name": "one"}]}}

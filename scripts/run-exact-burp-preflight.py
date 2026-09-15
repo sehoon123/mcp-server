@@ -152,6 +152,7 @@ def main() -> int:
             resources,
             resource_templates,
             require_v412_schema=requires_v412_catalog_schema(args.expected_server_version),
+            server_version=args.expected_server_version,
         )
 
         project_id = read_project_id(client)

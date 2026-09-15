@@ -550,6 +550,7 @@ def main() -> int:
             catalog_responses["resources"],
             catalog_responses["resourceTemplates"],
             require_v412_schema=requires_v412_catalog_schema(args.expected_server_version),
+            server_version=args.expected_server_version,
         )
         report["catalog"]["canonicalSha256"] = _catalog_digest(catalog_responses)
 

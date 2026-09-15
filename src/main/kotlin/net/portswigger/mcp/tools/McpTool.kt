@@ -97,7 +97,7 @@ internal val COLLABORATOR_GENERATE_TOOL_ANNOTATIONS = ToolAnnotations(
 internal val PROJECT_MUTATION_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint = false,
     destructiveHint = true,
-    idempotentHint = true,
+    idempotentHint = false,
     openWorldHint = false,
 )
 

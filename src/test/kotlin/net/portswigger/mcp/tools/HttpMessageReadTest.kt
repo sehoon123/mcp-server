@@ -142,6 +142,139 @@ class HttpMessageReadTest {
     }
 
     @Test
+    fun `JSON pointer selects complete escaped object array and null values`() = runBlocking {
+        val fixture = fixture(
+            projectIds = List(15) { "project-a" },
+            bodyText = """{"a/b":{"~key":[null,{"value":"ok"}]}}""",
+        )
+        val base = GetHttpMessage(
+            projectId = "project-a",
+            ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+            part = "request_body",
+            jsonPointer = "/a~1b/~0key/1/value",
+        )
+
+        val nested = fixture.service.read(base)
+        val nullValue = fixture.service.read(base.copy(jsonPointer = "/a~1b/~0key/0"))
+        val missing = fixture.service.read(base.copy(jsonPointer = "/a~1b/~0key/01"))
+        val root = fixture.service.read(base.copy(jsonPointer = ""))
+        for (index in listOf("١", "+1", "-")) {
+            val invalidIndex = fixture.service.read(base.copy(jsonPointer = "/a~1b/~0key/$index"))
+            assertEquals(HttpJsonSelectionStatus.MISSING, invalidIndex.jsonSelection?.status)
+        }
+
+        assertEquals(HttpJsonSelectionStatus.FOUND, nested.jsonSelection?.status)
+        assertEquals("\"ok\"", nested.jsonSelection?.valueJson)
+        assertNull(nested.content)
+        assertNull(nested.metadata)
+        verify(exactly = 0) { fixture.request.url() }
+        verify(exactly = 0) { fixture.request.httpService() }
+        verify(exactly = 0) { fixture.item.annotations() }
+        assertEquals(HttpJsonSelectionStatus.FOUND, nullValue.jsonSelection?.status)
+        assertEquals("null", nullValue.jsonSelection?.valueJson)
+        assertEquals(HttpJsonSelectionStatus.MISSING, missing.jsonSelection?.status)
+        assertNull(missing.jsonSelection?.valueJson)
+        assertEquals(HttpJsonSelectionStatus.FOUND, root.jsonSelection?.status)
+        assertTrue(root.jsonSelection?.valueJson.orEmpty().startsWith("{"))
+    }
+
+    @Test
+    fun `invalid JSON pointer options fail before source access`() = runBlocking {
+        val fixture = fixture(projectIds = listOf("project-a"), bodyText = "{}")
+        val base = GetHttpMessage(
+            projectId = "caller-forged",
+            ref = HttpMessageReference(HttpMessageSource.PROXY, "7"),
+            part = "request_body",
+            jsonPointer = "/x",
+        )
+
+        listOf(
+            base.copy(part = null),
+            base.copy(offset = 1),
+            base.copy(encoding = "base64"),
+            base.copy(jsonPointer = "x"),
+            base.copy(jsonPointer = "/bad~2escape"),
+            base.copy(jsonPointer = "x".repeat(513)),
+        ).forEach { input ->
+            val result = fixture.service.read(input)
+            assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, result.status)
+            assertNull(result.projectId)
+        }
+        verify(exactly = 0) { fixture.api.project() }
+        verify(exactly = 0) { fixture.proxy.history(any()) }
+    }
+
+    @Test
+    fun `JSON selection reports parse and output limits without partial content`() = runBlocking {
+        val invalid = fixture(List(3) { "project-a" }, """{"x":1,"x":2}""").service.read(
+            GetHttpMessage(
+                "project-a",
+                HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                jsonPointer = "/x",
+            )
+        )
+        assertEquals(HttpJsonSelectionStatus.DUPLICATE_KEY, invalid.jsonSelection?.status)
+        assertNull(invalid.jsonSelection?.valueJson)
+        assertNull(invalid.content)
+
+        val malformed = fixture(List(3) { "project-a" }, "{not-json").service.read(
+            GetHttpMessage(
+                "project-a",
+                HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                jsonPointer = "",
+            )
+        )
+        assertEquals(HttpJsonSelectionStatus.INVALID_JSON, malformed.jsonSelection?.status)
+        assertNull(malformed.jsonSelection?.valueJson)
+
+        val oversizedFixture = fixture(List(3) { "project-a" }, "{}" + " ".repeat(MAX_JSON_COMPARISON_BYTES))
+        val oversized = oversizedFixture.service.read(
+            GetHttpMessage(
+                "project-a",
+                HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                jsonPointer = "",
+            )
+        )
+        assertEquals(HttpJsonSelectionStatus.INPUT_TRUNCATED, oversized.jsonSelection?.status)
+        assertNull(oversized.jsonSelection?.valueJson)
+        verify(exactly = 0) { oversizedFixture.body.getBytes() }
+
+        val limited = fixture(List(3) { "project-a" }, """{"x":"abcd"}""").service.read(
+            GetHttpMessage(
+                "project-a",
+                HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                limit = 3,
+                jsonPointer = "/x",
+            )
+        )
+        assertEquals(HttpJsonSelectionStatus.LIMIT_EXCEEDED, limited.jsonSelection?.status)
+        assertNull(limited.jsonSelection?.valueJson)
+    }
+
+    @Test
+    fun `final project fence discards a prepared JSON selection`() = runBlocking {
+        val fixture = fixture(listOf("project-a", "project-a", "project-b"), """{"x":"private"}""")
+
+        val result = fixture.service.read(
+            GetHttpMessage(
+                "project-a",
+                HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = "request_body",
+                jsonPointer = "/x",
+            )
+        )
+
+        assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, result.status)
+        assertNull(result.jsonSelection)
+        assertNull(result.content)
+        assertFalse(result.toString().contains("private"))
+    }
+
+    @Test
     fun `request accessor IllegalArgumentException is a sanitized Burp error`() = runBlocking {
         val fixture = fixture(projectIds = listOf("project-a", "project-a", "project-a"))
         every { fixture.request.url() } throws IllegalArgumentException("PRIVATE_SENTINEL")
@@ -160,7 +293,7 @@ class HttpMessageReadTest {
         assertNull(result.content)
     }
 
-    private fun fixture(projectIds: List<String>): ReadFixture {
+    private fun fixture(projectIds: List<String>, bodyText: String = ""): ReadFixture {
         val api = mockk<MontoyaApi>()
         val project = mockk<Project>()
         val proxy = mockk<Proxy>()
@@ -192,8 +325,19 @@ class HttpMessageReadTest {
         every { request.method() } returns "GET"
         every { request.url() } returns "https://example.test/path"
         every { request.httpService() } returns service
+        val bodyBytes = bodyText.toByteArray()
         every { request.body() } returns body
-        every { body.length() } returns 0
+        every { body.length() } returns bodyBytes.size
+        every { body.getBytes() } returns bodyBytes
+        every { body.subArray(any(), any()) } answers {
+            val start = firstArg<Int>()
+            val end = secondArg<Int>()
+            val slice = bodyBytes.copyOfRange(start, end)
+            mockk<MontoyaByteArray>().also { selected ->
+                every { selected.length() } returns slice.size
+                every { selected.getBytes() } returns slice
+            }
+        }
         every { service.host() } returns "example.test"
         every { service.port() } returns 443
         every { service.secure() } returns true
@@ -205,6 +349,7 @@ class HttpMessageReadTest {
             proxy = proxy,
             item = item,
             request = request,
+            body = body,
         )
     }
 
@@ -215,5 +360,6 @@ class HttpMessageReadTest {
         val proxy: Proxy,
         val item: ProxyHttpRequestResponse,
         val request: HttpRequest,
+        val body: MontoyaByteArray,
     )
 }

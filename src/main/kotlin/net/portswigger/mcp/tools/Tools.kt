@@ -535,7 +535,16 @@ internal fun Server.registerTools(
             performanceDiagnostics = services.historyPerformanceDiagnostics,
         )
         val scannerIssueReadService = ScannerIssueReadService(api, config)
+        val scannerIssueCreationService = ScannerIssueCreationService(api, config, services::withOrganizerMutation)
         val collaboratorToolService = services.collaborator
+        mcpStructuredToolWithContext<CreateScannerIssue, CreateScannerIssueResult>(
+            description = "Record one Professional Scanner issue from 1–8 existing HTTP references after human-reviewed attestation and local approval. This evidence-reporting tool sends nothing, starts no scan, and does not automatically verify the caller-authored finding or persistence. If executionState is uncertain, never retry automatically.",
+            annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
+        ) { input ->
+            val output = scannerIssueCreationService.create(input)
+            StructuredToolResponse(output, isError = output.status.isMcpError(), text = null)
+        }
+
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
             description = "List/filter Scanner issues; access policy applies and projectId is rechecked. Legacy mode returns JSON records, or 'Reached end of items' when empty. Cursor mode returns summaries and snapshotCursor. Pass snapshotCursor or nextDeltaCursor as sinceSnapshotCursor for a bounded append-stable range; this does not prove regression, removal, or in-place change. When hasMore=true, continue with nextCursor as cursor or nextDeltaCursor as sinceSnapshotCursor. Use get_scanner_issue_by_id for detail.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
@@ -655,7 +664,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CompareHttpMessages, CompareHttpMessagesResult>(
-        description = "Compare parts of 2–8 stored HTTP messages under source-access approval; no traffic or mutation occurs. request_json/response_json return bounded field-path differences without scalar values. allEqual is JSON structural equality in JSON modes (check jsonComparison.status), otherwise byte equality; null means the selected comparison is incomplete or unavailable.",
+        description = "Compare parts of 2–8 stored HTTP messages under source-access approval; no traffic or mutation occurs. request_json/response_json return bounded paths without scalar values. allEqual is JSON structural equality in JSON modes (check jsonComparison.status), otherwise byte equality; null means the comparison is incomplete or unavailable. Optional responseKeywords uses Burp on complete stored responses regardless selected response part or preview limit and is runtime-only.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageComparisonService.compare(input)
@@ -677,7 +686,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
-        description = "Optional bounded read of one stored Proxy, Site Map, or Organizer message: metadata (default) or one selected request or response part. Pass the projectId and complete {source,id} ref from search_http_messages unchanged. Source-access approval and matching project ID apply; content is byte-paginated, defaulting to 32 KiB and capped at 256 KiB, so pass returned nextOffsetBytes as offset while hasMore is true. Nothing is sent or changed, and this read is not required before the from-ID action tools.",
+        description = "Read one stored HTTP reference (metadata by default); source approval and matching projectId apply. Use the complete {source,id} from search_http_messages. Raw parts: 32 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. Explicit request_body/response_body supports jsonPointer (strict RFC 6901), which never returns a partial value. Nothing is sent or changed; this read is not required before the from-ID action tools.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageReadService.read(input)

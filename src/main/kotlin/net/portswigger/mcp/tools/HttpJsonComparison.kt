@@ -58,6 +58,51 @@ data class HttpJsonComparison(
 
 private class JsonComparisonFailure(val status: HttpJsonComparisonStatus) : RuntimeException()
 
+internal sealed interface StrictJsonParseResult {
+    data class Parsed(val root: JsonElement) : StrictJsonParseResult
+    data class Failed(val status: HttpJsonComparisonStatus) : StrictJsonParseResult
+}
+
+/** Strictly parses one complete bounded UTF-8 JSON document without exposing parser exception details. */
+internal suspend fun parseStrictJsonBody(
+    bytes: ByteArray,
+    visit: suspend () -> Unit,
+): StrictJsonParseResult {
+    currentCoroutineContext().ensureActive()
+    if (bytes.size > MAX_JSON_COMPARISON_BYTES) {
+        return StrictJsonParseResult.Failed(HttpJsonComparisonStatus.INPUT_TRUNCATED)
+    }
+    return try {
+        val text = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes)).toString()
+        guardJsonStructure(text)
+        val root = Json.parseToJsonElement(text)
+        val unicodeEncoder = Charsets.UTF_8.newEncoder()
+        val pending = ArrayDeque<JsonElement>().apply { add(root) }
+        while (pending.isNotEmpty()) {
+            visit()
+            when (val node = pending.removeLast()) {
+                is JsonObject -> pending.addAll(node.values)
+                is JsonArray -> pending.addAll(node)
+                is JsonPrimitive -> {
+                    val valid = if (node.isString) unicodeEncoder.canEncode(node.content) else
+                        node is JsonNull || node.content in listOf("true", "false") || JSON_NUMBER.matches(node.content)
+                    if (!valid) throw JsonComparisonFailure(HttpJsonComparisonStatus.INVALID_JSON)
+                }
+            }
+        }
+        StrictJsonParseResult.Parsed(root)
+    } catch (error: JsonComparisonFailure) {
+        StrictJsonParseResult.Failed(error.status)
+    } catch (_: CharacterCodingException) {
+        StrictJsonParseResult.Failed(HttpJsonComparisonStatus.INVALID_JSON)
+    } catch (_: SerializationException) {
+        StrictJsonParseResult.Failed(HttpJsonComparisonStatus.INVALID_JSON)
+    }
+}
+
 /** Input is a bounded, already-approved body snapshot. No Montoya objects or raw values escape this comparison. */
 internal suspend fun compareJsonBodies(bodies: List<ByteArray>, truncated: List<Boolean>): HttpJsonComparison {
     val context = currentCoroutineContext()
@@ -68,75 +113,56 @@ internal suspend fun compareJsonBodies(bodies: List<ByteArray>, truncated: List<
         return HttpJsonComparison(HttpJsonComparisonStatus.INPUT_TRUNCATED, null, emptyList(), false, incomplete)
     }
     var visits = 0
-    var currentRef: Int? = null
-    fun visit() {
+    suspend fun visit() {
         context.ensureActive()
         if (++visits > MAX_JSON_NODE_VISITS) throw JsonComparisonFailure(HttpJsonComparisonStatus.LIMIT_EXCEEDED)
     }
+    val documents = ArrayList<JsonElement>(bodies.size)
+    for ((index, bytes) in bodies.withIndex()) {
+        when (val parsed = parseStrictJsonBody(bytes, ::visit)) {
+            is StrictJsonParseResult.Parsed -> documents += parsed.root
+            is StrictJsonParseResult.Failed -> return HttpJsonComparison(
+                parsed.status,
+                null,
+                emptyList(),
+                false,
+                index,
+            )
+        }
+    }
+    val differences = ArrayList<HttpJsonDifference>()
+    var equal = true
+    var omitted = false
+    suspend fun compare(left: JsonElement?, right: JsonElement?, path: String?, refIndex: Int) {
+        visit()
+        when {
+            left is JsonObject && right is JsonObject -> (left.keys + right.keys).toSortedSet().forEach { key ->
+                compare(left[key], right[key], childPointer(path, key), refIndex)
+            }
+            left is JsonArray && right is JsonArray -> for (index in 0 until maxOf(left.size, right.size)) {
+                compare(left.getOrNull(index), right.getOrNull(index), childPointer(path, index.toString()), refIndex)
+            }
+            left != right -> {
+                equal = false
+                if (path == null || differences.size == MAX_JSON_DIFFERENCES) {
+                    omitted = true
+                } else {
+                    val kind = when {
+                        left == null -> HttpJsonDifferenceKind.ADDED
+                        right == null -> HttpJsonDifferenceKind.REMOVED
+                        else -> HttpJsonDifferenceKind.CHANGED
+                    }
+                    differences += HttpJsonDifference(refIndex, path, kind)
+                }
+            }
+        }
+    }
     return try {
-        val unicodeEncoder = Charsets.UTF_8.newEncoder()
-        val documents = bodies.mapIndexed { index, bytes ->
-            currentRef = index
-            context.ensureActive()
-            val text = Charsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(bytes)).toString()
-            guardJsonStructure(text)
-            val root = Json.parseToJsonElement(text)
-            val pending = ArrayDeque<JsonElement>()
-            pending.add(root)
-            while (pending.isNotEmpty()) {
-                visit()
-                when (val node = pending.removeLast()) {
-                    is JsonObject -> pending.addAll(node.values)
-                    is JsonArray -> pending.addAll(node)
-                    is JsonPrimitive -> {
-                        val valid = if (node.isString) unicodeEncoder.canEncode(node.content) else
-                            node is JsonNull || node.content in listOf("true", "false") || JSON_NUMBER.matches(node.content)
-                        if (!valid) throw JsonComparisonFailure(HttpJsonComparisonStatus.INVALID_JSON)
-                    }
-                }
-            }
-            root
-        }
-        currentRef = null
-        val differences = ArrayList<HttpJsonDifference>()
-        var equal = true
-        var omitted = false
-        fun compare(left: JsonElement?, right: JsonElement?, path: String?, refIndex: Int) {
-            visit()
-            when {
-                left is JsonObject && right is JsonObject -> (left.keys + right.keys).toSortedSet().forEach { key ->
-                    compare(left[key], right[key], childPointer(path, key), refIndex)
-                }
-                left is JsonArray && right is JsonArray -> for (index in 0 until maxOf(left.size, right.size)) {
-                    compare(left.getOrNull(index), right.getOrNull(index), childPointer(path, index.toString()), refIndex)
-                }
-                left != right -> {
-                    equal = false
-                    if (path == null || differences.size == MAX_JSON_DIFFERENCES) {
-                        omitted = true
-                    } else {
-                        val kind = when {
-                            left == null -> HttpJsonDifferenceKind.ADDED
-                            right == null -> HttpJsonDifferenceKind.REMOVED
-                            else -> HttpJsonDifferenceKind.CHANGED
-                        }
-                        differences += HttpJsonDifference(refIndex, path, kind)
-                    }
-                }
-            }
-        }
         for (index in 1 until documents.size) compare(documents[0], documents[index], "", index)
         context.ensureActive()
         HttpJsonComparison(HttpJsonComparisonStatus.OK, equal, differences, omitted)
     } catch (error: JsonComparisonFailure) {
-        HttpJsonComparison(error.status, null, emptyList(), false, currentRef)
-    } catch (_: CharacterCodingException) {
-        HttpJsonComparison(HttpJsonComparisonStatus.INVALID_JSON, null, emptyList(), false, currentRef)
-    } catch (_: SerializationException) {
-        HttpJsonComparison(HttpJsonComparisonStatus.INVALID_JSON, null, emptyList(), false, currentRef)
+        HttpJsonComparison(error.status, null, emptyList(), false)
     }
 }
 

@@ -377,8 +377,10 @@ Implemented in later v4.12 milestones:
 - Native anomaly ranking and notes/highlight mutation add three Community-visible tools together with disabled-by-default
   direct/system-shell execution. Professional additionally adds four Request Execution Engine lifecycle tools and two
   Repeater custom-action Bambda tools.
-- The resulting development catalogs contain 24 Community tools and 37 Professional tools. Prompts, resources, URI
-  templates, and dependencies remain unchanged; clients must reconnect and rediscover.
+- RC1 catalogs contain 24 Community tools and 37 Professional tools. RC2 adds Professional human-reviewed issue
+  submission and extends existing reads with strict JSON field selection and runtime-only response keywords, bringing
+  the current catalogs to 24/38. Prompts, resources, URI templates, and dependencies remain unchanged; clients must
+  reconnect and rediscover.
 - Request Execution state is capped by request count, cumulative bytes, handle count, project lifecycle, metadata-only
   result capture, and cleanup reservations. Bambda/Shell authority remains separately opt-in and explicitly unconfined
   after native execution starts.
@@ -417,8 +419,8 @@ The near-term order is gate-driven:
 4. Keep v4.10 demand-driven and prefer measured scale/soak work or one separately reviewed client/operator UX problem.
 5. Advance v4.12 on `main` in this order: five-client Setup Center and Connection Doctor, native local preset manager,
    bounded related-traffic and Scanner-delta modes, request-only Comparer/Decoder handoff, then explicitly bounded native
-   ranking/annotation and opt-in execution surfaces. Freeze the resulting 24/37 catalog and do not merge these commits
-   into protected `release/v4.11`.
+   ranking/annotation and opt-in execution surfaces, followed by bounded evidence reads and human-reviewed issue reporting.
+   Freeze the resulting RC2 24/38 catalog and do not merge these commits into protected `release/v4.11`.
 6. Start a private modern-wire alpha only after the stable protocol, released Kotlin SDK transport, and sessionless
    approval entry gates are satisfied; require modern conformance and the supported-client matrix before beta/RC, as
    defined in [V5_READINESS.md](V5_READINESS.md) and [V5_APPROVAL_MODEL.md](V5_APPROVAL_MODEL.md).

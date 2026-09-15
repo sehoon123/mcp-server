@@ -91,6 +91,7 @@ PROFESSIONAL_ONLY_TOOLS = LEGACY_PROFESSIONAL_ONLY_TOOLS | frozenset(
         "control_http_request_execution",
         "import_bambda",
         "generate_bambda_chain",
+        "create_scanner_issue",
     }
 )
 
@@ -117,6 +118,9 @@ LEGACY_EDITION_CATALOG_IDENTIFIERS = _edition_catalogs(
     LEGACY_PROFESSIONAL_ONLY_TOOLS,
 )
 EDITION_CATALOG_IDENTIFIERS = _edition_catalogs(COMMON_TOOLS, PROFESSIONAL_ONLY_TOOLS)
+RC1_EDITION_CATALOG_IDENTIFIERS = _edition_catalogs(
+    COMMON_TOOLS, PROFESSIONAL_ONLY_TOOLS - {"create_scanner_issue"},
+)
 EDITION_CATALOG_COUNTS = {
     edition: {catalog: len(identifiers) for catalog, identifiers in catalogs.items()}
     for edition, catalogs in EDITION_CATALOG_IDENTIFIERS.items()
@@ -127,8 +131,27 @@ LEGACY_EDITION_CATALOG_COUNTS = {
 }
 
 
-def edition_catalog_counts(require_v412_schema: bool) -> dict[str, dict[str, int]]:
-    return EDITION_CATALOG_COUNTS if require_v412_schema else LEGACY_EDITION_CATALOG_COUNTS
+def edition_catalog_identifiers(
+    require_v412_schema: bool, server_version: str | None = None,
+) -> dict[str, dict[str, frozenset[str]]]:
+    if not isinstance(require_v412_schema, bool):
+        raise HarnessError("catalog schema contract selector was invalid")
+    if server_version is not None and require_v412_schema != requires_v412_catalog_schema(server_version):
+        raise HarnessError("catalog schema selector does not match the server version")
+    if not require_v412_schema:
+        return LEGACY_EDITION_CATALOG_IDENTIFIERS
+    if server_version == "4.12.0-rc.1":
+        return RC1_EDITION_CATALOG_IDENTIFIERS
+    return EDITION_CATALOG_IDENTIFIERS
+
+
+def edition_catalog_counts(
+    require_v412_schema: bool, server_version: str | None = None,
+) -> dict[str, dict[str, int]]:
+    return {
+        edition: {label: len(names) for label, names in catalogs.items()}
+        for edition, catalogs in edition_catalog_identifiers(require_v412_schema, server_version).items()
+    }
 
 SMOKE_SCENARIO_KEYS = frozenset(
     {
@@ -522,7 +545,9 @@ def _validate_scanner_delta_schema(tool: dict[str, Any]) -> None:
             raise HarnessError("Scanner delta limitations changed")
 
 
-def _validate_v412_native_tools(edition: str, tools: list[dict[str, Any]]) -> None:
+def _validate_v412_native_tools(
+    edition: str, tools: list[dict[str, Any]], *, require_evidence_schema: bool,
+) -> None:
     by_name = {tool.get("name"): tool for tool in tools}
 
     def tool(name: str) -> dict[str, Any]:
@@ -555,8 +580,44 @@ def _validate_v412_native_tools(edition: str, tools: list[dict[str, Any]]) -> No
     shell_output = (shell.get("outputSchema") or {}).get("properties") or {}
     _schema_bound(shell_output.get("output"), "maxLength", 65_536, "local command output")
 
+    if require_evidence_schema:
+        for name in ("get_http_message", "compare_http_messages"):
+            annotations = tool(name).get("annotations") or {}
+            if annotations.get("readOnlyHint") is not True or annotations.get("destructiveHint") is not False:
+                raise HarnessError("evidence read tool annotations changed")
+        _schema_bound(properties("get_http_message").get("jsonPointer"), "maxLength", 512, "JSON pointer")
+        _schema_bound(properties("compare_http_messages").get("responseKeywords"), "minItems", 1, "keyword minimum")
+        _schema_bound(properties("compare_http_messages").get("responseKeywords"), "maxItems", 32, "keyword maximum")
+        for name, field, fields, bound_field, bound, maximum in (
+            ("get_http_message", "jsonSelection", {"status", "valueJson"}, "valueJson", "maxLength", 262_144),
+            ("compare_http_messages", "keywordAnalysis", {"variantKeywords", "invariantKeywords", "skipped", "reason"},
+             "variantKeywords", "maxItems", 32),
+        ):
+            output = (tool(name).get("outputSchema") or {}).get("properties") or {}
+            selection = _schema_object(output.get(field), frozenset(fields), field)
+            _schema_bound(selection["properties"].get(bound_field), bound, maximum, field)
+            if field == "keywordAnalysis":
+                _schema_bound(selection["properties"].get("invariantKeywords"), "maxItems", 32, field)
+
     if edition != "professional":
         return
+    if require_evidence_schema:
+        issue = tool("create_scanner_issue")
+        annotations = issue.get("annotations") or {}
+        expected_annotations = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False}
+        if any(annotations.get(key) is not value for key, value in expected_annotations.items()):
+            raise HarnessError("issue submission annotations changed")
+        _schema_required(issue.get("inputSchema") or {}, frozenset({
+            "projectId", "refs", "name", "detail", "severity", "confidence", "humanReviewed",
+        }), "issue submission input")
+        issue_properties = properties("create_scanner_issue")
+        if (issue_properties.get("humanReviewed") or {}).get("type") != "boolean":
+            raise HarnessError("issue submission attestation changed")
+        for field, bound, maximum in (
+            ("refs", "minItems", 1), ("refs", "maxItems", 8),
+            ("name", "maxLength", 256), ("detail", "maxLength", 8_192), ("remediation", "maxLength", 8_192),
+        ):
+            _schema_bound(issue_properties.get(field), bound, maximum, "issue submission " + field)
     start = tool("start_http_request_execution")
     start_annotations = start.get("annotations") or {}
     if start_annotations.get("readOnlyHint") is not False or start_annotations.get("openWorldHint") is not True:
@@ -581,12 +642,9 @@ def validate_catalog(
     resource_templates: list[dict[str, Any]],
     *,
     require_v412_schema: bool = True,
+    server_version: str | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(require_v412_schema, bool):
-        raise HarnessError("catalog schema contract selector was invalid")
-    approved_catalogs = (
-        EDITION_CATALOG_IDENTIFIERS if require_v412_schema else LEGACY_EDITION_CATALOG_IDENTIFIERS
-    )
+    approved_catalogs = edition_catalog_identifiers(require_v412_schema, server_version)
     expected_identifiers = approved_catalogs.get(edition)
     if expected_identifiers is None:
         raise HarnessError("edition must be community or professional")
@@ -602,7 +660,7 @@ def validate_catalog(
     ):
         raise HarnessError("MCP catalogs were not arrays of objects")
     counts = {label: len(items) for label, (items, _) in catalogs.items()}
-    if counts != edition_catalog_counts(require_v412_schema)[edition]:
+    if counts != edition_catalog_counts(require_v412_schema, server_version)[edition]:
         raise HarnessError("catalog counts do not match the approved edition")
     for label, (items, field) in catalogs.items():
         actual = _catalog_identifiers(items, field, label)
@@ -621,7 +679,21 @@ def validate_catalog(
     if require_v412_schema:
         if scanner is not None:
             _validate_scanner_delta_schema(scanner)
-        _validate_v412_native_tools(edition, tools)
+        if server_version == "4.12.0-rc.1":
+            for name, schema, fields in (
+                ("get_http_message", "inputSchema", {"jsonPointer"}),
+                ("get_http_message", "outputSchema", {"jsonSelection"}),
+                ("compare_http_messages", "inputSchema", {"responseKeywords"}),
+                ("compare_http_messages", "outputSchema", {"keywordAnalysis"}),
+            ):
+                tool = next(tool for tool in tools if tool.get("name") == name)
+                schema_value = tool.get(schema) or {}
+                if not isinstance(schema_value, dict):
+                    raise HarnessError("RC1 evidence tool schema was malformed")
+                properties = schema_value.get("properties") or {}
+                if not isinstance(properties, dict) or fields.intersection(properties):
+                    raise HarnessError("RC1 catalog contains successor evidence fields")
+        _validate_v412_native_tools(edition, tools, require_evidence_schema=server_version != "4.12.0-rc.1")
 
     return {
         "counts": counts,

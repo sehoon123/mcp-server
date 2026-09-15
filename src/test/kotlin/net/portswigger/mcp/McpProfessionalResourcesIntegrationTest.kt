@@ -202,6 +202,7 @@ class McpProfessionalResourcesIntegrationTest {
                 "search_websocket_messages",
                 "get_websocket_message_by_id",
                 "set_burp_control_state",
+                "create_scanner_issue",
                 "get_scanner_issues",
                 "get_scanner_issue_by_id",
                 "start_scanner_audit_from_ids",
@@ -222,6 +223,8 @@ class McpProfessionalResourcesIntegrationTest {
                 )
             }
         }
+        assertTrue(descriptions.getValue("create_scanner_issue").contains("sends nothing, starts no scan"))
+        assertTrue(descriptions.getValue("create_scanner_issue").contains("does not automatically verify"))
         assertTrue(descriptions.getValue("get_scanner_issues").contains("hasMore=true"))
         assertTrue(descriptions.getValue("get_scanner_issues").contains("nextCursor as cursor"))
         assertTrue(descriptions.getValue("get_scanner_issues").contains("nextDeltaCursor as sinceSnapshotCursor"))

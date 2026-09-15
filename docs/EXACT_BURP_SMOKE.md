@@ -50,9 +50,10 @@ manager is constructed, off the UI thread, and the preflight requires that diges
 candidate file; version equality alone is not accepted.
 
 Catalog schema checks are release-line selected. Candidates through v4.11 retain the historical correlation-bound
-contract. An exact v4.12 identity additionally selects the 24 Community / 37 Professional identifiers and requires the bounded
-`relatedTraffic`, Scanner-delta, RankingUtils, annotation, local-command, Request Execution, and Bambda schema/annotation
-contracts. v4.11 continues to select its historical 21/28 identifiers; an unrecognized later release line is refused
+contract. Exact v4.12 RC1 retains its 24 Community / 37 Professional identifiers and bounded `relatedTraffic`, Scanner-delta,
+RankingUtils, annotation, local-command, Request Execution, and Bambda contracts. RC2 and subsequent v4.12 identities select
+24/38 and additionally require bounded JSON selection, response keywords, and Professional issue-reporting schemas.
+v4.11 continues to select its historical 21/28 identifiers; an unrecognized later release line is refused
 until its catalog contract is reviewed. Development suffixes
 such as `-dev.N` are also refused because exact smoke accepts only stable or `-rc.N` release identities. This additive
 check does not reinterpret or modify any v4.11 tag, asset, evidence record, or protected release workflow.
@@ -159,10 +160,12 @@ Create one reviewed JSON document under the evidence root:
 
 The real document must contain exactly all 11 scenario keys from the
 [release smoke matrix](RELEASING.md#burp-smoke-matrix). For v4.12, the existing keys deliberately absorb the new checks
-without rewriting historical v4.11 evidence: `catalogEditionGating` covers 24/37 names and schemas;
-`professionalScannerCollaborator` also covers Professional Request Execution and Bambda; `routingNoHiddenNetwork`
+without rewriting historical evidence: `catalogEditionGating` covers RC1's 24/37 or RC2's 24/38 names and schemas;
+`professionalScannerCollaborator` also covers Professional Request Execution and Bambda, plus RC2 issue submission with
+operator-confirmed evidence/fields in Burp (a successful add call alone is not persistence verification); `routingNoHiddenNetwork`
 covers annotation; `stableIdReplayIndependentApprovals` covers execution batches; `boundedLargeDataAndCancellation`
-covers ranking and cumulative engine limits; `diagnosticsRedaction` covers code-execution audit privacy and emergency
+covers ranking and cumulative engine limits, plus RC2 complete-value JSON selection and complete-response keyword bounds;
+`diagnosticsRedaction` covers issue-field/evidence privacy as well as code-execution audit privacy and emergency
 precedence; and `unloadDuringBackgroundWork` covers engine cleanup reservations. Permanent evidence records only
 categorical outcomes and hashes—never commands, environment values, Bambda source, raw traffic, or extracted values.
 The project-transition and uncertain-execution reconciliation scenarios remain outside the scenario-key contract rather

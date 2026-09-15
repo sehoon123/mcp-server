@@ -52,7 +52,7 @@ def validate_preflight(
     jar_sha256: str,
     version: str,
 ) -> None:
-    expected_counts = edition_catalog_counts(requires_v412_catalog_schema(version))[edition]
+    expected_counts = edition_catalog_counts(requires_v412_catalog_schema(version), version)[edition]
     if type(report.get("schemaVersion")) is not int or report.get("schemaVersion") != 1:
         raise HarnessError("edition preflight has an unsupported schema")
     expected = {

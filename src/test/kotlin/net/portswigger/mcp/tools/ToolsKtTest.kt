@@ -107,6 +107,7 @@ private val EXPECTED_COMMUNITY_TOOL_NAMES = setOf(
 )
 
 private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_NAMES + setOf(
+    "create_scanner_issue",
     "get_scanner_issues",
     "get_scanner_issue_by_id",
     "start_scanner_audit_from_ids",
@@ -557,7 +558,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "575dd9844a0b285f71b73dcf7f4585b5d7439c321a67d7512a8b51164f5337ea",
+            "a1cb9d724740636f114b83b84a3f72a9c72dd986eb94883f713769de01b896ff",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -591,6 +592,9 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
+        assertTrue(description("get_http_message").contains("jsonPointer"))
+        assertTrue(description("get_http_message").contains("never returns a partial value"))
+        assertTrue(description("get_http_message").contains("Nothing is sent or changed"))
         assertTrue(description("get_http_message").contains("search_http_messages"))
         assertTrue(description("get_http_message").contains("nextOffsetBytes as offset"))
         assertTrue(description("get_http_message").contains("not required before the from-ID action tools"))
@@ -2179,6 +2183,11 @@ class ToolsKtTest {
         assertTrue(jsonComparisonSchema.contains("limit_exceeded"))
         assertTrue(comparison.inputSchema.properties?.get("excerptEncoding").toString().contains("base64"))
         assertNotNull(comparison.outputSchema?.properties?.get("responseVariations"))
+        assertTrue(comparison.inputSchema.properties?.get("responseKeywords").toString().contains("\"maxItems\":32"))
+        assertNotNull(comparison.outputSchema?.properties?.get("keywordAnalysis"))
+        val httpRead = tools.single { it.name == "get_http_message" }
+        assertTrue(httpRead.inputSchema.properties?.get("jsonPointer").toString().contains("\"maxLength\":512"))
+        assertNotNull(httpRead.outputSchema?.properties?.get("jsonSelection"))
         assertEquals(true, comparison.annotations?.readOnlyHint)
 
         val savePreset = tools.single { it.name == "save_workflow_preset" }
@@ -2510,7 +2519,7 @@ class ToolsKtTest {
         @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
-            assertEquals(37, tools.size)
+            assertEquals(38, tools.size)
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertNonNullOutputFieldsAreRequired)
@@ -2519,7 +2528,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "5452adeda8e4aae6b40212084b95b848d27e2611c23358461a7c13992d04ca7d",
+                "588f73b65fb5e459932b933f7a3251cc9f58b79702b246eac2fc3b5e2d0477f6",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
@@ -2543,6 +2552,20 @@ class ToolsKtTest {
             assertEquals(false, bambdaImport.annotations?.readOnlyHint)
             assertEquals(true, bambdaImport.annotations?.openWorldHint)
             assertTrue(bambdaImport.description.orEmpty().contains("outside MCP request, project, outbound"))
+
+            val createIssue = tools.single { it.name == "create_scanner_issue" }
+            assertEquals(
+                setOf("projectId", "refs", "name", "detail", "severity", "confidence", "humanReviewed"),
+                createIssue.inputSchema.required?.toSet(),
+            )
+            assertTrue(createIssue.inputSchema.properties?.get("refs").toString().contains("\"maxItems\":8"))
+            assertTrue(createIssue.inputSchema.properties?.get("humanReviewed").toString().contains("not proof"))
+            assertEquals(false, createIssue.annotations?.readOnlyHint)
+            assertEquals(true, createIssue.annotations?.destructiveHint)
+            assertEquals(false, createIssue.annotations?.idempotentHint)
+            assertEquals(false, createIssue.annotations?.openWorldHint)
+            assertTrue(createIssue.description.orEmpty().contains("sends nothing, starts no scan"))
+            assertTrue(createIssue.description.orEmpty().contains("never retry automatically"))
 
             val start = tools.single { it.name == "start_scanner_audit_from_ids" }
             assertEquals(setOf("projectId", "mode", "targets"), start.inputSchema.required?.toSet())
@@ -3088,6 +3111,7 @@ class ToolsKtTest {
             val tools = client.listTools()
             assertTrue(tools.all { it.annotations?.readOnlyHint != null })
             assertFalse(tools.any { it.name == "get_scanner_issues" })
+            assertFalse(tools.any { it.name == "create_scanner_issue" })
             assertFalse(tools.any { it.name == "generate_collaborator_payload" })
             assertFalse(tools.any { it.name == "get_collaborator_interactions" })
             assertFalse(tools.any { it.name == "start_http_request_execution" })
@@ -3118,6 +3142,7 @@ class ToolsKtTest {
             assertTrue(tools.all { it.annotations?.readOnlyHint != null })
             assertTrue(tools.all { it.outputSchema != null })
             assertTrue(tools.any { it.name == "get_scanner_issues" })
+            assertTrue(tools.any { it.name == "create_scanner_issue" })
             assertTrue(tools.any { it.name == "generate_collaborator_payload" })
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })
             assertTrue(tools.any { it.name == "start_http_request_execution" })

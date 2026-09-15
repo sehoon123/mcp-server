@@ -29,6 +29,9 @@ private const val COMPARE_EXCERPT_CONTEXT_BYTES = 256
 private const val MAX_COMPARE_EXCERPT_BYTES = 1_024
 private const val MAX_NATIVE_VARIATION_MESSAGE_BYTES = 1024 * 1024
 private const val MAX_NATIVE_VARIATION_TOTAL_BYTES = 4 * 1024 * 1024
+private const val MAX_RESPONSE_KEYWORDS = 32
+private const val MAX_RESPONSE_KEYWORD_CHARS = 256
+private const val MAX_RESPONSE_KEYWORD_TOTAL_CHARS = 4_096
 
 @Serializable
 data class CompareHttpMessages(
@@ -46,6 +49,8 @@ data class CompareHttpMessages(
     val ignoreHeaders: List<String>? = null,
     @JsonSchemaMetadata(description = "Run Burp response variation analysis for response parts.", defaultJson = "true")
     val includeResponseVariations: Boolean? = null,
+    @JsonSchemaMetadata(description = "Optional runtime-only Burp keyword analysis over each complete stored response, independent of comparison part and preview limit.", minItems = 1, maxItems = MAX_RESPONSE_KEYWORDS)
+    val responseKeywords: List<String>? = null,
 )
 
 @Serializable
@@ -168,6 +173,17 @@ data class HttpResponseVariationSummary(
 )
 
 @Serializable
+data class HttpResponseKeywordSummary(
+    @JsonSchemaMetadata(maxItems = MAX_RESPONSE_KEYWORDS)
+    val variantKeywords: List<String>,
+    @JsonSchemaMetadata(maxItems = MAX_RESPONSE_KEYWORDS)
+    val invariantKeywords: List<String>,
+    val skipped: Boolean,
+    @JsonSchemaMetadata(maxLength = 256)
+    val reason: String? = null,
+)
+
+@Serializable
 data class CompareHttpMessagesResult(
     @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpComparisonStatus,
@@ -181,6 +197,7 @@ data class CompareHttpMessagesResult(
     val headerComparison: HttpHeaderComparison? = null,
     val contentDifference: HttpContentDifference? = null,
     val responseVariations: HttpResponseVariationSummary? = null,
+    val keywordAnalysis: HttpResponseKeywordSummary? = null,
     val errorRefIndex: Int? = null,
     val error: String? = null,
     @JsonSchemaMetadata(description = "Present only for request_json/response_json. Check its status before using equality; outer status ok alone does not establish a successful JSON comparison.")
@@ -227,8 +244,11 @@ internal class HttpMessageComparisonService(
             HttpComparisonEncoding.TEXT -> "text"
             HttpComparisonEncoding.BASE64 -> "base64"
         }
-        val ignoredHeaders = try {
-            normalizeIgnoredHeaders(input.ignoreHeaders)
+        val ignoredHeaders: Set<String>
+        val normalizedKeywords: List<String>?
+        try {
+            ignoredHeaders = normalizeIgnoredHeaders(input.ignoreHeaders)
+            normalizedKeywords = normalizeResponseKeywords(input.responseKeywords, part)
         } catch (e: IllegalArgumentException) {
             return comparisonError(
                 HttpComparisonStatus.INVALID_ARGUMENT,
@@ -329,6 +349,7 @@ internal class HttpMessageComparisonService(
         } else {
             null
         }
+        val keywordAnalysis = normalizedKeywords?.let { responseKeywords(messages, it) }
 
         val projectAfterComparison = try {
             api.project().id()
@@ -364,46 +385,20 @@ internal class HttpMessageComparisonService(
             headerComparison = headerComparison,
             contentDifference = contentDifference,
             responseVariations = variations,
+            keywordAnalysis = keywordAnalysis,
             jsonComparison = jsonComparison,
         )
     }
 
     private suspend fun responseVariations(messages: List<ResolvedHttpMessage>): HttpResponseVariationSummary {
-        val responses = messages.map { it.response }
-        if (responses.any { it == null }) {
-            return HttpResponseVariationSummary(
-                variantAttributes = emptyList(),
-                invariantAttributes = emptyList(),
-                skipped = true,
-                reason = "one or more references do not have a response",
-            )
+        val bounded = boundedNativeResponses(messages, "variation")
+        if (bounded is NativeResponses.Skipped) {
+            return HttpResponseVariationSummary(emptyList(), emptyList(), true, bounded.reason)
         }
-        val nonNullResponses = responses.filterNotNull()
-        var total = 0L
-        for (response in nonNullResponses) {
-            val size = response.bodyOffset().toLong().coerceAtLeast(0) + response.body().length().toLong().coerceAtLeast(0)
-            if (size > MAX_NATIVE_VARIATION_MESSAGE_BYTES) {
-                return HttpResponseVariationSummary(
-                    variantAttributes = emptyList(),
-                    invariantAttributes = emptyList(),
-                    skipped = true,
-                    reason = "a response exceeds the $MAX_NATIVE_VARIATION_MESSAGE_BYTES-byte variation-analysis limit",
-                )
-            }
-            total += size
-            if (total > MAX_NATIVE_VARIATION_TOTAL_BYTES) {
-                return HttpResponseVariationSummary(
-                    variantAttributes = emptyList(),
-                    invariantAttributes = emptyList(),
-                    skipped = true,
-                    reason = "responses exceed the $MAX_NATIVE_VARIATION_TOTAL_BYTES-byte total variation-analysis limit",
-                )
-            }
-        }
-
+        val responses = (bounded as NativeResponses.Available).responses
         return try {
             val analyzer = api.http().createResponseVariationsAnalyzer()
-            nonNullResponses.forEach {
+            responses.forEach {
                 currentCoroutineContext().ensureActive()
                 analyzer.updateWith(it)
             }
@@ -423,6 +418,95 @@ internal class HttpMessageComparisonService(
             )
         }
     }
+
+    private suspend fun responseKeywords(
+        messages: List<ResolvedHttpMessage>,
+        keywords: List<String>,
+    ): HttpResponseKeywordSummary {
+        val bounded = try {
+            boundedNativeResponses(messages, "keyword")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return HttpResponseKeywordSummary(
+                emptyList(),
+                emptyList(),
+                true,
+                "Burp response keyword analysis was unavailable",
+            )
+        }
+        if (bounded is NativeResponses.Skipped) {
+            return HttpResponseKeywordSummary(emptyList(), emptyList(), true, bounded.reason)
+        }
+        return try {
+            currentCoroutineContext().ensureActive()
+            val analyzer = api.http().createResponseKeywordsAnalyzer(keywords)
+            (bounded as NativeResponses.Available).responses.forEach {
+                currentCoroutineContext().ensureActive()
+                analyzer.updateWith(it)
+            }
+            currentCoroutineContext().ensureActive()
+            val variants = analyzer.variantKeywords()
+            val invariants = analyzer.invariantKeywords()
+            val supplied = keywords.toSet()
+            if (variants.size > keywords.size || invariants.size > keywords.size ||
+                variants.any { it !in supplied } || invariants.any { it !in supplied } ||
+                variants.intersect(invariants).isNotEmpty() || variants + invariants != supplied
+            ) {
+                HttpResponseKeywordSummary(
+                    emptyList(),
+                    emptyList(),
+                    true,
+                    "Burp response keyword analysis returned an invalid result",
+                )
+            } else {
+                HttpResponseKeywordSummary(variants.sorted(), invariants.sorted(), false)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            HttpResponseKeywordSummary(
+                emptyList(),
+                emptyList(),
+                true,
+                "Burp response keyword analysis was unavailable",
+            )
+        }
+    }
+}
+
+private sealed interface NativeResponses {
+    data class Available(val responses: List<burp.api.montoya.http.message.responses.HttpResponse>) : NativeResponses
+    data class Skipped(val reason: String) : NativeResponses
+}
+
+private fun boundedNativeResponses(messages: List<ResolvedHttpMessage>, analysis: String): NativeResponses {
+    val responses = messages.map { it.response }
+    if (responses.any { it == null }) {
+        return NativeResponses.Skipped("one or more references do not have a response")
+    }
+    val nonNullResponses = responses.filterNotNull()
+    var total = 0L
+    for (response in nonNullResponses) {
+        val headerBytes = response.bodyOffset()
+        val bodyBytes = response.body().length()
+        if (headerBytes < 0 || bodyBytes < 0) {
+            return NativeResponses.Skipped("a response reported an invalid byte length")
+        }
+        val size = headerBytes.toLong() + bodyBytes
+        if (size > MAX_NATIVE_VARIATION_MESSAGE_BYTES) {
+            return NativeResponses.Skipped(
+                "a response exceeds the $MAX_NATIVE_VARIATION_MESSAGE_BYTES-byte $analysis-analysis limit"
+            )
+        }
+        total += size
+        if (total > MAX_NATIVE_VARIATION_TOTAL_BYTES) {
+            return NativeResponses.Skipped(
+                "responses exceed the $MAX_NATIVE_VARIATION_TOTAL_BYTES-byte total $analysis-analysis limit"
+            )
+        }
+    }
+    return NativeResponses.Available(nonNullResponses)
 }
 
 private data class ComparisonMaterial(
@@ -524,6 +608,30 @@ internal fun validateHttpComparisonSettings(input: CompareHttpMessages) {
     val limit = input.limitBytesPerMessage ?: DEFAULT_COMPARE_BYTES_PER_MESSAGE
     require(limit in 1..MAX_COMPARE_BYTES_PER_MESSAGE) { "limitBytesPerMessage is out of range" }
     normalizeIgnoredHeaders(input.ignoreHeaders)
+    normalizeResponseKeywords(input.responseKeywords, input.part ?: HttpComparisonPart.RESPONSE)
+}
+
+private fun normalizeResponseKeywords(
+    values: List<String>?,
+    part: HttpComparisonPart,
+): List<String>? {
+    if (values == null) return null
+    require(part in setOf(
+        HttpComparisonPart.RESPONSE,
+        HttpComparisonPart.RESPONSE_HEADERS,
+        HttpComparisonPart.RESPONSE_BODY,
+    )) { "responseKeywords supports only response, response_headers, or response_body" }
+    require(values.size in 1..MAX_RESPONSE_KEYWORDS) {
+        "responseKeywords must contain between 1 and $MAX_RESPONSE_KEYWORDS items"
+    }
+    require(values.distinct().size == values.size) { "responseKeywords must contain distinct values" }
+    require(values.all { it.length in 1..MAX_RESPONSE_KEYWORD_CHARS && it.none(Char::isISOControl) }) {
+        "responseKeywords values must be nonempty, at most $MAX_RESPONSE_KEYWORD_CHARS characters, and contain no controls"
+    }
+    require(values.sumOf(String::length) <= MAX_RESPONSE_KEYWORD_TOTAL_CHARS) {
+        "responseKeywords exceed the $MAX_RESPONSE_KEYWORD_TOTAL_CHARS-character total limit"
+    }
+    return values
 }
 
 private fun normalizeIgnoredHeaders(values: List<String>?): Set<String> {
