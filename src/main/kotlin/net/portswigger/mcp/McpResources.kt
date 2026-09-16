@@ -765,6 +765,7 @@ private fun validCanonicalHttpReference(value: String): Boolean {
         "response",
         "response_headers",
         "response_body",
+        "response_mime",
     )
 }
 

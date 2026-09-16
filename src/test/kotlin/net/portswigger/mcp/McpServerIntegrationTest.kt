@@ -662,6 +662,30 @@ class McpServerIntegrationTest {
         assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
         assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
         assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+        every { response.statedMimeType() } returns MimeType.PLAIN_TEXT
+        every { response.inferredMimeType() } returns MimeType.JSON
+        val mimeUri = "burp://http/integration-project/proxy/42/response_mime"
+        val mime = client.readResource(mimeUri).singleTextResourceJson()
+        assertEquals("true", mime.getValue("mimeAnalysis").jsonObject.getValue("disagrees").jsonPrimitive.content)
+        assertFalse(mime.containsKey("content"))
+        assertFalse(mime.containsKey("metadata"))
+        val mimePrompt = client.getPrompt("analyze_http_without_sending", mapOf("httpReference" to mimeUri))
+        assertTrue(assertIs<TextContent>(mimePrompt.messages.single().content).text.contains(mimeUri))
+
+        val selected = mockk<burp.api.montoya.http.message.HttpHeader>()
+        every { selected.name() } returns "X-Selected"
+        every { selected.value() } returns "selected-only"
+        every { response.headers() } returns listOf(selected)
+        val headerResult = requireNotNull(client.callTool("get_http_message", mapOf(
+            "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"),
+            "part" to "response_headers", "headerName" to "x-selected",
+        )))
+        val headerJson = headerResult.singleTextToolJson()
+        assertEquals(headerResult.structuredContent, headerJson)
+        assertEquals("selected-only", headerJson.getValue("headerSelection").jsonObject.getValue("values").jsonArray.single().jsonPrimitive.content)
+        assertFalse(headerJson.containsKey("content"))
+        assertFalse(headerJson.containsKey("metadata"))
+        assertFalse(auditRecords.any { it.toString().contains("selected-only") })
     }
 
     @Test

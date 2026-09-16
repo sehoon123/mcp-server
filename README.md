@@ -6,9 +6,9 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0-rc.3` — test candidate, not a published stable release.**
-See the [RC3 changes and remaining release gates](docs/releases/4.12.0-rc.3.md).
-The signed RC1/RC2 candidates and their uploaded bytes remain unchanged.
+**Current source version: `4.12.0-dev.4` — unreleased passive-inspection work after RC3's CI build.**
+See the [reburp feature review](docs/REBURP_FEATURE_REVIEW.md) and [RC3 release gates](docs/releases/4.12.0-rc.3.md).
+RC3 tagging remains blocked by its dependency preflight; the signed RC1/RC2 candidates and uploaded bytes remain unchanged.
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**
@@ -180,6 +180,23 @@ action approval unless YOLO mode is active.
 
 Byte-size regression checks use synthetic fixtures; they are not model-specific token or real-agent benchmarks. The
 catalog remains 24/38 tools without `$defs`, schema removal, new aliases, or a response-format negotiation scheme.
+
+### Focused header and MIME reads (unreleased)
+
+`get_http_message.headerName` selects one ASCII HTTP header name from explicit `request_headers` or `response_headers`.
+Names match case-insensitively; duplicate values retain their order. `found` with `[""]` differs from `missing` with `[]`.
+This returns Burp-parsed values, not byte-exact header lines. Offset must be zero and encoding must be text.
+The complete header block is capped at 64 KiB, the parsed list at 128 headers and names at 256 characters, with at most
+32 selected values and 65,536 selected characters. The complete values array, including JSON escaping, must fit `limit`;
+`input_truncated`/`limit_exceeded` returns no selected values or raw fallback and is not proof of absence.
+Only selected header values are accessed; ordinary metadata and body copies are omitted. Source approval still applies,
+including for credential-bearing headers. Site Map reference validation may still inspect existing bounded private samples.
+
+`part: "response_mime"` returns native `stated`, `inferred`, nullable `disagrees`, and `skipped` fields under `mimeAnalysis`.
+It also works at `burp://http/{projectId}/{source}/{id}/response_mime`; header selection is tool-only. A complete response
+above 1 MiB is skipped before MIME getters. Indeterminate native labels yield `disagrees: null`; disagreement is an
+observation, not a vulnerability verdict. This mode requires offset zero/text and returns neither body nor ordinary metadata.
+Native accessor allocation and runtime are not an interruptible heap/deadline guarantee. No decompression is added.
 
 ### Bounded evidence reading and reporting
 

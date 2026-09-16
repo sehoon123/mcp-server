@@ -570,7 +570,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "d1a64fc4df52eeff0283809e7900f04b176c49d3a8fc4a5ffd42dfc74dbcf19f",
+            "042ca4f1fab03cefe2681f3dfdd204407cc4cb4417bc88a3f20ff42c9a48ed5b",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -609,11 +609,16 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
         assertTrue(description("get_http_message").contains("jsonPointer"))
-        assertTrue(description("get_http_message").contains("never returns a partial value"))
+        assertTrue(description("get_http_message").contains("complete RFC 6901 body value"))
+        assertTrue(description("get_http_message").contains("headerName"))
+        assertTrue(description("get_http_message").contains("response_mime"))
+        val headerNameSchema = tools.getValue("get_http_message").inputSchema.properties!!.getValue("headerName").jsonObject
+        assertEquals("1", headerNameSchema.getValue("minLength").toString())
+        assertEquals("256", headerNameSchema.getValue("maxLength").toString())
         assertTrue(description("get_http_message").contains("Nothing is sent or changed"))
         assertTrue(description("get_http_message").contains("search_http_messages"))
         assertTrue(description("get_http_message").contains("nextOffsetBytes as offset"))
-        assertTrue(description("get_http_message").contains("not required before the from-ID action tools"))
+        assertTrue(description("get_http_message").contains("no read is required before from-ID actions"))
         assertTrue(description("send_http_request_from_id").contains("Each call restarts from the stored source"))
         assertTrue(description("send_http_request_from_id").contains("patches never accumulate"))
         assertTrue(description("route_http_message_from_id").contains("Each call restarts from the stored source"))
@@ -2544,7 +2549,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "afd5b9ce2e3c18bf0b169c0b049a8bf638c2a071d30bd08f01b37df002d34b4a",
+                "955ae898fb1ebf6d67e58b2eed4150c97df9dbdfc49a9b7f10df45f225cef3b5",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->

@@ -30,6 +30,7 @@ private val HTTP_MESSAGE_PARTS = setOf(
     "response",
     "response_headers",
     "response_body",
+    "response_mime",
 )
 private val SCANNER_ISSUE_FIELDS = setOf(
     "metadata",
@@ -359,7 +360,7 @@ internal fun ProxyWebSocketMessage.readPayload(
 internal fun normalizeHttpPart(part: String?): String {
     val normalized = part?.trim()?.lowercase()?.replace('-', '_') ?: "metadata"
     require(normalized in HTTP_MESSAGE_PARTS) {
-        "part must be metadata, request, request_headers, request_body, response, response_headers, or response_body"
+        "part must be metadata, request, request_headers, request_body, response, response_headers, response_body, or response_mime"
     }
     return normalized
 }

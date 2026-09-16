@@ -686,7 +686,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
-        description = "Read one stored HTTP reference (metadata by default); source approval and matching projectId apply. Use the complete {source,id} from search_http_messages. Raw parts: 8 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. Explicit request_body/response_body supports jsonPointer (strict RFC 6901), which never returns a partial value. Nothing is sent or changed; this read is not required before the from-ID action tools.",
+        description = "Read a stored {source,id} from search_http_messages; source approval and matching projectId apply. Metadata by default; response_mime returns native MIME observations. Raw parts: 8 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. jsonPointer selects a complete RFC 6901 body value; headerName selects complete parsed header values. Use explicit body/header parts. Nothing is sent or changed; no read is required before from-ID actions.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageReadService.read(input)

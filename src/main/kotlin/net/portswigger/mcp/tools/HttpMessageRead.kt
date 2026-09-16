@@ -2,6 +2,9 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.http.message.HttpMessage
+import burp.api.montoya.http.message.MimeType
+import burp.api.montoya.http.message.responses.HttpResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -10,9 +13,18 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.safeExceptionSummary
+
+private const val MAX_SELECTED_HEADER_INPUT = 64 * 1024
+private const val MAX_SELECTED_HEADER_COUNT = 128
+private const val MAX_SELECTED_HEADER_VALUES = 32
+private const val MAX_MIME_RESPONSE_BYTES = 1024 * 1024
+private val INDETERMINATE_MIME_TYPES = setOf(
+    null, MimeType.NONE, MimeType.UNRECOGNIZED, MimeType.AMBIGUOUS, MimeType.IMAGE_UNKNOWN, MimeType.APPLICATION_UNKNOWN,
+)
 
 @Serializable
 data class GetHttpMessage(
@@ -22,7 +34,7 @@ data class GetHttpMessage(
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(
         description = "HTTP message section to return.",
-        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body"],
+        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body", "response_mime"],
         defaultJson = "\"metadata\"",
     )
     val part: String? = null,
@@ -34,6 +46,8 @@ data class GetHttpMessage(
     val encoding: String? = null,
     @JsonSchemaMetadata(description = "Optional RFC 6901 pointer for a complete request_body or response_body JSON value. Empty selects the root. Offset must be zero and encoding must be text.", maxLength = 512)
     val jsonPointer: String? = null,
+    @JsonSchemaMetadata(description = "Select complete parsed values for one header from explicit request_headers/response_headers; offset 0, text only. Limit bounds the values JSON.", minLength = 1, maxLength = 256)
+    val headerName: String? = null,
 )
 
 @Serializable
@@ -112,6 +126,33 @@ data class HttpJsonSelection(
 )
 
 @Serializable
+enum class HttpHeaderSelectionStatus {
+    @SerialName("found") FOUND,
+    @SerialName("missing") MISSING,
+    @SerialName("input_truncated") INPUT_TRUNCATED,
+    @SerialName("limit_exceeded") LIMIT_EXCEEDED,
+}
+
+@Serializable
+data class HttpHeaderSelection(
+    val status: HttpHeaderSelectionStatus,
+    @JsonSchemaMetadata(maxItems = MAX_SELECTED_HEADER_VALUES)
+    val values: List<String>,
+) {
+    constructor(status: HttpHeaderSelectionStatus) : this(status, emptyList())
+}
+
+@Serializable
+data class HttpMimeAnalysis(
+    @JsonSchemaMetadata(maxLength = 64) val stated: String?,
+    @JsonSchemaMetadata(maxLength = 64) val inferred: String?,
+    @JsonSchemaMetadata(description = "Native labels differ; null if indeterminate. Not a vulnerability verdict.")
+    val disagrees: Boolean?,
+    @JsonSchemaMetadata(description = "Complete response exceeds the 1 MiB analysis cap.")
+    val skipped: Boolean,
+)
+
+@Serializable
 data class GetHttpMessageResult(
     @JsonSchemaMetadata(description = READ_ONLY_TOOL_STATUS_DESCRIPTION)
     val status: HttpMessageReadStatus,
@@ -121,6 +162,8 @@ data class GetHttpMessageResult(
     val metadata: UnifiedHttpMessageMetadata? = null,
     val content: HistoryContentSlice? = null,
     val jsonSelection: HttpJsonSelection? = null,
+    val headerSelection: HttpHeaderSelection? = null,
+    val mimeAnalysis: HttpMimeAnalysis? = null,
     val error: String? = null,
 )
 
@@ -136,6 +179,7 @@ internal class HttpMessageReadService(
         val normalizedLimit: Int
         val normalizedEncoding: String
         val normalizedJsonPointer: List<String>?
+        val normalizedHeaderName: String?
         try {
             normalizedPart = normalizeHttpPart(input.part)
             normalizedOffset = normalizeHistoryOffset(input.offset)
@@ -147,6 +191,14 @@ internal class HttpMessageReadService(
                 normalizedOffset,
                 normalizedEncoding,
             )
+            normalizedHeaderName = input.headerName?.also { name ->
+                require(name.length in 1..256 && name.matches(HTTP_TOKEN_PATTERN)) { "headerName must be an ASCII HTTP token of 1..256 characters" }
+                require(input.part == "request_headers" || input.part == "response_headers") { "headerName requires explicit request_headers or response_headers" }
+                require(normalizedOffset == 0 && normalizedEncoding == "text") { "headerName requires offset 0 and text encoding" }
+            }
+            if (normalizedPart == "response_mime") {
+                require(normalizedOffset == 0 && normalizedEncoding == "text") { "response_mime requires offset 0 and text encoding" }
+            }
         } catch (e: IllegalArgumentException) {
             return readError(
                 status = HttpMessageReadStatus.INVALID_ARGUMENT,
@@ -161,7 +213,7 @@ internal class HttpMessageReadService(
             val resolution = resolver.resolve(
                 input.projectId,
                 input.ref,
-                sourceMetadata = if (normalizedJsonPointer == null) {
+                sourceMetadata = if (normalizedJsonPointer == null && normalizedHeaderName == null && normalizedPart != "response_mime") {
                     HttpSourceMetadataSelection.FULL
                 } else {
                     HttpSourceMetadataSelection.NONE
@@ -188,6 +240,7 @@ internal class HttpMessageReadService(
                 limit = normalizedLimit,
                 encoding = normalizedEncoding,
                 jsonPointer = normalizedJsonPointer,
+                headerName = normalizedHeaderName,
             )
         } catch (e: CancellationException) {
             throw e
@@ -243,9 +296,22 @@ private suspend fun readResolved(
     limit: Int,
     encoding: String,
     jsonPointer: List<String>?,
+    headerName: String?,
 ): GetHttpMessageResult {
     val request = resolved.request
     val response = resolved.response
+    if (headerName != null || part == "response_mime") {
+        val message = if (part == "request_headers") request else response
+        return GetHttpMessageResult(
+            status = if (message == null) HttpMessageReadStatus.PART_UNAVAILABLE else HttpMessageReadStatus.OK,
+            projectId = projectId,
+            ref = resolved.ref,
+            part = part,
+            headerSelection = if (headerName != null && message != null) selectHeader(message, headerName, limit) else null,
+            mimeAnalysis = if (part == "response_mime" && response != null) inspectMime(response) else null,
+            error = if (message == null) "$part is not available" else null,
+        )
+    }
     if (jsonPointer != null) {
         val body = if (part == "request_body") request.body() else response?.body()
         return GetHttpMessageResult(
@@ -319,6 +385,54 @@ private suspend fun readResolved(
         part = part,
         metadata = metadata,
         content = bytes.toHistorySlice(offset, limit, encoding),
+    )
+}
+
+private suspend fun selectHeader(message: HttpMessage, name: String, limit: Int): HttpHeaderSelection {
+    val headerBytes = message.bodyOffset()
+    require(headerBytes >= 0) { "Burp reported a negative header length" }
+    if (headerBytes > MAX_SELECTED_HEADER_INPUT) return HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED)
+    val headers = message.headers()
+    val count = headers.size
+    require(count >= 0) { "Burp reported a negative header count" }
+    if (count > MAX_SELECTED_HEADER_COUNT) return HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED)
+    val values = ArrayList<String>()
+    var selectedChars = 0
+    var jsonBytes = 2 // Array delimiters; each value is budgeted with JSON escaping.
+    for (index in 0 until count) {
+        currentCoroutineContext().ensureActive()
+        val header = headers[index]
+        val rawName = header.name()
+        if (rawName.length > 256) return HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED)
+        if (rawName.any { it.code > 127 } || !rawName.equals(name, ignoreCase = true)) continue
+        if (values.size == MAX_SELECTED_HEADER_VALUES) return HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED)
+        val value = header.value()
+        if (value.length > MAX_SELECTED_HEADER_INPUT - selectedChars) return HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED)
+        selectedChars += value.length
+        jsonBytes += JsonPrimitive(value).toString().toByteArray(Charsets.UTF_8).size + if (values.isEmpty()) 0 else 1
+        if (jsonBytes > limit) return HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED)
+        values += value
+    }
+    currentCoroutineContext().ensureActive()
+    if (headers.size != count) return HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED)
+    if (jsonBytes > limit) return HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED)
+    return HttpHeaderSelection(if (values.isEmpty()) HttpHeaderSelectionStatus.MISSING else HttpHeaderSelectionStatus.FOUND, values)
+}
+
+private suspend fun inspectMime(response: HttpResponse): HttpMimeAnalysis {
+    val headerBytes = response.bodyOffset()
+    val bodyBytes = response.body().length()
+    require(headerBytes >= 0 && bodyBytes >= 0) { "Burp reported a negative response length" }
+    if (headerBytes.toLong() + bodyBytes > MAX_MIME_RESPONSE_BYTES) return HttpMimeAnalysis(null, null, null, skipped = true)
+    currentCoroutineContext().ensureActive()
+    val stated = response.statedMimeType()
+    currentCoroutineContext().ensureActive()
+    val inferred = response.inferredMimeType()
+    currentCoroutineContext().ensureActive()
+    return HttpMimeAnalysis(
+        stated?.name?.take(64), inferred?.name?.take(64),
+        if (stated in INDETERMINATE_MIME_TYPES || inferred in INDETERMINATE_MIME_TYPES) null else stated != inferred,
+        skipped = false,
     )
 }
 

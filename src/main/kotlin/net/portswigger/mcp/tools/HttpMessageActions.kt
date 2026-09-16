@@ -43,7 +43,7 @@ private const val MAX_ACTION_BODY_BYTES = 1024 * 1024
 private const val MIN_ACTION_TIMEOUT_MS = 100
 private const val MAX_ACTION_TIMEOUT_MS = 120_000
 private const val DEFAULT_ACTION_TIMEOUT_MS = 30_000
-private val HTTP_TOKEN_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+internal val HTTP_TOKEN_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 @Serializable
 data class SendHttpRequestFromId(

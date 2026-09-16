@@ -4,6 +4,9 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.Annotations
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.HttpService
+import burp.api.montoya.http.message.HttpHeader
+import burp.api.montoya.http.message.MimeType
+import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
@@ -14,15 +17,22 @@ import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import net.portswigger.mcp.security.DataAccessApprovalHandler
+import net.portswigger.mcp.security.DataAccessSecurity
+import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -344,7 +354,210 @@ class HttpMessageReadTest {
         assertNull(result.content)
     }
 
-    private fun fixture(projectIds: List<String>, bodyText: String = ""): ReadFixture {
+    @Test
+    fun `selected headers preserve duplicate empty values without unrelated content`() = runBlocking {
+        val f = fixture(List(20) { "project-a" }, "BODY_PRIVATE")
+        val other = mockk<HttpHeader>()
+        every { other.name() } returns "Authorization"
+        every { f.request.bodyOffset() } returns 128
+        every { f.request.headers() } returns listOf(header("X-Value", "first"), other, header("x-value", ""))
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_headers", headerName = "X-VALUE")
+        val result = f.service.read(input)
+        assertEquals(HttpHeaderSelection(HttpHeaderSelectionStatus.FOUND, listOf("first", "")), result.headerSelection)
+        assertNull(result.metadata)
+        assertNull(result.content)
+        assertEquals(HttpHeaderSelectionStatus.MISSING, f.service.read(input.copy(headerName = "Absent", limit = 2)).headerSelection?.status)
+        assertEquals(HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED), f.service.read(input.copy(headerName = "Absent", limit = 1)).headerSelection)
+        every { f.request.headers() } returns listOf(header("X-Value", ""))
+        assertEquals(listOf(""), f.service.read(input).headerSelection?.values)
+        every { f.request.headers() } returns listOf(header("K", "not-an-ascii-name"))
+        assertEquals(HttpHeaderSelectionStatus.MISSING, f.service.read(input.copy(headerName = "K")).headerSelection?.status)
+        every { f.request.headers() } returns listOf(header("a".repeat(256), "boundary"))
+        assertEquals(listOf("boundary"), f.service.read(input.copy(headerName = "a".repeat(256))).headerSelection?.values)
+        verify(exactly = 0) { other.value() }
+        verify(exactly = 0) { f.request.toByteArray() }
+        verify(exactly = 0) { f.request.body() }
+        verify(exactly = 0) { f.request.url() }
+        verify(exactly = 0) { f.request.httpService() }
+        verify(exactly = 0) { f.item.annotations() }
+    }
+
+    @Test
+    fun `selected headers enforce complete input count and escaped UTF8 output budgets`() = runBlocking {
+        val f = fixture(List(40) { "project-a" })
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_headers", headerName = "X")
+        every { f.request.bodyOffset() } returns 65537
+        assertEquals(HttpHeaderSelectionStatus.INPUT_TRUNCATED, f.service.read(input).headerSelection?.status)
+        verify(exactly = 0) { f.request.headers() }
+        every { f.request.bodyOffset() } returns 65536
+        every { f.request.headers() } returns object : AbstractList<HttpHeader>() {
+            override val size = 129
+            override fun get(index: Int): HttpHeader = error("must not inspect oversized header lists")
+        }
+        assertEquals(HttpHeaderSelectionStatus.INPUT_TRUNCATED, f.service.read(input).headerSelection?.status)
+        val ignored = mockk<HttpHeader>()
+        every { ignored.name() } returns "Other"
+        every { f.request.headers() } returns List(127) { ignored } + header("X", "yes")
+        assertEquals(listOf("yes"), f.service.read(input).headerSelection?.values)
+        verify(exactly = 0) { ignored.value() }
+        every { f.request.headers() } returns List(32) { header("X", "") }
+        assertEquals(32, f.service.read(input).headerSelection?.values?.size)
+        every { f.request.headers() } returns List(33) { header("X", "") }
+        assertEquals(HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED), f.service.read(input).headerSelection)
+        every { f.request.headers() } returns listOf(header("X", "x".repeat(65537)))
+        assertEquals(HttpHeaderSelection(HttpHeaderSelectionStatus.INPUT_TRUNCATED), f.service.read(input).headerSelection)
+        every { f.request.headers() } returns listOf(header("a".repeat(257), ""))
+        assertEquals(HttpHeaderSelectionStatus.INPUT_TRUNCATED, f.service.read(input).headerSelection?.status)
+        val values = listOf("가\"\\\n", "")
+        val exactBytes = JsonArray(values.map(::JsonPrimitive)).toString().toByteArray(Charsets.UTF_8).size
+        every { f.request.headers() } returns values.map { header("X", it) }
+        assertEquals(values, f.service.read(input.copy(limit = exactBytes)).headerSelection?.values)
+        val tooSmall = f.service.read(input.copy(limit = exactBytes - 1))
+        assertEquals(HttpHeaderSelection(HttpHeaderSelectionStatus.LIMIT_EXCEEDED), tooSmall.headerSelection)
+        assertNull(tooSmall.content)
+        every { f.request.bodyOffset() } returns -1
+        assertEquals(HttpMessageReadStatus.BURP_ERROR, f.service.read(input).status)
+    }
+
+    @Test
+    fun `inspection arguments fail before project source or approvals`() = runBlocking {
+        val f = fixture(listOf("project-a"))
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_headers", headerName = "X")
+        val invalid = listOf("", "a".repeat(257), "X Y", "X:Y", "X\nY", "K").map { input.copy(headerName = it) } + listOf(
+            input.copy(part = null), input.copy(part = "request_body"), input.copy(jsonPointer = "/x"),
+            input.copy(offset = 1), input.copy(encoding = "base64"), input.copy(limit = 0), input.copy(limit = 262145),
+            input.copy(part = "response_mime"), input.copy(part = "response_mime", headerName = null, offset = 1),
+            input.copy(part = "response_mime", headerName = null, encoding = "base64"),
+        )
+        invalid.forEach { assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, f.service.read(it).status) }
+        verify(exactly = 0) { f.api.project() }
+        verify(exactly = 0) { f.proxy.history(any()) }
+    }
+
+    @Test
+    fun `response MIME is an opt-in observation with indeterminate labels`() = runBlocking {
+        val pairs = listOf<Triple<MimeType?, MimeType?, Boolean?>>(
+            Triple(MimeType.JSON, MimeType.JSON, false), Triple(MimeType.PLAIN_TEXT, MimeType.HTML, true),
+            Triple(null, MimeType.JSON, null), Triple(MimeType.JSON, null, null), Triple(null, null, null),
+        ) + listOf(MimeType.NONE, MimeType.UNRECOGNIZED, MimeType.AMBIGUOUS, MimeType.IMAGE_UNKNOWN, MimeType.APPLICATION_UNKNOWN)
+            .flatMap { listOf(Triple(it, MimeType.JSON, null), Triple(MimeType.JSON, it, null), Triple(it, it, null)) }
+        for ((stated, inferred, disagreement) in pairs) {
+            val f = fixture(List(3) { "project-a" })
+            val response = response(f, 128)
+            every { response.statedMimeType() } returns stated
+            every { response.inferredMimeType() } returns inferred
+            val result = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response_mime"))
+            assertEquals(HttpMimeAnalysis(stated?.name, inferred?.name, disagreement, false), result.mimeAnalysis)
+            assertNull(result.metadata)
+            assertNull(result.content)
+            verify(exactly = 0) { response.toByteArray() }
+            verify(exactly = 0) { response.headers() }
+            verify(exactly = 0) { f.request.url() }
+            verify(exactly = 0) { f.request.body() }
+            verify(exactly = 0) { f.item.annotations() }
+        }
+    }
+
+    @Test
+    fun `response inspection distinguishes missing size caps and invalid native lengths`() = runBlocking {
+        val f = fixture(List(30) { "project-a" })
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response_mime")
+        assertEquals(HttpMessageReadStatus.PART_UNAVAILABLE, f.service.read(input).status)
+        assertEquals(HttpMessageReadStatus.PART_UNAVAILABLE, f.service.read(input.copy(part = "response_headers", headerName = "X")).status)
+        val response = response(f, 1048576 - 32)
+        every { response.statedMimeType() } returns MimeType.JSON
+        every { response.inferredMimeType() } returns MimeType.JSON
+        assertEquals(false, f.service.read(input).mimeAnalysis?.skipped)
+        every { response.body().length() } returns 1048576 - 31
+        assertEquals(HttpMimeAnalysis(null, null, null, true), f.service.read(input).mimeAnalysis)
+        every { response.bodyOffset() } returns Int.MAX_VALUE
+        every { response.body().length() } returns Int.MAX_VALUE
+        assertEquals(true, f.service.read(input).mimeAnalysis?.skipped)
+        verify(exactly = 1) { response.statedMimeType() }
+        verify(exactly = 1) { response.inferredMimeType() }
+        every { response.bodyOffset() } returns -1
+        assertEquals(HttpMessageReadStatus.BURP_ERROR, f.service.read(input).status)
+        every { response.bodyOffset() } returns 32
+        every { response.body().length() } returns -1
+        assertEquals(HttpMessageReadStatus.BURP_ERROR, f.service.read(input).status)
+        every { response.body().length() } returns 0
+        every { response.headers() } returns listOf(header("X", "response-only"))
+        assertEquals(listOf("response-only"), f.service.read(input.copy(part = "response_headers", headerName = "x")).headerSelection?.values)
+    }
+
+    @Test
+    fun `inspection errors cancellation and final project changes never leak selected data`() = runBlocking {
+        for (part in listOf("request_headers", "response_mime")) {
+            val f = fixture(List(4) { "project-a" })
+            val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = part, headerName = if (part == "request_headers") "X" else null)
+            val mimeResponse = if (part == "response_mime") response(f, 0) else null
+            if (part == "request_headers") {
+                every { f.request.bodyOffset() } returns 32
+                every { f.request.headers() } throws IllegalStateException("PRIVATE_SENTINEL")
+            } else {
+                every { mimeResponse!!.statedMimeType() } throws IllegalStateException("PRIVATE_SENTINEL")
+            }
+            val result = f.service.read(input)
+            assertEquals(HttpMessageReadStatus.BURP_ERROR, result.status)
+            assertNull(result.headerSelection)
+            assertNull(result.mimeAnalysis)
+            assertFalse(result.toString().contains("PRIVATE_SENTINEL"))
+            if (part == "request_headers") {
+                every { f.request.headers() } throws CancellationException("cancel")
+            } else {
+                every { mimeResponse!!.statedMimeType() } throws CancellationException("cancel")
+            }
+            assertFailsWith<CancellationException> { f.service.read(input) }
+
+            val moved = fixture(listOf("project-a", "project-a", "project-b"))
+            if (part == "request_headers") {
+                every { moved.request.bodyOffset() } returns 32
+                every { moved.request.headers() } returns listOf(header("X", "PRIVATE_SENTINEL"))
+            } else {
+                val response = response(moved, 0)
+                every { response.statedMimeType() } returns MimeType.JSON
+                every { response.inferredMimeType() } returns MimeType.HTML
+            }
+            val discarded = moved.service.read(input)
+            assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, discarded.status)
+            assertNull(discarded.headerSelection)
+            assertNull(discarded.mimeAnalysis)
+            assertFalse(discarded.toString().contains("PRIVATE_SENTINEL"))
+        }
+    }
+
+    @Test
+    fun `inspection source denial never reads either native selector`() = runBlocking {
+        val previous = DataAccessSecurity.approvalHandler
+        try {
+            DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+                override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig) = false
+            }
+            for (part in listOf("request_headers", "response_mime")) {
+                val f = fixture(List(3) { "project-a" }, requireApproval = true)
+                val result = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = part, headerName = if (part == "request_headers") "X" else null))
+                assertEquals(HttpMessageReadStatus.ACCESS_DENIED, result.status)
+                verify(exactly = 0) { f.proxy.history(any()) }
+            }
+        } finally {
+            DataAccessSecurity.approvalHandler = previous
+        }
+    }
+
+    private fun header(name: String, value: String): HttpHeader = mockk<HttpHeader>().also {
+        every { it.name() } returns name
+        every { it.value() } returns value
+    }
+
+    private fun response(f: ReadFixture, bodyBytes: Int): HttpResponse = mockk<HttpResponse>().also { response ->
+        val body = mockk<MontoyaByteArray>()
+        every { body.length() } returns bodyBytes
+        every { response.body() } returns body
+        every { response.bodyOffset() } returns 32
+        every { f.item.response() } returns response
+    }
+
+    private fun fixture(projectIds: List<String>, bodyText: String = "", requireApproval: Boolean = false): ReadFixture {
         val api = mockk<MontoyaApi>()
         val project = mockk<Project>()
         val proxy = mockk<Proxy>()
@@ -355,6 +568,7 @@ class HttpMessageReadTest {
         val annotations = mockk<Annotations>()
         val logging = mockk<Logging>(relaxed = true)
         val storage = mockk<PersistedObject>(relaxed = true)
+        if (requireApproval) every { storage.getBoolean("requireDataAccessApproval") } returns true
         val config = McpConfig(storage, logging, net.portswigger.mcp.testPreferences())
 
         every { api.project() } returns project

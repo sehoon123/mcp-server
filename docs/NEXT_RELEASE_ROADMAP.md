@@ -1,7 +1,7 @@
 # Active release roadmap
 
 **Status date:** 2026-09-16<br>
-**Current test candidate:** `4.12.0-rc.3` (agent-efficiency changes after RC2; publication gates remain open)<br>
+**Current development build:** `4.12.0-dev.4` (focused passive inspection after RC3 CI; tagging/publication gates remain open)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
 **Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
@@ -469,7 +469,10 @@ aliases or families.
 
 ## v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
-Development began on advancing `main` under `4.12.0-dev.1`; the current test candidate is `4.12.0-rc.3` after signed RC2.
+Development began on advancing `main` under `4.12.0-dev.1`; the current build is `4.12.0-dev.4` after the RC3 CI candidate.
+RC3 has no tag/draft: its fresh OSV preflight reported four build/test dependency coordinates, so tagging was withheld.
+The new development work uses SerialVersion 16 and adds only [focused header/MIME reads](REBURP_FEATURE_REVIEW.md);
+it does not address or waive that dependency gate.
 The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
 cherry-picked into that release branch. RC1 locally increments `SerialVersion` from 12 to 13, but this is not a frozen
 release identity: before signing, reconcile it against every same-UUID predecessor, including the non-ancestor v4.11

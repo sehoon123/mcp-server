@@ -223,8 +223,9 @@ examples are 66,914 → 17,758 UTF-8 bytes for a mirrored default HTTP preview o
 are synthetic byte/character reductions, not tokenizer counts or real-agent benchmarks. Larger complete-read tasks should
 request a sufficient explicit limit instead of incurring extra small-page calls.
 
-The serialized tool arrays remain approximately 130.7/197.5 kB (Community/Professional: 130,667/197,455 bytes), including
-output schemas; clients differ in which fields reach a model. The existing fingerprint tests also cap these arrays at 132,000/200,000 bytes to make catalog growth deliberate. Do not claim meaningful catalog shrinkage from
+RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); the focused header/MIME development
+adds 1,009 bytes for 131,676/198,464, including output schemas. Clients differ in which fields reach a model. Existing
+fingerprint tests retain the 132,000/200,000-byte ceilings to make catalog growth deliberate. Do not claim meaningful catalog shrinkage from
 this change. Initialize instructions grow from 742 to 1,100 bytes to help avoid redundant reads; keep them below 1,500.
 
 ### 2. Select accurate tool annotations
