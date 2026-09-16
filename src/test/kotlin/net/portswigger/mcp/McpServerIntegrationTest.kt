@@ -782,7 +782,14 @@ class McpServerIntegrationTest {
                 "burp://http/integration-project/proxy/${"1".repeat(129)}"
             ).singleTextResourceJson()
             assertEquals("invalid_id", oversizedId["status"]?.jsonPrimitive?.content)
+            for (part in listOf("RESPONSE_MIME", "response-mime", "%20response_body", "response_body%20", "unknown")) {
+                val uri = "burp://http/integration-project/proxy/7/$part"
+                val rejected = client.readResource(uri).singleTextResourceJson()
+                assertEquals("invalid_argument", rejected["status"]?.jsonPrimitive?.content, part)
+                assertTrue(runCatching { client.getPrompt("analyze_http_without_sending", mapOf("httpReference" to uri)) }.isFailure, part)
+            }
             assertEquals(0, prompts.get())
+            verify(exactly = 0) { bridgeProxy.history(any()) }
         } finally {
             DataAccessSecurity.approvalHandler = previousHandler
         }

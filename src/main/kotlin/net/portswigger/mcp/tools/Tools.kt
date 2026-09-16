@@ -37,7 +37,9 @@ import java.util.regex.Pattern
 internal suspend fun checkDataAccessOrDeny(
     accessType: DataAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
 ): Boolean {
+    currentCoroutineContext().ensureActive()
     val allowed = DataAccessSecurity.checkDataAccessPermission(accessType, config)
+    currentCoroutineContext().ensureActive()
     if (!allowed) {
         api.logging().logToOutput("MCP $logMessage access denied")
         return false

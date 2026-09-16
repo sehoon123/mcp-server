@@ -17,10 +17,16 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -325,6 +331,54 @@ class ScannerIssueReadTest {
         assertEquals(id, result.summary?.id)
         verify(exactly = 1) { issues[MAX_SCANNER_ISSUE_SCAN] }
         verify(exactly = 0) { issue.detail() }
+    }
+
+    @Test
+    fun `already cancelled Scanner reads avoid native project and source access`() = runBlocking {
+        val id = issue(7, "Cancellation", "unused").stableHistoryId(0)
+        every { siteMap.issues() } returns emptyList()
+        var returned: ScannerIssueReadResult? = null
+        val operation = async {
+            currentCoroutineContext().cancel()
+            returned = service.read(GetScannerIssueById(id, "project-123", field = "detail"))
+        }
+        assertFailsWith<CancellationException> { operation.await() }
+        assertNull(returned)
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { siteMap.issues() }
+    }
+
+    @Test
+    fun `indexed Scanner Job cancellation stops detail access and final results`() = runBlocking {
+        for (phase in listOf("lookup_return", "lookup_throw", "project_return", "project_throw")) {
+            val issue = issue(7, "Cancellation", "PRIVATE_SENTINEL")
+            val id = issue.stableHistoryId(0)
+            var operationJob: Job? = null
+            var detailRead = false
+            var returned: ScannerIssueReadResult? = null
+            every { siteMap.issues() } answers {
+                if (phase.startsWith("lookup")) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                listOf(issue)
+            }
+            every { issue.detail() } answers { detailRead = true; "PRIVATE_SENTINEL" }
+            every { project.id() } answers {
+                if (detailRead) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                "project-123"
+            }
+            val operation = async {
+                operationJob = currentCoroutineContext()[Job]
+                returned = service.read(GetScannerIssueById(id, "project-123", field = "detail"))
+            }
+            assertFailsWith<CancellationException>(phase) { operation.await() }
+            assertNull(returned, phase)
+            if (phase.startsWith("lookup")) verify(exactly = 0) { issue.detail() }
+        }
     }
 
     private fun issue(typeIndex: Int, name: String, detail: String): AuditIssue {

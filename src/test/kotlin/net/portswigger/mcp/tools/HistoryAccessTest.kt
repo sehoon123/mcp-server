@@ -9,6 +9,7 @@ import io.mockk.every
 import io.mockk.mockk
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -35,6 +36,11 @@ class HistoryAccessTest {
         assertEquals(262144, normalizeHistoryLimit(262144))
         assertEquals("metadata", normalizeHttpPart(null))
         assertEquals("response_body", normalizeHttpPart("response-body"))
+        assertEquals("response_mime", normalizeHttpPart(" RESPONSE-MIME "))
+        assertTrue(isCanonicalHttpPart("response_mime"))
+        assertFalse(isCanonicalHttpPart("RESPONSE_MIME"))
+        assertFalse(isCanonicalHttpPart("response-mime"))
+        assertFalse(isCanonicalHttpPart(" response_mime "))
         assertEquals("base64", normalizeHistoryEncoding("BASE64"))
 
         assertFailsWith<IllegalArgumentException> { normalizeHistoryOffset(-1) }

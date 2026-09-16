@@ -174,6 +174,7 @@ internal class HttpMessageReadService(
     private val resolver = HttpMessageResolver(api, config)
 
     suspend fun read(input: GetHttpMessage): GetHttpMessageResult {
+        currentCoroutineContext().ensureActive()
         val normalizedPart: String
         val normalizedOffset: Int
         val normalizedLimit: Int
@@ -200,6 +201,7 @@ internal class HttpMessageReadService(
                 require(normalizedOffset == 0 && normalizedEncoding == "text") { "response_mime requires offset 0 and text encoding" }
             }
         } catch (e: IllegalArgumentException) {
+            currentCoroutineContext().ensureActive()
             return readError(
                 status = HttpMessageReadStatus.INVALID_ARGUMENT,
                 projectId = null,
@@ -218,7 +220,7 @@ internal class HttpMessageReadService(
                 } else {
                     HttpSourceMetadataSelection.NONE
                 },
-            )
+            ).also { currentCoroutineContext().ensureActive() }
         ) {
             is HttpMessageBatchResolution.Found -> resolution
             is HttpMessageBatchResolution.Failed -> return readError(
@@ -253,6 +255,7 @@ internal class HttpMessageReadService(
                 message = e.message.orEmpty(),
             )
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             readError(
                 status = HttpMessageReadStatus.BURP_ERROR,
                 projectId = found.projectId,
@@ -262,11 +265,13 @@ internal class HttpMessageReadService(
             )
         }
 
+        currentCoroutineContext().ensureActive()
         val currentProjectId = try {
-            api.project().id()
+            api.project().id().also { currentCoroutineContext().ensureActive() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return readError(
                 status = HttpMessageReadStatus.BURP_ERROR,
                 projectId = found.projectId,

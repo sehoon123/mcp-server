@@ -6,14 +6,14 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0-rc.4` (BApp SerialVersion 17) — a test candidate with passive inspection and defensive
-dependency updates, not a published stable release.**
-See the [reburp feature review](docs/REBURP_FEATURE_REVIEW.md) and [RC4 release gates](docs/releases/4.12.0-rc.4.md).
-RC4 updates Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache HttpClient5 `5.6.4` /
+**Current source version: `4.12.0-rc.5` (BApp SerialVersion 18) — a test candidate with consistent resource URIs and
+cooperative read cancellation, not a published stable release.**
+See the [RC5 changes and release gates](docs/releases/4.12.0-rc.5.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
+RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache HttpClient5 `5.6.4` /
 HttpCore5 `5.4.3` stack to clear the fresh OSV pre-tag blockers; it adds no request, scan, or execution capability.
 The embedded proxy is `2.2.1`, also using Kotlin `2.4.20`. Tagging requires a fresh check of the exact committed
 208-coordinate [candidate graph](security/README.md); formal publication remains separately gated. The signed RC1/RC2
-candidates and their uploaded bytes remain unchanged.
+candidates and their uploaded bytes remain unchanged; the signed RC4 test candidate is preserved too.
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**
@@ -288,7 +288,16 @@ burp://scanner-issue/{projectId}/{id}/{field}/{evidenceIndex}
 HTTP, WebSocket, and Scanner resources reuse the existing source approval checks on every read, including memory-only
 session grants, and revalidate the current project and stable ID before returning bounded content. Message and evidence
 resources return the first 8 KiB slice by default from RC3 (32 KiB through RC2); use the corresponding detail tool when
-further byte pagination is required. URIs must be canonical. Resource subscriptions and list-change notifications remain unadvertised because the
+further byte pagination is required. URIs must be canonical: HTTP part segments use exact lowercase/underscore names
+such as `response_body` and `response_mime`. Case, hyphen, or whitespace aliases are rejected before source approval;
+this does not remove the detail tool's existing part normalization.
+
+HTTP, WebSocket, and Scanner reads check Job cancellation at service entry and around approval, lookup, materialization,
+and final project checks, preventing avoidable follow-up work and ordinary service results after observed cancellation.
+Native calls and synchronous slicing are not forcibly interrupted. The MCP dispatcher already propagates cancellation;
+these service checks are not a claim that prior cancelled wire responses leaked data.
+
+Resource subscriptions and list-change notifications remain unadvertised because the
 catalog is fixed for a listener lifetime and Kotlin SDK `0.14.0` does not expose bounded, project-aware subscription
 admission or selective invalidation. See [PROJECT_BOUND_NOTIFICATIONS.md](docs/PROJECT_BOUND_NOTIFICATIONS.md).
 

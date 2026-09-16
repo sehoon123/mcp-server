@@ -159,6 +159,7 @@ internal class HttpMessageResolver(
         authorization: HttpMessageResolutionAuthorization?,
         performanceAttribution: HttpMessageResolutionPerformanceAttribution?,
     ): HttpMessageBatchResolution {
+        currentCoroutineContext().ensureActive()
         if (!isValidProjectId(projectId)) {
             return failure(
                 HttpMessageResolutionStatus.INVALID_ARGUMENT,
@@ -206,10 +207,11 @@ internal class HttpMessageResolver(
         }
 
         val currentProjectId = try {
-            api.project().id()
+            api.project().id().also { currentCoroutineContext().ensureActive() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return failure(
                 HttpMessageResolutionStatus.BURP_ERROR,
                 null,
@@ -244,13 +246,16 @@ internal class HttpMessageResolver(
             authorization
         } else {
             for (source in authorizationSources) {
+                currentCoroutineContext().ensureActive()
                 val sourceRefIndex = validated.indexOfFirst { it.ref.source == source }
                 val sourceRef = validated.getOrNull(sourceRefIndex)?.ref
                 val allowed = try {
                     DataAccessSecurity.checkDataAccessPermission(source.dataAccessType(), config)
+                        .also { currentCoroutineContext().ensureActive() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    currentCoroutineContext().ensureActive()
                     return failure(
                         HttpMessageResolutionStatus.BURP_ERROR,
                         currentProjectId,
@@ -263,12 +268,14 @@ internal class HttpMessageResolver(
                     api.logging().logToOutput(
                         "MCP ${source.displayNameForResolution()} access ${if (allowed) "granted" else "denied"}"
                     )
-                }
+                }.onFailure { if (it is CancellationException) throw it }
+                currentCoroutineContext().ensureActive()
                 val projectAfterSourceApproval = try {
-                    api.project().id()
+                    api.project().id().also { currentCoroutineContext().ensureActive() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    currentCoroutineContext().ensureActive()
                     return failure(
                         HttpMessageResolutionStatus.BURP_ERROR,
                         currentProjectId,
@@ -314,6 +321,7 @@ internal class HttpMessageResolver(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return failure(
                 HttpMessageResolutionStatus.BURP_ERROR,
                 currentProjectId,
@@ -322,11 +330,13 @@ internal class HttpMessageResolver(
                 "Burp could not resolve the HTTP message: ${safeResolverException(e)}",
             )
         }
+        currentCoroutineContext().ensureActive()
         val projectAfterResolution = try {
-            api.project().id()
+            api.project().id().also { currentCoroutineContext().ensureActive() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return failure(
                 HttpMessageResolutionStatus.BURP_ERROR,
                 currentProjectId,

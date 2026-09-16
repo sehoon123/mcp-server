@@ -29,6 +29,7 @@ internal class ScannerIssueReadService(
     private val config: McpConfig,
 ) {
     suspend fun read(input: GetScannerIssueById): ScannerIssueReadResult {
+        currentCoroutineContext().ensureActive()
         val parsedId = parseScannerIssueId(input.id) ?: return scannerIssueReadError(
             input,
             HistoryReadStatus.INVALID_ARGUMENT,
@@ -57,6 +58,7 @@ internal class ScannerIssueReadService(
                 }
             }
         } catch (e: IllegalArgumentException) {
+            currentCoroutineContext().ensureActive()
             return scannerIssueReadError(
                 input,
                 HistoryReadStatus.INVALID_ARGUMENT,
@@ -67,10 +69,11 @@ internal class ScannerIssueReadService(
         }
 
         val expectedProjectId = try {
-            api.project().id()
+            api.project().id().also { currentCoroutineContext().ensureActive() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return scannerIssueReadError(
                 input,
                 HistoryReadStatus.BURP_ERROR,
@@ -95,7 +98,7 @@ internal class ScannerIssueReadService(
                 api,
                 "Scanner issue ${input.id}",
             )
-            val projectAfterApproval = api.project().id()
+            val projectAfterApproval = api.project().id().also { currentCoroutineContext().ensureActive() }
             if (projectAfterApproval != expectedProjectId) {
                 return mismatch(
                     input,
@@ -115,7 +118,8 @@ internal class ScannerIssueReadService(
             }
 
             val issues = api.siteMap().issues()
-            val projectAfterSnapshot = api.project().id()
+            currentCoroutineContext().ensureActive()
+            val projectAfterSnapshot = api.project().id().also { currentCoroutineContext().ensureActive() }
             if (projectAfterSnapshot != expectedProjectId) {
                 return mismatch(
                     input,
@@ -145,7 +149,8 @@ internal class ScannerIssueReadService(
                 if (ambiguous || scanned < issues.size) null else match
             }
 
-            val currentProjectId = api.project().id()
+            currentCoroutineContext().ensureActive()
+            val currentProjectId = api.project().id().also { currentCoroutineContext().ensureActive() }
             if (currentProjectId != expectedProjectId) {
                 return mismatch(
                     input,
@@ -192,7 +197,8 @@ internal class ScannerIssueReadService(
                     e.message.orEmpty(),
                 )
             }
-            val finalProjectId = api.project().id()
+            currentCoroutineContext().ensureActive()
+            val finalProjectId = api.project().id().also { currentCoroutineContext().ensureActive() }
             if (finalProjectId != expectedProjectId) {
                 return mismatch(
                     input,
@@ -205,6 +211,7 @@ internal class ScannerIssueReadService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             scannerIssueReadError(
                 input,
                 HistoryReadStatus.BURP_ERROR,

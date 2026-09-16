@@ -13,6 +13,11 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
@@ -22,6 +27,8 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -184,6 +191,80 @@ class WebSocketMessageReadTest {
         assertEquals("replacement-project", result.projectId)
         assertEquals(null, result.metadata)
         assertEquals(null, result.content)
+    }
+
+    @Test
+    fun `already cancelled WebSocket reads avoid native project and source access`() = runBlocking {
+        config.requireDataAccessApproval = false
+        every { proxy.webSocketHistory(any()) } returns emptyList()
+        var returned: WebSocketMessageReadResult? = null
+        val operation = async {
+            currentCoroutineContext().cancel()
+            returned = service.read(GetWebsocketMessageById(7, "project-ws"))
+        }
+        assertFailsWith<CancellationException> { operation.await() }
+        assertNull(returned)
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { proxy.webSocketHistory(any()) }
+    }
+
+    @Test
+    fun `WebSocket Job cancellation stops native followup and final results`() = runBlocking {
+        config.requireDataAccessApproval = false
+        for (phase in listOf("lookup_return", "lookup_throw", "project_return", "project_throw")) {
+            val item = mockk<ProxyWebSocketMessage>()
+            val payload = mockk<MontoyaByteArray>()
+            val annotations = mockk<Annotations>()
+            var operationJob: Job? = null
+            var payloadRead = false
+            var returned: WebSocketMessageReadResult? = null
+            every { item.id() } returns 7
+            every { item.webSocketId() } returns 3
+            every { item.time() } returns ZonedDateTime.parse("2026-01-02T03:04:05Z")
+            every { item.direction() } returns Direction.SERVER_TO_CLIENT
+            every { item.listenerPort() } returns 8080
+            every { item.annotations() } returns annotations
+            every { annotations.notes() } returns null
+            every { payload.length() } returns 0
+            every { item.payload() } answers { payloadRead = true; payload }
+            every { proxy.webSocketHistory(any()) } answers {
+                if (phase.startsWith("lookup")) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                listOf(item)
+            }
+            every { project.id() } answers {
+                if (payloadRead) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                "project-ws"
+            }
+            val operation = async {
+                operationJob = currentCoroutineContext()[Job]
+                returned = service.read(GetWebsocketMessageById(7, "project-ws"))
+            }
+            assertFailsWith<CancellationException>(phase) { operation.await() }
+            assertNull(returned, phase)
+            if (phase.startsWith("lookup")) verify(exactly = 0) { item.payload() }
+        }
+    }
+
+    @Test
+    fun `cancelled approval prevents WebSocket history lookup without throwing from the handler`() = runBlocking {
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                currentCoroutineContext().cancel()
+                return true
+            }
+        }
+        every { proxy.webSocketHistory(any()) } returns emptyList()
+        var returned: WebSocketMessageReadResult? = null
+        val operation = async { returned = service.read(GetWebsocketMessageById(7, "project-ws")) }
+        assertFailsWith<CancellationException> { operation.await() }
+        assertNull(returned)
+        verify(exactly = 0) { proxy.webSocketHistory(any()) }
     }
 
     @Test

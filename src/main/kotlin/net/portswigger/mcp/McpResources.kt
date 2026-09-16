@@ -33,6 +33,7 @@ import net.portswigger.mcp.tools.SCANNER_ISSUE_ID_REGEX
 import net.portswigger.mcp.tools.ScannerIssueReadService
 import net.portswigger.mcp.tools.WebSocketMessageReadService
 import net.portswigger.mcp.tools.executeRegisteredResource
+import net.portswigger.mcp.tools.isCanonicalHttpPart
 import net.portswigger.mcp.tools.parseSiteMapId
 import java.net.URI
 import java.net.URLDecoder
@@ -437,6 +438,9 @@ private suspend fun Server.readHttpResource(
     }
     val id = variables["id"]?.takeIf(String::isNotEmpty)
         ?: return@secureResourceRead invalidResource(request.uri, "HTTP reference ID is invalid")
+    if (part != null && !isCanonicalHttpPart(part)) {
+        return@secureResourceRead invalidResource(request.uri, "HTTP message part is invalid or noncanonical")
+    }
     val segments = buildList {
         add(projectId)
         add(sourceText)
@@ -757,16 +761,7 @@ private fun validCanonicalHttpReference(value: String): Boolean {
     if (segments.size !in 3..4 || !validProjectId(segments[0])) return false
     if (segments[1] !in setOf("proxy", "site_map", "organizer")) return false
     if (segments[2].length !in 1..128 || segments[2].any(Char::isISOControl)) return false
-    return segments.size == 3 || segments[3] in setOf(
-        "metadata",
-        "request",
-        "request_headers",
-        "request_body",
-        "response",
-        "response_headers",
-        "response_body",
-        "response_mime",
-    )
+    return segments.size == 3 || isCanonicalHttpPart(segments[3])
 }
 
 private fun validCanonicalScannerReference(value: String): Boolean {

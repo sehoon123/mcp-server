@@ -228,6 +228,14 @@ adds 1,009 bytes for 131,676/198,464, including output schemas. Clients differ i
 fingerprint tests retain the 132,000/200,000-byte ceilings to make catalog growth deliberate. Do not claim meaningful catalog shrinkage from
 this change. Initialize instructions grow from 742 to 1,100 bytes to help avoid redundant reads; keep them below 1,500.
 
+### Read cancellation and URI regression checks
+
+Use actual `Job.cancel()` from synthetic native getters, including getters that return normally or throw an ordinary
+exception. Assert the service did not return an ordinary result or call later accessors; a cancelled `await()` alone
+cannot prove that internal work stopped. Cover pre-cancelled, post-approval/lookup, and final-project-check boundaries.
+Do not describe cooperative checkpoints as interruptible native calls or treat service-only tests as proof of a wire leak.
+HTTP resource and prompt part validation share exact membership; keep the detail tool's tolerant normalization separate.
+
 ### 2. Select accurate tool annotations
 
 Reuse or add annotations in `McpTool.kt`:

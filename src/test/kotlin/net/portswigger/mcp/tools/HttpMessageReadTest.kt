@@ -24,6 +24,10 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
@@ -544,6 +548,99 @@ class HttpMessageReadTest {
         }
     }
 
+    @Test
+    fun `HTTP approval Job cancellation avoids subsequent logging project and history access`() = runBlocking {
+        val previous = DataAccessSecurity.approvalHandler
+        try {
+            DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+                override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean {
+                    currentCoroutineContext().cancel()
+                    return true
+                }
+            }
+            val f = fixture(List(4) { "project-a" }, requireApproval = true)
+            var returned: GetHttpMessageResult? = null
+            val operation = async {
+                returned = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7")))
+            }
+            assertFailsWith<CancellationException> { operation.await() }
+            assertNull(returned)
+            verify(exactly = 1) { f.api.project() }
+            verify(exactly = 0) { f.api.logging() }
+            verify(exactly = 0) { f.proxy.history(any()) }
+        } finally {
+            DataAccessSecurity.approvalHandler = previous
+        }
+    }
+
+    @Test
+    fun `HTTP resolver does not swallow native logging cancellation`() = runBlocking {
+        val f = fixture(List(4) { "project-a" })
+        every { f.api.logging() } throws CancellationException("native logging cancelled")
+        assertFailsWith<CancellationException> {
+            f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7")))
+        }
+        verify(exactly = 1) { f.api.project() }
+        verify(exactly = 0) { f.proxy.history(any()) }
+    }
+
+    @Test
+    fun `already cancelled HTTP reads avoid native project and source access`() = runBlocking {
+        val f = fixture(List(4) { "project-a" })
+        var returned: GetHttpMessageResult? = null
+        val operation = async {
+            currentCoroutineContext().cancel()
+            returned = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7")))
+        }
+        assertFailsWith<CancellationException> { operation.await() }
+        assertNull(returned)
+        verify(exactly = 0) { f.api.project() }
+        verify(exactly = 0) { f.proxy.history(any()) }
+    }
+
+    @Test
+    fun `HTTP Job cancellation after materialization or final project read never returns a result`() = runBlocking {
+        for (phase in listOf("lookup_return", "lookup_throw", "body_return", "body_throw", "project_return", "project_throw")) {
+            val f = fixture(List(8) { "project-a" }, "PRIVATE_SENTINEL")
+            var operationJob: Job? = null
+            var bodyRead = false
+            var projectsAfterBody = 0
+            var returned: GetHttpMessageResult? = null
+            every { f.proxy.history(any()) } answers {
+                if (phase.startsWith("lookup")) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                listOf(f.item)
+            }
+            every { f.request.body() } answers {
+                bodyRead = true
+                if (phase.startsWith("body")) {
+                    operationJob!!.cancel()
+                    if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                }
+                f.body
+            }
+            every { f.project.id() } answers {
+                if (bodyRead) {
+                    projectsAfterBody++
+                    if (phase.startsWith("project")) {
+                        operationJob!!.cancel()
+                        if (phase.endsWith("throw")) throw IllegalStateException("PRIVATE_SENTINEL")
+                    }
+                }
+                "project-a"
+            }
+            val operation = async {
+                operationJob = currentCoroutineContext()[Job]
+                returned = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_body"))
+            }
+            assertFailsWith<CancellationException>(phase) { operation.await() }
+            assertNull(returned, phase)
+            assertEquals(if (phase.startsWith("project")) 1 else 0, projectsAfterBody, phase)
+        }
+    }
+
     private fun header(name: String, value: String): HttpHeader = mockk<HttpHeader>().also {
         every { it.name() } returns name
         every { it.value() } returns value
@@ -611,6 +708,7 @@ class HttpMessageReadTest {
         return ReadFixture(
             service = HttpMessageReadService(api, config),
             api = api,
+            project = project,
             config = config,
             proxy = proxy,
             item = item,
@@ -622,6 +720,7 @@ class HttpMessageReadTest {
     private data class ReadFixture(
         val service: HttpMessageReadService,
         val api: MontoyaApi,
+        val project: Project,
         val config: McpConfig,
         val proxy: Proxy,
         val item: ProxyHttpRequestResponse,

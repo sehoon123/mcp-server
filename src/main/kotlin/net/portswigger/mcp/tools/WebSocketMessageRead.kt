@@ -2,6 +2,8 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.DataAccessType
 
@@ -11,6 +13,7 @@ internal class WebSocketMessageReadService(
     private val config: McpConfig,
 ) {
     suspend fun read(input: GetWebsocketMessageById): WebSocketMessageReadResult {
+        currentCoroutineContext().ensureActive()
         val normalizedOffset: Int
         val normalizedLimit: Int
         val normalizedEncoding: String
@@ -26,14 +29,16 @@ internal class WebSocketMessageReadService(
             normalizedLimit = normalizeHistoryLimit(input.limit)
             normalizedEncoding = normalizeHistoryEncoding(input.encoding)
         } catch (e: IllegalArgumentException) {
+            currentCoroutineContext().ensureActive()
             return webSocketReadError(input, HistoryReadStatus.INVALID_ARGUMENT, null, e.message.orEmpty())
         }
 
         val expectedProjectId = try {
-            api.project().id()
+            api.project().id().also { currentCoroutineContext().ensureActive() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             return webSocketReadError(
                 input,
                 HistoryReadStatus.BURP_ERROR,
@@ -46,6 +51,7 @@ internal class WebSocketMessageReadService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             webSocketReadError(
                 input,
                 HistoryReadStatus.BURP_ERROR,
@@ -76,7 +82,7 @@ internal class WebSocketMessageReadService(
             api,
             "WebSocket history item ${input.id}",
         )
-        val projectAfterApproval = api.project().id()
+        val projectAfterApproval = api.project().id().also { currentCoroutineContext().ensureActive() }
         if (projectAfterApproval != expectedProjectId) {
             return webSocketReadError(
                 input,
@@ -95,7 +101,8 @@ internal class WebSocketMessageReadService(
         }
 
         val item = api.proxy().webSocketHistory { it.id() == input.id }.firstOrNull()
-        val currentProjectId = api.project().id()
+        currentCoroutineContext().ensureActive()
+        val currentProjectId = api.project().id().also { currentCoroutineContext().ensureActive() }
         if (currentProjectId != expectedProjectId) {
             return webSocketReadError(
                 input,
@@ -124,7 +131,8 @@ internal class WebSocketMessageReadService(
                 e.message.orEmpty(),
             )
         }
-        val finalProjectId = api.project().id()
+        currentCoroutineContext().ensureActive()
+        val finalProjectId = api.project().id().also { currentCoroutineContext().ensureActive() }
         if (finalProjectId != expectedProjectId) {
             return webSocketReadError(
                 input,
