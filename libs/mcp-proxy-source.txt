@@ -1,10 +1,10 @@
 Source: https://github.com/sehoon123/mcp-proxy
-Commit: 5fc6a395af59b97d5250cf96002671b000cc0310
+Commit: ae486d65ab3212b1fce216e6fa283930fe0fc10c
 Branch: main
-Version: 2.2.0
+Version: 2.2.1
 Build: ./gradlew clean test shadowJar writeRuntimeComponents --no-build-cache
 Artifact: build/libs/mcp-proxy-all.jar
-SHA-256: 6df0fa43a978ee90875669120a2a3e497baa3d3d64533cbf7cb53a6f3f436ea9
+SHA-256: bb509565d8fa986383f028097ceef4bdf2c1c4b7013300aa2b872da2569eddcf
 Runtime component: com.typesafe:config:1.4.5 4a4b0affb22a9572409d3a6bde99ce3f2045c551cadc1ca7fe09690892c526c3
 Runtime component: io.github.oshai:kotlin-logging-jvm:8.0.4 0bbac3f9dac5067b40d02fe461a053782bc8d3ef5162a923581b369adef7e02d
 Runtime component: io.ktor:ktor-client-cio-jvm:3.4.3 46906daeff1dc1bfa1d63acf832c0760b84dd156c597879a63a907260229fe98
@@ -32,7 +32,7 @@ Runtime component: io.modelcontextprotocol:kotlin-sdk-jvm:0.14.0 88c25c0136e9be9
 Runtime component: io.modelcontextprotocol:kotlin-sdk-server-jvm:0.14.0 559c47869375f8838ff11db3640bf305a91985713ee36e2956b71c771f2eb20d
 Runtime component: org.fusesource.jansi:jansi:2.4.2 0b7b8b003a90ea491579b62f5118828e45112914c65589b00faa49d6ec785839
 Runtime component: org.jetbrains.kotlin:kotlin-reflect:2.3.0 714df4be819545ff4de1f36aa2183e0dea94b4c8cdf7ca29e9c89919baf36362
-Runtime component: org.jetbrains.kotlin:kotlin-stdlib:2.3.21 6f64eac736db9434dd6925b4a518b9d1d17177652320c37916cf9ba3ce7d7d7a
+Runtime component: org.jetbrains.kotlin:kotlin-stdlib:2.4.20 2226de463d309d4a5500a481320b3dea515a6981dcae1def531fbc158884e25f
 Runtime component: org.jetbrains.kotlinx:kotlinx-collections-immutable-jvm:0.5.0 9481ed3b87e282ffb95d7e2a033702afa3af476e3b89137294aeccebb27c76f7
 Runtime component: org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.11.0 d1d75aa01dffbb4d1c520e67e4c4e7f5f6174718e7cb4632412503f2f0e604fa
 Runtime component: org.jetbrains.kotlinx:kotlinx-coroutines-slf4j:1.11.0 1043471e7d5f99680df3a056cf766276e0fe339e48030dea503fc1c94c33743e

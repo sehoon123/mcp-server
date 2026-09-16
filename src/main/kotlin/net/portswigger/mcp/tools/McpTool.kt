@@ -398,7 +398,7 @@ inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedTool(
         requireBoundedPage()
         val items = execute(this)
 
-        when {
+        val page = when {
             offset >= items.size -> {
                 "Reached end of items"
             }
@@ -411,6 +411,8 @@ inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedTool(
                 )
             }
         }
+        // Explicit content avoids Unit-coercion overload ambiguity under Kotlin 2.4.
+        listOf(TextContent(page))
     })
 }
 

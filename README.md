@@ -6,9 +6,14 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0-dev.4` — unreleased passive-inspection work after RC3's CI build.**
-See the [reburp feature review](docs/REBURP_FEATURE_REVIEW.md) and [RC3 release gates](docs/releases/4.12.0-rc.3.md).
-RC3 tagging remains blocked by its dependency preflight; the signed RC1/RC2 candidates and uploaded bytes remain unchanged.
+**Current source version: `4.12.0-rc.4` (BApp SerialVersion 17) — a test candidate with passive inspection and defensive
+dependency updates, not a published stable release.**
+See the [reburp feature review](docs/REBURP_FEATURE_REVIEW.md) and [RC4 release gates](docs/releases/4.12.0-rc.4.md).
+RC4 updates Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache HttpClient5 `5.6.4` /
+HttpCore5 `5.4.3` stack to clear the fresh OSV pre-tag blockers; it adds no request, scan, or execution capability.
+The embedded proxy is `2.2.1`, also using Kotlin `2.4.20`. Tagging requires a fresh check of the exact committed
+208-coordinate [candidate graph](security/README.md); formal publication remains separately gated. The signed RC1/RC2
+candidates and their uploaded bytes remain unchanged.
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**

@@ -159,7 +159,8 @@ class McpToolPolicyTest {
             description = "audit argument probe",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) {
-            "ok"
+            // Explicit content avoids Unit-coercion overload ambiguity under Kotlin 2.4.
+            listOf(TextContent("ok"))
         }
 
         val connection = mockk<ClientConnection>(relaxed = true) {

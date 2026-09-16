@@ -35,7 +35,7 @@ For the currently pinned proxy, clone the recorded repository and check out the 
 ```bash
 git clone https://github.com/sehoon123/mcp-proxy.git
 cd mcp-proxy
-git checkout --detach 5fc6a395af59b97d5250cf96002671b000cc0310
+git checkout --detach ae486d65ab3212b1fce216e6fa283930fe0fc10c
 ./gradlew clean test shadowJar writeRuntimeComponents --no-build-cache
 ```
 

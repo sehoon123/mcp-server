@@ -1,11 +1,12 @@
 # Packaged legal material
 
-The release JAR copies this directory and the root distribution notices into `META-INF/legal/` under collision-safe
+The release JAR copies the license texts below and the root distribution notices into `META-INF/legal/` under collision-safe
 names. Dependency-provided generic `META-INF/LICENSE*` and `META-INF/NOTICE*` entries are excluded from the shaded
 archive only after this reviewed bundle is supplied.
 
-- `licenses/Apache-2.0.txt` is the Apache License 2.0 text extracted from the pinned Kotlin Gradle plugin 2.3.21 and is
-  identical to the standard Apache License 2.0 text.
+- `licenses/Apache-2.0.txt` was originally extracted from Kotlin Gradle plugin 2.3.21 during the review dated below.
+  That is its historical extraction source, not the currently pinned Kotlin version. The text is identical to the
+  standard Apache License 2.0 text.
 - `licenses/MIT-SLF4J.txt` is the license text from `slf4j-api` 2.0.17 and includes its copyright attribution.
 - the root `LICENSE` contains GNU GPL version 3 for this project and the embedded proxy;
 - the root `NOTICE.md`, `FORK_NOTICE.md`, `THIRD_PARTY_NOTICES.md`, and `CORRESPONDING_SOURCE.md` provide the

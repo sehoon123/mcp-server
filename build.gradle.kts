@@ -475,6 +475,21 @@ dependencies {
     testImplementation(platform(libs.jackson.bom.test))
     testImplementation(libs.json.schema.validator)
     byteBuddyAgent(libs.byte.buddy.agent)
+
+    // Test-only transitive HTTP client stack (pulled in by json-schema-validator's remote loader).
+    // Not on the application runtime/compile classpaths.
+    // ponytail: test constraints only; remove when the upstream defaults include these fixes.
+    constraints {
+        testImplementation("org.apache.httpcomponents.client5:httpclient5:5.6.4") {
+            because("GHSA-hjcp-jmpx-g3qm fixed in 5.6.3; test-only remote schema loader dependency")
+        }
+        testImplementation("org.apache.httpcomponents.core5:httpcore5:5.4.3") {
+            because("GHSA-hf6x-8p5f-cgmf fixed in 5.4.3; test-only remote schema loader dependency")
+        }
+        testImplementation("org.apache.httpcomponents.core5:httpcore5-h2:5.4.3") {
+            because("GHSA-v3jc-474w-2wm6 fixed in 5.4.3; test-only remote schema loader dependency")
+        }
+    }
 }
 
 java {
