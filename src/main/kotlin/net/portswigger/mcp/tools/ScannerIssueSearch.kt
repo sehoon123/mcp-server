@@ -299,7 +299,7 @@ internal class ScannerIssueSearchService(
         cursorSecret.copyOf().also { require(it.size >= 32) { "cursorSecret must contain at least 32 bytes" } },
         SCANNER_CURSOR_HMAC,
     )
-    private val cursorJson = Json { encodeDefaults = true }
+    private val cursorJson = Json { encodeDefaults = true; explicitNulls = false }
 
     suspend fun get(input: GetScannerIssues): StructuredToolResponse<ScannerIssuePageResult> {
         if (input.count !in 1..MAX_SCANNER_ISSUE_LIMIT) {

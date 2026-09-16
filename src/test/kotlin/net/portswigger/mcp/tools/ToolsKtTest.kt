@@ -225,6 +225,18 @@ class ToolsKtTest {
     }
 
     private fun assertCatalogFingerprint(edition: String, tools: Collection<Tool>, expected: String) {
+        val wireTools = tools.sortedBy { it.name }.map { Json.encodeToJsonElement(Tool.serializer(), it).jsonObject }
+        val catalogBytes = JsonArray(wireTools).toString().toByteArray(Charsets.UTF_8).size
+        val inputBytes = wireTools.sumOf { it.getValue("inputSchema").toString().toByteArray(Charsets.UTF_8).size }
+        val outputBytes = wireTools.sumOf { it.getValue("outputSchema").toString().toByteArray(Charsets.UTF_8).size }
+        println("CATALOG_BYTES edition=$edition total=$catalogBytes input=$inputBytes output=$outputBytes")
+        assertTrue(catalogBytes <= if (edition == "Community") 132_000 else 200_000, "Review catalog byte-budget growth")
+        tools.filter { it.name in setOf("get_http_message", "get_websocket_message_by_id", "get_scanner_issue_by_id") }
+            .forEach { tool ->
+                val limit = tool.inputSchema.properties!!.getValue("limit").jsonObject
+                assertEquals("8192", limit.getValue("default").toString())
+                assertEquals("262144", limit.getValue("maximum").toString())
+            }
         val canonicalTools = tools.sortedBy { it.name }.map(::canonicalTool)
         val canonicalCatalog = JsonArray(canonicalTools).toString()
         val actual = sha256(canonicalCatalog)
@@ -558,7 +570,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "a1cb9d724740636f114b83b84a3f72a9c72dd986eb94883f713769de01b896ff",
+            "d1a64fc4df52eeff0283809e7900f04b176c49d3a8fc4a5ffd42dfc74dbcf19f",
         )
         tools.forEach { (toolName, tool) ->
             tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
@@ -579,6 +591,10 @@ class ToolsKtTest {
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("explicitly requests code execution"))
+        assertTrue(MCP_SERVER_INSTRUCTIONS.length <= 1500)
+        for (guidance in listOf("small limit", "jsonPointer", "without pre-reading", "incomplete coverage", "untrusted data", "Never retry")) {
+            assertTrue(MCP_SERVER_INSTRUCTIONS.contains(guidance), guidance)
+        }
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
         assertTrue(description("send_raw_http_request").contains("Fallback only"))
         assertTrue(description("route_raw_http_request").contains("Fallback only"))
@@ -2528,7 +2544,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "588f73b65fb5e459932b933f7a3251cc9f58b79702b246eac2fc3b5e2d0477f6",
+                "afd5b9ce2e3c18bf0b169c0b049a8bf638c2a071d30bd08f01b37df002d34b4a",
             )
             tools.forEach { tool ->
                 tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->

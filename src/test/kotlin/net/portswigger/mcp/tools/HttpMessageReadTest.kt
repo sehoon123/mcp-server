@@ -10,6 +10,11 @@ import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -179,6 +184,52 @@ class HttpMessageReadTest {
     }
 
     @Test
+    fun `default preview and explicit larger reads preserve complete pagination`() = runBlocking {
+        val body = "x".repeat(40 * 1024)
+        val fixture = fixture(List(50) { "project-a" }, body)
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_body")
+        val first = fixture.service.read(input)
+        val oldSize = fixture.service.read(input.copy(limit = 32 * 1024))
+        val whole = fixture.service.read(input.copy(limit = MAX_HISTORY_SLICE_BYTES))
+        fun wireBytes(value: GetHttpMessageResult): Int {
+            val structured = Json.encodeToJsonElement(GetHttpMessageResult.serializer(), value).jsonObject
+            return Json.encodeToString(CallToolResult(
+                content = listOf(TextContent(structured.toString())), structuredContent = structured,
+            )).toByteArray().size
+        }
+        println("HTTP_READ_BYTES default=${wireBytes(first)} explicit32KiB=${wireBytes(oldSize)} payload=${first.content!!.returnedBytes}")
+        assertEquals(8192, first.content!!.returnedBytes)
+        assertTrue(wireBytes(first) * 10 < wireBytes(oldSize) * 3, "Default mirrored preview should be at least 70% smaller")
+        assertEquals(DEFAULT_HISTORY_SLICE_BYTES, first.content!!.nextOffsetBytes)
+        assertEquals(body.length, first.content!!.totalBytes)
+        assertEquals(body, whole.content!!.data)
+        val reconstructed = StringBuilder(first.content!!.data)
+        var next = first.content!!.nextOffsetBytes
+        while (next != null) {
+            val page = fixture.service.read(input.copy(offset = next)).content!!
+            reconstructed.append(page.data)
+            next = page.nextOffsetBytes
+        }
+        assertEquals(body, reconstructed.toString())
+    }
+
+    @Test
+    fun `JSON selection above the preview default requires explicit larger limit`() = runBlocking {
+        val value = "x".repeat(8192)
+        val fixture = fixture(List(8) { "project-a" }, """{"value":"$value"}""")
+        val input = GetHttpMessage(
+            "project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "request_body", jsonPointer = "/value",
+        )
+        val preview = fixture.service.read(input)
+        assertEquals(HttpJsonSelectionStatus.LIMIT_EXCEEDED, preview.jsonSelection?.status)
+        assertNull(preview.jsonSelection?.valueJson)
+        assertNull(preview.content)
+        val complete = fixture.service.read(input.copy(limit = 32768))
+        assertEquals(HttpJsonSelectionStatus.FOUND, complete.jsonSelection?.status)
+        assertEquals("\"$value\"", complete.jsonSelection?.valueJson)
+    }
+
+    @Test
     fun `invalid JSON pointer options fail before source access`() = runBlocking {
         val fixture = fixture(projectIds = listOf("project-a"), bodyText = "{}")
         val base = GetHttpMessage(
@@ -336,6 +387,7 @@ class HttpMessageReadTest {
             mockk<MontoyaByteArray>().also { selected ->
                 every { selected.length() } returns slice.size
                 every { selected.getBytes() } returns slice
+                every { selected.toString() } returns slice.toString(Charsets.UTF_8)
             }
         }
         every { service.host() } returns "example.test"

@@ -257,7 +257,7 @@ internal class HttpMessageSearchService(
         cursorSecret.copyOf().also { require(it.size >= 32) { "cursorSecret must contain at least 32 bytes" } },
         CURSOR_HMAC_ALGORITHM,
     )
-    private val cursorJson = Json { encodeDefaults = true }
+    private val cursorJson = Json { encodeDefaults = true; explicitNulls = false }
 
     init {
         require(maxScannedItems > 0) { "maxScannedItems must be positive" }

@@ -15,7 +15,7 @@ import java.util.Base64
 import java.util.HexFormat
 import kotlin.math.min
 
-internal const val DEFAULT_HISTORY_SLICE_BYTES = 32 * 1024
+internal const val DEFAULT_HISTORY_SLICE_BYTES = 8 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
 internal const val MAX_NOTES_CHARS = 2_000
 internal const val MCP_PROJECT_ID_INPUT_DESCRIPTION =

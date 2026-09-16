@@ -30,6 +30,9 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZonedDateTime
+import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
@@ -423,6 +426,17 @@ class HttpMessageSearchTest {
         assertEquals("1", first.items.single().ref.id)
         assertTrue(first.hasMore)
         val cursor = assertNotNull(first.nextCursor)
+        println("HTTP_CURSOR_CHARS=${cursor.length}")
+        assertTrue(cursor.length < 555, "Null-heavy fixture cursor must stay smaller than RC2")
+        val payload = Base64.getUrlDecoder().decode(cursor.substringBefore('.')).toString(Charsets.UTF_8)
+        assertFalse(payload.contains(":null"))
+        val legacyPayload = payload.replace("\"query\":{", "\"query\":{\"host\":null,").toByteArray()
+        val signature = Mac.getInstance("HmacSHA256").run {
+            init(SecretKeySpec(ByteArray(32) { 7 }, "HmacSHA256"))
+            doFinal(legacyPayload)
+        }
+        val encoder = Base64.getUrlEncoder().withoutPadding()
+        val legacyCursor = encoder.encodeToString(legacyPayload) + "." + encoder.encodeToString(signature)
 
         proxyHistory += proxyItem(3, "GET", "https://example.test/three", 200).item
         val second = service.search(SearchHttpMessages(limit = 1, cursor = cursor))
@@ -431,6 +445,7 @@ class HttpMessageSearchTest {
         assertEquals("2", second.items.single().ref.id)
         assertFalse(second.hasMore)
         assertEquals(null, second.nextCursor)
+        assertEquals(second, service.search(SearchHttpMessages(limit = 1, cursor = legacyCursor)))
     }
 
     @Test

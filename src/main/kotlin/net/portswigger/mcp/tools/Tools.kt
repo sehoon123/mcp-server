@@ -686,7 +686,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
-        description = "Read one stored HTTP reference (metadata by default); source approval and matching projectId apply. Use the complete {source,id} from search_http_messages. Raw parts: 32 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. Explicit request_body/response_body supports jsonPointer (strict RFC 6901), which never returns a partial value. Nothing is sent or changed; this read is not required before the from-ID action tools.",
+        description = "Read one stored HTTP reference (metadata by default); source approval and matching projectId apply. Use the complete {source,id} from search_http_messages. Raw parts: 8 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. Explicit request_body/response_body supports jsonPointer (strict RFC 6901), which never returns a partial value. Nothing is sent or changed; this read is not required before the from-ID action tools.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageReadService.read(input)
@@ -941,7 +941,7 @@ data class GetWebsocketMessageById(
     @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(description = "Read the edited payload variant.", defaultJson = "false") val edited: Boolean? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0") val offset: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
+    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "8192") val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,
 )
 
@@ -957,7 +957,7 @@ data class GetScannerIssueById(
     @JsonSchemaMetadata(description = "Scanner issue section to return.", enumValues = ["metadata", "detail", "remediation", "evidence_request", "evidence_response"], defaultJson = "\"metadata\"") val field: String? = null,
     @JsonSchemaMetadata(description = "Required when `field` is `evidence_request` or `evidence_response`.", minimum = 0) val evidenceIndex: Int? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0") val offset: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "32768") val limit: Int? = null,
+    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "8192") val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"") val encoding: String? = null,
 )
 

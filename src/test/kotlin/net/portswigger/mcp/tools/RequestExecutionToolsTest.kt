@@ -15,10 +15,9 @@ import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
@@ -239,7 +238,8 @@ class RequestExecutionToolsTest {
             get(service) as kotlinx.coroutines.sync.Mutex
         }
         lifecycle.lock()
-        val start = async(Dispatchers.Default) {
+        // The runBlocking event loop resumes this test only after start suspends on lifecycle admission.
+        val start = async {
             service.start(
                 StartHttpRequestExecution(
                     "project-1",
@@ -248,10 +248,10 @@ class RequestExecutionToolsTest {
             )
         }
         approvalReached.await()
-        delay(50)
         val blockerAcquired = CompletableDeferred<Unit>()
         val releaseBlocker = CompletableDeferred<Unit>()
-        val blocker = launch(Dispatchers.Default) {
+        // Queue behind cleanup admission before unlocking, then hold the lock for cancellation.
+        val blocker = launch(start = CoroutineStart.UNDISPATCHED) {
             lifecycle.lock()
             try {
                 blockerAcquired.complete(Unit)
@@ -262,13 +262,9 @@ class RequestExecutionToolsTest {
         }
         lifecycle.unlock()
         blockerAcquired.await()
-        var observedInFlight = 0
-        repeat(100) {
-            observedInFlight = HttpRequestExecutionService::class.java.getDeclaredField("startsInFlight").run {
-                isAccessible = true
-                getInt(service)
-            }
-            if (observedInFlight == 0) delay(5)
+        val observedInFlight = HttpRequestExecutionService::class.java.getDeclaredField("startsInFlight").run {
+            isAccessible = true
+            getInt(service)
         }
         assertEquals(1, observedInFlight)
 

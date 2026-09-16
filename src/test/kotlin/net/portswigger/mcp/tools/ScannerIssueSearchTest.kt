@@ -34,12 +34,20 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 // Changes require reviewed compatibility/version handling and independent regeneration, not copied runtime output.
-private const val GOLDEN_SCANNER_PAGE_CURSOR =
+private const val LEGACY_SCANNER_PAGE_CURSOR =
     "eyJ2ZXJzaW9uIjoxLCJraW5kIjoicGFnZSIsInByb2plY3RJZCI6InByb2plY3QtMTIzIiwicXVlcnkiOnsic2V2ZXJpdGllcyI6bnVsbCwiY29uZmlkZW5jZXMiOm51bGwsImhvc3QiOm51bGwsIm5hbWVDb250YWlucyI6bnVsbCwiY2FzZVNlbnNpdGl2ZSI6ZmFsc2UsIm5ld2VzdEZpcnN0IjpmYWxzZX0sInNuYXBzaG90Ijp7InNpemUiOjMsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF85ODE3MzczNzdiMmExODAxMDE4YmEwNjRjZTcxNTg3MSIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8yX2FlYWQxNDcyYmNhZGU4YzQ0OGIzNjhkZmYwYTE3NTYxIn0sIm5leHRJbmRleCI6MX0.QA9lgYfqkbbXMFpEJFhgPVMea_ruS9YbI0RE6MPgl3E"
-private const val GOLDEN_SCANNER_SNAPSHOT_CURSOR =
+private const val LEGACY_SCANNER_SNAPSHOT_CURSOR =
     "eyJ2ZXJzaW9uIjoxLCJraW5kIjoic25hcHNob3QiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7InNldmVyaXRpZXMiOm51bGwsImNvbmZpZGVuY2VzIjpudWxsLCJob3N0IjpudWxsLCJuYW1lQ29udGFpbnMiOm51bGwsImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6ZmFsc2V9LCJzbmFwc2hvdCI6eyJzaXplIjozLCJmaXJzdEFuY2hvciI6Imlzc3VlX3YyXzBfOTgxNzM3Mzc3YjJhMTgwMTAxOGJhMDY0Y2U3MTU4NzEiLCJsYXN0QW5jaG9yIjoiaXNzdWVfdjJfMl9hZWFkMTQ3MmJjYWRlOGM0NDhiMzY4ZGZmMGExNzU2MSJ9fQ.wEepHLs4Van9NHogmVjZFAt5s8VhEZbRjAaYHbbD5ZY"
-private const val GOLDEN_SCANNER_DELTA_CURSOR =
+private const val LEGACY_SCANNER_DELTA_CURSOR =
     "eyJ2ZXJzaW9uIjoxLCJraW5kIjoiZGVsdGEiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7InNldmVyaXRpZXMiOm51bGwsImNvbmZpZGVuY2VzIjpudWxsLCJob3N0IjpudWxsLCJuYW1lQ29udGFpbnMiOm51bGwsImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6dHJ1ZX0sImJhc2VsaW5lIjp7InNpemUiOjIsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF83ZDI3ZDc1YTgzNzYxNGFlOTY5ZjgyNTdkNjVhY2VkZiIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8xXzIxYTRlZTE0NGMyZTJjOTQyOGMwMjcwYWMyNGRhNmUzIn0sImN1cnJlbnQiOnsic2l6ZSI6NSwiZmlyc3RBbmNob3IiOiJpc3N1ZV92Ml8wXzdkMjdkNzVhODM3NjE0YWU5NjlmODI1N2Q2NWFjZWRmIiwibGFzdEFuY2hvciI6Imlzc3VlX3YyXzRfY2U1NjhlNDg3ZGE3YjBmZjcwZmUxMjBhODVlNzZiNjEifSwibmV4dEluZGV4IjoyfQ.egwKwlp9KwRMaHa_eI0mf7TnXSB2kf30aXsdvVgshqw"
+
+// Independently generated from the legacy fixture JSON with null members omitted and the same synthetic HMAC key.
+private const val GOLDEN_SCANNER_PAGE_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoicGFnZSIsInByb2plY3RJZCI6InByb2plY3QtMTIzIiwicXVlcnkiOnsiY2FzZVNlbnNpdGl2ZSI6ZmFsc2UsIm5ld2VzdEZpcnN0IjpmYWxzZX0sInNuYXBzaG90Ijp7InNpemUiOjMsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF85ODE3MzczNzdiMmExODAxMDE4YmEwNjRjZTcxNTg3MSIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8yX2FlYWQxNDcyYmNhZGU4YzQ0OGIzNjhkZmYwYTE3NTYxIn0sIm5leHRJbmRleCI6MX0.WKXkxa1QIgOh1fUx3TPgKSaWrQlVNo9HnxZrdHR8kPU"
+private const val GOLDEN_SCANNER_SNAPSHOT_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoic25hcHNob3QiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7ImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6ZmFsc2V9LCJzbmFwc2hvdCI6eyJzaXplIjozLCJmaXJzdEFuY2hvciI6Imlzc3VlX3YyXzBfOTgxNzM3Mzc3YjJhMTgwMTAxOGJhMDY0Y2U3MTU4NzEiLCJsYXN0QW5jaG9yIjoiaXNzdWVfdjJfMl9hZWFkMTQ3MmJjYWRlOGM0NDhiMzY4ZGZmMGExNzU2MSJ9fQ.dRHd-3uQrU42gtITqAqKmz-BupzjgBxzb5s5c-Zm2Ec"
+private const val GOLDEN_SCANNER_DELTA_CURSOR =
+    "eyJ2ZXJzaW9uIjoxLCJraW5kIjoiZGVsdGEiLCJwcm9qZWN0SWQiOiJwcm9qZWN0LTEyMyIsInF1ZXJ5Ijp7ImNhc2VTZW5zaXRpdmUiOmZhbHNlLCJuZXdlc3RGaXJzdCI6dHJ1ZX0sImJhc2VsaW5lIjp7InNpemUiOjIsImZpcnN0QW5jaG9yIjoiaXNzdWVfdjJfMF83ZDI3ZDc1YTgzNzYxNGFlOTY5ZjgyNTdkNjVhY2VkZiIsImxhc3RBbmNob3IiOiJpc3N1ZV92Ml8xXzIxYTRlZTE0NGMyZTJjOTQyOGMwMjcwYWMyNGRhNmUzIn0sImN1cnJlbnQiOnsic2l6ZSI6NSwiZmlyc3RBbmNob3IiOiJpc3N1ZV92Ml8wXzdkMjdkNzVhODM3NjE0YWU5NjlmODI1N2Q2NWFjZWRmIiwibGFzdEFuY2hvciI6Imlzc3VlX3YyXzRfY2U1NjhlNDg3ZGE3YjBmZjcwZmUxMjBhODVlNzZiNjEifSwibmV4dEluZGV4IjoyfQ.R4NxfNVb8G-EonnbLjQrqx_rlg5f47SQiAhDb49kCHM"
 
 class ScannerIssueSearchTest {
     private val api = mockk<MontoyaApi>()
@@ -319,12 +327,20 @@ class ScannerIssueSearchTest {
         assertEquals(listOf("One"), page1.items.map { it.name })
         assertEquals(GOLDEN_SCANNER_PAGE_CURSOR, page1.nextCursor)
         assertEquals(GOLDEN_SCANNER_SNAPSHOT_CURSOR, page1.snapshotCursor)
+        assertTrue(GOLDEN_SCANNER_PAGE_CURSOR.length < LEGACY_SCANNER_PAGE_CURSOR.length)
+        assertTrue(GOLDEN_SCANNER_SNAPSHOT_CURSOR.length < LEGACY_SCANNER_SNAPSHOT_CURSOR.length)
+        println("SCANNER_CURSOR_CHARS page=${page1.nextCursor!!.length} snapshot=${page1.snapshotCursor!!.length}")
 
         current += appended
         val page2 = service.get(GetScannerIssues(count = 1, cursor = page1.nextCursor)).output
         assertEquals(ScannerIssuePageStatus.OK, page2.status)
         assertEquals(listOf("Two"), page2.items.map { it.name })
         assertEquals(3, page2.snapshotSize)
+        assertEquals(page2, service.get(GetScannerIssues(count = 1, cursor = LEGACY_SCANNER_PAGE_CURSOR)).output)
+        assertEquals(
+            service.get(GetScannerIssues(sinceSnapshotCursor = page1.snapshotCursor)).output,
+            service.get(GetScannerIssues(sinceSnapshotCursor = LEGACY_SCANNER_SNAPSHOT_CURSOR)).output,
+        )
 
         clearMocks(siteMap, answers = false, recordedCalls = true)
         val tampered = (if (page1.nextCursor!!.first() == 'A') "B" else "A") + page1.nextCursor!!.drop(1)
@@ -507,11 +523,14 @@ class ScannerIssueSearchTest {
         assertTrue(first.hasMore)
         assertNull(first.snapshotCursor)
         assertEquals(GOLDEN_SCANNER_DELTA_CURSOR, first.nextDeltaCursor)
+        assertTrue(GOLDEN_SCANNER_DELTA_CURSOR.length < LEGACY_SCANNER_DELTA_CURSOR.length)
+        println("SCANNER_DELTA_CURSOR_CHARS=${first.nextDeltaCursor!!.length}")
 
         val second = service.get(
             GetScannerIssues(count = 2, sinceSnapshotCursor = assertNotNull(first.nextDeltaCursor)),
         ).output
         assertEquals(listOf("New three"), second.items.map { it.name })
+        assertEquals(second, service.get(GetScannerIssues(count = 2, sinceSnapshotCursor = LEGACY_SCANNER_DELTA_CURSOR)).output)
         assertFalse(second.hasMore)
         assertNull(second.nextDeltaCursor)
         assertNotNull(second.snapshotCursor)

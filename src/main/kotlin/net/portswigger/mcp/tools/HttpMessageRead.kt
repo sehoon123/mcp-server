@@ -28,7 +28,7 @@ data class GetHttpMessage(
     val part: String? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0")
     val offset: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "32768")
+    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "8192")
     val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,

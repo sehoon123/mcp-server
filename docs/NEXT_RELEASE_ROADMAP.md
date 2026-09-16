@@ -1,7 +1,7 @@
 # Active release roadmap
 
-**Status date:** 2026-09-15<br>
-**Current development candidate:** `4.12.0-rc.2` (local preparation; publication gates remain open)<br>
+**Status date:** 2026-09-16<br>
+**Current test candidate:** `4.12.0-rc.3` (agent-efficiency changes after RC2; publication gates remain open)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
 **Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
@@ -469,7 +469,7 @@ aliases or families.
 
 ## v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
-Development began on advancing `main` under `4.12.0-dev.1`; the current working candidate is `4.12.0-rc.2`.
+Development began on advancing `main` under `4.12.0-dev.1`; the current test candidate is `4.12.0-rc.3` after signed RC2.
 The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
 cherry-picked into that release branch. RC1 locally increments `SerialVersion` from 12 to 13, but this is not a frozen
 release identity: before signing, reconcile it against every same-UUID predecessor, including the non-ancestor v4.11
@@ -479,7 +479,11 @@ pinned. No earlier candidate's vulnerability, smoke, or publication evidence val
 RC1 adds a native redacted activity table inspired by reburp's activity-log usability, using the existing audit snapshot,
 retention, and diagnostics timer rather than recording raw API/target traffic. It also checks Gradle/BApp/JAR version
 parity during ordinary builds. RC2 increments the local SerialVersion to 14 without changing RC1's signed identity.
-See [the RC2 fragment](releases/4.12.0-rc.2.md) for current compatibility and outstanding gates.
+See [the RC2 fragment](releases/4.12.0-rc.2.md) for that immutable candidate's compatibility and outstanding gates.
+[RC3](releases/4.12.0-rc.3.md) uses SerialVersion 15, smaller 8 KiB detail previews, compact private cursors, and passive
+agent usage guidance. The 24/38 catalog and explicit 256 KiB read cap remain; reconnect to rediscover changed defaults.
+A signed test tag and manually staged unpublished draft do not satisfy the protected publication gates. Such a draft
+cannot be retrofitted into the one-shot formal pipeline; that requires a successor candidate after the gates are met.
 
 Milestone order:
 

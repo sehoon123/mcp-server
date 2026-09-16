@@ -30,7 +30,9 @@ class HistoryAccessTest {
     @Test
     fun `history slice arguments are bounded`() {
         assertEquals(0, normalizeHistoryOffset(null))
-        assertEquals(DEFAULT_HISTORY_SLICE_BYTES, normalizeHistoryLimit(null))
+        assertEquals(8192, normalizeHistoryLimit(null))
+        assertEquals(32768, normalizeHistoryLimit(32768))
+        assertEquals(262144, normalizeHistoryLimit(262144))
         assertEquals("metadata", normalizeHttpPart(null))
         assertEquals("response_body", normalizeHttpPart("response-body"))
         assertEquals("base64", normalizeHistoryEncoding("BASE64"))

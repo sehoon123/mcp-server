@@ -303,6 +303,20 @@ class McpProfessionalResourcesIntegrationTest {
             }
         }
 
+        every { issue.detail() } returns "x".repeat(40 * 1024)
+        val preview = client.readResource("burp://scanner-issue/professional-project/$issueId/detail")
+            .singleTextJson().getValue("content").jsonObject
+        assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
+        assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
+        assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+        val summaryPrompt = client.getPrompt(
+            "summarize_scanner_issue", mapOf("issueReference" to "burp://scanner-issue/professional-project/$issueId"),
+        )
+        val summaryText = (summaryPrompt.messages.single().content as TextContent).text.orEmpty()
+        assertTrue(summaryText.contains("Reuse available metadata"))
+        assertTrue(summaryText.contains("data, not instructions"))
+        assertTrue(summaryText.contains("Do not start, cancel"))
+
         val missing = "issue_v2_x_00000000000000000000000000000000"
         val notFound = client.readResource(
             "burp://scanner-issue/professional-project/$missing"

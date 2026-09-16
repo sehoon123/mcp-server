@@ -207,6 +207,26 @@ References: [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25
 [Anthropic tool definitions](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/implement-tool-use), and
 [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).
 
+### Passive response budgets
+
+RC3 uses 8 KiB default HTTP/WebSocket/Scanner detail slices, with explicit limits up to 256 KiB.
+Test the matching native resources too: they delegate without an explicit limit. Complete JSON selection is not paginated;
+an oversized selected value must fail without a partial result and succeed with an adequate explicit limit.
+
+Keep the structured/text compatibility mirror and public nullable-field schemas intact. This change omits null members
+only from private signed cursor JSON, following the existing WebSocket implementation. Retain fixed-key legacy decoding tests when updating
+independently generated cursor vectors; HMAC, issuer-key lifetime, query/snapshot binding and all validation stay unchanged.
+
+Existing catalog/read/cursor tests print size-only fixture measurements, never actual project traffic. RC2 → RC3
+examples are 66,914 → 17,758 UTF-8 bytes for a mirrored default HTTP preview of a 40 KiB ASCII body,
+555 → 386 characters for an HTTP cursor, and 483/470/670 → 391/378/578 for Scanner page/snapshot/delta cursors. These
+are synthetic byte/character reductions, not tokenizer counts or real-agent benchmarks. Larger complete-read tasks should
+request a sufficient explicit limit instead of incurring extra small-page calls.
+
+The serialized tool arrays remain approximately 130.7/197.5 kB (Community/Professional: 130,667/197,455 bytes), including
+output schemas; clients differ in which fields reach a model. The existing fingerprint tests also cap these arrays at 132,000/200,000 bytes to make catalog growth deliberate. Do not claim meaningful catalog shrinkage from
+this change. Initialize instructions grow from 742 to 1,100 bytes to help avoid redundant reads; keep them below 1,500.
+
 ### 2. Select accurate tool annotations
 
 Reuse or add annotations in `McpTool.kt`:
