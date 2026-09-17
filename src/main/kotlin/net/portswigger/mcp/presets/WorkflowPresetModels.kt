@@ -167,7 +167,7 @@ internal data class ListWorkflowPresets(
     val projectId: String,
     @JsonSchemaMetadata(description = "Optional preset-type filter.")
     val type: WorkflowPresetType? = null,
-    @JsonSchemaMetadata(description = "Zero-based list offset.", minimum = 0, maximum = 64, defaultJson = "0")
+    @JsonSchemaMetadata(description = "Zero-based preset-record offset.", minimum = 0, maximum = 64, defaultJson = "0")
     val offset: Int = 0,
     @JsonSchemaMetadata(description = "Maximum presets returned.", minimum = 1, maximum = 64, defaultJson = "25")
     val limit: Int = 25,
@@ -181,6 +181,7 @@ internal data class ListWorkflowPresetsResult(
     val items: List<WorkflowPreset>,
     val total: Int,
     val returned: Int,
+    @JsonSchemaMetadata(description = "More presets remain; continue at offset + returned with the same filters. No cursor.")
     val hasMore: Boolean,
     @JsonSchemaMetadata(maxLength = MAX_WORKFLOW_PRESET_ERROR_CHARS)
     val error: String? = null,

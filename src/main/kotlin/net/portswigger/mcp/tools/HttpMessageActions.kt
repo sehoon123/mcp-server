@@ -348,6 +348,7 @@ data class HttpMessageActionResult(
     val response: HttpActionResponseSummary? = null,
     val recordedInSiteMap: Boolean? = null,
     val recordedRef: HttpMessageReference? = null,
+    @JsonSchemaMetadata(description = "Organizer only: whether the unchanged source response was preserved.")
     val preservedResponseInOrganizer: Boolean? = null,
     val error: String? = null,
 )

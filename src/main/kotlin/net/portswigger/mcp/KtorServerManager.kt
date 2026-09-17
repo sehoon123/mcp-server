@@ -89,7 +89,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 private const val MCP_PATH = "/mcp"
 internal const val MCP_SERVER_INSTRUCTIONS =
-    "Reuse projectId and {source,id} refs from producing results; otherwise use search_http_messages with narrow " +
+    "Call exact tool names; titles are labels, not aliases. Reuse projectId and {source,id} refs from producing " +
+        "results; otherwise use search_http_messages with narrow " +
         "filters and a small limit. Reuse summaries; use get_http_message only for missing parts, jsonPointer for " +
         "one JSON value, and compare_http_messages for differences without pre-reading bodies. Follow nextCursor " +
         "or nextOffsetBytes only as needed; report incomplete coverage. Request an explicit larger limit when a " +
@@ -97,11 +98,11 @@ internal const val MCP_SERVER_INSTRUCTIONS =
         "uncertain mutations automatically. Check structured status, retry and executionState/actionState; " +
         "isError=false alone is not success. Denials require user action, not another tool. " +
         "Create a Repeater tab via route_http_message_from_id with destination=repeater and optional tabName; " +
-        "this does not send traffic or update an existing tab. Do not use code execution for tab creation. Send variants via " +
-        "send_http_request_from_id or route via route_http_message_from_id, passing only changed patch fields. " +
+        "this does not send traffic or update an existing tab. Do not use code execution for tab creation. " +
+        "send_http_request_from_id sends traffic; routing does not. Pass only changed patch fields. " +
         "Omitted fields come from the stored source; every call restarts there, so patches are not cumulative. Never " +
         "rebuild stored traffic as raw HTTP; use raw tools only for genuinely new requests. Reuse explicit refs for " +
-        "native ranking, annotation, and Professional request execution. Invoke Bambda or local-command tools only " +
+        "analysis. Follow schema selectors and units; do not guess IDs. Invoke Bambda or local-command tools only " +
         "when the user explicitly requests code execution and the Burp operator enabled that separate capability."
 internal const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
 internal const val MCP_MAX_SESSION_ID_CHARS = 128

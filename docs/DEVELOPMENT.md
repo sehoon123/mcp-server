@@ -169,14 +169,50 @@ data class ExampleLookupResult(
 Prefer a dedicated service class for Montoya interaction. Keep registration declarative in `registerTools`; do not put a
 large implementation in the registration lambda.
 
+### Tool names, titles, and compatibility
+
+Every production tool has a short, sentence-case MCP `title` describing its role. The title is a display label, **not an
+alias**: clients must call the exact `name` from `tools/list`. Clients may ignore titles, so the description's opening
+verb must agree with the title and remain understandable on its own. Neither a title nor a verb grants permission.
+
+Use this vocabulary for new contracts; retain the existing wire names and schema spellings until a separately reviewed
+compatibility migration. Input DTO renaming changes the wire name and is not a metadata cleanup.
+
+| Role | Vocabulary and retained exceptions |
+| --- | --- |
+| One object, content slice, or status | `get` name / “Read” title. `get_burp_options` returns one configuration object, not a collection. |
+| Stored-data discovery | `search` for filtered/content discovery; `list` for enumerating saved definitions (optional type filtering is fine). Historical `get_scanner_issues` has the title “Search Scanner issues”. |
+| External interaction observation | “Poll”; historical `get_collaborator_interactions` also supports bounded waiting. |
+| Passive interpretation | “Compare”, “Analyze”, “Summarize”, “Correlate”, or “Rank”; preserve each tool's evidence and privacy limits. |
+| Local state | “Save”, “Update”, “Set”, “Annotate”, “Delete”, or “Record”. `create_scanner_issue` records an attested finding; it does not verify one. |
+| Local routing | Titles explicitly say “Create Repeater tab or route …”; names remain `route_http_message_from_id` and `route_raw_http_request`. No transmission or existing-tab update is implied. Organizer can preserve an unchanged source response, so a stored message is not always request-only. |
+| Other side effects | Use the actual action, not a pure-generation label. `generate_collaborator_payload` is “Allocate Collaborator payload”; `generate_bambda_chain` is “Generate and import Repeater Bambda chain”, not a preview. Preserve all approval/execution warnings. |
+| Stored passive definition | `execute_workflow_preset` is “Run read-only workflow preset”, not general code or request execution. |
+
+Do not add `_by_id`/`_from_id(s)` to new names merely because an input contains an ID; distinguish the source in the noun
+or title when needed. Existing suffixes are compatibility exceptions, not a selector grammar. Read the schema:
+
+- HTTP `ref` is the complete `{source,id}` pair; `refs` is a list of those pairs. Copy IDs as strings, including
+  numeric-looking Proxy IDs; do not substitute list offsets. `start_scanner_audit_from_ids` takes `targets`, not bare IDs.
+- WebSocket `id` is a numeric message ID, not the `webSocketId` connection ID. Scanner `id` is a versioned opaque string.
+  Task/execution operations use their own producing result's `taskId`/`executionId`, never an HTTP reference ID.
+- Copy opaque `projectId` from a producing result or `burp://project/summary` when the schema accepts it. HTTP search and
+  Scanner issue search capture/recheck the current project internally; neither accepts `projectId`. Project-level Burp
+  options also capture/recheck it without returning the ID. User-level options and Burp control state are not project-scoped.
+- HTTP content uses `part`; Scanner content uses `field` and conditional `evidenceIndex`. These are not interchangeable.
+- New numeric fields should name their unit (`…Bytes`, `…Chars`, `…Ms`, or an explicit record-count name). Existing record
+  counts retain `limit`, Scanner `count`, and Collaborator `maxResults`; detail `limit` means **bytes**, not records or
+  characters. Existing `Ms`/`Millis` mean milliseconds and `Seconds` means seconds; never rename or convert them silently.
+
 ### Tool descriptions are model-facing contracts
 
 MCP tools are model-controlled and clients may rank them with keyword or embedding search over names and descriptions.
 The official MCP guidance also recommends clear descriptions, detailed JSON Schema parameter definitions, focused atomic
 operations, and brief catalog descriptions to limit context cost. Apply those principles as follows:
 
-- Start with one direct sentence that says what the tool does and identifies the data source or destination that
-  distinguishes it from neighboring tools.
+- Use this order: action and selection boundary → result → traffic/mutation and approval/project implications →
+  uncertain-outcome handling where applicable. Start with the title's action verb and identify the distinguishing source
+  or destination; do not bury an import or other mutation behind “generate”.
 - For overlapping tools, put the selection boundary first: say when to prefer this tool, when to use its raw or
   reference-based counterpart, and whether an already-produced stable reference should be reused instead of searched
   for again.
@@ -213,6 +249,39 @@ References: [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25
 [Anthropic tool definitions](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/implement-tool-use), and
 [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling).
 
+### Continuation and result interpretation
+
+Keep family-specific continuation rules; a common-looking `limit` or `hasMore` does not imply a common cursor protocol.
+
+| Family | Unit and continuation |
+| --- | --- |
+| HTTP search | `limit` counts summaries. Pass `nextCursor` as `cursor`, omitting filters or repeating them exactly. |
+| WebSocket search | `limit` counts summaries. Cursor calls contain only `projectId`, `cursor`, and optional `limit`. |
+| HTTP/WebSocket/Scanner detail | `offset` and `limit` are bytes. Follow the content slice's `nextOffsetBytes` as `offset` while `hasMore`; selected complete JSON/header values are not ordinary byte-preview pages. |
+| Scanner issue search | `count` counts issues. Legacy mode advances `offset` by `returned` while `hasMore`; `summariesOnly` does not select cursor mode. Ordinary cursor mode follows `nextCursor`. A fully consumed `snapshotCursor` starts a later `sinceSnapshotCursor` range; `nextDeltaCursor` continues that range. This cannot establish regression, removal, or in-place changes. |
+| Preset list | `limit` counts presets. With the same filters, continue at `offset + returned` while `hasMore`. No cursor exists. |
+| Preset execution | Follow the selected delegated result's continuation contract, not a fabricated outer cursor. |
+| Collaborator interactions | `maxResults` counts interactions; `hasMore` has no continuation cursor. `since` is an exclusive timestamp filter, not a lossless checkpoint (timestamps can tie). `scanLimitReached` leaves unscanned match status unknown. |
+
+An empty search page with `hasMore=true` is not end-of-data. Report incomplete coverage rather than treating bounded,
+truncated, access-denied, or unavailable data as evidence of absence.
+
+| Result signal | Interpretation |
+| --- | --- |
+| MCP `isError` | Tool-level error flag, not a transport-delivery or sufficient success test. Retained direct-read denials can have `isError=false`; preset delegation can classify the same denial as an error. Never use another tool to bypass it. |
+| `status` | Operation-specific outcome; read its enum/schema. Action success requires `ok` and a completed side-effect state, not just absence of an MCP error. |
+| `executionState` / Scanner `actionState` | Authoritative side-effect outcome (`not_started`, `completed`, `uncertain`). Never automatically retry uncertain mutations. |
+| Scanner `taskState` | Separate long-running task lifecycle; a completed status read is not a completed or successful audit. |
+| Optional `retry` | Follow it when present; `do_not_retry` wins. Absence is not permission to repeat a mutation, and denial requires user action. |
+| Nested results | Preset outer status describes preset lookup; inspect the selected `httpSearch`, `webSocketSearch`, or `httpComparison` status. JSON comparison also requires checking `jsonComparison.status`; `allEqual=null` is incomplete/unavailable, not equality. |
+| Detail-read MCP errors | WebSocket/Scanner detail set `isError=true` for `invalid_argument`, `not_found`, `project_mismatch`, and `burp_error`; these are non-mutating reads. |
+
+The catalog tests pin all 38 name/title pairs and opening verbs, units, counterpart links, and these audited exceptions.
+The packaged stdio-proxy test also pins all 24 Community name/title pairs. A separate pre-change contract fingerprint excludes tool titles and schema prose but retains names, properties (including
+real fields named `description`), literal defaults, requiredness, enums, bounds, and annotations. Do not update that
+fingerprint for a prose-only change; full metadata fingerprints must change and be reviewed. These checks are not a
+real-agent selection benchmark, client title-rendering test, or live Burp UI verification.
+
 ### Passive response budgets
 
 RC3 uses 8 KiB default HTTP/WebSocket/Scanner detail slices, with explicit limits up to 256 KiB.
@@ -230,10 +299,10 @@ are synthetic byte/character reductions, not tokenizer counts or real-agent benc
 request a sufficient explicit limit instead of incurring extra small-page calls.
 
 RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); focused header/MIME reads and routing
-contract clarifications bring these to 131,989/198,777, including output schemas. Clients differ in which fields reach a
-model. Existing fingerprint tests retain the 132,000/200,000-byte ceilings to make catalog growth deliberate. Do not claim
-catalog shrinkage from these changes. Initialize instructions use 1,445 bytes for read, routing, and outcome guidance;
-keep them below 1,500.
+clarifications reached 131,989/198,777. Role titles and compact contract prose now measure 131,838/198,573, including output
+schemas. These are serialized byte counts, not tokenizer savings or evidence of better agent selection. Clients differ
+in which fields reach a model. Fingerprint tests retain the 132,000/200,000-byte ceilings to make growth deliberate.
+Initialize instructions use 1,470 bytes; keep them below 1,500.
 
 ### Read cancellation and URI regression checks
 

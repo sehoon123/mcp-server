@@ -426,7 +426,8 @@ internal fun Server.registerTools(
     val localCommandService = services.localCommands(config)
 
     mcpStructuredToolWithContext<SendRawHttpRequest, RawHttpActionResult>(
-        description = "Send exactly one caller-supplied HTTP/1.1 or HTTP/2 request. Fallback only: prefer send_http_request_from_id when a stored reference exists. The independent outbound-target policy applies; stored-reference/request-action approval does not. The call binds to the Burp project current when execution starts and returns that projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+        title = "Send raw HTTP request",
+        description = "Send one caller-supplied HTTP/1.1 or HTTP/2 request only if no stored ref exists; otherwise prefer send_http_request_from_id. The independent outbound-target policy applies, not stored-reference/request-action approval. Binds to the current project and returns projectId. Redirects are disabled, output is bounded, and no Site Map entry is added. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.send(input)
@@ -434,7 +435,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Create a new Repeater tab (destination=repeater), or open a caller-supplied HTTP/1.1 or HTTP/2 request in Intruder, Organizer, Comparer, or Decoder. Fallback only: prefer route_http_message_from_id for stored traffic. Sends no network traffic; routing approval and project binding apply. HTTP/2 Intruder is unsupported. Comparer/Decoder receive only the request bytes. If executionState is uncertain, do not retry automatically.",
+        title = "Create Repeater tab or route raw HTTP request",
+        description = "Create a new Repeater tab (destination=repeater), or route a caller-supplied request to Intruder, Organizer, Comparer, or Decoder; prefer route_http_message_from_id for stored traffic. Routing approval and current-project binding apply; no network traffic is sent. HTTP/2 Intruder is unsupported. Comparer/Decoder receive only request bytes. Never retry executionState=uncertain automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.route(input)
@@ -442,7 +444,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RankHttpMessages, RankHttpMessagesResult>(
-        description = "Apply Burp's native anomaly ranking to an explicit project-bound set of 1–32 stored HTTP messages. Source access applies; request and response bytes are privately bounded to 2 MiB each and 16 MiB total. Ranks are relative ordinals for exactly this set, not severity, confidence, or vulnerability evidence. No traffic or mutation occurs, and the native ranking call has no interruptible deadline.",
+        title = "Rank HTTP messages",
+        description = "Rank 1–32 explicit stored HTTP messages using Burp's native anomaly ranking. Source access and matching projectId apply; private request/response bounds are 2 MiB each and 16 MiB total. Ranks are relative ordinals for this set, not severity, confidence, or vulnerability evidence. No traffic or mutation occurs; the native call has no interruptible deadline.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = nativeHttpRankingService.rank(input)
@@ -450,7 +453,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<AnnotateHttpMessages, AnnotateHttpMessagesResult>(
-        description = "Replace, append, or clear notes and set or clear highlight colors on 1–16 explicit stored HTTP records. Source access and sensitive-action approval apply, current annotations are rechecked before mutation, and the project is fenced. The batch is not atomic: executionState=uncertain means a prefix or one field may have changed; reconcile manually and never retry automatically.",
+        title = "Annotate HTTP messages",
+        description = "Annotate 1–16 explicit stored HTTP records: replace/append/clear notes and set/clear highlights. Source access, sensitive-action approval and matching projectId apply; current annotations are rechecked before mutation. No traffic is sent. The batch is not atomic: uncertain execution may have changed a prefix or one field; reconcile manually and never retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpAnnotationService.annotate(input)
@@ -458,7 +462,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<ExecuteLocalCommand, ExecuteLocalCommandResult>(
-        description = "Execute one direct argv or explicitly shell-interpreted local command through Burp's native command utility. The local code-execution toggle and per-call sensitive approval are mandatory unless YOLO bypasses only the prompt; Emergency read-only blocks invocation. Native timeout options apply, but only the MCP preview is output-bounded and an already started process is outside project fencing. Never retry an uncertain result.",
+        title = "Execute local command",
+        description = "Execute one direct argv or explicitly shell-interpreted local command via Burp. The separate code-execution toggle and sensitive approval apply; YOLO bypasses only the prompt. Emergency read-only blocks it. Native timeout options apply, but only the MCP preview is output-bounded; a started process is outside project fencing. Never retry an uncertain result.",
         annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
     ) { input ->
         val output = localCommandService.execute(input)
@@ -466,14 +471,16 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetBurpOptions, GetBurpOptionsResult>(
-        description = "Return bounded project- or user-level Burp configuration after approval unless YOLO mode allows it. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Credentials are filtered by default; disabling filtering may return sensitive values. This changes no Burp state.",
+        title = "Read Burp options",
+        description = "Read bounded Burp configuration for level=project or level=user. Approval applies unless YOLO allows it. Project reads capture and recheck the current project without returning its ID; user reads are project-independent. Credentials are filtered by default; disabling filtering may expose secrets. No Burp state changes.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         burpOptionsService.get(input)
     }
 
     mcpStructuredToolWithContext<SetBurpOptions, SetBurpOptionsResult>(
-        description = "Import bounded project- or user-level Burp configuration when editing tools are enabled. level=project captures and rechecks the project current at execution, but the result does not expose that ID; level=user is project-independent. Approval is required unless YOLO mode allows it. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
+        title = "Update Burp options",
+        description = "Update Burp configuration by importing bounded JSON for level=project or level=user; editing tools must be enabled. Approval applies unless YOLO allows it. Project imports capture and recheck the current project without returning its ID; user imports are project-independent. If executionState is uncertain, configuration may be partially applied; reconcile manually and do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         burpOptionsService.set(input)
@@ -484,7 +491,8 @@ internal fun Server.registerTools(
         val bambdaService = services.bambdas(config)
 
         mcpStructuredToolWithContext<StartHttpRequestExecution, HttpRequestExecutionActionResult>(
-            description = "Create a Professional-only native Request Execution Engine, queue 1–16 bounded stored or raw requests, and start sending immediately. Source, derived-request, outbound-target, and batch approvals apply; project binding and aggregate limits remain active. The returned extension-owned handle supports bounded queue/status/control calls. If executionState is uncertain, requests may have started; never retry automatically.",
+            title = "Start HTTP request execution",
+            description = "Start one Professional Request Execution Engine with 1–16 stored or raw requests; sending begins immediately. Source, derived-request, outbound-target and batch approvals, project binding and aggregate limits apply. Returns an extension-owned handle for bounded queue/status/control calls. If executionState is uncertain, requests may have started; never retry automatically.",
             annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
         ) { input ->
             val output = requestExecutionService.start(input)
@@ -492,7 +500,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<QueueHttpRequestExecution, HttpRequestExecutionActionResult>(
-            description = "Queue 1–16 additional bounded stored or raw requests into a running extension-owned Request Execution Engine handle, up to 64 total. All source, derived-request, outbound-target, batch, and project checks run before native queueing. Queueing is not atomic; an uncertain result may have queued a prefix and must not be retried automatically.",
+            title = "Queue HTTP request execution",
+            description = "Queue 1–16 additional stored or raw requests into a running extension-owned Request Execution Engine, up to 64 total. Source, derived-request, outbound-target, batch and project checks precede native queueing. Queueing is not atomic: an uncertain result may have queued a prefix; never retry automatically.",
             annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
         ) { input ->
             val output = requestExecutionService.queue(input)
@@ -500,7 +509,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GetHttpRequestExecution, HttpRequestExecutionStatusResult>(
-            description = "Read live stats and bounded completion-order metadata for an extension-owned Request Execution Engine handle. Optionally wait up to 30 seconds. Request and response content is never returned or retained by this extension; native results are dropped after metadata capture. This does not send, queue, pause, resume, cancel, or delete anything.",
+            title = "Read HTTP request execution status",
+            description = "Read live stats and bounded completion-order metadata for an extension-owned Request Execution Engine handle; optionally wait up to 30 seconds. This extension never returns or retains request/response content; native results are dropped after metadata capture. No requests are sent or queued and no execution control is changed.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             val output = requestExecutionService.get(input)
@@ -508,7 +518,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<ControlHttpRequestExecution, HttpRequestExecutionActionResult>(
-            description = "Pause, resume, cancel, or cancel-and-delete one extension-owned Request Execution Engine handle after sensitive approval and project recheck. Emergency read-only blocks every control, including cancellation; project changes and extension unload independently attempt cleanup. An uncertain result may already have applied the control and must not be retried automatically.",
+            title = "Control HTTP request execution",
+            description = "Control one extension-owned Request Execution Engine: pause, resume, cancel, or cancel-and-delete. Sensitive approval and project recheck apply. Emergency read-only blocks every control, including cancellation; project changes and extension unload independently attempt cleanup. If executionState is uncertain, the control may already have applied; do not retry automatically.",
             annotations = REQUEST_EXECUTION_TOOL_ANNOTATIONS,
         ) { input ->
             val output = requestExecutionService.control(input)
@@ -516,7 +527,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<ImportBambda, BambdaImportResult>(
-            description = "Import bounded bare Java source as a Professional Repeater CUSTOM_ACTION Bambda with a deterministic name-derived ID. At most 32 distinct MCP-imported IDs are retained per extension lifetime; reimport replaces one without consuming another slot. The local code-execution toggle and sensitive approval apply, but imported code can later run outside MCP request, project, outbound, and emergency-read-only fences. Inspect the full local approval preview; never retry an uncertain import automatically.",
+            title = "Import Repeater Bambda",
+            description = "Import bounded bare Java source as a Professional Repeater CUSTOM_ACTION Bambda. The name determines a stable ID; reimport replaces it. At most 32 distinct MCP-imported IDs per extension lifetime. The code-execution toggle and sensitive approval apply. Imported code can later run outside MCP request, project, outbound, and emergency-read-only fences. Inspect the full local approval preview; never retry an uncertain import automatically.",
             annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
         ) { input ->
             val output = bambdaService.import(input)
@@ -524,7 +536,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GenerateBambdaChain, GenerateBambdaChainResult>(
-            description = "Generate and immediately import a bounded Professional Repeater CUSTOM_ACTION Bambda that sends 1–8 fixed-target steps, extracts values, and injects later headers. The 32-distinct-ID extension-lifetime import cap applies. This is not a preview: the same code-execution toggle, replacement semantics, and approval as import_bambda apply. Running or auto-running the imported action occurs outside MCP outbound/project fences.",
+            title = "Generate and import Repeater Bambda chain",
+            description = "Generate and immediately import a Professional Repeater CUSTOM_ACTION Bambda for 1–8 fixed-target steps; not a preview. The code-execution toggle, replacement/approval rules and 32-distinct-ID lifetime cap from import_bambda apply. Running or auto-running it sends requests with value extraction and later-header injection outside MCP request, project, outbound and emergency-read-only fences.",
             annotations = CODE_EXECUTION_TOOL_ANNOTATIONS,
         ) { input ->
             val output = bambdaService.generateAndImport(input)
@@ -540,6 +553,7 @@ internal fun Server.registerTools(
         val scannerIssueCreationService = ScannerIssueCreationService(api, config, services::withOrganizerMutation)
         val collaboratorToolService = services.collaborator
         mcpStructuredToolWithContext<CreateScannerIssue, CreateScannerIssueResult>(
+            title = "Record Scanner issue",
             description = "Record one Professional Scanner issue from 1–8 existing HTTP references after human-reviewed attestation and local approval. This evidence-reporting tool sends nothing, starts no scan, and does not automatically verify the caller-authored finding or persistence. If executionState is uncertain, never retry automatically.",
             annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
         ) { input ->
@@ -548,14 +562,16 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GetScannerIssues, ScannerIssuePageResult>(
-            description = "List/filter Scanner issues; access policy applies and projectId is rechecked. Legacy mode returns JSON records, or 'Reached end of items' when empty. Cursor mode returns summaries and snapshotCursor. Pass snapshotCursor or nextDeltaCursor as sinceSnapshotCursor for a bounded append-stable range; this does not prove regression, removal, or in-place change. When hasMore=true, continue with nextCursor as cursor or nextDeltaCursor as sinceSnapshotCursor. Use get_scanner_issue_by_id for detail.",
+            title = "Search Scanner issues",
+            description = "Search Scanner issues in the captured, rechecked current project; no projectId input. Access policy applies; no traffic/mutation. Legacy JSON mode advances offset by returned while hasMore=true (empty: 'Reached end of items'). Cursor mode returns summaries: use nextCursor as cursor or nextDeltaCursor as sinceSnapshotCursor. A fully consumed snapshotCursor starts an append-stable range; this does not prove regression, removal, or in-place change. Use get_scanner_issue_by_id for detail.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             scannerIssueSearchService.get(input)
         }
 
         mcpStructuredToolWithContext<GetScannerIssueById, ScannerIssueReadResult>(
-            description = "Read one Scanner issue by stable ID from the specified project after Scanner-issue access approval. Use the opaque projectId from burp://project/summary or the producing list result; IDs are not portable across projects. Selected detail or evidence is bounded and byte-paginated. evidenceIndex is required for evidence_request or evidence_response. burp_error is a read failure and no mutation occurred.",
+            title = "Read Scanner issue",
+            description = "Read one Scanner issue by id in the specified project. Reuse projectId from a producing result or burp://project/summary; IDs are not portable across projects. Scanner-issue access approval applies. field selects bounded, byte-paginated content; evidenceIndex is required for evidence_request or evidence_response. No mutation occurs; burp_error is a read failure.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             val output = scannerIssueReadService.read(input)
@@ -567,6 +583,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<StartScannerAuditFromIds, ScannerAuditResult>(
+            title = "Start Scanner audit",
             description = "Start one passive or focused active Scanner audit from stored HTTP references after approval unless the local operator enabled YOLO mode. Both modes reject out-of-scope requests. Passive mode requires responses and sends no target traffic; active mode requires insertionPoints and can send requests. Passive mode accepts up to 16 targets and active mode up to 4. If actionState is uncertain, do not start another audit automatically.",
             annotations = SCANNER_START_TOOL_ANNOTATIONS,
         ) { input ->
@@ -575,6 +592,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GetScannerAudit, ScannerAuditResult>(
+            title = "Read Scanner audit status",
             description = "Read status and bounded issue summaries for a Scanner audit started by this MCP server. Reading status refreshes the 6-hour inactivity lease but not the 24-hour maximum lifetime; requesting issues is subject to Scanner-issue access approval. issuesAccessDenied identifies an operator denial, while issuesUnavailable identifies a skipped or technically failed issue read. Treat normalized actionState and taskState as authoritative; bounded Burp statusMessage text may lag.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
@@ -583,6 +601,7 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<CancelScannerAudit, ScannerAuditResult>(
+            title = "Cancel Scanner audit",
             description = "Cancel a retained Scanner audit started by this MCP server after approval unless the local operator enabled YOLO mode. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
             annotations = SCANNER_CANCEL_TOOL_ANNOTATIONS,
         ) { input ->
@@ -591,7 +610,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GenerateCollaboratorPayload, GenerateCollaboratorPayloadResult>(
-            description = "Generate a project-bound Collaborator payload for out-of-band testing. This allocates and returns a payload but does not inject or send it. If executionState is uncertain, a payload may already have been allocated; do not retry automatically.",
+            title = "Allocate Collaborator payload",
+            description = "Allocate a project-bound Collaborator payload. This returns a payload and identifier but does not inject or send it. If executionState is uncertain, it may already have been allocated; do not retry automatically.",
             annotations = COLLABORATOR_GENERATE_TOOL_ANNOTATIONS,
         ) { input ->
             val response = collaboratorToolService.generate(input)
@@ -601,7 +621,8 @@ internal fun Server.registerTools(
         }
 
         mcpStructuredToolWithContext<GetCollaboratorInteractions, GetCollaboratorInteractionsResult>(
-            description = "Poll bounded DNS, HTTP, or SMTP interactions for the specified current project, subject to Collaborator-interaction access policy. Long polling is limited to 120 seconds and scanning to 10,000 interactions; use the payload ID from generate_collaborator_payload to filter one payload. hasMore only reports known matching interactions omitted inside the scanned window and has no continuation cursor; scanLimitReached separately means unscanned interactions have unknown match status.",
+            title = "Poll Collaborator interactions",
+            description = "Poll bounded DNS/HTTP/SMTP interactions for the current projectId under Collaborator-interaction access policy. Filter with the payload ID from generate_collaborator_payload. Long polling is capped at 120 seconds and scanning at 10,000 interactions. hasMore marks known matching records omitted inside that window and has no continuation cursor; scanLimitReached means unscanned interactions have unknown match status.",
             annotations = COLLABORATOR_READ_TOOL_ANNOTATIONS,
         ) { input ->
             val response = collaboratorToolService.interactions(input, config) { progress, total, message ->
@@ -612,7 +633,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SearchHttpMessages, SearchHttpMessagesResult>(
-        description = "Find Proxy (default), Site Map, or Organizer messages in the call-start project when no reusable ref exists; returned projectId and each {source,id} ref feed reads and from-ID actions. Source-access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and content inspection to 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor, omitting filters or repeating them exactly. MCP sends are absent unless Burp recorded them.",
+        title = "Search HTTP messages",
+        description = "Search Proxy (default), Site Map, or Organizer messages in the call-start project when no reusable ref exists. Returns projectId and {source,id} refs. Source access applies; no traffic or mutation occurs. At most 50 results, 10,000 scanned records and 32 MiB inspected. items=[] with hasMore=true is not end-of-data; follow nextCursor with filters omitted or repeated exactly. MCP sends are absent unless Burp recorded them.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageSearchService.search(input) { progress, total, message ->
@@ -626,6 +648,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SummarizeHttpAttackSurface, HttpAttackSurfaceResult>(
+        title = "Summarize HTTP attack surface",
         description = "Summarize services, methods, statuses, MIME types, extensions, and normalized paths from stored HTTP metadata; the default is in-scope Proxy records. Source-access policy applies, and no traffic or mutation occurs. Query strings, bodies, header values, and notes are not retained. If burp_error reports changing HTTP metadata, retry the read.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
@@ -636,7 +659,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CorrelateHttpActivity, CorrelateHttpActivityResult>(
-        description = "Compare two caller-selected cohorts of 1–16 HTTP references each. Optionally append up to 16 ranked related events from 1–4 seeds; selected references are revalidated and never change the explicit delta. Source policy applies; no traffic or mutation occurs. Results expose only Proxy times and establish no identity, chronology, causality, vulnerability evidence, or complete enumeration. Query strings, headers, bodies, notes, and raw bytes are omitted; Site Map ID checks may inspect bounded private samples.",
+        title = "Correlate HTTP activity",
+        description = "Correlate two cohorts of 1–16 explicit HTTP refs each. Optionally append up to 16 ranked related events from 1–4 seeds; refs are revalidated and discovered events never change the explicit delta. Source policy applies; no traffic or mutation occurs. Results expose only Proxy times and establish no identity, chronology, causality, vulnerability evidence, or complete enumeration. Query strings, headers, bodies, notes, and raw bytes are omitted; Site Map ID checks may inspect bounded private samples.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val result = httpActivityCorrelationService.correlate(input) { progress, total, message ->
@@ -650,6 +674,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CheckScope, CheckScopeResult>(
+        title = "Check Target scope",
         description = "Check whether up to 32 URLs or stored HTTP references are currently in Target scope. This never changes scope; stored references remain subject to their source-access approval.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
@@ -658,7 +683,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<UpdateScope, UpdateScopeResult>(
-        description = "Include or exclude up to 16 URLs or stored HTTP references in Target scope. All targets are validated before any approval prompt or policy bypass and before mutation. The scope change requires approval unless an existing policy allows it. If executionState is uncertain, some changes may already exist; do not retry automatically.",
+        title = "Update Target scope",
+        description = "Update Target scope by including/excluding up to 16 URLs or stored HTTP references. All targets are validated before any approval prompt or policy bypass and before mutation. Scope changes require approval unless policy allows them. If executionState is uncertain, some changes may already exist; do not retry automatically.",
         annotations = SCOPE_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val output = scopeToolService.update(input)
@@ -666,7 +692,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<CompareHttpMessages, CompareHttpMessagesResult>(
-        description = "Compare parts of 2–8 stored HTTP messages under source-access approval; no traffic or mutation occurs. request_json/response_json return bounded paths without scalar values. allEqual is JSON structural equality in JSON modes (check jsonComparison.status), otherwise byte equality; null means the comparison is incomplete or unavailable. Optional responseKeywords uses Burp on complete stored responses regardless selected response part or preview limit and is runtime-only.",
+        title = "Compare HTTP messages",
+        description = "Compare parts of 2–8 stored HTTP messages under source-access approval; no traffic or mutation occurs. request_json/response_json return paths without scalar values: allEqual is structural equality only when jsonComparison.status is ok. Other parts use byte equality; null means incomplete/unavailable. responseKeywords analyzes complete stored responses regardless of selected part or preview limit, and is runtime-only.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageComparisonService.compare(input)
@@ -674,7 +701,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<AnalyzeHttpSessionSecurity, AnalyzeHttpSessionSecurityResult>(
-        description = "Passively analyze authentication and session signals across 1–32 HTTP references. Source-access policy applies; no traffic or mutation occurs. Returns value-free authentication, cookie, redirect, endpoint-role, and cross-message observations; raw bodies and sensitive values are never returned. Site Map identity checks may privately inspect bounded body and header samples. Input order is a proposed flow; results do not establish chronology, browser behavior, severity, or a vulnerability.",
+        title = "Analyze HTTP session security",
+        description = "Analyze authentication and session signals across 1–32 HTTP refs using stored evidence only. Source access applies; no traffic or mutation occurs. Returns value-free authentication, cookie, redirect, endpoint-role and cross-message observations, never raw bodies or sensitive values. Site Map identity checks may privately inspect bounded body and header samples. Input order is a proposed flow, not proof of chronology, browser behavior, severity, or a vulnerability.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = services.httpSessionSecurityAnalyzer.analyze(input, config) { progress, total, message ->
@@ -688,6 +716,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetHttpMessage, GetHttpMessageResult>(
+        title = "Read HTTP message",
         description = "Read a stored {source,id} from search_http_messages; source approval and matching projectId apply. Metadata by default; response_mime returns native MIME observations. Raw parts: 8 KiB default, 256 KiB cap; pass nextOffsetBytes as offset while hasMore. jsonPointer selects a complete RFC 6901 body value; headerName selects complete parsed header values. Use explicit body/header parts. Nothing is sent or changed; no read is required before from-ID actions.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
@@ -696,7 +725,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SendHttpRequestFromId, HttpMessageActionResult>(
-        description = "Send one stored HTTP request, optionally with a bounded patch. Each call restarts from the stored source, so omitted patch fields inherit it and patches never accumulate; the destination service cannot change. Source access, the derived-request/request-action policy, and the independent outbound-target policy apply; each may allow without prompting. Redirects are rejected; MCP sends are not added to Site Map. If executionState is uncertain, the request may have been sent; do not retry automatically.",
+        title = "Send stored HTTP request",
+        description = "Send one stored HTTP request, optionally with a bounded patch. Each call restarts from the stored source, so omitted fields inherit it and patches never accumulate; the destination service cannot change. Source access, derived-request/request-action policy and independent outbound-target policy apply. No redirects or automatic Site Map entry. If executionState is uncertain, the request may have been sent; do not retry automatically.",
         annotations = HTTP_REQUEST_ACTION_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.send(input)
@@ -704,7 +734,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteHttpMessageFromId, HttpMessageActionResult>(
-        description = "Create a new Repeater tab (destination=repeater), or open a stored request in Intruder, Organizer, Comparer, or Decoder. Routing sends no network traffic and starts no attack. Source and routing approvals apply. Each call restarts from the stored source; patches never accumulate. Comparer/Decoder receive only request bytes. Check status and executionState; if uncertain, do not retry automatically.",
+        title = "Create Repeater tab or route stored HTTP message",
+        description = "Create a new Repeater tab (destination=repeater), or route a stored request to Intruder, Organizer, Comparer, or Decoder. Source and routing approvals apply; no network traffic or attack is started. Each call restarts from the stored source; patches never accumulate. Comparer/Decoder receive only request bytes. Unpatched Organizer routing may include the source response. Never retry executionState=uncertain automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.route(input)
@@ -712,7 +743,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SearchWebsocketMessages, SearchWebsocketMessagesResult>(
-        description = "Search Proxy WebSocket metadata using the opaque projectId from burp://project/summary or a producing result. WebSocket-history access policy applies; no traffic or mutation occurs. Results are limited to 50, scanning to 10,000 records and 32 MiB. A budget-limited page may have items=[] with hasMore=true; continue with nextCursor and only the same projectId plus optional limit.",
+        title = "Search WebSocket messages",
+        description = "Search Proxy WebSocket metadata with projectId from burp://project/summary or a producing result. Use get_websocket_message_by_id for payloads. Access policy applies; no traffic or mutation occurs. At most 50 results, 10,000 records scanned and 32 MiB inspected. items=[] with hasMore=true is not end-of-data; pass nextCursor as cursor with only projectId and optional limit.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = webSocketMessageSearchService.search(input) { progress, total, message ->
@@ -726,7 +758,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SaveWorkflowPreset, SaveWorkflowPresetResult>(
-        description = "Create one project-scoped HTTP search, WebSocket search, or HTTP comparison preset. With overwrite=true, replace an existing case-insensitive same-name preset. Names are trimmed; other caller-authored strings are stored verbatim and are not secret-filtered, so do not include secrets. This sends no traffic. If executionState is uncertain, do not retry automatically.",
+        title = "Save workflow preset",
+        description = "Save a project-scoped HTTP search, WebSocket search, or HTTP comparison preset. Creates by default; overwrite=true replaces a case-insensitive same-name preset. Names are trimmed; other caller-authored strings are stored verbatim, not secret-filtered. Do not store secrets. No traffic is sent. Never retry executionState=uncertain automatically.",
         annotations = WORKFLOW_PRESET_SAVE_ANNOTATIONS,
     ) { input ->
         val output = workflowPresetService.save(input)
@@ -734,6 +767,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<ListWorkflowPresets, ListWorkflowPresetsResult>(
+        title = "List workflow presets",
         description = "List stored workflow preset definitions for the current project, optionally filtered and paginated. This is read-only, sends no traffic, and the project can contain at most 64 presets.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
@@ -742,6 +776,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<DeleteWorkflowPreset, DeleteWorkflowPresetResult>(
+        title = "Delete workflow preset",
         description = "Delete one project-scoped workflow preset without affecting traffic or other Burp state. A missing preset succeeds with deleted=false. If executionState is uncertain, do not retry automatically.",
         annotations = WORKFLOW_PRESET_DELETE_ANNOTATIONS,
     ) { input ->
@@ -750,7 +785,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<ExecuteWorkflowPreset, ExecuteWorkflowPresetResult>(
-        description = "Run one stored HTTP search, WebSocket search, or HTTP comparison preset. For search presets, cursor is runtime-only; an optional runtime limit overrides the saved defaultLimit, otherwise the saved or service default is used. Comparison refs are runtime-only and required. Delegated approvals, bounds, cursors, and status remain authoritative; this sends no traffic.",
+        title = "Run read-only workflow preset",
+        description = "Run a stored read-only HTTP search, WebSocket search, or HTTP comparison preset. Search cursor is runtime-only; runtime limit overrides saved defaultLimit, otherwise saved/service defaults apply. Comparison refs are runtime-only and required. Check outer and selected nested status. Delegated approvals, bounds and continuation rules apply; no traffic is sent.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = workflowPresetService.execute(input) { progress, total, message ->
@@ -760,7 +796,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<GetWebsocketMessageById, WebSocketMessageReadResult>(
-        description = "Read one original or edited Proxy WebSocket payload by stable ID. Use the opaque projectId from burp://project/summary or the producing search result; IDs are not portable across projects. WebSocket-history access approval applies; content is bounded and byte-paginated. burp_error is a read failure and no mutation occurred.",
+        title = "Read WebSocket message",
+        description = "Read one original or edited Proxy WebSocket payload by id from search_websocket_messages, with matching projectId. WebSocket-history access approval applies; content is bounded and byte-paginated using offset/limit. IDs are not portable across projects. burp_error is a read failure and no mutation occurred.",
         annotations = READ_ONLY_TOOL_ANNOTATIONS,
     ) { input ->
         val output = webSocketMessageReadService.read(input)
@@ -772,7 +809,8 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(
-        description = "Change one Burp-wide control—the task execution engine or Proxy Intercept state—after approval unless YOLO mode allows it. This is intentionally not project-scoped, takes no projectId, and is not reverted by a project switch. If executionState is uncertain, the change may have occurred; do not retry automatically.",
+        title = "Set Burp control state",
+        description = "Set one Burp-wide control: task execution engine or Proxy Intercept. Approval applies unless YOLO allows it. This is intentionally not project-scoped: no projectId and not reverted by a project switch. If executionState is uncertain, the change may have occurred; do not retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage = when (input.control) {
@@ -939,7 +977,7 @@ data class SetBurpControlState(
 
 @Serializable
 data class GetWebsocketMessageById(
-    @JsonSchemaMetadata(description = "Stable WebSocket history ID.", minimum = 0) val id: Int,
+    @JsonSchemaMetadata(description = "Numeric message id from search_websocket_messages, not a webSocketId connection id.", minimum = 0) val id: Int,
     @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256) val projectId: String,
     @JsonSchemaMetadata(description = "Read the edited payload variant.", defaultJson = "false") val edited: Boolean? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0") val offset: Int? = null,
@@ -950,7 +988,7 @@ data class GetWebsocketMessageById(
 @Serializable
 data class GetScannerIssueById(
     @JsonSchemaMetadata(
-        description = "Versioned Scanner issue ID returned by search or audit status.",
+        description = "Versioned issue id from get_scanner_issues or get_scanner_audit; copy verbatim.",
         pattern = "^issue_v2_(x|[0-9a-z]{1,6})_[0-9a-f]{32}$",
         maxLength = 128,
     )

@@ -557,6 +557,7 @@ class ToolCallContext @PublishedApi internal constructor(
 inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContext(
     description: String,
     annotations: ToolAnnotations? = null,
+    title: String? = null,
     crossinline execute: suspend ToolCallContext.(I) -> StructuredToolResponse<O>,
 ) {
     val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
@@ -591,6 +592,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
 
     addTool(
         name = toolName,
+        title = title,
         description = description,
         inputSchema = inputSchema,
         outputSchema = outputSchema,

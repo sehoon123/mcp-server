@@ -166,6 +166,25 @@ project, outbound-approval, toggle, and Emergency read-only checks. Both tool fa
 the local operator explicitly enables **Bambda and local command tools**; every invocation still requires sensitive
 action approval unless YOLO mode is active.
 
+### Tool discovery and retained contracts (unreleased)
+
+All 24 Community / 38 Professional tools expose a role-first MCP **title** as well as their existing callable **name**.
+For example, `get_scanner_issues` displays “Search Scanner issues”, and `generate_bambda_chain` displays
+“Generate and import Repeater Bambda chain”—not a preview. Routing titles explicitly mention Repeater tab creation.
+Titles are labels, not aliases; clients must call the exact names from `tools/list`. Descriptions remain self-contained
+for clients that ignore titles or initialize instructions. Tool names, input/result fields, approval rules, and server-side
+action behavior are unchanged.
+
+- Follow each schema's selector and unit: HTTP `{source,id}`, numeric WebSocket message `id` (not `webSocketId`),
+  Scanner issue `id`, and task/execution handles are different. Detail `limit` is bytes; search/list limits are record
+  counts, including retained Scanner `count` and Collaborator `maxResults`. Continuation rules differ by family.
+- `isError=false` alone is not success. Inspect `status`, applicable side-effect/retry fields, and nested preset/JSON
+  comparison status. Denials require user action, not a substitute tool; uncertain mutations must not be retried automatically.
+
+See the [naming and compatibility contract](docs/DEVELOPMENT.md#tool-names-titles-and-compatibility) and
+[continuation/result guide](docs/DEVELOPMENT.md#continuation-and-result-interpretation). Catalog regression checks cover
+both editions; they do not establish real-client title rendering, model selection quality, or live Burp UI behavior.
+
 ### Efficient agent reads (RC3)
 
 - Reuse `projectId`, references, and summaries already returned; do not fetch each message just to discover its metadata.

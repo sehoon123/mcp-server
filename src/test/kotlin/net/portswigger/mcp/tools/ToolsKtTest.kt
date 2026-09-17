@@ -79,49 +79,51 @@ import java.time.ZonedDateTime
 import java.util.HexFormat
 import java.util.Optional
 
-private val EXPECTED_COMMUNITY_TOOL_NAMES = setOf(
-    "send_raw_http_request",
-    "route_raw_http_request",
-    "get_burp_options",
-    "set_burp_options",
-    "search_http_messages",
-    "summarize_http_attack_surface",
-    "correlate_http_activity",
-    "check_scope",
-    "update_scope",
-    "compare_http_messages",
-    "analyze_http_session_security",
-    "save_workflow_preset",
-    "list_workflow_presets",
-    "delete_workflow_preset",
-    "execute_workflow_preset",
-    "get_http_message",
-    "send_http_request_from_id",
-    "route_http_message_from_id",
-    "search_websocket_messages",
-    "get_websocket_message_by_id",
-    "set_burp_control_state",
-    "rank_http_messages",
-    "annotate_http_messages",
-    "execute_local_command",
+internal val EXPECTED_COMMUNITY_TOOL_TITLES = mapOf(
+    "send_raw_http_request" to "Send raw HTTP request",
+    "route_raw_http_request" to "Create Repeater tab or route raw HTTP request",
+    "get_burp_options" to "Read Burp options",
+    "set_burp_options" to "Update Burp options",
+    "search_http_messages" to "Search HTTP messages",
+    "summarize_http_attack_surface" to "Summarize HTTP attack surface",
+    "correlate_http_activity" to "Correlate HTTP activity",
+    "check_scope" to "Check Target scope",
+    "update_scope" to "Update Target scope",
+    "compare_http_messages" to "Compare HTTP messages",
+    "analyze_http_session_security" to "Analyze HTTP session security",
+    "save_workflow_preset" to "Save workflow preset",
+    "list_workflow_presets" to "List workflow presets",
+    "delete_workflow_preset" to "Delete workflow preset",
+    "execute_workflow_preset" to "Run read-only workflow preset",
+    "get_http_message" to "Read HTTP message",
+    "send_http_request_from_id" to "Send stored HTTP request",
+    "route_http_message_from_id" to "Create Repeater tab or route stored HTTP message",
+    "search_websocket_messages" to "Search WebSocket messages",
+    "get_websocket_message_by_id" to "Read WebSocket message",
+    "set_burp_control_state" to "Set Burp control state",
+    "rank_http_messages" to "Rank HTTP messages",
+    "annotate_http_messages" to "Annotate HTTP messages",
+    "execute_local_command" to "Execute local command",
 )
+private val EXPECTED_COMMUNITY_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_TITLES.keys
 
-private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_COMMUNITY_TOOL_NAMES + setOf(
-    "create_scanner_issue",
-    "get_scanner_issues",
-    "get_scanner_issue_by_id",
-    "start_scanner_audit_from_ids",
-    "get_scanner_audit",
-    "cancel_scanner_audit",
-    "generate_collaborator_payload",
-    "get_collaborator_interactions",
-    "start_http_request_execution",
-    "queue_http_request_execution",
-    "get_http_request_execution",
-    "control_http_request_execution",
-    "import_bambda",
-    "generate_bambda_chain",
+private val EXPECTED_PROFESSIONAL_TOOL_TITLES = EXPECTED_COMMUNITY_TOOL_TITLES + mapOf(
+    "create_scanner_issue" to "Record Scanner issue",
+    "get_scanner_issues" to "Search Scanner issues",
+    "get_scanner_issue_by_id" to "Read Scanner issue",
+    "start_scanner_audit_from_ids" to "Start Scanner audit",
+    "get_scanner_audit" to "Read Scanner audit status",
+    "cancel_scanner_audit" to "Cancel Scanner audit",
+    "generate_collaborator_payload" to "Allocate Collaborator payload",
+    "get_collaborator_interactions" to "Poll Collaborator interactions",
+    "start_http_request_execution" to "Start HTTP request execution",
+    "queue_http_request_execution" to "Queue HTTP request execution",
+    "get_http_request_execution" to "Read HTTP request execution status",
+    "control_http_request_execution" to "Control HTTP request execution",
+    "import_bambda" to "Import Repeater Bambda",
+    "generate_bambda_chain" to "Generate and import Repeater Bambda chain",
 )
+private val EXPECTED_PROFESSIONAL_TOOL_NAMES = EXPECTED_PROFESSIONAL_TOOL_TITLES.keys
 
 class ToolsKtTest {
     private val testBearerToken = "0123456789012345678901234567890123456789012"
@@ -226,6 +228,10 @@ class ToolsKtTest {
 
     private fun assertCatalogToolContract(tool: Tool) {
         assertTrue(tool.name.matches(Regex("[a-z][a-z0-9_]*")), tool.name)
+        val title = requireNotNull(tool.title) { "${tool.name} lacks a display title" }
+        assertEquals(EXPECTED_PROFESSIONAL_TOOL_TITLES.getValue(tool.name), title, tool.name)
+        assertTrue(title.length <= 64 && title != tool.name, "${tool.name} title must be a concise label, not an alias")
+        assertTrue(tool.description.orEmpty().startsWith(title.substringBefore(' ') + " "), "${tool.name} role verb differs from its title")
         assertTrue(tool.description.orEmpty().isNotBlank(), "${tool.name} lacks a description")
         assertTrue(tool.description.orEmpty().length <= 512, "${tool.name} description exceeds the catalog budget")
         assertNotNull(tool.annotations?.readOnlyHint, "${tool.name}.readOnlyHint")
@@ -246,9 +252,50 @@ class ToolsKtTest {
                 "${tool.name}.projectId must use the common opaque project-binding contract",
             )
         }
+        val statusDescription = tool.outputSchema?.properties?.get("status")?.jsonObject
+            ?.get("description")?.jsonPrimitive?.content.orEmpty()
+        assertFalse(statusDescription.contains("Reconcile project and cursor state"), "${tool.name} has cursor-only retry guidance")
+        if (tool.name in setOf("get_websocket_message_by_id", "get_scanner_issue_by_id")) {
+            for (status in listOf("invalid_argument", "not_found", "project_mismatch", "burp_error")) {
+                assertTrue(statusDescription.contains(status), "${tool.name} omits $status from its MCP error mapping")
+            }
+            assertTrue(statusDescription.contains("isError=true"))
+        }
+        val recordLimit = when (tool.name) {
+            "search_http_messages", "search_websocket_messages" -> "limit" to "summaries"
+            "list_workflow_presets" -> "limit" to "presets"
+            "get_scanner_issues" -> "count" to "issue records"
+            "get_collaborator_interactions" -> "maxResults" to "interaction records"
+            else -> null
+        }
+        recordLimit?.let { (field, unit) ->
+            val description = tool.inputSchema.properties!!.getValue(field).jsonObject.getValue("description").jsonPrimitive.content
+            assertTrue(description.contains(unit), "${tool.name}.$field must state its record unit")
+        }
         assertNonNullOutputFieldsAreRequired(tool)
         assertTruncatedStringsAdvertiseBounds(tool)
         assertBurpErrorGuidanceIsSelfContained(tool)
+    }
+
+    // Strip schema prose, not a real property named "description" or literal values in defaults/enums.
+    private fun schemaContract(element: JsonElement, propertyMap: Boolean = false): JsonElement = when (element) {
+        is JsonObject -> JsonObject(element.entries.filter { propertyMap || it.key != "description" }.associate { (key, value) ->
+            key to if (!propertyMap && key in setOf("default", "enum", "const", "examples")) value else schemaContract(
+                value,
+                !propertyMap && key in setOf("properties", "\$defs", "definitions", "patternProperties", "dependentSchemas"),
+            )
+        })
+        is JsonArray -> JsonArray(element.map { schemaContract(it) })
+        else -> element
+    }
+
+    private fun assertCatalogContract(edition: String, tools: Collection<Tool>, expected: String) {
+        val contracts = tools.sortedBy { it.name }.map { tool ->
+            JsonObject(canonicalTool(tool).filterKeys { it != "title" && it != "description" }.mapValues { (key, value) ->
+                if (key == "inputSchema" || key == "outputSchema") schemaContract(value) else value
+            })
+        }
+        assertEquals(expected, sha256(JsonArray(contracts).toString()), "$edition wire contract changed beyond titles/descriptions")
     }
 
     private fun assertCatalogFingerprint(edition: String, tools: Collection<Tool>, expected: String) {
@@ -263,6 +310,10 @@ class ToolsKtTest {
                 val limit = tool.inputSchema.properties!!.getValue("limit").jsonObject
                 assertEquals("8192", limit.getValue("default").toString())
                 assertEquals("262144", limit.getValue("maximum").toString())
+                for (field in listOf("offset", "limit")) {
+                    assertTrue(tool.inputSchema.properties!!.getValue(field).jsonObject
+                        .getValue("description").jsonPrimitive.content.contains("byte"), "${tool.name}.$field must state byte units")
+                }
             }
         val canonicalTools = tools.sortedBy { it.name }.map(::canonicalTool)
         val canonicalCatalog = JsonArray(canonicalTools).toString()
@@ -583,6 +634,25 @@ class ToolsKtTest {
     }
 
     @Test
+    fun `catalog contract retains description properties and literal values while excluding schema prose`() {
+        val schema = Json.parseToJsonElement("""{
+            "description":"remove", "type":"object", "properties":{
+                "description":{"type":"string","description":"remove"},
+                "settings":{"type":"object","default":{"description":"keep"},
+                    "enum":[{"description":"keep"}],"description":"remove"}
+            }
+        }""")
+        val contract = schemaContract(schema).jsonObject
+        assertFalse("description" in contract)
+        val properties = contract.getValue("properties").jsonObject
+        assertEquals(JsonObject(mapOf("type" to JsonPrimitive("string"))), properties.getValue("description"))
+        val settings = properties.getValue("settings").jsonObject
+        assertEquals("keep", settings.getValue("default").jsonObject.getValue("description").jsonPrimitive.content)
+        assertEquals("keep", settings.getValue("enum").jsonArray.single().jsonObject.getValue("description").jsonPrimitive.content)
+        assertFalse("description" in settings)
+    }
+
+    @Test
     fun `Community catalog descriptions expose corrected contracts without implementation jargon`() = runBlocking {
         val tools = client.listTools().associateBy { it.name }
         assertEquals(24, tools.size)
@@ -590,28 +660,30 @@ class ToolsKtTest {
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         tools.values.forEach(::assertCatalogToolContract)
+        assertCatalogContract("Community", tools.values, "4c7049a067ffe56de2c6efee976ed513e55dfb17ecfd75924d2c679c6cad7f48")
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "e37233064aaf14069bd2b9550d03ae639d745ed6c9c6ad3250aae74e2ca65eaa",
+            "3f9e9595e2deaa1c956dffecfc57f2084e5592cd6f070041a54ba37b2a158819",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("explicitly requests code execution"))
-        assertTrue(MCP_SERVER_INSTRUCTIONS.length <= 1500)
+        assertTrue(MCP_SERVER_INSTRUCTIONS.toByteArray(Charsets.UTF_8).size < 1500)
         for (guidance in listOf(
             "small limit", "jsonPointer", "without pre-reading", "incomplete coverage", "untrusted data", "Never retry",
             "destination=repeater", "optional tabName", "does not send traffic or update an existing tab",
             "isError=false alone is not success", "Denials require user action", "Do not use code execution for tab creation",
+            "Call exact tool names", "titles are labels, not aliases", "Follow schema selectors and units", "do not guess IDs",
         )) {
             assertTrue(MCP_SERVER_INSTRUCTIONS.contains(guidance), guidance)
         }
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
-        assertTrue(description("send_raw_http_request").contains("Fallback only"))
-        assertTrue(description("route_raw_http_request").contains("Fallback only"))
+        assertTrue(description("send_raw_http_request").contains("only if no stored ref exists"))
+        assertTrue(description("route_raw_http_request").contains("prefer route_http_message_from_id for stored traffic"))
         assertTrue(description("route_raw_http_request").contains("Comparer, or Decoder"))
-        assertTrue(description("route_raw_http_request").contains("Comparer/Decoder receive only the request bytes"))
+        assertTrue(description("route_raw_http_request").contains("Comparer/Decoder receive only request bytes"))
         assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder is unsupported"))
         assertFalse(description("route_raw_http_request").contains("No history is added"))
         for (name in listOf("route_http_message_from_id", "route_raw_http_request")) {
@@ -633,10 +705,10 @@ class ToolsKtTest {
         assertTrue(tools.getValue("route_raw_http_request").inputSchema.properties!!.getValue("usesHttps")
             .toString().contains("no connection is made"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
-        assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
+        assertTrue(description("set_burp_options").contains("capture and recheck the current project"))
         assertTrue(description("search_http_messages").contains("call-start project"))
         assertTrue(description("search_http_messages").contains("items=[] with hasMore=true"))
-        assertTrue(description("search_http_messages").contains("scanning to 10,000 records"))
+        assertTrue(description("search_http_messages").contains("10,000 scanned records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
         assertTrue(description("get_http_message").contains("jsonPointer"))
@@ -656,6 +728,7 @@ class ToolsKtTest {
         assertTrue(description("route_http_message_from_id").contains("patches never accumulate"))
         assertTrue(description("route_http_message_from_id").contains("Comparer, or Decoder"))
         assertTrue(description("route_http_message_from_id").contains("Comparer/Decoder receive only request bytes"))
+        assertTrue(description("route_http_message_from_id").contains("Unpatched Organizer routing may include the source response"))
         listOf("send_http_request_from_id", "route_http_message_from_id").forEach { toolName ->
             val properties = requireNotNull(tools[toolName]).inputSchema.properties.orEmpty()
             assertTrue(
@@ -682,11 +755,20 @@ class ToolsKtTest {
         assertTrue(description("analyze_http_session_security").contains("privately inspect bounded body and header samples"))
         assertTrue(description("save_workflow_preset").contains("Names are trimmed"))
         assertTrue(description("list_workflow_presets").contains("stored workflow preset definitions"))
-        assertTrue(description("execute_workflow_preset").contains("runtime limit overrides the saved defaultLimit"))
-        assertTrue(description("route_http_message_from_id").contains("sends no network traffic"))
+        assertTrue(description("execute_workflow_preset").contains("runtime limit overrides saved defaultLimit"))
+        assertTrue(description("execute_workflow_preset").contains("Check outer and selected nested status"))
+        assertTrue(tools.getValue("list_workflow_presets").outputSchema!!.properties!!.getValue("hasMore")
+            .toString().contains("offset + returned"))
+        assertTrue(description("route_http_message_from_id").contains("no network traffic or attack is started"))
+        assertTrue(tools.getValue("route_http_message_from_id").outputSchema!!.properties!!.getValue("preservedResponseInOrganizer")
+            .toString().contains("unchanged source response"))
         assertTrue(description("send_raw_http_request").contains("independent outbound-target policy"))
         assertTrue(description("send_http_request_from_id").contains("independent outbound-target policy"))
         assertTrue(description("search_websocket_messages").contains("items=[] with hasMore=true"))
+        assertTrue(description("search_websocket_messages").contains("get_websocket_message_by_id"))
+        assertTrue(description("get_websocket_message_by_id").contains("search_websocket_messages"))
+        assertTrue(tools.getValue("get_websocket_message_by_id").inputSchema.properties!!.getValue("id")
+            .toString().contains("not a webSocketId connection id"))
         assertTrue(description("set_burp_control_state").contains("intentionally not project-scoped"))
         assertTrue(description("rank_http_messages").contains("relative ordinals"))
         assertTrue(description("rank_http_messages").contains("no interruptible deadline"))
@@ -1519,7 +1601,7 @@ class ToolsKtTest {
                 assertEquals(listOf("level"), readTool.inputSchema.required)
                 assertTrue(readTool.inputSchema.properties?.get("level").toString().contains("project"))
                 val setTool = tools.single { it.name == "set_burp_options" }
-                assertTrue(setTool.description.orEmpty().contains("captures and rechecks the project current"))
+                assertTrue(setTool.description.orEmpty().contains("capture and recheck the current project"))
                 val jsonSchema = setTool.inputSchema.properties?.get("json").toString()
                 assertTrue(jsonSchema.contains("project_options"))
                 assertTrue(jsonSchema.contains("user_options"))
@@ -2597,10 +2679,11 @@ class ToolsKtTest {
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertCatalogToolContract)
+            assertCatalogContract("Professional", tools, "0b7ad68dbbe6eef6bd87d9ddb2a5d089687f4ec210cdfe58718632f684cce6fc")
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "eff11ec4f96b1a4a3454def73f5f2c252e509c2ac37ec396c6025c6f9832f089",
+                "d3769e2a2c73f31f87240b4dcdf24e3724196383bf783fe9f71062f1f5b89086",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2614,6 +2697,13 @@ class ToolsKtTest {
             assertEquals(false, bambdaImport.annotations?.readOnlyHint)
             assertEquals(true, bambdaImport.annotations?.openWorldHint)
             assertTrue(bambdaImport.description.orEmpty().contains("outside MCP request, project, outbound"))
+            val chain = tools.single { it.name == "generate_bambda_chain" }
+            assertTrue(chain.title.orEmpty().startsWith("Generate and import"))
+            assertTrue(chain.description.orEmpty().contains("immediately import"))
+            assertTrue(chain.description.orEmpty().contains("not a preview"))
+            assertTrue(chain.description.orEmpty().contains("Running or auto-running it sends requests"))
+            assertTrue(chain.description.orEmpty().contains("outside MCP request, project, outbound and emergency-read-only fences"))
+            assertEquals(false, chain.annotations?.readOnlyHint)
 
             val createIssue = tools.single { it.name == "create_scanner_issue" }
             assertEquals(
@@ -2667,9 +2757,13 @@ class ToolsKtTest {
             assertEquals(false, cancel.annotations?.openWorldHint)
 
             val issues = tools.single { it.name == "get_scanner_issues" }
-            assertTrue(issues.description.orEmpty().contains("projectId is rechecked"))
+            assertTrue(issues.description.orEmpty().contains("captured, rechecked current project"))
+            assertTrue(issues.description.orEmpty().contains("no projectId input"))
+            assertFalse("projectId" in issues.inputSchema.properties.orEmpty())
             assertTrue(issues.description.orEmpty().contains("does not prove regression, removal, or in-place change"))
             assertTrue(issues.description.orEmpty().contains("nextDeltaCursor as sinceSnapshotCursor"))
+            assertTrue(issues.description.orEmpty().contains("Legacy JSON mode advances offset by returned"))
+            assertTrue(issues.description.orEmpty().contains("fully consumed snapshotCursor"))
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
             assertNotNull(issues.inputSchema.properties?.get("sinceSnapshotCursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))

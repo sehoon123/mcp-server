@@ -8,7 +8,7 @@ import net.portswigger.mcp.security.safeExceptionSummary
 internal const val MAX_STANDARD_TOOL_ERROR_CHARS = 384
 internal const val MAX_STRUCTURED_TOOL_ERROR_CHARS = 512
 internal const val READ_ONLY_TOOL_STATUS_DESCRIPTION =
-    "Outcome; burp_error means a bounded read failed and no mutation occurred. Reconcile project and cursor state before retrying."
+    "Read failed on burp_error; no mutation. Recheck applicable project/ref/page state before retrying."
 internal const val TOOL_STATUS_RETRY_DESCRIPTION =
     "Outcome category. burp_error alone does not determine whether retry is safe; use retry and executionState."
 internal const val READ_STATUS_RETRY_DESCRIPTION =

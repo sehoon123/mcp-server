@@ -50,9 +50,9 @@ private const val LEGACY_SCANNER_TRUNCATION_MARKER =
 
 @Serializable
 data class GetScannerIssues(
-    @JsonSchemaMetadata(description = "Maximum issues returned.", minimum = 1, maximum = 50, defaultJson = "25")
+    @JsonSchemaMetadata(description = "Maximum issue records per page (legacy count field).", minimum = 1, maximum = 50, defaultJson = "25")
     override val count: Int = DEFAULT_SCANNER_ISSUE_LIMIT,
-    @JsonSchemaMetadata(description = "Legacy-mode offset; cursor mode requires zero.", minimum = 0, defaultJson = "0")
+    @JsonSchemaMetadata(description = "Legacy-mode issue-record offset; cursor mode requires zero.", minimum = 0, defaultJson = "0")
     override val offset: Int = 0,
     @JsonSchemaMetadata(description = "In legacy offset mode, return compact summary records instead of full details; does not enable cursor mode.", defaultJson = "false")
     val summariesOnly: Boolean? = null,

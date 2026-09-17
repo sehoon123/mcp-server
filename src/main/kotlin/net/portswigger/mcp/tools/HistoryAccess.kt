@@ -19,7 +19,7 @@ internal const val DEFAULT_HISTORY_SLICE_BYTES = 8 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
 internal const val MAX_NOTES_CHARS = 2_000
 internal const val MCP_PROJECT_ID_INPUT_DESCRIPTION =
-    "Opaque ID from burp://project/summary or the producing search/list result; it must match the current project and every supplied reference or cursor."
+    "Opaque projectId from burp://project/summary or a producing result; must match the current project and all refs/cursors."
 private const val SCANNER_IDENTITY_CHUNK_CHARS = 8 * 1024
 private const val SCANNER_TEXT_ENCODING_BUFFER_BYTES = 8 * 1024
 private val HTTP_MESSAGE_PARTS = setOf(
@@ -135,7 +135,7 @@ data class WebSocketMessageMetadata(
 
 @Serializable
 data class WebSocketMessageReadResult(
-    @JsonSchemaMetadata(description = "Outcome; invalid_argument and burp_error set MCP isError=true, and no mutation occurs.")
+    @JsonSchemaMetadata(description = "Read outcome; isError=true for invalid_argument, not_found, project_mismatch or burp_error. No mutation.")
     val status: HistoryReadStatus,
     val id: Int,
     @JsonSchemaMetadata(description = "Effective project binding when safely known.")
@@ -148,7 +148,7 @@ data class WebSocketMessageReadResult(
 
 @Serializable
 data class ScannerIssueReadResult(
-    @JsonSchemaMetadata(description = "Outcome; invalid_argument and burp_error set MCP isError=true, and no mutation occurs.")
+    @JsonSchemaMetadata(description = "Read outcome; isError=true for invalid_argument, not_found, project_mismatch or burp_error. No mutation.")
     val status: HistoryReadStatus,
     val id: String,
     val field: String,

@@ -69,7 +69,7 @@ data class GetCollaboratorInteractions(
     val since: String? = null,
     @JsonSchemaMetadata(description = "Bounded long-poll duration in seconds.", minimum = 0, maximum = 120, defaultJson = "0")
     val waitSeconds: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum interactions returned.", minimum = 1, maximum = 50, defaultJson = "20")
+    @JsonSchemaMetadata(description = "Maximum interaction records returned; no continuation cursor.", minimum = 1, maximum = 50, defaultJson = "20")
     val maxResults: Int? = null,
     @JsonSchemaMetadata(description = "Maximum detail bytes per interaction; zero omits details.", minimum = 0, maximum = 16384, defaultJson = "4096")
     val detailLimitBytes: Int? = null,

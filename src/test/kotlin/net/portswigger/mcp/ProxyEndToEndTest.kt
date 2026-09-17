@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.presets.WorkflowPresetStore
 import net.portswigger.mcp.security.NoOpMcpAuditSink
+import net.portswigger.mcp.tools.EXPECTED_COMMUNITY_TOOL_TITLES
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -199,35 +200,8 @@ class ProxyEndToEndTest {
     fun `proxy should list tools`() {
         runBlocking {
             val tools = client.listTools()
-            assertEquals(
-                setOf(
-                    "send_raw_http_request",
-                    "route_raw_http_request",
-                    "rank_http_messages",
-                    "annotate_http_messages",
-                    "execute_local_command",
-                    "get_burp_options",
-                    "set_burp_options",
-                    "search_http_messages",
-                    "summarize_http_attack_surface",
-                    "correlate_http_activity",
-                    "check_scope",
-                    "update_scope",
-                    "compare_http_messages",
-                    "analyze_http_session_security",
-                    "save_workflow_preset",
-                    "list_workflow_presets",
-                    "delete_workflow_preset",
-                    "execute_workflow_preset",
-                    "get_http_message",
-                    "send_http_request_from_id",
-                    "route_http_message_from_id",
-                    "search_websocket_messages",
-                    "get_websocket_message_by_id",
-                    "set_burp_control_state",
-                ),
-                tools.map { it.name }.toSet(),
-            )
+            assertEquals(EXPECTED_COMMUNITY_TOOL_TITLES.size, tools.size)
+            assertEquals(EXPECTED_COMMUNITY_TOOL_TITLES, tools.associate { it.name to it.title })
             val action = tools.single { it.name == "send_http_request_from_id" }
             assertEquals(true, action.annotations?.destructiveHint)
             assertEquals(true, action.annotations?.openWorldHint)
