@@ -95,13 +95,13 @@ data class RouteHttpMessageFromId(
         description = "Complete {source, id} reference from search_http_messages or another producing result; it must belong to projectId."
     )
     val ref: HttpMessageReference,
-    @JsonSchemaMetadata(description = "Single Burp tool destination for this action.")
+    @JsonSchemaMetadata(description = "repeater creates a new tab, not an update; other values select the named Burp tool.")
     val destination: HttpMessageRouteDestination,
     @JsonSchemaMetadata(
         description = "Optional bounded changes applied to a fresh copy of the stored request; omitted fields inherit the stored source, patches are not cumulative, omission or {} makes no request changes, and this does not send it."
     )
     val patch: HttpRequestPatch? = null,
-    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer, Comparer, and Decoder.", maxLength = 128)
+    @JsonSchemaMetadata(description = "Caption for a new Repeater/Intruder tab, not an existing tab selector. Omit for Burp's default; rejected for other destinations.", maxLength = 128)
     val tabName: String? = null,
     @JsonSchemaMetadata(description = "Optional semantic Intruder insertion points; rejected for other destinations.", minItems = 1, maxItems = 32)
     val insertionPoints: List<HttpInsertionPointSelector>? = null,
@@ -330,7 +330,7 @@ data class HttpActionResponseSummary(
 
 @Serializable
 data class HttpMessageActionResult(
-    @JsonSchemaMetadata(description = "Outcome category; execution_uncertain means the side effect may already exist.")
+    @JsonSchemaMetadata(description = "Success requires status=ok and executionState=completed, not just isError=false.")
     val status: HttpMessageActionStatus,
     @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
@@ -342,6 +342,7 @@ data class HttpMessageActionResult(
     val patchApplied: Boolean,
     val changes: String? = null,
     val requestBytes: Int? = null,
+    @JsonSchemaMetadata(description = "Supplied caption, not a tab ID.")
     val tabName: String? = null,
     val insertionPointCount: Int? = null,
     val response: HttpActionResponseSummary? = null,

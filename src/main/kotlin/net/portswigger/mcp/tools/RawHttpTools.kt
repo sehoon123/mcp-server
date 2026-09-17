@@ -99,7 +99,7 @@ enum class RawHttpRouteDestination {
 
 @Serializable
 data class RouteRawHttpRequest(
-    @JsonSchemaMetadata(description = "Burp tool in which to open the request without sending it.")
+    @JsonSchemaMetadata(description = "repeater creates a new tab, not an update; other values select the named Burp tool.")
     val destination: RawHttpRouteDestination,
     @JsonSchemaMetadata(description = "Protocol to use; provide only the matching http1 or http2 object.")
     val protocol: RawHttpProtocol,
@@ -111,15 +111,15 @@ data class RouteRawHttpRequest(
     val targetHostname: String,
     @JsonSchemaMetadata(description = "Destination port.", minimum = 1, maximum = 65535)
     val targetPort: Int,
-    @JsonSchemaMetadata(description = "Connect to the destination using TLS.")
+    @JsonSchemaMetadata(description = "TLS setting for the staged request; no connection is made.")
     val usesHttps: Boolean,
-    @JsonSchemaMetadata(description = "Optional Repeater or Intruder tab caption; rejected for Organizer, Comparer, and Decoder.", maxLength = 128)
+    @JsonSchemaMetadata(description = "Caption for a new Repeater/Intruder tab, not an existing tab selector. Omit for Burp's default; rejected for other destinations.", maxLength = 128)
     val tabName: String? = null,
 )
 
 @Serializable
 data class RawHttpActionResult(
-    @JsonSchemaMetadata(description = "Outcome category; execution_uncertain means the side effect may already exist.")
+    @JsonSchemaMetadata(description = "Success requires status=ok and executionState=completed, not just isError=false.")
     val status: HttpMessageActionStatus,
     @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
@@ -129,6 +129,7 @@ data class RawHttpActionResult(
     @JsonSchemaMetadata(description = "Project current when execution started; null when capture failed.")
     val projectId: String? = null,
     val requestBytes: Int? = null,
+    @JsonSchemaMetadata(description = "Supplied caption, not a tab ID.")
     val tabName: String? = null,
     val response: HttpActionResponseSummary? = null,
     val recordedInSiteMap: Boolean? = null,

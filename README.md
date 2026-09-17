@@ -575,6 +575,39 @@ Correlation results do not retain or return query strings, fragments, headers, b
 Map stable-ID validation may still inspect its existing bounded private identity samples. Any project change, access
 denial, missing explicit or selected related record, accessor failure, or cancellation discards partial correlation output.
 
+## Creating a Repeater tab without sending traffic
+
+Use `route_http_message_from_id` with `destination: "repeater"` for an existing stored request. Reuse its producing
+`projectId` and complete `ref`; a detail read is not required. For example, with a reference returned by your search:
+
+```json
+{
+  "projectId": "<projectId from the producing result>",
+  "ref": {"source": "proxy", "id": "<id from the producing result>"},
+  "destination": "repeater",
+  "tabName": "Manual review"
+}
+```
+
+- Each successful call creates a **new** request tab. `tabName` is an optional caption, not a tab ID or selector for
+  updating an existing tab. Omit it for Burp's default caption. These tools do not list, read, rename, or edit existing
+  Repeater tabs, and cannot create an empty tab without a request.
+- For a genuinely new, caller-supplied request, use `route_raw_http_request` with the same destination and optional
+  caption. It requires `protocol`, its matching `http1` or `http2` object, `targetHostname`, `targetPort`, and `usesHttps`.
+  The host/port/TLS fields describe the staged request; routing does not connect to that host.
+- Both routes require applicable approvals and create local Burp UI state without sending network traffic. Organizer
+  routing adds an Organizer item; “no network traffic” does not mean “no local mutation.” Do not use request sending,
+  Request Execution, Bambda, or local-command tools just to create a tab.
+- Confirm `status: "ok"` **and** `executionState: "completed"`. Returned `tabName` is only the supplied caption, not a
+  usable tab handle. On `uncertain`, inspect Burp manually rather than retrying and possibly creating a duplicate.
+
+Across **all tools**, inspect `structuredContent.status` and any `retry`, `executionState`, or `actionState` before
+claiming success. Existing compatibility behavior can return `isError: false` for approval denials or unavailable data.
+A denial requires user action, not a switch to another tool to bypass it. Resources and prompts are separate MCP
+interfaces, not callable tool names; use the current `tools/list` catalog rather than removed names such as
+`create_repeater_tab` or `create_repeater_tab_from_id`. Reload/reconnect the MCP client after updating the extension if it
+has cached old definitions.
+
 ## Stable-ID request actions
 
 For existing Burp traffic, the preferred autonomous flow is `search_http_messages` → optional `get_http_message` → a

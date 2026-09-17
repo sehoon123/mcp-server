@@ -224,6 +224,33 @@ class ToolsKtTest {
         return text!!
     }
 
+    private fun assertCatalogToolContract(tool: Tool) {
+        assertTrue(tool.name.matches(Regex("[a-z][a-z0-9_]*")), tool.name)
+        assertTrue(tool.description.orEmpty().isNotBlank(), "${tool.name} lacks a description")
+        assertTrue(tool.description.orEmpty().length <= 512, "${tool.name} description exceeds the catalog budget")
+        assertNotNull(tool.annotations?.readOnlyHint, "${tool.name}.readOnlyHint")
+        assertNotNull(tool.annotations?.destructiveHint, "${tool.name}.destructiveHint")
+        assertNotNull(tool.annotations?.idempotentHint, "${tool.name}.idempotentHint")
+        assertNotNull(tool.annotations?.openWorldHint, "${tool.name}.openWorldHint")
+        if (tool.annotations?.readOnlyHint == true) assertEquals(false, tool.annotations?.destructiveHint)
+        tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
+            assertTrue(
+                propertySchema.jsonObject["description"]?.jsonPrimitive?.content?.isNotBlank() == true,
+                "${tool.name}.$propertyName lacks an input schema description",
+            )
+        }
+        tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
+            assertEquals(
+                MCP_PROJECT_ID_INPUT_DESCRIPTION,
+                projectSchema.getValue("description").jsonPrimitive.content,
+                "${tool.name}.projectId must use the common opaque project-binding contract",
+            )
+        }
+        assertNonNullOutputFieldsAreRequired(tool)
+        assertTruncatedStringsAdvertiseBounds(tool)
+        assertBurpErrorGuidanceIsSelfContained(tool)
+    }
+
     private fun assertCatalogFingerprint(edition: String, tools: Collection<Tool>, expected: String) {
         val wireTools = tools.sortedBy { it.name }.map { Json.encodeToJsonElement(Tool.serializer(), it).jsonObject }
         val catalogBytes = JsonArray(wireTools).toString().toByteArray(Charsets.UTF_8).size
@@ -562,37 +589,22 @@ class ToolsKtTest {
         assertEquals(EXPECTED_COMMUNITY_TOOL_NAMES, tools.keys)
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
-        assertTrue(tools.values.all { !it.description.isNullOrBlank() })
-        assertTrue(tools.values.all { it.description.orEmpty().length <= 512 })
-        tools.values.forEach(::assertNonNullOutputFieldsAreRequired)
-        tools.values.forEach(::assertTruncatedStringsAdvertiseBounds)
-        tools.values.forEach(::assertBurpErrorGuidanceIsSelfContained)
+        tools.values.forEach(::assertCatalogToolContract)
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "042ca4f1fab03cefe2681f3dfdd204407cc4cb4417bc88a3f20ff42c9a48ed5b",
+            "e37233064aaf14069bd2b9550d03ae639d745ed6c9c6ad3250aae74e2ca65eaa",
         )
-        tools.forEach { (toolName, tool) ->
-            tool.inputSchema.properties.orEmpty().forEach { (propertyName, propertySchema) ->
-                assertTrue(
-                    propertySchema.jsonObject["description"]?.jsonPrimitive?.content?.isNotBlank() == true,
-                    "$toolName.$propertyName lacks an input schema description",
-                )
-            }
-            tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
-                assertEquals(
-                    MCP_PROJECT_ID_INPUT_DESCRIPTION,
-                    projectSchema.getValue("description").jsonPrimitive.content,
-                    "$toolName.projectId must use the common opaque project-binding contract",
-                )
-            }
-        }
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("route_http_message_from_id"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("explicitly requests code execution"))
         assertTrue(MCP_SERVER_INSTRUCTIONS.length <= 1500)
-        for (guidance in listOf("small limit", "jsonPointer", "without pre-reading", "incomplete coverage", "untrusted data", "Never retry")) {
+        for (guidance in listOf(
+            "small limit", "jsonPointer", "without pre-reading", "incomplete coverage", "untrusted data", "Never retry",
+            "destination=repeater", "optional tabName", "does not send traffic or update an existing tab",
+            "isError=false alone is not success", "Denials require user action", "Do not use code execution for tab creation",
+        )) {
             assertTrue(MCP_SERVER_INSTRUCTIONS.contains(guidance), guidance)
         }
         assertTrue(description("send_raw_http_request").contains("caller-supplied HTTP/1.1 or HTTP/2"))
@@ -601,6 +613,25 @@ class ToolsKtTest {
         assertTrue(description("route_raw_http_request").contains("Comparer, or Decoder"))
         assertTrue(description("route_raw_http_request").contains("Comparer/Decoder receive only the request bytes"))
         assertTrue(description("route_raw_http_request").contains("HTTP/2 Intruder is unsupported"))
+        assertFalse(description("route_raw_http_request").contains("No history is added"))
+        for (name in listOf("route_http_message_from_id", "route_raw_http_request")) {
+            val tool = tools.getValue(name)
+            assertTrue(description(name).startsWith("Create a new Repeater tab (destination=repeater)"))
+            val properties = tool.inputSchema.properties!!
+            assertTrue(properties.getValue("destination").toString().contains("new tab, not an update"))
+            assertTrue(properties.getValue("tabName").toString().contains("not an existing tab selector"))
+            assertTrue(properties.getValue("tabName").toString().contains("Omit for Burp's default"))
+            assertFalse("tabName" in tool.inputSchema.required.orEmpty())
+            assertEquals(false, tool.annotations?.readOnlyHint)
+            assertEquals(false, tool.annotations?.destructiveHint)
+            assertEquals(false, tool.annotations?.idempotentHint)
+            assertEquals(false, tool.annotations?.openWorldHint)
+            assertTrue(tool.outputSchema!!.properties!!.getValue("tabName").toString().contains("not a tab ID"))
+            assertTrue(tool.outputSchema!!.properties!!.getValue("status").toString()
+                .contains("Success requires status=ok and executionState=completed, not just isError=false"))
+        }
+        assertTrue(tools.getValue("route_raw_http_request").inputSchema.properties!!.getValue("usesHttps")
+            .toString().contains("no connection is made"))
         assertTrue(description("get_burp_options").contains("Credentials are filtered by default"))
         assertTrue(description("set_burp_options").contains("captures and rechecks the project current"))
         assertTrue(description("search_http_messages").contains("call-start project"))
@@ -970,7 +1001,7 @@ class ToolsKtTest {
         }
 
         @Test
-        fun `unified raw HTTP2 routing creates exactly one approved Repeater tab`() = runBlocking {
+        fun `raw Repeater routing supports named and default captions without network transmission`() = runBlocking {
             val repeater = mockk<burp.api.montoya.repeater.Repeater>(relaxed = true)
             val request = mockk<HttpRequest>()
             val body = montoyaBytes(byteArrayOf())
@@ -1001,7 +1032,19 @@ class ToolsKtTest {
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals(listOf(":method", ":path"), headers.captured.take(2).map { it.name() })
+            assertEquals("v4", result?.structuredContent?.get("tabName")?.jsonPrimitive?.content)
+            val unnamed = client.callTool("route_raw_http_request", mapOf(
+                "destination" to "repeater", "protocol" to "http_2",
+                "http2" to mapOf("pseudoHeaders" to mapOf("method" to "POST", "path" to "/api"),
+                    "headers" to emptyMap<String, String>(), "requestBody" to "payload"),
+                "targetHostname" to "example.test", "targetPort" to 443, "usesHttps" to true,
+            ))
+            assertEquals("ok", unnamed?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("completed", unnamed?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            assertNull(unnamed?.structuredContent?.get("tabName"))
             verify(exactly = 1) { repeater.sendToRepeater(request, "v4") }
+            verify(exactly = 1) { repeater.sendToRepeater(request) }
+            verify(exactly = 0) { api.http() }
         }
 
         @Test
@@ -1650,7 +1693,7 @@ class ToolsKtTest {
     @Nested
     inner class HttpMessageActionToolsTests {
         @Test
-        fun `ID based Repeater action is structured bounded and correctly annotated`() {
+        fun `stored Repeater routing supports named and default captions without network transmission`() {
             val project = mockk<burp.api.montoya.project.Project>()
             val proxy = mockk<Proxy>()
             val item = mockk<ProxyHttpRequestResponse>()
@@ -1698,7 +1741,17 @@ class ToolsKtTest {
                 assertEquals(false, result?.isError)
                 assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
                 assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertEquals("derived", result?.structuredContent?.get("tabName")?.jsonPrimitive?.content)
+                val unnamed = client.callTool("route_http_message_from_id", mapOf(
+                    "projectId" to "project-actions", "ref" to mapOf("source" to "proxy", "id" to "91"),
+                    "destination" to "repeater",
+                ))
+                assertEquals("ok", unnamed?.structuredContent?.get("status")?.jsonPrimitive?.content)
+                assertEquals("completed", unnamed?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+                assertNull(unnamed?.structuredContent?.get("tabName"))
                 verify(exactly = 1) { repeater.sendToRepeater(request, "derived") }
+                verify(exactly = 1) { repeater.sendToRepeater(request) }
+                verify(exactly = 0) { api.http() }
 
                 val tools = client.listTools()
                 val repeaterTool = tools.single { it.name == "route_http_message_from_id" }
@@ -2543,24 +2596,12 @@ class ToolsKtTest {
             assertEquals(38, tools.size)
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
-            tools.forEach(::assertNonNullOutputFieldsAreRequired)
-            tools.forEach(::assertTruncatedStringsAdvertiseBounds)
-            tools.forEach(::assertBurpErrorGuidanceIsSelfContained)
+            tools.forEach(::assertCatalogToolContract)
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "955ae898fb1ebf6d67e58b2eed4150c97df9dbdfc49a9b7f10df45f225cef3b5",
+                "eff11ec4f96b1a4a3454def73f5f2c252e509c2ac37ec396c6025c6f9832f089",
             )
-            tools.forEach { tool ->
-                tool.inputSchema.properties?.get("projectId")?.jsonObject?.let { projectSchema ->
-                    assertEquals(
-                        MCP_PROJECT_ID_INPUT_DESCRIPTION,
-                        projectSchema.getValue("description").jsonPrimitive.content,
-                        "${tool.name}.projectId must use the common opaque project-binding contract",
-                    )
-                }
-            }
-
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
             assertEquals(true, executionStart.annotations?.openWorldHint)

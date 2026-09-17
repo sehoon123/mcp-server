@@ -434,7 +434,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteRawHttpRequest, RawHttpActionResult>(
-        description = "Open exactly one caller-supplied HTTP/1.1 or HTTP/2 request in Repeater, Intruder, Organizer, Comparer, or Decoder without network transmission. Fallback only: prefer route_http_message_from_id for stored traffic. Routing approval and project binding apply. No history is added; HTTP/2 Intruder is unsupported. Comparer/Decoder receive only the request bytes. If executionState is uncertain, do not retry automatically.",
+        description = "Create a new Repeater tab (destination=repeater), or open a caller-supplied HTTP/1.1 or HTTP/2 request in Intruder, Organizer, Comparer, or Decoder. Fallback only: prefer route_http_message_from_id for stored traffic. Sends no network traffic; routing approval and project binding apply. HTTP/2 Intruder is unsupported. Comparer/Decoder receive only the request bytes. If executionState is uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = rawHttpActionService.route(input)
@@ -704,7 +704,7 @@ internal fun Server.registerTools(
     }
 
     mcpStructuredToolWithContext<RouteHttpMessageFromId, HttpMessageActionResult>(
-        description = "Open one stored HTTP request in Repeater, Intruder, Organizer, Comparer, or Decoder, optionally after a bounded patch. Each call restarts from the stored source, so patches never accumulate. tabName is Repeater/Intruder-only and insertionPoints Intruder-only. Source and routing approvals apply; it sends no network traffic or starts an Intruder attack. Comparer/Decoder receive only request bytes. If executionState is uncertain, do not retry automatically.",
+        description = "Create a new Repeater tab (destination=repeater), or open a stored request in Intruder, Organizer, Comparer, or Decoder. Routing sends no network traffic and starts no attack. Source and routing approvals apply. Each call restarts from the stored source; patches never accumulate. Comparer/Decoder receive only request bytes. Check status and executionState; if uncertain, do not retry automatically.",
         annotations = REQUEST_ROUTING_TOOL_ANNOTATIONS,
     ) { input ->
         val output = httpMessageActionService.route(input)

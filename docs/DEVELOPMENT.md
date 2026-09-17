@@ -183,6 +183,9 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 - Put cross-tool sequencing in the MCP initialize `instructions` field, while keeping each individual description
   self-contained enough for clients that ignore server instructions or load tools selectively. Do not require a read
   step when a later action can consume the producing reference directly.
+- For consolidated destination tools, retain the user's task vocabulary (for example, “create a new Repeater tab”)
+  and the exact selector (`destination=repeater`). Distinguish new-object creation from updates; a caption is not a
+  stable handle. Never describe routing-only tools as connecting to a target or as making no local state changes.
 - For sparse optional objects, document omission semantics both on the tool and the property. State whether each call
   starts from a fresh source, whether changes accumulate, and how empty or explicit values differ from omission.
 - State network transmission, Burp mutation, routing-only behavior, required approval or access policy, and ambiguous
@@ -199,7 +202,10 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
   Add an example only when a format or continuation handoff is otherwise ambiguous.
 
 Review descriptions through `tools/list` and prompt descriptions through `prompts/list`. Test both positive contract
-phrases and the absence of known misleading wording.
+phrases and the absence of known misleading wording. Apply the same description, input-property, and annotation checks
+in both editions, not only Community. Exercise the named Repeater route without an HTTP send; retain the existing
+structured denial/`isError=false` compatibility checks. Initialize guidance and action-result schemas must make clear
+that transport-level non-error alone is not success: inspect status and the authoritative side-effect/retry fields.
 
 References: [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
 [MCP server concepts](https://modelcontextprotocol.io/docs/learn/server-concepts),
@@ -223,10 +229,11 @@ examples are 66,914 → 17,758 UTF-8 bytes for a mirrored default HTTP preview o
 are synthetic byte/character reductions, not tokenizer counts or real-agent benchmarks. Larger complete-read tasks should
 request a sufficient explicit limit instead of incurring extra small-page calls.
 
-RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); the focused header/MIME development
-adds 1,009 bytes for 131,676/198,464, including output schemas. Clients differ in which fields reach a model. Existing
-fingerprint tests retain the 132,000/200,000-byte ceilings to make catalog growth deliberate. Do not claim meaningful catalog shrinkage from
-this change. Initialize instructions grow from 742 to 1,100 bytes to help avoid redundant reads; keep them below 1,500.
+RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); focused header/MIME reads and routing
+contract clarifications bring these to 131,989/198,777, including output schemas. Clients differ in which fields reach a
+model. Existing fingerprint tests retain the 132,000/200,000-byte ceilings to make catalog growth deliberate. Do not claim
+catalog shrinkage from these changes. Initialize instructions use 1,445 bytes for read, routing, and outcome guidance;
+keep them below 1,500.
 
 ### Read cancellation and URI regression checks
 
