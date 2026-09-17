@@ -213,6 +213,13 @@ operations, and brief catalog descriptions to limit context cost. Apply those pr
 - Use this order: action and selection boundary → result → traffic/mutation and approval/project implications →
   uncertain-outcome handling where applicable. Start with the title's action verb and identify the distinguishing source
   or destination; do not bury an import or other mutation behind “generate”.
+- Include the operator's task vocabulary for the same operation, because clients rank names and descriptions by keyword
+  or embedding similarity. State the Burp-native term and at least one common synonym an agent is likely to use
+  (`replay`, `diff`, `Proxy history`, `endpoint inventory`, `vulnerability scan`, `out-of-band`). Synonyms are search
+  terms only: they never imply a second callable name and cannot guarantee a client's ranking.
+- For a multi-call family, identify the counterpart tools by name in the same entry: a start tool names its status and
+  stop tools, and a status or stop tool names the producer of its handle. A client may load only one entry, so the entry
+  should say where to continue, though the client still has to load that tool's own definition.
 - For overlapping tools, put the selection boundary first: say when to prefer this tool, when to use its raw or
   reference-based counterpart, and whether an already-produced stable reference should be reused instead of searched
   for again.
@@ -276,7 +283,8 @@ truncated, access-denied, or unavailable data as evidence of absence.
 | Nested results | Preset outer status describes preset lookup; inspect the selected `httpSearch`, `webSocketSearch`, or `httpComparison` status. JSON comparison also requires checking `jsonComparison.status`; `allEqual=null` is incomplete/unavailable, not equality. |
 | Detail-read MCP errors | WebSocket/Scanner detail set `isError=true` for `invalid_argument`, `not_found`, `project_mismatch`, and `burp_error`; these are non-mutating reads. |
 
-The catalog tests pin all 38 name/title pairs and opening verbs, units, counterpart links, and these audited exceptions.
+The catalog tests pin all 38 name/title pairs and opening verbs, units, counterpart links, task-vocabulary terms, and
+these audited exceptions; substring presence is all they establish, not ranking or selection quality.
 The packaged stdio-proxy test also pins all 24 Community name/title pairs. A separate pre-change contract fingerprint excludes tool titles and schema prose but retains names, properties (including
 real fields named `description`), literal defaults, requiredness, enums, bounds, and annotations. Do not update that
 fingerprint for a prose-only change; full metadata fingerprints must change and be reviewed. These checks are not a
@@ -299,7 +307,7 @@ are synthetic byte/character reductions, not tokenizer counts or real-agent benc
 request a sufficient explicit limit instead of incurring extra small-page calls.
 
 RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); focused header/MIME reads and routing
-clarifications reached 131,989/198,777. Role titles and compact contract prose now measure 131,838/198,573, including output
+clarifications reached 131,989/198,777. Role titles and compact contract prose now measure 131,876/199,314, including output
 schemas. These are serialized byte counts, not tokenizer savings or evidence of better agent selection. Clients differ
 in which fields reach a model. Fingerprint tests retain the 132,000/200,000-byte ceilings to make growth deliberate.
 Initialize instructions use 1,470 bytes; keep them below 1,500.

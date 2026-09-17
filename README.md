@@ -178,6 +178,14 @@ action behavior are unchanged.
 - Follow each schema's selector and unit: HTTP `{source,id}`, numeric WebSocket message `id` (not `webSocketId`),
   Scanner issue `id`, and task/execution handles are different. Detail `limit` is bytes; search/list limits are record
   counts, including retained Scanner `count` and Collaborator `maxResults`. Continuation rules differ by family.
+- Descriptions carry the operator's task vocabulary next to the Burp-native term, which helps keyword or embedding
+  ranking surface the relevant entry: `send_http_request_from_id` says replay, `compare_http_messages` says diff,
+  `search_http_messages` says Proxy history, `summarize_http_attack_surface` says endpoint inventory,
+  `start_scanner_audit_from_ids` says vulnerability scan, and the Collaborator tools say out-of-band/OAST callbacks.
+  These are search terms, not alternative callable names, and they do not guarantee any client's ranking.
+- Multi-call families identify the next tool by name in the same entry, so a client that loaded only one definition is
+  still told where to continue: audit `start → get → cancel`, execution `start → queue → get → control`, and
+  Collaborator `generate → poll`. The client must still load that tool's schema to call it.
 - `isError=false` alone is not success. Inspect `status`, applicable side-effect/retry fields, and nested preset/JSON
   comparison status. Denials require user action, not a substitute tool; uncertain mutations must not be retried automatically.
 

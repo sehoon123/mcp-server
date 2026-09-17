@@ -664,7 +664,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "3f9e9595e2deaa1c956dffecfc57f2084e5592cd6f070041a54ba37b2a158819",
+            "3e4de696601a3567ff631aff5e7ccdc9a01b6d3e69059271a055e2a06d721b71",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -711,6 +711,19 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("10,000 scanned records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
+        // Task vocabulary: clients rank names+descriptions, so an agent's natural phrasing must hit the right tool.
+        for ((phrase, expected) in mapOf(
+            "replay" to "send_http_request_from_id",
+            "diff" to "compare_http_messages",
+            "Proxy history" to "search_http_messages",
+            "endpoint inventory" to "summarize_http_attack_surface",
+            "token" to "analyze_http_session_security",
+        )) {
+            assertTrue(
+                description(expected).contains(phrase),
+                "$expected must remain discoverable through the task phrase \"$phrase\"",
+            )
+        }
         assertTrue(description("get_http_message").contains("jsonPointer"))
         assertTrue(description("get_http_message").contains("complete RFC 6901 body value"))
         assertTrue(description("get_http_message").contains("headerName"))
@@ -724,6 +737,7 @@ class ToolsKtTest {
         assertTrue(description("get_http_message").contains("no read is required before from-ID actions"))
         assertTrue(description("send_http_request_from_id").contains("Each call restarts from the stored source"))
         assertTrue(description("send_http_request_from_id").contains("patches never accumulate"))
+        assertTrue(description("send_http_request_from_id").contains("no automatic Site Map entry"))
         assertTrue(description("route_http_message_from_id").contains("Each call restarts from the stored source"))
         assertTrue(description("route_http_message_from_id").contains("patches never accumulate"))
         assertTrue(description("route_http_message_from_id").contains("Comparer, or Decoder"))
@@ -2683,7 +2697,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "d3769e2a2c73f31f87240b4dcdf24e3724196383bf783fe9f71062f1f5b89086",
+                "36df04ecff6565c3cd66f262d01e67373dfc1351d540372bdc8e33396fef5e9a",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2764,6 +2778,37 @@ class ToolsKtTest {
             assertTrue(issues.description.orEmpty().contains("nextDeltaCursor as sinceSnapshotCursor"))
             assertTrue(issues.description.orEmpty().contains("Legacy JSON mode advances offset by returned"))
             assertTrue(issues.description.orEmpty().contains("fully consumed snapshotCursor"))
+            // Family loops: an agent that starts a task must find its status/stop counterpart in the same entry.
+            for ((toolName, counterparts) in mapOf(
+                "start_scanner_audit_from_ids" to listOf("get_scanner_audit", "cancel_scanner_audit"),
+                "get_scanner_audit" to listOf("start_scanner_audit_from_ids"),
+                "cancel_scanner_audit" to listOf("start_scanner_audit_from_ids", "get_scanner_audit"),
+                "start_http_request_execution" to listOf(
+                    "queue_http_request_execution",
+                    "get_http_request_execution",
+                    "control_http_request_execution",
+                ),
+                "queue_http_request_execution" to listOf("start_http_request_execution", "get_http_request_execution"),
+                "get_http_request_execution" to listOf("start_http_request_execution", "control_http_request_execution"),
+                "control_http_request_execution" to listOf("start_http_request_execution", "get_http_request_execution"),
+                "generate_collaborator_payload" to listOf("get_collaborator_interactions"),
+                "get_collaborator_interactions" to listOf("generate_collaborator_payload"),
+            )) {
+                val text = tools.single { it.name == toolName }.description.orEmpty()
+                counterparts.forEach { assertTrue(text.contains(it), "$toolName must name $it") }
+            }
+            assertTrue(issues.description.orEmpty().contains("the result returns projectId"))
+            assertTrue(start.description.orEmpty().contains("Passive accepts 1\u201316 targets, active 1\u20134"))
+            for ((phrase, expected) in mapOf(
+                "vulnerability scan" to "start_scanner_audit_from_ids",
+                "out-of-band" to "generate_collaborator_payload",
+                "callbacks" to "get_collaborator_interactions",
+            )) {
+                assertTrue(
+                    tools.single { it.name == expected }.description.orEmpty().contains(phrase),
+                    "$expected must remain discoverable through \"$phrase\"",
+                )
+            }
             assertNotNull(issues.inputSchema.properties?.get("cursor"))
             assertNotNull(issues.inputSchema.properties?.get("sinceSnapshotCursor"))
             assertNotNull(issues.inputSchema.properties?.get("severities"))
