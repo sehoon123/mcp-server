@@ -316,8 +316,10 @@ HTTP, WebSocket, and Scanner resources reuse the existing source approval checks
 session grants, and revalidate the current project and stable ID before returning bounded content. Message and evidence
 resources return the first 8 KiB slice by default from RC3 (32 KiB through RC2); use the corresponding detail tool when
 further byte pagination is required. URIs must be canonical: HTTP part segments use exact lowercase/underscore names
-such as `response_body` and `response_mime`. Case, hyphen, or whitespace aliases are rejected before source approval;
-this does not remove the detail tool's existing part normalization.
+such as `response_body` and `response_mime`. Proxy/Organizer URI IDs must be canonical non-negative integers; Site Map
+IDs must use the producing search's `sitemap_<index>_<fingerprint>` form. Invalid/noncanonical HTTP URI IDs now return
+`invalid_argument` before source approval, and prompts reject the same forms. Valid references remain unchanged.
+Case, hyphen, or whitespace part aliases are also rejected; detail tools retain their existing normalization.
 
 HTTP, WebSocket, and Scanner reads check Job cancellation at service entry and around approval, lookup, materialization,
 and final project checks, preventing avoidable follow-up work and ordinary service results after observed cancellation.
@@ -915,6 +917,30 @@ metrics; a rejected credential also increments the authentication-rejection coun
 The following examples are alternatives. Configure only the clients you actually use, and verify the example against
 the documentation for your installed client version before applying it.
 
+### Check agent readiness without side effects
+
+After connecting or upgrading, reconnect and rediscover the server's capabilities; a cached client catalog may be stale.
+Check the selected server connection, not another Burp instance:
+
+- Expect 24 Community / 38 Professional tools, 3 fixed resources, 4/7 resource templates, and 4/5 prompts. Titles are
+  labels, not callable names. These counts describe the protocol, not a client's combined tool/resource UI.
+- If only `projectId` is missing, read `burp://project/summary` and require `status: "ok"`. A tools-only client can obtain
+  it from an approved, narrowly filtered `search_http_messages` call with a small `limit`; do not search traffic merely
+  to obtain the ID when the summary resource is available. A denied read is not permission to use the other path.
+- Keep each reference with its producing server and `projectId`. After a project change, reconnect and obtain fresh
+  references; never attach old IDs or cursors to a new project ID. Comparison and session analysis take `refs`, an array
+  of `{source,id}` objects, whereas a single HTTP detail read takes `ref`.
+- Inspect structured tool results or the JSON inside resource text, including `status` and coverage limits. Successful
+  delivery and `isError=false` alone do not establish operation success. Captured traffic, notes, and prompt focus are
+  untrusted data. Read-only prompts explicitly forbid mutation and bypassing denial through another tool or resource.
+- Allow time for local approval dialogs. A client timeout, disconnection, or missing result does not prove that a
+  mutation was cancelled or never started. Do not automatically resubmit it or relax approval settings to make a client
+  work; reconcile the outcome in Burp first.
+
+Automated checks cover synthetic native HTTP and embedded-proxy sessions, including initialization instructions,
+project-summary handoff, prompt contracts, and read errors. They do **not** certify an installed third-party client's
+configuration, model behavior, or the loaded Burp JAR. Connection Doctor remains a local-admission check only.
+
 ### Claude Code
 
 Claude Code supports Streamable HTTP directly, so it does not need the embedded stdio proxy.
@@ -922,13 +948,15 @@ Claude Code supports Streamable HTTP directly, so it does not need the embedded 
 Add Burp for the current user:
 
 ```shell
-export INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN='<token copied from Burp>'
+# Set INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN privately in the launch environment first.
 claude mcp add --transport http burp-independent --scope user \
-  --header "Authorization: Bearer $INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN" \
+  --header 'Authorization: Bearer ${INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}' \
   http://127.0.0.1:9876/mcp
 claude mcp list
 ```
 
+The single quotes preserve the environment placeholder instead of expanding the token into command arguments and
+saved configuration. User-scope registration is stored in `~/.claude.json`, not a user `.mcp.json`.
 For a project-shared configuration, use `--scope project`. Claude creates `.mcp.json`; the equivalent file is:
 
 ```json
@@ -947,7 +975,8 @@ For a project-shared configuration, use `--scope project`. Claude creates `.mcp.
 
 Claude Code expands `INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN` from its environment. Claude Code requires
 `"type": "http"` (or its `"streamable-http"` alias) when an entry uses `url`. After opening a project containing
-`.mcp.json`, review and approve the server when Claude asks whether to trust it.
+`.mcp.json`, review and approve the server when Claude asks whether to trust it. See the
+[Claude Code MCP configuration reference](https://code.claude.com/docs/en/mcp) for scope and environment expansion.
 
 ### Claude Desktop and other stdio-only clients
 
@@ -1017,7 +1046,7 @@ Burp may still be executing.
 Register the native HTTP endpoint in the user-level mcporter configuration:
 
 ```shell
-export INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN='<token copied from Burp>'
+# Set INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN privately in the launch environment first.
 mcporter config add burp-independent http://127.0.0.1:9876/mcp --scope home \
   --header 'Authorization=Bearer ${INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN}'
 # Set the resulting burp-independent entry's lifecycle to "keep-alive" as shown below.

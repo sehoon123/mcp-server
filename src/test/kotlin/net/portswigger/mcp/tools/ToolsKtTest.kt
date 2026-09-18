@@ -676,6 +676,8 @@ class ToolsKtTest {
             "destination=repeater", "optional tabName", "does not send traffic or update an existing tab",
             "isError=false alone is not success", "Denials require user action", "Do not use code execution for tab creation",
             "Call exact tool names", "titles are labels, not aliases", "Follow schema selectors and units", "do not guess IDs",
+            "from successful results", "read burp://project/summary", "without resources use search_http_messages",
+            "Never rebind refs to another projectId", "uncertain or lost results", "not another tool/resource",
         )) {
             assertTrue(MCP_SERVER_INSTRUCTIONS.contains(guidance), guidance)
         }
@@ -711,7 +713,7 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("10,000 scanned records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
-        // Task vocabulary: clients rank names+descriptions, so an agent's natural phrasing must hit the right tool.
+        // Lexical regression only: phrase presence does not establish client ranking or model selection.
         for ((phrase, expected) in mapOf(
             "replay" to "send_http_request_from_id",
             "diff" to "compare_http_messages",

@@ -26,6 +26,11 @@ class ClientSetupTest {
             ClientSetupCatalog.definitions.map { it.id },
         )
         assertEquals(5, ClientSetupCatalog.definitions.size)
+        val claudeGuidance = ClientSetupCatalog.definitions.single { it.id == ClientSetupId.CLAUDE_CODE }.guidance
+        assertTrue(claudeGuidance.contains("project .mcp.json"))
+        assertTrue(claudeGuidance.contains("user scope"))
+        assertTrue(claudeGuidance.contains("~/.claude.json"))
+        assertTrue(claudeGuidance.contains("environment placeholder, not a literal token"))
         assertEquals(
             listOf(
                 "Claude Desktop",

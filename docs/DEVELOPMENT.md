@@ -310,7 +310,8 @@ RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional)
 clarifications reached 131,989/198,777. Role titles and compact contract prose now measure 131,876/199,314, including output
 schemas. These are serialized byte counts, not tokenizer savings or evidence of better agent selection. Clients differ
 in which fields reach a model. Fingerprint tests retain the 132,000/200,000-byte ceilings to make growth deliberate.
-Initialize instructions use 1,470 bytes; keep them below 1,500.
+Initialize instructions use 1,474 bytes; keep them below 1,500. Include the metadata-only project-summary bootstrap,
+reference/project binding, and no-automatic-retry guidance for uncertain or lost mutation results.
 
 ### Read cancellation and URI regression checks
 
@@ -489,10 +490,20 @@ entries for the native manager.
 Resources must execute through `executeRegisteredResource` so they receive the same bounded dispatcher, audit context,
 and session approval snapshot as tools. Reuse service-layer reads rather than implementing a second authorization path.
 
-Canonical `burp://` references must be validated with the same source-specific parser used by the read service. Prompt
-validation must reject a reference that the resource will later reject. Prompt arguments are untrusted text: bound them,
-canonicalize identifiers, and quote inserted values as JSON/string literals. Prompts describe actions; they must not
-perform hidden side effects.
+Canonical `burp://` references must reuse the source-specific canonical reference builder's validation in both resource
+and prompt paths. Reject noncanonical numeric IDs and malformed Site Map IDs before data approval; HTTP resource URI
+validation returns `invalid_argument`, while detail tools retain their existing normalization/error contracts. Validation
+checks syntax, not record existence, current-project membership, or approval. Prompt retrieval must not read source data.
+Prompt arguments are untrusted text: bound them and quote inserted values as JSON/string literals. Keep prompt field names
+consistent with `tools/list`: comparison/session analysis use `projectId` and `refs`, not a single `ref`, and references
+must not be rebound to a different project. All current prompts are read-only; their shared result builder supplies the
+captured-content trust warning, result-status/coverage checks, no-mutation instruction, and prohibition on bypassing a
+denial via tools or resources. These are model-facing instructions, not technical enforcement of client behavior.
+
+Test initialization instructions through native HTTP and the embedded stdio proxy, and pass a successful project-summary
+result's ID into a read-only tool instead of assuming it. Client setup previews must preserve environment placeholders;
+Claude Code project configuration is `.mcp.json`, whereas user-scope registration uses `~/.claude.json`. A local admission
+probe, schema test, or substring assertion is not proof that an external client/model follows these contracts.
 
 ## Concurrency and Swing
 

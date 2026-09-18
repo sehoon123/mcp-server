@@ -56,7 +56,7 @@ internal object ClientSetupCatalog {
             id = ClientSetupId.CLAUDE_CODE,
             displayName = "Claude Code",
             transport = ClientSetupTransport.NATIVE_HTTP,
-            guidance = "Use a user or project .mcp.json and provide the bearer through the named environment variable. Review the project trust prompt before connecting.",
+            guidance = "Use project .mcp.json, or register at user scope with claude mcp add (stored in ~/.claude.json). Keep the bearer as the named environment placeholder, not a literal token. Review the project trust prompt before connecting.",
             automaticInstallAvailable = false,
         ),
         ClientSetupDefinition(
