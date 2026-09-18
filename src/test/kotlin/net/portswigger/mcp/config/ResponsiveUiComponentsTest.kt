@@ -41,6 +41,7 @@ import javax.swing.JScrollPane
 import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.JTable
+import javax.swing.JToggleButton
 import javax.swing.JViewport
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -200,31 +201,62 @@ class ResponsiveUiComponentsTest {
     }
 
     @Test
-    fun `custom server toggle has native keyboard and accessibility behavior`() {
+    fun `native server toggle preserves keyboard accessibility and silent state updates`() {
         runOnEdt {
-            var selected = false
-            val toggle = Design.createToggleSwitch(false) { selected = it }
+            val selections = mutableListOf<Boolean>()
+            val toggle = Design.createToggleSwitch(false) { selections += it }
             toggle.accessibleContext.accessibleName = "MCP server enabled"
 
-            assertEquals(JComponent::class.java, toggle.javaClass.superclass)
+            assertEquals(JToggleButton::class.java, toggle.javaClass)
             assertTrue(toggle.isFocusable)
+            assertTrue(toggle.isFocusPainted)
             assertEquals(AccessibleRole.TOGGLE_BUTTON, toggle.accessibleContext.accessibleRole)
             assertEquals("MCP server enabled", toggle.accessibleContext.accessibleName)
+            toggle.isSelected = true
+            assertEquals("On", toggle.text)
+            toggle.isSelected = false
+            assertEquals("Off", toggle.text)
+            assertTrue(selections.isEmpty())
 
-            val enterKey = KeyStroke.getKeyStroke("released ENTER")
-            val actionKey = toggle.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).get(enterKey)
-            assertNotNull(actionKey)
-            toggle.actionMap.get(actionKey).actionPerformed(ActionEvent(toggle, ActionEvent.ACTION_PERFORMED, "enter"))
-
-            assertTrue(toggle.accessibleContext.accessibleStateSet.contains(AccessibleState.CHECKED))
-            assertTrue(selected)
-
-            val normalSize = toggle.preferredSize
-            withUiFontScale(2f) {
-                val enlarged = Design.createToggleSwitch(false) {}
-                assertTrue(enlarged.preferredSize.width >= (normalSize.width * 1.5).toInt())
-                assertTrue(enlarged.preferredSize.height >= (normalSize.height * 1.5).toInt())
+            toggle.updateUI()
+            listOf("ENTER", "SPACE").forEachIndexed { index, key ->
+                listOf("pressed", "released").forEach { phase ->
+                    val actionKey = toggle.getInputMap(JComponent.WHEN_FOCUSED)
+                        .get(KeyStroke.getKeyStroke("$phase $key"))
+                    assertNotNull(actionKey)
+                    toggle.actionMap.get(actionKey).actionPerformed(
+                        ActionEvent(toggle, ActionEvent.ACTION_PERFORMED, "$phase $key"),
+                    )
+                    assertEquals(index + if (phase == "released") 1 else 0, selections.size)
+                }
+                assertEquals(index == 0, toggle.isSelected)
+                assertEquals(toggle.isSelected, toggle.accessibleContext.accessibleStateSet.contains(AccessibleState.CHECKED))
             }
+            assertEquals(listOf(true, false), selections)
+
+            toggle.isEnabled = false
+            toggle.doClick(0)
+            toggle.accessibleContext.accessibleAction.doAccessibleAction(0)
+            assertFalse(toggle.isSelected)
+            assertEquals(listOf(true, false), selections)
+            toggle.isEnabled = true
+            toggle.accessibleContext.accessibleAction.doAccessibleAction(0)
+            assertTrue(toggle.isSelected)
+            assertEquals(listOf(true, false, true), selections)
+
+            val normalFontSize = toggle.font.size
+            withUiFontScale(2f) {
+                toggle.updateUI()
+                val enlarged = Design.createToggleSwitch(false) {}
+                listOf(toggle, enlarged).forEach { button ->
+                    assertTrue(button.font.size >= normalFontSize * 1.5)
+                    button.setSize(button.preferredSize)
+                    assertButtonTextFits(button)
+                    assertEquals("pressed", button.inputMap.get(KeyStroke.getKeyStroke("pressed ENTER")))
+                    assertEquals("released", button.inputMap.get(KeyStroke.getKeyStroke("released ENTER")))
+                }
+            }
+            assertEquals(listOf(true, false, true), selections)
         }
     }
 
@@ -569,6 +601,7 @@ private fun withUiFontScale(scale: Float, action: () -> Unit) {
     val keys = listOf(
         "Label.font",
         "Button.font",
+        "ToggleButton.font",
         "CheckBox.font",
         "TextArea.font",
         "TextField.font",

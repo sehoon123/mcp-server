@@ -12,7 +12,7 @@ See the [RC5 changes and release gates](docs/releases/4.12.0-rc.5.md) and [rebur
 RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache HttpClient5 `5.6.4` /
 HttpCore5 `5.4.3` stack to clear the fresh OSV pre-tag blockers; it adds no request, scan, or execution capability.
 The embedded proxy is `2.2.1`, also using Kotlin `2.4.20`. Tagging requires a fresh check of the exact committed
-208-coordinate [candidate graph](security/README.md); formal publication remains separately gated. The signed RC1/RC2
+206-coordinate [candidate graph](security/README.md); formal publication remains separately gated. The signed RC1/RC2
 candidates and their uploaded bytes remain unchanged; the signed RC4 test candidate is preserved too.
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern

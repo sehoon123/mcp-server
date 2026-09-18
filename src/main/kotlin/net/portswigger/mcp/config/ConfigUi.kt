@@ -76,16 +76,12 @@ class ConfigUi internal constructor(
     private val cleanupStarted = AtomicBoolean()
     private val statePublicationClosed = AtomicBoolean()
 
-    private val enabledToggle: ToggleSwitch = Design.createToggleSwitch(false) { enabled ->
-        if (suppressToggleEvents) return@createToggleSwitch
-
+    private val enabledToggle: JToggleButton = Design.createToggleSwitch(false) { enabled ->
         if (enabled) {
             ConfigValidation.validateServerConfig(hostField.text, portField.text)?.let { error ->
                 validationErrorLabel.text = error
                 validationErrorLabel.isVisible = true
-                suppressToggleEvents = true
-                enabledToggle.setState(false, animate = true)
-                suppressToggleEvents = false
+                enabledToggle.isSelected = false
                 return@createToggleSwitch
             }
         }
@@ -113,7 +109,6 @@ class ConfigUi internal constructor(
     private lateinit var clientSetupPanel: ClientSetupPanel
 
     private var toggleListener: ((Boolean) -> Unit)? = null
-    private var suppressToggleEvents: Boolean = false
     private var endpointDocumentListenersInstalled = false
 
     private val endpointChangeListener = object : DocumentListener {
@@ -136,7 +131,7 @@ class ConfigUi internal constructor(
     }
 
     init {
-        enabledToggle.setState(config.enabled, animate = false)
+        enabledToggle.isSelected = config.enabled
         hostField.text = config.host
         portField.text = config.port.toString()
 
@@ -358,55 +353,50 @@ class ConfigUi internal constructor(
         if (statePublicationClosed.get()) return
         CoroutineScope(Dispatchers.Swing).launch {
             if (statePublicationClosed.get()) return@launch
-            suppressToggleEvents = true
-            try {
-                val nextDoctorListenerCode = state.toDoctorListenerCode()
-                if (nextDoctorListenerCode != lastDoctorListenerCode) {
-                    lastDoctorListenerCode = nextDoctorListenerCode
-                    if (::clientSetupPanel.isInitialized) {
-                        clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
-                    }
+            val nextDoctorListenerCode = state.toDoctorListenerCode()
+            if (nextDoctorListenerCode != lastDoctorListenerCode) {
+                lastDoctorListenerCode = nextDoctorListenerCode
+                if (::clientSetupPanel.isInitialized) {
+                    clientSetupPanel.markDoctorResultStale(DoctorResultStaleReason.LISTENER_STATE_CHANGED)
+                }
+            }
+
+            val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
+            if (::advancedOptionsPanel.isInitialized) {
+                advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
+            }
+
+            when (state) {
+                ServerState.Starting, ServerState.Stopping -> {
+                    enabledToggle.isEnabled = false
                 }
 
-                val enableAdvancedOptions = state is ServerState.Stopped || state is ServerState.Failed
-                if (::advancedOptionsPanel.isInitialized) {
-                    advancedOptionsPanel.setFieldsEnabled(enableAdvancedOptions)
+                ServerState.Running -> {
+                    enabledToggle.isEnabled = true
+                    enabledToggle.isSelected = true
                 }
 
-                when (state) {
-                    ServerState.Starting, ServerState.Stopping -> {
-                        enabledToggle.isEnabled = false
-                    }
+                ServerState.Stopped -> {
+                    enabledToggle.isEnabled = true
+                    enabledToggle.isSelected = false
+                }
 
-                    ServerState.Running -> {
-                        enabledToggle.isEnabled = true
-                        enabledToggle.setState(true, animate = false)
-                    }
+                is ServerState.Failed -> {
+                    enabledToggle.isEnabled = true
+                    enabledToggle.isSelected = false
 
-                    ServerState.Stopped -> {
-                        enabledToggle.isEnabled = true
-                        enabledToggle.setState(false, animate = false)
-                    }
-
-                    is ServerState.Failed -> {
-                        enabledToggle.isEnabled = true
-                        enabledToggle.setState(false, animate = false)
-
-                        val friendlyMessage = when (state.exception) {
-                            is UnresolvedAddressException -> "Unable to resolve address"
-                            is McpServerStartupException -> safeSingleLine(
-                                state.exception.message ?: "MCP server startup failed"
-                            )
-                            else -> safeExceptionSummary(state.exception)
-                        }
-
-                        Dialogs.showMessageDialog(
-                            panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
+                    val friendlyMessage = when (state.exception) {
+                        is UnresolvedAddressException -> "Unable to resolve address"
+                        is McpServerStartupException -> safeSingleLine(
+                            state.exception.message ?: "MCP server startup failed"
                         )
+                        else -> safeExceptionSummary(state.exception)
                     }
+
+                    Dialogs.showMessageDialog(
+                        panel, "Failed to start ${ProductIdentity.PRODUCT_NAME}: $friendlyMessage", ERROR_MESSAGE
+                    )
                 }
-            } finally {
-                suppressToggleEvents = false
             }
         }
     }

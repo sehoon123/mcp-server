@@ -476,11 +476,14 @@ RC3 has no tag/draft: its fresh OSV preflight reported four build/test dependenc
 dependency remediation for that gate: Kotlin `2.4.20` (build plugins and runtime stdlib) and test-only Apache
 HttpClient5 `5.6.4` / HttpCore5 `5.4.3` (with `httpcore5-h2` `5.4.3`). It adds no request, scan, or execution
 capability. Proxy `2.2.1` is embedded through the existing clean-source guard. See [the RC4 fragment](releases/4.12.0-rc.4.md)
-and [208-coordinate candidate baseline](../security/README.md). Fresh OSV/npm against the exact committed server/proxy
+and [candidate dependency baseline](../security/README.md). Fresh OSV/npm against the exact committed server/proxy
 pair is required before a test tag; that is not a formal publication or protected-workflow attestation.
-The current [RC5 candidate](releases/4.12.0-rc.5.md), SerialVersion 18, adds only exact HTTP resource-part admission and
-cooperative cancellation checkpoints in the existing shared read services. Catalog, proxy and dependencies are unchanged;
-RC4's signed source/tag/assets remain preserved.
+The initial [RC5 candidate](releases/4.12.0-rc.5.md), SerialVersion 18, added exact HTTP resource-part admission and
+cooperative cancellation checkpoints in the existing shared read services without catalog, proxy or dependency changes.
+The subsequent audit cleanup replaces decorative server-toggle rendering with a native Swing toggle, removes unused
+helpers/DTOs and one test dependency, and preserves runtime dependency versions, proxy and MCP wire contracts. Its
+206-coordinate local candidate baseline still requires fresh exact-source vulnerability evidence; the frozen formal
+release gates are unchanged. RC4's signed source/tag/assets remain preserved.
 The next stable release remains `v4.11.0` on the protected `release/v4.11` lineage. No v4.12 commit may be merged or
 cherry-picked into that release branch. RC1 locally increments `SerialVersion` from 12 to 13, but this is not a frozen
 release identity: before signing, reconcile it against every same-UUID predecessor, including the non-ancestor v4.11

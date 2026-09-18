@@ -13,14 +13,19 @@ without reviewing the dependency, integrity, license, vulnerability, and release
 ## v4.12 local candidate preflight
 
 `v4.12-candidate-maven-coordinates.txt` separately records the complete updated server/proxy graph for local pre-tag
-checking: **208** unique coordinates, SHA-256
-`59f86f52a3504d5e4314c34e67fa548a6066b1042f4d24a755dcd1a8de190efb`.
+checking: **206** unique coordinates, SHA-256
+`585bc63c66d07d5aa54e144cfe179a8bde444ddc5b0238dca79532406a71a688`.
 It includes both lockfiles, both selected project-plugin graphs, and both reviewed settings-plugin implementations;
 no build/test dependency is excluded from the query. Kotlin 2.4.0 ABI-compatibility tooling is included alongside 2.4.20.
 The obsolete `kotlinInternalAbiValidation` configuration no longer exists in either project; its stale lock bindings
 were removed and the current complete graphs resolved again, not filtered to hide an advisory.
 
-Use the existing `scripts/release_vulnerability_gate.py` with this file, `--expected-count 208`, and the exact hash above.
+The 2026-09-18 audit cleanup removes only the unused test-side `ktor-client-content-negotiation` and its JVM coordinate
+from the prior 208-coordinate baseline. Both are absent from the resolved server graph and pinned proxy lockfile;
+runtime dependencies, dependency versions, and the frozen formal release contract are unchanged. This graph update
+is not fresh vulnerability evidence.
+
+Use the existing `scripts/release_vulnerability_gate.py` with this file, `--expected-count 206`, and the exact hash above.
 Generate graph reports and fresh OSV/npm results against the clean committed server and the exact embedded-proxy source
 commit. The script validates supplied identities but does not independently prove checkout identity; the caller must
 verify those commits and clean source state. Previous responses, editable working trees, and passing contract fixtures

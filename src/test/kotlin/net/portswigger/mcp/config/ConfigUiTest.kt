@@ -37,6 +37,7 @@ import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.JToggleButton
 import javax.swing.SwingUtilities
 
 class ConfigUiTest {
@@ -397,6 +398,65 @@ class ConfigUiTest {
     }
 
     @Test
+    fun `server toggle rejects invalid settings and publishes lifecycle state without callbacks`() {
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getBoolean(any()) } returns null
+        every { storage.getString(any()) } returns null
+        every { storage.getInteger(any()) } returns null
+        var storedEnabled = false
+        every { storage.getBoolean("enabled") } answers { storedEnabled }
+        every { storage.setBoolean("enabled", any()) } answers { storedEnabled = secondArg() }
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
+        lateinit var ui: ConfigUi
+        lateinit var toggle: JToggleButton
+        val selections = mutableListOf<Boolean>()
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(config, emptyList())
+            ui.onEnabledToggled { selections += it }
+            toggle = ui.component.descendants().filterIsInstance<JToggleButton>()
+                .single { it.name == "serverEnabledToggle" }
+        }
+        try {
+            SwingUtilities.invokeAndWait {
+                val fields = ui.component.descendants().filterIsInstance<JTextField>().toList()
+                val host = fields.single { it.name == "serverHostField" }
+                val port = fields.single { it.name == "serverPortField" }
+                listOf("not-loopback" to "9876", "127.0.0.1" to "70000").forEach { (hostText, portText) ->
+                    host.text = hostText
+                    port.text = portText
+                    toggle.doClick(0)
+                    assertFalse(toggle.isSelected)
+                    assertFalse(config.enabled)
+                    assertTrue(selections.isEmpty())
+                }
+                host.text = "127.0.0.1"
+                port.text = "9876"
+                toggle.doClick(0)
+                assertTrue(toggle.isSelected)
+                assertTrue(config.enabled)
+                assertEquals(listOf(true), selections)
+            }
+            listOf(ServerState.Starting, ServerState.Running, ServerState.Stopping, ServerState.Stopped).forEach { state ->
+                ui.updateServerState(state)
+                SwingUtilities.invokeAndWait {
+                    assertEquals(state == ServerState.Running || state == ServerState.Stopped, toggle.isEnabled)
+                    assertEquals(state != ServerState.Stopped, toggle.isSelected)
+                    if (!toggle.isEnabled) toggle.doClick(0)
+                    assertEquals(listOf(true), selections)
+                }
+            }
+            SwingUtilities.invokeAndWait {
+                toggle.doClick(0)
+                toggle.doClick(0)
+                assertFalse(config.enabled)
+                assertEquals(listOf(true, true, false), selections)
+            }
+        } finally {
+            ui.cleanup()
+        }
+    }
+
+    @Test
     fun `failed state dialog exception does not suppress later server toggles`() {
         val storage = mockk<PersistedObject>(relaxed = true)
         every { storage.getBoolean(any()) } returns null
@@ -418,9 +478,10 @@ class ConfigUiTest {
 
             ui.updateServerState(ServerState.Failed(IllegalStateException("listener failure")))
             SwingUtilities.invokeAndWait { }
-            val enabledToggle = ui.component.descendants().filterIsInstance<ToggleSwitch>().single()
+            val enabledToggle = ui.component.descendants().filterIsInstance<JToggleButton>()
+                .single { it.name == "serverEnabledToggle" }
             SwingUtilities.invokeAndWait {
-                enabledToggle.actionMap.get("toggle").actionPerformed(null)
+                enabledToggle.doClick(0)
             }
 
             assertEquals(1, toggles.get())

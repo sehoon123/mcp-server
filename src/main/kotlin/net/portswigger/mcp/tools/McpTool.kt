@@ -601,49 +601,14 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
     )
 }
 
-@OptIn(InternalSerializationApi::class)
 inline fun <reified I : Any, reified O : Any> Server.mcpStructuredTool(
     description: String,
     annotations: ToolAnnotations? = null,
     crossinline execute: suspend I.() -> O,
 ) {
-    val toolName = I::class.simpleName?.toLowerSnakeCase() ?: error("Couldn't find name for ${I::class}")
-    val inputSerializer = I::class.serializer()
-    val outputSerializer = O::class.serializer()
-    val inputSchema = inputSerializer.descriptor.asInputSchema()
-    val outputSchema = outputSerializer.descriptor.asOutputSchema()
-
-    val toolServer = this
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
-        toolServer.executeRegisteredTool(
-            connection,
-            request,
-            toolName,
-            annotations,
-            inputSchema.properties?.keys.orEmpty(),
-        ) {
-            val input = Json.decodeFromJsonElement(
-                inputSerializer,
-                request.params.arguments ?: JsonObject(emptyMap()),
-            )
-            val output = execute(input)
-            val structuredContent = Json.encodeToJsonElement(outputSerializer, output).jsonObject
-            CallToolResult(
-                content = listOf(TextContent(structuredContent.toString())),
-                isError = false,
-                structuredContent = structuredContent,
-            )
-        }
+    mcpStructuredToolWithContext<I, O>(description, annotations) { input ->
+        StructuredToolResponse(execute(input))
     }
-
-    addTool(
-        name = toolName,
-        description = description,
-        inputSchema = inputSchema,
-        outputSchema = outputSchema,
-        toolAnnotations = annotations,
-        handler = handler,
-    )
 }
 
 fun String.toLowerSnakeCase(): String {

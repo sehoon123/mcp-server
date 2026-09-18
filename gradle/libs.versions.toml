@@ -41,7 +41,6 @@ byte-buddy-agent = { module = "net.bytebuddy:byte-buddy-agent", version.ref = "b
 json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "json-schema-validator" }
 jackson-bom-test = { module = "tools.jackson:jackson-bom", version.ref = "jackson-test" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
-ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
 
 [bundles]
 ktor-server = [
@@ -54,8 +53,7 @@ ktor-server = [
 ]
 
 ktor-test = [
-    "ktor-server-test-host",
-    "ktor-client-content-negotiation"
+    "ktor-server-test-host"
 ]
 
 test-framework = [

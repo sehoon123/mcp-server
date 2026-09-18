@@ -3,7 +3,6 @@ package net.portswigger.mcp.config.components
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
-import net.portswigger.mcp.config.ToggleSwitch
 import java.awt.FlowLayout
 import java.awt.event.ItemEvent
 import javax.swing.*
@@ -12,7 +11,7 @@ import javax.swing.Box.createVerticalStrut
 
 class ServerConfigurationPanel(
     private val config: McpConfig,
-    private val enabledToggle: ToggleSwitch,
+    private val enabledToggle: JToggleButton,
     private val validationErrorLabel: WarningLabel
 ) : JPanel() {
 
