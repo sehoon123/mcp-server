@@ -656,12 +656,25 @@ class McpServerIntegrationTest {
                 assertEquals(expected, result["content"]?.jsonObject?.get("data")?.jsonPrimitive?.content)
             }
         }
-        every { response.body() } returns montoyaBytes("x".repeat(40 * 1024))
-        val preview = client.readResource("burp://http/integration-project/proxy/42/response_body")
-            .singleTextResourceJson().getValue("content").jsonObject
+        every { response.body() } returns montoyaBytes("x".repeat(8192) + "http-tail")
+        val contentUri = "burp://http/integration-project/proxy/42/response_body"
+        val firstPage = client.readResource(contentUri).singleTextResourceJson()
+        assertEquals("ok", firstPage.getValue("status").jsonPrimitive.content)
+        val preview = firstPage.getValue("content").jsonObject
         assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
         assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
         assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+        assertEquals(preview, client.readResource(contentUri).singleTextResourceJson().getValue("content"))
+        val continued = client.callTool("get_http_message", mapOf(
+            "projectId" to firstPage.getValue("projectId").jsonPrimitive.content,
+            "ref" to mapOf("source" to "proxy", "id" to "42"), "part" to "response_body",
+            "offset" to preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt(),
+        )).singleTextToolJson()
+        assertEquals("ok", continued.getValue("status").jsonPrimitive.content)
+        val tail = continued.getValue("content").jsonObject
+        assertEquals(8192, tail.getValue("offsetBytes").jsonPrimitive.content.toInt())
+        assertEquals("http-tail", tail.getValue("data").jsonPrimitive.content)
+        assertEquals("false", tail.getValue("hasMore").jsonPrimitive.content)
         every { response.statedMimeType() } returns MimeType.PLAIN_TEXT
         every { response.inferredMimeType() } returns MimeType.JSON
         val mimeUri = "burp://http/integration-project/proxy/42/response_mime"
@@ -720,12 +733,28 @@ class McpServerIntegrationTest {
             )
             assertEquals(expected, result["content"]?.jsonObject?.get("data")?.jsonPrimitive?.content)
         }
-        every { item.payload() } returns montoyaBytes("x".repeat(40 * 1024))
-        val preview = client.readResource("burp://websocket/integration-project/17")
-            .singleTextResourceJson().getValue("content").jsonObject
-        assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
-        assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
-        assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+        every { item.payload() } returns montoyaBytes("x".repeat(8192) + "original-tail")
+        every { item.editedPayload() } returns montoyaBytes("x".repeat(8192) + "edited-tail")
+        for (variant in listOf("original", "edited")) {
+            val uri = "burp://websocket/integration-project/17" + if (variant == "edited") "/edited" else ""
+            val firstPage = client.readResource(uri).singleTextResourceJson()
+            assertEquals("ok", firstPage.getValue("status").jsonPrimitive.content)
+            val preview = firstPage.getValue("content").jsonObject
+            assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
+            assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
+            assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+            assertEquals(preview, client.readResource(uri).singleTextResourceJson().getValue("content"))
+            val continued = client.callTool("get_websocket_message_by_id", mapOf(
+                "projectId" to firstPage.getValue("projectId").jsonPrimitive.content,
+                "id" to firstPage.getValue("id").jsonPrimitive.content.toInt(), "edited" to (variant == "edited"),
+                "offset" to preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt(),
+            )).singleTextToolJson()
+            assertEquals("ok", continued.getValue("status").jsonPrimitive.content)
+            val tail = continued.getValue("content").jsonObject
+            assertEquals(8192, tail.getValue("offsetBytes").jsonPrimitive.content.toInt())
+            assertEquals("$variant-tail", tail.getValue("data").jsonPrimitive.content)
+            assertEquals("false", tail.getValue("hasMore").jsonPrimitive.content)
+        }
     }
 
     @Test
@@ -978,6 +1007,19 @@ class McpServerIntegrationTest {
         assertTrue(HTTP_PART_RESOURCE_TEMPLATE in templates)
         assertTrue(WEBSOCKET_RESOURCE_TEMPLATE in templates)
         assertTrue(WEBSOCKET_VARIANT_RESOURCE_TEMPLATE in templates)
+        for ((uri, toolName) in mapOf(
+            HTTP_PART_RESOURCE_TEMPLATE to "get_http_message",
+            WEBSOCKET_RESOURCE_TEMPLATE to "get_websocket_message_by_id",
+            WEBSOCKET_VARIANT_RESOURCE_TEMPLATE to "get_websocket_message_by_id",
+        )) {
+            val description = templates.getValue(uri).description.orEmpty()
+            for (text in listOf(toolName, "8 KiB", "status=ok", "content.hasMore=true", "more is needed",
+                "content.nextOffsetBytes as offset (bytes)", "Repeating the URI restarts at zero", "never bypass a denial")) {
+                assertTrue(description.contains(text), "$uri: $text")
+            }
+        }
+        assertTrue(templates.getValue(WEBSOCKET_VARIANT_RESOURCE_TEMPLATE).description.orEmpty()
+            .contains("edited=true for edited, false for original"))
 
         val prompts = client.listPrompts().associateBy { it.name }
         assertEquals(4, prompts.size)

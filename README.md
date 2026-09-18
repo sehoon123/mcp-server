@@ -314,8 +314,12 @@ burp://scanner-issue/{projectId}/{id}/{field}/{evidenceIndex}
 
 HTTP, WebSocket, and Scanner resources reuse the existing source approval checks on every read, including memory-only
 session grants, and revalidate the current project and stable ID before returning bounded content. Message and evidence
-resources return the first 8 KiB slice by default from RC3 (32 KiB through RC2); use the corresponding detail tool when
-further byte pagination is required. URIs must be canonical: HTTP part segments use exact lowercase/underscore names
+resources return the first 8 KiB slice by default from RC3 (32 KiB through RC2). Repeating a resource URI starts at byte
+zero, not the next page. Only after `status: "ok"` and `content.hasMore: true`, and when more content is needed, pass
+`content.nextOffsetBytes` as `offset` to `get_http_message`, `get_websocket_message_by_id`, or `get_scanner_issue_by_id`.
+Keep the same project, record and part/field; preserve Scanner `evidenceIndex` and map the WebSocket `edited` variant to
+`edited: true` (original to `false`). These remain fresh, approved reads, not an immutable snapshot or a way to bypass a
+denied resource read. URIs must be canonical: HTTP part segments use exact lowercase/underscore names
 such as `response_body` and `response_mime`. Proxy/Organizer URI IDs must be canonical non-negative integers; Site Map
 IDs must use the producing search's `sitemap_<index>_<fingerprint>` form. Invalid/noncanonical HTTP URI IDs now return
 `invalid_argument` before source approval, and prompts reject the same forms. Valid references remain unchanged.

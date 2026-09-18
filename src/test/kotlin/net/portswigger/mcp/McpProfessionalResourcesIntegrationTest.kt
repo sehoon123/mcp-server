@@ -249,7 +249,18 @@ class McpProfessionalResourcesIntegrationTest {
         val collaboratorSchema = tools.single { it.name == "get_collaborator_interactions" }.inputSchema.toString()
         assertTrue(collaboratorSchema.contains("Exclusive ISO-8601 instant lower-bound filter"))
 
-        val templates = client.listResourceTemplates().resourceTemplates.map { it.uriTemplate }.toSet()
+        val templateDefinitions = client.listResourceTemplates().resourceTemplates
+        val templates = templateDefinitions.map { it.uriTemplate }.toSet()
+        for (uri in listOf(SCANNER_ISSUE_FIELD_RESOURCE_TEMPLATE, SCANNER_ISSUE_EVIDENCE_RESOURCE_TEMPLATE)) {
+            val description = templateDefinitions.single { it.uriTemplate == uri }.description.orEmpty()
+            assertTrue(description.length <= 512)
+            for (text in listOf("get_scanner_issue_by_id", "8 KiB", "status=ok", "content.hasMore=true", "more is needed",
+                "content.nextOffsetBytes as offset (bytes)", "Repeating the URI restarts at zero", "never bypass a denial")) {
+                assertTrue(description.contains(text), "$uri: $text")
+            }
+        }
+        assertTrue(templateDefinitions.single { it.uriTemplate == SCANNER_ISSUE_EVIDENCE_RESOURCE_TEMPLATE }
+            .description.orEmpty().contains("projectId, id, field and evidenceIndex"))
         assertEquals(
             setOf(
                 HTTP_RESOURCE_TEMPLATE,
@@ -303,12 +314,25 @@ class McpProfessionalResourcesIntegrationTest {
             }
         }
 
-        every { issue.detail() } returns "x".repeat(40 * 1024)
-        val preview = client.readResource("burp://scanner-issue/professional-project/$issueId/detail")
-            .singleTextJson().getValue("content").jsonObject
+        every { issue.detail() } returns "x".repeat(8192) + "scanner-tail"
+        val detailUri = "burp://scanner-issue/professional-project/$issueId/detail"
+        val firstPage = client.readResource(detailUri).singleTextJson()
+        assertEquals("ok", firstPage.getValue("status").jsonPrimitive.content)
+        val preview = firstPage.getValue("content").jsonObject
         assertEquals(8192, preview.getValue("returnedBytes").jsonPrimitive.content.toInt())
         assertEquals(8192, preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt())
         assertEquals("true", preview.getValue("hasMore").jsonPrimitive.content)
+        assertEquals(preview, client.readResource(detailUri).singleTextJson().getValue("content"))
+        val continued = client.callTool("get_scanner_issue_by_id", mapOf(
+            "projectId" to firstPage.getValue("projectId").jsonPrimitive.content,
+            "id" to firstPage.getValue("id").jsonPrimitive.content, "field" to "detail",
+            "offset" to preview.getValue("nextOffsetBytes").jsonPrimitive.content.toInt(),
+        )).singleTextToolJson()
+        assertEquals("ok", continued.getValue("status").jsonPrimitive.content)
+        val tail = continued.getValue("content").jsonObject
+        assertEquals(8192, tail.getValue("offsetBytes").jsonPrimitive.content.toInt())
+        assertEquals("scanner-tail", tail.getValue("data").jsonPrimitive.content)
+        assertEquals("false", tail.getValue("hasMore").jsonPrimitive.content)
         val summaryPrompt = client.getPrompt(
             "summarize_scanner_issue", mapOf("issueReference" to "burp://scanner-issue/professional-project/$issueId"),
         )

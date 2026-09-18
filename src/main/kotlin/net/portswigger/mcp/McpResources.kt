@@ -168,7 +168,7 @@ internal fun Server.registerMcpResources(
             uriTemplate = HTTP_PART_RESOURCE_TEMPLATE,
             name = "burp_http_message_part",
             title = "Burp HTTP message part",
-            description = "Reads the first bounded slice of a selected HTTP message part. Existing source approval, project binding, and stable-ID validation are applied on every read.",
+            description = "Reads HTTP metadata/MIME summaries or a first content slice of up to 8 KiB. If JSON status=ok and content.hasMore=true and more is needed, use get_http_message with the same projectId, ref and part and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. Source approval and project/ID checks apply on every read; never bypass a denial.",
             mimeType = RESOURCE_MIME_TYPE,
         ),
     ) { request, variables ->
@@ -180,7 +180,7 @@ internal fun Server.registerMcpResources(
             uriTemplate = WEBSOCKET_RESOURCE_TEMPLATE,
             name = "burp_websocket_message",
             title = "Burp WebSocket message",
-            description = "Reads the first bounded slice of an original project-scoped Proxy WebSocket payload. WebSocket history approval is checked on every read.",
+            description = "Reads up to the first 8 KiB of the original Proxy WebSocket payload. If JSON status=ok and content.hasMore=true and more is needed, use get_websocket_message_by_id with the same projectId and message id, edited=false, and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. WebSocket approval and project/ID checks apply on every read; never bypass a denial.",
             mimeType = RESOURCE_MIME_TYPE,
         ),
     ) { request, variables ->
@@ -191,7 +191,7 @@ internal fun Server.registerMcpResources(
             uriTemplate = WEBSOCKET_VARIANT_RESOURCE_TEMPLATE,
             name = "burp_websocket_message_variant",
             title = "Burp WebSocket message variant",
-            description = "Reads the first bounded slice of the original or edited WebSocket payload with project and source revalidation.",
+            description = "Reads up to the first 8 KiB of the original or edited WebSocket payload. If JSON status=ok and content.hasMore=true and more is needed, use get_websocket_message_by_id with the same projectId and message id; set edited=true for edited, false for original, and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. WebSocket approval and project/ID checks apply on every read; never bypass a denial.",
             mimeType = RESOURCE_MIME_TYPE,
         ),
     ) { request, variables ->
@@ -229,7 +229,7 @@ internal fun Server.registerMcpResources(
                 uriTemplate = SCANNER_ISSUE_FIELD_RESOURCE_TEMPLATE,
                 name = "burp_scanner_issue_field",
                 title = "Burp Scanner issue field",
-                description = "Reads bounded Scanner issue metadata, detail, or remediation. Evidence fields require the evidence-index template.",
+                description = "Reads Scanner metadata or up to the first 8 KiB of detail/remediation. Evidence fields require the evidence-index template. If JSON status=ok and content.hasMore=true and more is needed, use get_scanner_issue_by_id with the same projectId, id and field and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. Scanner approval and project/ID checks apply on every read; never bypass a denial.",
                 mimeType = RESOURCE_MIME_TYPE,
             ),
         ) { request, variables ->
@@ -247,7 +247,7 @@ internal fun Server.registerMcpResources(
                 uriTemplate = SCANNER_ISSUE_EVIDENCE_RESOURCE_TEMPLATE,
                 name = "burp_scanner_issue_evidence",
                 title = "Burp Scanner issue evidence",
-                description = "Reads the first bounded request or response evidence slice for one stable Scanner issue and evidence index.",
+                description = "Reads up to the first 8 KiB of request or response evidence for a Scanner issue. If JSON status=ok and content.hasMore=true and more is needed, use get_scanner_issue_by_id with the same projectId, id, field and evidenceIndex and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. Scanner approval and project/ID checks apply on every read; never bypass a denial.",
                 mimeType = RESOURCE_MIME_TYPE,
             ),
         ) { request, variables ->
