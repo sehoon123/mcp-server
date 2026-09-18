@@ -2,8 +2,6 @@ package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.*
 import net.portswigger.mcp.security.findBurpFrame
-import java.awt.Component
-import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.event.*
 import javax.swing.*
@@ -71,107 +69,28 @@ class AutoApproveTargetsPanel(private val config: McpConfig) : JPanel() {
     }
 
     private fun createTargetsList(listModel: DefaultListModel<String>): JList<String> {
-        return object : JList<String>(listModel) {
-            private var rolloverIndex = -1
-
-            init {
-                selectionMode = ListSelectionModel.SINGLE_SELECTION
-                visibleRowCount = 5
-                font = Design.Typography.bodyMedium
-                background = Design.Colors.listBackground
-                foreground = Design.Colors.onSurface
-                border = BorderFactory.createEmptyBorder(
-                    Design.Spacing.SM, Design.Spacing.MD, Design.Spacing.SM, Design.Spacing.MD
-                )
-                cellRenderer = createCellRenderer()
-                addMouseMotionListener(createMouseMotionListener())
-                addMouseListener(createMouseListener())
-                addKeyListener(createKeyListener(listModel))
-                isFocusable = true
-            }
-
-            private fun createCellRenderer() = object : DefaultListCellRenderer() {
-                override fun getListCellRendererComponent(
-                    list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean
-                ): Component {
-                    super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-                    border = BorderFactory.createEmptyBorder(
-                        Design.Spacing.SM, Design.Spacing.MD, Design.Spacing.SM, Design.Spacing.MD
-                    )
-
-                    val isRollover = index == rolloverIndex && !isSelected
-
-                    when {
-                        isSelected -> {
-                            background = Design.Colors.listSelectionBackground
-                            foreground = Design.Colors.listSelectionForeground
-                        }
-
-                        isRollover -> {
-                            background = Design.Colors.listHoverBackground
-                            foreground = Design.Colors.onSurface
-                        }
-
-                        else -> {
-                            background =
-                                if (index % 2 == 0) Design.Colors.listBackground else Design.Colors.listAlternatingBackground
-                            foreground = Design.Colors.onSurface
-                        }
-                    }
-                    return this
-                }
-            }
-
-            private fun createMouseMotionListener() = object : MouseMotionAdapter() {
-                override fun mouseMoved(e: MouseEvent) {
-                    try {
-                        val index = locationToIndex(e.point)
-                        val newRolloverIndex = if (index >= 0 && index < model.size && getCellBounds(
-                                index, index
-                            )?.contains(e.point) == true
-                        ) {
-                            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                            index
-                        } else {
-                            cursor = Cursor.getDefaultCursor()
-                            -1
-                        }
-
-                        if (rolloverIndex != newRolloverIndex) {
-                            rolloverIndex = newRolloverIndex
-                            repaint()
-                        }
-                    } catch (_: Exception) {
-                        rolloverIndex = -1
-                        cursor = Cursor.getDefaultCursor()
-                    }
-                }
-            }
-
-            private fun createMouseListener() = object : MouseAdapter() {
-                override fun mouseExited(e: MouseEvent) {
-                    if (rolloverIndex != -1) {
-                        rolloverIndex = -1
-                        cursor = Cursor.getDefaultCursor()
-                        repaint()
-                    }
-                }
-            }
-
-            private fun createKeyListener(listModel: DefaultListModel<String>) = object : KeyAdapter() {
+        return JList(listModel).apply {
+            selectionMode = ListSelectionModel.SINGLE_SELECTION
+            visibleRowCount = 5
+            font = Design.Typography.bodyMedium
+            background = Design.Colors.listBackground
+            foreground = Design.Colors.onSurface
+            border = BorderFactory.createEmptyBorder(
+                Design.Spacing.SM, Design.Spacing.MD, Design.Spacing.SM, Design.Spacing.MD
+            )
+            addKeyListener(object : KeyAdapter() {
                 override fun keyPressed(e: KeyEvent) {
-                    when (e.keyCode) {
-                        KeyEvent.VK_DELETE, KeyEvent.VK_BACK_SPACE -> {
-                            if (selectedIndex >= 0 && selectedIndex < model.size) {
-                                runTargetMutation("Could not remove the auto-approved target") {
-                                    removeTarget(selectedIndex, listModel)
-                                }
-                                e.consume()
+                    if (e.keyCode == KeyEvent.VK_DELETE || e.keyCode == KeyEvent.VK_BACK_SPACE) {
+                        val index = selectedIndex
+                        if (this@apply.isEnabled && index in 0 until model.size) {
+                            runTargetMutation("Could not remove the auto-approved target") {
+                                removeTarget(index, listModel)
                             }
+                            e.consume()
                         }
                     }
                 }
-            }
+            })
         }
     }
 

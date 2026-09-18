@@ -4,6 +4,9 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.mockk.verify
 import net.portswigger.mcp.config.components.AdaptiveButtonPanel
 import net.portswigger.mcp.config.components.ResponsiveColumnsPanel
 import net.portswigger.mcp.config.components.WidthTrackingPanel
@@ -27,8 +30,10 @@ import java.awt.Color
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
+import java.awt.Desktop
 import java.awt.Font
 import java.awt.event.ActionEvent
+import java.net.URI
 import java.nio.file.Path
 import javax.accessibility.AccessibleRole
 import javax.accessibility.AccessibleState
@@ -183,9 +188,9 @@ class ResponsiveUiComponentsTest {
     @Test
     fun `wrapping text grows vertically instead of overflowing its parent`() {
         runOnEdt {
-            val text = WrappingText(
-                "Session approvals are memory-only and expire on session deletion, idle eviction, listener restart, or Burp shutdown."
-            )
+            val message = "Session approvals are memory-only and expire on session deletion, idle eviction, " +
+                "listener restart, or Burp shutdown.\n\nExplicit  spacing and newlines remain intact."
+            val text = WrappingText(message)
             val parent = javax.swing.JPanel().apply {
                 layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
                 add(text)
@@ -196,7 +201,10 @@ class ResponsiveUiComponentsTest {
             text.setSize(260, text.preferredSize.height)
             assertTrue(text.preferredSize.height > text.getFontMetrics(text.font).height)
             assertTrue(text.preferredSize.width <= parent.width)
-            assertEquals(text.text, text.accessibleContext.accessibleName)
+            assertEquals(message, text.text)
+            assertEquals(message, text.accessibleContext.accessibleName)
+            assertTrue(text.lineWrap)
+            assertTrue(text.wrapStyleWord)
         }
     }
 
@@ -261,13 +269,61 @@ class ResponsiveUiComponentsTest {
     }
 
     @Test
-    fun `links and styled buttons retain visible keyboard focus support`() {
-        runOnEdt {
-            val anchor = Anchor("Manual install steps", "https://example.invalid/")
-            assertTrue(anchor.isFocusable)
-            assertNotNull(anchor.inputMap.get(KeyStroke.getKeyStroke("released SPACE")))
-            assertNotNull(anchor.inputMap.get(KeyStroke.getKeyStroke("released ENTER")))
+    fun `native links retain keyboard accessibility disabled state and guarded browsing`() {
+        val desktop = mockk<Desktop>(relaxed = true)
+        val uri = URI("https://example.invalid/")
+        mockkStatic(Desktop::class)
+        try {
+            every { Desktop.isDesktopSupported() } returns true
+            every { Desktop.getDesktop() } returns desktop
+            every { desktop.isSupported(Desktop.Action.BROWSE) } returns true
+            runOnEdt {
+                val anchor = Anchor("Manual install steps", uri.toString())
+                assertTrue(anchor.isFocusable)
+                assertTrue(anchor.isFocusPainted)
+                assertEquals(AccessibleRole.PUSH_BUTTON, anchor.accessibleContext.accessibleRole)
+                assertEquals("Manual install steps", anchor.accessibleContext.accessibleName)
+                assertEquals("Opens $uri in the default browser", anchor.accessibleContext.accessibleDescription)
+                anchor.updateUI()
+                listOf("ENTER", "SPACE").forEachIndexed { index, key ->
+                    listOf("pressed", "released").forEach { phase ->
+                        val actionKey = anchor.getInputMap(JComponent.WHEN_FOCUSED)
+                            .get(KeyStroke.getKeyStroke("$phase $key"))
+                        assertNotNull(actionKey)
+                        anchor.actionMap.get(actionKey).actionPerformed(
+                            ActionEvent(anchor, ActionEvent.ACTION_PERFORMED, "$phase $key"),
+                        )
+                        verify(exactly = index + if (phase == "released") 1 else 0) { desktop.browse(uri) }
+                    }
+                }
+                anchor.isEnabled = false
+                anchor.doClick(0)
+                anchor.accessibleContext.accessibleAction.doAccessibleAction(0)
+                verify(exactly = 2) { desktop.browse(any()) }
+                anchor.isEnabled = true
+                anchor.doClick(0)
+                verify(exactly = 3) { desktop.browse(uri) }
 
+                every { desktop.isSupported(Desktop.Action.BROWSE) } returns false
+                anchor.doClick(0)
+                every { desktop.isSupported(Desktop.Action.BROWSE) } returns true
+                Anchor("Invalid URI", "://invalid").doClick(0)
+                every { Desktop.isDesktopSupported() } returns false
+                anchor.doClick(0)
+                verify(exactly = 3) { desktop.browse(any()) }
+                every { Desktop.isDesktopSupported() } returns true
+                every { desktop.browse(any()) } throws java.io.IOException("browser unavailable")
+                anchor.doClick(0)
+                verify(exactly = 4) { desktop.browse(uri) }
+            }
+        } finally {
+            unmockkStatic(Desktop::class)
+        }
+    }
+
+    @Test
+    fun `styled buttons retain visible keyboard focus support`() {
+        runOnEdt {
             var activated = false
             val button = Design.createFilledButton("Allow Once").apply {
                 addActionListener { activated = true }

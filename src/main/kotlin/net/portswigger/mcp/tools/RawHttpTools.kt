@@ -256,8 +256,7 @@ internal class RawHttpActionService(
             target,
             prepared.requestBytes,
         )?.let { return it }
-        val recording = recordHttpResponseInSiteMap(api, exchange, expectedProjectId)
-        var warning: String? = recording.warning
+        var warning = siteMapRecordingWarning(api, exchange)
         val response = try {
             exchange?.response()?.toActionSummary(bodyLimit, encoding)
         } catch (e: CancellationException) {
@@ -283,8 +282,8 @@ internal class RawHttpActionService(
             projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
             requestBytes = prepared.requestBytes,
             response = response,
-            recordedInSiteMap = recording.recorded,
-            recordedRef = recording.ref,
+            recordedInSiteMap = false,
+            recordedRef = null,
             error = warning,
         )
     }

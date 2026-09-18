@@ -389,33 +389,6 @@ inline fun <reified I : Any> Server.mcpTool(
     })
 }
 
-inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedTool(
-    description: String,
-    noinline mapper: (J) -> CharSequence = { it.toString() },
-    crossinline execute: suspend I.() -> List<J>
-) {
-    mcpTool<I>(description, READ_ONLY_TOOL_ANNOTATIONS, execute = {
-        requireBoundedPage()
-        val items = execute(this)
-
-        val page = when {
-            offset >= items.size -> {
-                "Reached end of items"
-            }
-
-            else -> {
-                val upperLimit = (offset + count).coerceAtMost(items.size)
-
-                boundedLegacyPage(
-                    items.subList(offset, upperLimit).asSequence().map { mapper(it) }.iterator()
-                )
-            }
-        }
-        // Explicit content avoids Unit-coercion overload ambiguity under Kotlin 2.4.
-        listOf(TextContent(page))
-    })
-}
-
 internal sealed interface PaginatedSource<out J> {
     data class Items<J>(val sequence: Sequence<J>) : PaginatedSource<J>
     data class Message(val text: String) : PaginatedSource<Nothing>
@@ -447,48 +420,6 @@ internal inline fun <reified I : Paginated, J : Any> Server.mcpPaginatedSequence
             }
         }
     })
-}
-
-inline fun <reified I : Paginated> Server.mcpPaginatedTool(
-    description: String,
-    crossinline execute: suspend I.() -> Sequence<String>
-) {
-    mcpTool<I>(description, READ_ONLY_TOOL_ANNOTATIONS, execute = {
-        requireBoundedPage()
-        val iterator = execute(this).drop(offset).take(count).iterator()
-        if (!iterator.hasNext()) {
-            listOf(TextContent("Reached end of items"))
-        } else {
-            listOf(TextContent(boundedLegacyPage(iterator)))
-        }
-    })
-}
-
-@OptIn(ExperimentalTypeInference::class)
-@OverloadResolutionByLambdaReturnType
-@JvmName("mcpNamedToolString")
-inline fun Server.mcpTool(
-    name: String,
-    description: String,
-    annotations: ToolAnnotations? = null,
-    crossinline execute: suspend () -> List<ContentBlock>
-) {
-    val toolServer = this
-    val handler: suspend (ClientConnection, CallToolRequest) -> CallToolResult = { connection, request ->
-        toolServer.executeRegisteredTool(connection, request, name, annotations) {
-            CallToolResult(
-                content = execute(),
-                isError = false
-            )
-        }
-    }
-    addTool(
-        name = name,
-        description = description,
-        inputSchema = ToolSchema(),
-        toolAnnotations = annotations,
-        handler = handler,
-    )
 }
 
 inline fun Server.mcpTool(

@@ -19,32 +19,6 @@ object Dialogs {
         activeOptionDialog.get()?.dispose()
     }
 
-    private fun wrapText(text: String, maxWidth: Int = 50): String {
-        if (text.length <= maxWidth) return text
-
-        val words = text.split(" ")
-        val result = StringBuilder()
-        var currentLine = StringBuilder()
-
-        for (word in words) {
-            if (currentLine.length + word.length + 1 <= maxWidth) {
-                if (currentLine.isNotEmpty()) currentLine.append(" ")
-                currentLine.append(word)
-            } else {
-                if (result.isNotEmpty()) result.append("\n")
-                result.append(currentLine.toString())
-                currentLine = StringBuilder(word)
-            }
-        }
-
-        if (currentLine.isNotEmpty()) {
-            if (result.isNotEmpty()) result.append("\n")
-            result.append(currentLine.toString())
-        }
-
-        return result.toString()
-    }
-
     private fun createDialog(parent: Component?, title: String): JDialog {
         require(title.isNotBlank()) { "Dialog title must not be blank" }
         val parentWindow = parent?.let(SwingUtilities::getWindowAncestor)
@@ -104,7 +78,7 @@ object Dialogs {
         }
 
         val messageLabel = WrappingText(
-            wrapText(message),
+            message,
             WrappingTextStyle.PRIMARY_BODY_LARGE,
             fallbackMaxWidth = 560,
         )

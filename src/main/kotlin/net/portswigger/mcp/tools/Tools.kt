@@ -934,28 +934,11 @@ internal fun Server.registerTools(
 
 }
 
-internal data class SiteMapRecordResult(
-    val recorded: Boolean,
-    val ref: HttpMessageReference? = null,
-    val warning: String? = null,
-)
-
-internal fun recordHttpResponseInSiteMap(api: MontoyaApi, response: HttpRequestResponse?): Boolean =
-    recordHttpResponseInSiteMap(api, response, projectId = null).recorded
-
-internal fun recordHttpResponseInSiteMap(
-    api: MontoyaApi,
-    response: HttpRequestResponse?,
-    projectId: String?,
-): SiteMapRecordResult {
-    if (response == null) return SiteMapRecordResult(recorded = false)
-    val warning = if (projectId == null) {
-        "automatic Site Map recording was skipped because no project boundary was available"
-    } else {
-        "automatic Site Map recording is disabled because Burp does not provide an atomic project-bound add"
-    }
+internal fun siteMapRecordingWarning(api: MontoyaApi, response: HttpRequestResponse?): String? {
+    if (response == null) return null
+    val warning = "automatic Site Map recording is disabled because Burp does not provide an atomic project-bound add"
     runCatching { api.logging().logToOutput("MCP request completed; $warning") }
-    return SiteMapRecordResult(recorded = false, warning = warning)
+    return warning
 }
 
 @Serializable

@@ -7,6 +7,7 @@ import io.mockk.*
 import net.portswigger.mcp.ProductIdentity
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
+import net.portswigger.mcp.config.components.AutoApproveTargetsPanel
 import net.portswigger.mcp.config.components.WrappingText
 import net.portswigger.mcp.presets.LocalWorkflowPresetListResult
 import net.portswigger.mcp.presets.LocalWorkflowPresetMutationResult
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.awt.Container
+import java.awt.event.KeyEvent
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -34,10 +36,12 @@ import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JLabel
+import javax.swing.JList
 import javax.swing.JOptionPane
 import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.JToggleButton
+import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
 
 class ConfigUiTest {
@@ -906,6 +910,72 @@ class ConfigUiTest {
         } finally {
             unmockkObject(Dialogs)
             ui.cleanup()
+        }
+    }
+
+    @Test
+    fun `native target list retains guarded keyboard removal error reporting and cleanup`() {
+        val strings = mutableMapOf<String, String>()
+        var failWrites = false
+        val storage = mockk<PersistedObject>(relaxed = true)
+        every { storage.getString(any()) } answers { strings[firstArg()] }
+        every { storage.setString(any(), any()) } answers {
+            if (failWrites) throw IllegalStateException("private storage failure")
+            strings[firstArg()] = secondArg()
+        }
+        val config = McpConfig(storage, mockk<Logging>(relaxed = true), net.portswigger.mcp.testPreferences())
+        val targets = listOf("one.invalid", "two.invalid")
+        targets.forEach(config::addAutoApproveTarget)
+        lateinit var panel: AutoApproveTargetsPanel
+        lateinit var list: JList<*>
+        SwingUtilities.invokeAndWait {
+            panel = AutoApproveTargetsPanel(config)
+            list = panel.descendants().filterIsInstance<JList<*>>().single()
+            assertEquals(JList::class.java, list.javaClass)
+            assertEquals(ListSelectionModel.SINGLE_SELECTION, list.selectionMode)
+            assertEquals(5, list.visibleRowCount)
+            assertTrue(list.isFocusable)
+            list.updateUI()
+        }
+        try {
+            listOf(KeyEvent.VK_DELETE, KeyEvent.VK_BACK_SPACE).forEachIndexed { index, key ->
+                SwingUtilities.invokeAndWait {
+                    fun press(): Boolean {
+                        val event = KeyEvent(list, KeyEvent.KEY_PRESSED, 0,
+                            if (index == 0) 0 else KeyEvent.SHIFT_DOWN_MASK, key, KeyEvent.CHAR_UNDEFINED)
+                        list.keyListeners.forEach { it.keyPressed(event) }
+                        return event.isConsumed
+                    }
+
+                    list.clearSelection()
+                    assertFalse(press())
+                    list.selectionModel.setSelectionInterval(list.model.size, list.model.size)
+                    assertFalse(press())
+                    list.selectedIndex = 0
+                    list.isEnabled = false
+                    assertFalse(press())
+                    assertEquals(targets.drop(index), config.getAutoApproveTargetsList())
+                    list.isEnabled = true
+                    failWrites = true
+                    assertTrue(press())
+                    assertEquals(targets.drop(index), config.getAutoApproveTargetsList())
+                    assertTrue(panel.descendants().filterIsInstance<WrappingText>()
+                        .any { it.text == "Could not remove the auto-approved target" })
+                    failWrites = false
+                    assertTrue(press())
+                    assertEquals(targets.drop(index + 1), config.getAutoApproveTargetsList())
+                    assertFalse(panel.descendants().filterIsInstance<WrappingText>()
+                        .any { it.text.startsWith("Could not remove") })
+                }
+                SwingUtilities.invokeAndWait { assertEquals(1 - index, list.model.size) }
+            }
+            SwingUtilities.invokeAndWait {
+                panel.cleanup()
+                config.addAutoApproveTarget("later.invalid")
+            }
+            SwingUtilities.invokeAndWait { assertEquals(0, list.model.size) }
+        } finally {
+            SwingUtilities.invokeAndWait { panel.cleanup() }
         }
     }
 

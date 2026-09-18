@@ -20,10 +20,6 @@ object Design {
         val error: Color get() = UIManager.getColor("Burp.errorColor") ?: Color(0xB3261E)
         val warning: Color get() = UIManager.getColor("Burp.warningColor") ?: Color(0xF57C00)
         val listBackground: Color get() = UIManager.getColor("List.background") ?: Color.WHITE
-        val listSelectionBackground: Color get() = UIManager.getColor("List.selectionBackground") ?: Color(0xE3F2FD)
-        val listSelectionForeground: Color get() = UIManager.getColor("List.selectionForeground") ?: Color(0x1976D2)
-        val listHoverBackground: Color get() = UIManager.getColor("List.hoverBackground") ?: Color(0xF0F8FF)
-        val listAlternatingBackground: Color get() = UIManager.getColor("List.alternateRowColor") ?: Color(0xFAFAFA)
         val listBorder: Color get() = UIManager.getColor("List.border") ?: Color(0xDDDDDD)
     }
 

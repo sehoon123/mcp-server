@@ -474,8 +474,7 @@ internal class HttpMessageActionService(
             HttpMessageActionDestination.HTTP,
             patched,
         )?.let { return it }
-        val recorded = recordHttpResponseInSiteMap(api, response, input.projectId)
-        var summaryError: String? = recorded.warning
+        var summaryError = siteMapRecordingWarning(api, response)
         val responseSummary = try {
             response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
         } catch (e: CancellationException) {
@@ -503,8 +502,8 @@ internal class HttpMessageActionService(
             HttpMessageActionDestination.HTTP,
             patched,
             response = responseSummary,
-            recordedInSiteMap = recorded.recorded,
-            recordedRef = recorded.ref,
+            recordedInSiteMap = false,
+            recordedRef = null,
             error = summaryError,
         )
     }

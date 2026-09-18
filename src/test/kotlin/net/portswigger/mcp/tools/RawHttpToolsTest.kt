@@ -107,6 +107,8 @@ class RawHttpToolsTest {
         assertEquals(48, result.requestBytes)
         assertNull(result.response)
         assertEquals(false, result.recordedInSiteMap)
+        assertNull(result.recordedRef)
+        assertNull(result.error)
         verify(exactly = 1) { options.withHttpMode(HttpMode.HTTP_1) }
         verify(exactly = 1) { options.withRedirectionMode(RedirectionMode.NEVER) }
         verify(exactly = 1) { options.withResponseTimeout(2500) }
@@ -200,6 +202,21 @@ class RawHttpToolsTest {
     }
 
     @Test
+    fun `Site Map warning is silent without a response and survives logging failure`() {
+        assertNull(siteMapRecordingWarning(api, null))
+        verify(exactly = 0) { api.logging() }
+        val exchange = mockk<HttpRequestResponse>()
+        val warning = "automatic Site Map recording is disabled because Burp does not provide an atomic project-bound add"
+        assertEquals(warning, siteMapRecordingWarning(api, exchange))
+        verify(exactly = 1) { logging.logToOutput("MCP request completed; $warning") }
+
+        every { logging.logToOutput(any<String>()) } throws IllegalStateException("logging unavailable")
+        assertEquals(warning, siteMapRecordingWarning(api, exchange))
+        verify(exactly = 2) { logging.logToOutput("MCP request completed; $warning") }
+        verify(exactly = 0) { api.siteMap() }
+    }
+
+    @Test
     fun `post-send automatic Site Map recording stays disabled at project boundary`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()
@@ -217,6 +234,7 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageActionStatus.OK, result.status)
         assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
         assertEquals(false, result.recordedInSiteMap)
+        assertNull(result.recordedRef)
         assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
         verify(exactly = 0) { api.siteMap() }
     }
