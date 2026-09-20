@@ -52,13 +52,34 @@ path. [BRANCH_POLICY.md](BRANCH_POLICY.md) records the distinction between verif
 approval, plus the evidence-preserving retirement of the separate v4.11 promotion track. Native Burp checks are
 explicitly **NOT RUN**; no Burp installation is available in this environment.
 
+## Second diagnostic and cleanup review
+
+Re-review baseline: `48e10d3eaa99a1b5bdee944bd4991fa3c14aa4f8`. The follow-up is limited to local diagnostic response
+handling and audit error/lifecycle boundaries; it is not a whole-product security certification.
+
+- **Body-independent Doctor completion:** `BodyHandlers.discarding()` still waits for response-body completion, although
+  the Doctor only classifies the status. It now obtains an input stream after headers and immediately closes it unread,
+  cancelling body consumption before closing the dedicated client. Status mappings, deadlines, loopback validation,
+  no-proxy/no-redirect policy, and evidence scope are unchanged. A deterministic subscriber fixture verifies completion
+  without delivering a body or EOF; another test checks stream/client cleanup on status-access failure. The existing
+  actual loopback request/redirect/privacy fixture still passes. No arbitrary target or offensive operation is exercised.
+- **Failure-isolated audit cleanup:** interrupted flush/close waits now restore the caller's interrupt flag. Audit
+  logging failures can no longer escape storage load/parse handling or prevent the final writer shutdown attempt.
+  Shutdown lives in `finally`, close remains idempotent, and failure messages remain fixed/type-only. An owned,
+  injectable executor makes interruption, submission, shutdown, and logger failure tests deterministic without sleeps.
+
+Six new boundary checks failed against the prior behavior before the fixes; seven new tests now cover these contracts.
+No tool/catalog, schema, credential policy, approval, dependency, proxy, release gate, or version changes are introduced.
+A shutdown request does not prove termination of a native storage call that ignores interruption; real Burp validation
+remains **NOT RUN**.
+
 ## Local verification
 
-The baseline suite passed 1,008 tests, initial endpoint fixes 1,021, and audit/serialization fixes 1,030. The consolidated
-clean build passes **1,031 tests**, with zero failures, errors, or skips. The two validation-order regressions and the
-recent-export regression were observed failing against their original implementations before their fixes. The four
-Python live-harness/smoke/observation/vulnerability contract suites also pass 74 fixture tests; those are not real Burp,
-live vulnerability-query, or elapsed-observation evidence.
+The suite progressed from baseline 1,008 to endpoint fixes 1,021, audit/serialization fixes 1,030, and consolidation
+1,031. The second-review clean build passes **1,038 tests**, with zero failures, errors, or skips. The initial two
+validation-order regressions and recent-export regression also failed on their original implementations before fixes.
+The four Python live-harness/smoke/observation/vulnerability contract suites pass 74 fixture tests; those are not real
+Burp, live vulnerability-query, or elapsed-observation evidence.
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache

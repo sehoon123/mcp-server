@@ -247,9 +247,12 @@ internal class JdkDoctorExchange(
     private val clientFactory: () -> HttpClient = ::buildDoctorHttpClient,
 ) : DoctorExchange {
     override fun execute(config: DoctorRequestConfig): Int = clientFactory().use { client ->
-        client.send(
+        val response = client.send(
             buildDoctorHttpRequest(config),
-            HttpResponse.BodyHandlers.discarding(),
-        ).statusCode()
+            HttpResponse.BodyHandlers.ofInputStream(),
+        )
+        // The doctor needs headers only: discarding() still drains the complete response body before returning.
+        // Closing the unread stream cancels body consumption and lets the dedicated client shut down promptly.
+        response.body().use { response.statusCode() }
     }
 }

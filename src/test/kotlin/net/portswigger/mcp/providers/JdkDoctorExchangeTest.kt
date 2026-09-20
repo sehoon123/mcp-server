@@ -1,19 +1,74 @@
 package net.portswigger.mcp.providers
 
 import com.sun.net.httpserver.HttpServer
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import net.portswigger.mcp.MCP_SESSION_ID_HEADER
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import java.io.IOException
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.util.concurrent.Flow
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class JdkDoctorExchangeTest {
+    @Test
+    fun `status-only exchange does not wait for body completion and cancels the unread body`() {
+        val client = mockk<HttpClient>(relaxed = true)
+        val subscription = mockk<Flow.Subscription>(relaxed = true)
+        every { client.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) } answers {
+            val subscriber = secondArg<HttpResponse.BodyHandler<InputStream>>().apply(mockk(relaxed = true))
+            subscriber.onSubscribe(subscription)
+            val body = subscriber.body.toCompletableFuture()
+            // No onNext/onComplete: status collection must not depend on receiving or finishing a response body.
+            assertTrue(body.isDone, "Doctor must collect status without waiting for response-body completion")
+            mockk<HttpResponse<InputStream>> {
+                every { statusCode() } returns 400
+                every { body() } returns body.join()
+            }
+        }
+
+        val result = JdkDoctorExchange { client }.execute(runningConfig())
+
+        assertEquals(400, result)
+        verify(exactly = 1) { subscription.cancel() }
+        verify(exactly = 1) { client.close() }
+    }
+
+    @Test
+    fun `status extraction failure still closes the body and HTTP client`() {
+        val client = mockk<HttpClient>(relaxed = true)
+        val body = mockk<InputStream>(relaxed = true)
+        val response = mockk<HttpResponse<InputStream>> {
+            every { body() } returns body
+            every { statusCode() } throws IOException("synthetic status failure")
+        }
+        every { client.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) } returns response
+
+        assertThrows<IOException> { JdkDoctorExchange { client }.execute(runningConfig()) }
+
+        verify(exactly = 0) { body.read() }
+        verify(exactly = 1) { body.close() }
+        verify(exactly = 1) { client.close() }
+    }
+
+    private fun runningConfig() = DoctorRequestConfig(
+        "127.0.0.1", 9876, "a".repeat(43), DoctorListenerCode.RUNNING,
+    )
+
     @Test
     fun `production exchange sends one controlled request and never follows redirects or retains response content`() {
         val firstRequests = AtomicInteger()
