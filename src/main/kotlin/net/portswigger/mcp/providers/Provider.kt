@@ -9,7 +9,6 @@ import net.portswigger.mcp.security.safeExceptionSummary
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -170,13 +169,9 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
         mcpServers[serverName] = burpServerConfig
         content["mcpServers"] = JsonObject(mcpServers)
 
-        val json = Json {
-            prettyPrint = true
-            encodeDefaults = true
-        }
         atomicWritePrivate(
             path,
-            json.encodeToString(JsonObject.serializer(), JsonObject(content)).toByteArray(StandardCharsets.UTF_8),
+            encodeBoundedClientConfig(JsonObject(content)),
             createBackup = true,
         )
 
@@ -239,14 +234,9 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
                 put("mcpServers", buildJsonObject {})
             }
 
-            val json = Json {
-                prettyPrint = true
-                encodeDefaults = true
-            }
-
             atomicWritePrivate(
                 path,
-                json.encodeToString(JsonObject.serializer(), defaultConfig).toByteArray(StandardCharsets.UTF_8),
+                encodeBoundedClientConfig(defaultConfig),
                 createBackup = false,
             )
             logging.logToOutput("Created a default Claude Desktop config")

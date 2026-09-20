@@ -130,9 +130,11 @@ endpoints out of diagnostics and route failures through the existing serialized 
 
 The Claude installer must validate endpoint and bearer format before proxy extraction or client-file work.
 `ClientConfigFile` reads only regular, non-symlinked files, checks size on the opened channel, and additionally bounds the
-actual stream read to 4 MiB plus one overflow-detection byte. Preserve strict UTF-8 decoding. An earlier size check is
-not a bound on a later read, and these checks are not a filesystem transaction against hostile concurrent directory
-replacement. See [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) for this review's scope and retained contracts.
+actual stream read to 4 MiB plus one overflow-detection byte. Preserve strict UTF-8 decoding. Use its bounded streaming
+encoder for both merged and default configuration: UTF-8, escaping, and pretty-print growth must fit the same 4 MiB
+budget before backup or replacement. Never fully serialize an unbounded string and only then check its length.
+An earlier size check is not a bound on a later read, and these checks are not a filesystem transaction against hostile
+concurrent directory replacement. See [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) for this review's scope and retained contracts.
 
 ## Request and session lifecycle
 
@@ -551,6 +553,9 @@ probe, schema test, or substring assertion is not proof that an external client/
 - `AuditActivityPanel` displays only sanitized `McpAuditSink.snapshot()` records. Reuse the diagnostics timer, cap the
   view at the configured retention, keep numeric sorting and literal filtering, preserve selected-record identity across
   refreshes, clear failed snapshots, and suppress reads after cleanup. Do not add traffic getters or another store.
+  Bounded JSONL export must retain the newest complete suffix in append order, never the oldest prefix of that snapshot.
+  Sanitized audit fields are ASCII, so the 64 Ki-character export cap also bounds UTF-8 bytes. Exact-fit lines need no
+  trailing newline; exports never trim persisted records and must not be described as complete history.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.

@@ -9,6 +9,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.MAX_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.MIN_AUDIT_RETENTION_ENTRIES
 import net.portswigger.mcp.config.McpConfig
@@ -150,6 +151,53 @@ class McpAuditLogTest {
         assertEquals("event_59", reloaded.snapshot().last().tool)
         assertTrue(reloaded.exportJsonLines(100).length <= 64 * 1024)
         reloaded.close()
+    }
+
+    @Test
+    fun `size capped export keeps the newest complete suffix in append order`() {
+        val fixture = auditFixture()
+        fixture.log.use { log ->
+            val longKeys = (0 until 16).map { index -> "key_${index}_" + "x".repeat(56) }
+            val approvals = (0 until 8).map { index ->
+                McpAuditApproval("approval_${index}_" + "x".repeat(48), "decision_" + "y".repeat(48))
+            }
+            repeat(100) { index ->
+                log.append(McpAuditRecord(
+                    timestampEpochMillis = fixedClock.millis(),
+                    sessionCorrelation = "abcdef123456",
+                    tool = "recent_event_$index",
+                    readOnly = true,
+                    argumentKeys = longKeys,
+                    approvals = approvals,
+                    durationMillis = 1,
+                    outcome = "completed",
+                ))
+            }
+            val before = log.snapshot(100)
+            val exported = log.exportJsonLines(100)
+            val decoded = exported.lineSequence().map { Json.decodeFromString<McpAuditRecord>(it) }.toList()
+
+            assertTrue(exported.toByteArray(Charsets.UTF_8).size <= 64 * 1024)
+            assertTrue(decoded.size in 1..99)
+            assertEquals("recent_event_99", decoded.last().tool)
+            assertEquals(before.takeLast(decoded.size), decoded)
+            assertEquals(before, log.snapshot(100), "Export must not trim retained audit records")
+        }
+    }
+
+    @Test
+    fun `export entry limit preserves recency and empty selections contain no partial JSON`() {
+        val fixture = auditFixture()
+        fixture.log.use { log ->
+            assertEquals("", log.exportJsonLines(100))
+            repeat(5) { index -> log.recordLocalEvent("event_$index", "completed") }
+            assertEquals("", log.exportJsonLines(0))
+            assertEquals("", log.exportJsonLines(-1))
+            val exported = log.exportJsonLines(2)
+            val decoded = exported.lines().map { Json.decodeFromString<McpAuditRecord>(it) }
+            assertEquals(listOf("event_3", "event_4"), decoded.map { it.tool })
+            assertFalse(exported.endsWith('\n'))
+        }
     }
 
     @Test

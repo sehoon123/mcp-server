@@ -24,19 +24,42 @@ host/port. Endpoint validation is in the configuration layer, not the provider l
 on client integration code. No new dependencies or changes to dependency locks, proxy bytes, release gates, approvals,
 network actions, tool descriptions, schemas, or result-error compatibility were introduced.
 
+## Additional audit and serialization review
+
+The endpoint/read fixes were committed as `149f53c61a8b0f4e09c21b3de03415dc3eb90459` with GitHub's verified signing
+service. A follow-up comparison with [reburp 1.1.7](REBURP_FEATURE_REVIEW.md#latest-configuration-and-audit-follow-up)
+keeps the different products' authority boundaries intact and adds two narrowly scoped fixes:
+
+- **Recent audit export:** the previous 64 KiB cutoff retained an older prefix of the selected records, dropping the
+  newest events. Export now retains the newest complete suffix in append order. Exact-fit lines do not pay for a
+  nonexistent trailing newline; an oversized newest record cannot silently substitute older history. No retained
+  records are deleted and no traffic values are added. A regression test failed on the original export implementation.
+- **Client configuration output:** reading at most 4 MiB was insufficient because merging and pretty printing could
+  write a larger file that the next installation could not read. The shared encoder now limits bytes during UTF-8
+  streaming, including escaping/indentation, before backup/replacement. It retains the existing JSON formatting and
+  unrelated properties. Tests cover exact limits, multibyte data, escaping, and compact-to-pretty expansion.
+
+These changes add no tool, resource, approval bypass, network operation, or dependency. reburp source was inspected
+without executing its REST server or importing its raw-logging or unauthenticated-access model.
+
 ## Local verification
 
-The baseline suite passed 1,008 tests. The updated suite passes **1,021 tests**, with zero failures, errors, or skips.
-Two new validation-order regressions were observed failing against the original production code before their fixes.
+The baseline suite passed 1,008 tests and the initial endpoint fixes passed 1,021. With the audit/serialization follow-up,
+the clean build passes **1,030 tests**, with zero failures, errors, or skips. The two validation-order regressions and the
+recent-export regression were observed failing against their original implementations before their fixes.
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
 bash scripts/test-release-version.sh
 ```
 
+A second local `embedProxyJar generateSbom --rerun-tasks --no-build-cache` produced identical JAR and SBOM hashes.
+This same-workspace check is not the independent, protected-workflow reproducibility gate.
+
 Tests include the real loopback CIO lifecycle and packaged stdio-proxy fixtures; they do not drive a real Burp instance.
-Packaging verifies the embedded proxy and legal bundle and generates the CycloneDX SBOM. Outputs are development
-artifacts under `build/`, not a tagged release or an uploaded CI distribution.
+Packaging verifies the embedded proxy and legal bundle and generates the CycloneDX SBOM. Local outputs are development
+artifacts under `build/`, not a tagged release. Any subsequently uploaded PR/CI distribution is a test artifact,
+not release or exact-byte Burp smoke evidence.
 
 ## Retained limitations and follow-up
 
@@ -50,4 +73,5 @@ artifacts under `build/`, not a tagged release or an uploaded CI distribution.
 - Real Community/Professional Burp startup, UI installation, and external-client tests remain required. Local mocks and
   protocol fixtures do not prove those integrations work.
 - Signed source, fresh candidate vulnerability/conformance evidence, independent reproducibility, and exact-byte Burp
-  smoke/publication gates in [RELEASING.md](RELEASING.md) remain mandatory. No version/tag/asset was published by this review.
+  smoke/publication gates in [RELEASING.md](RELEASING.md) remain mandatory. These changes do not authorize a release tag
+  or publication of release assets.

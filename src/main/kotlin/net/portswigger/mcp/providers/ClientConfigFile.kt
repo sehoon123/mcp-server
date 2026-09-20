@@ -1,5 +1,10 @@
 package net.portswigger.mcp.providers
 
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
@@ -10,6 +15,31 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
 internal const val MAX_PROVIDER_CONFIG_BYTES = 4 * 1024 * 1024
+private val clientConfigJson = Json { prettyPrint = true; encodeDefaults = true }
+
+/** Abort during UTF-8 serialization, before a backup or replacement can write an unreadable oversized config. */
+@OptIn(ExperimentalSerializationApi::class)
+internal fun encodeBoundedClientConfig(config: JsonObject): ByteArray {
+    val output = object : ByteArrayOutputStream() {
+        override fun write(value: Int) {
+            requireCapacity(1)
+            super.write(value)
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            requireCapacity(length)
+            super.write(bytes, offset, length)
+        }
+
+        private fun requireCapacity(additionalBytes: Int) {
+            require(additionalBytes in 0..MAX_PROVIDER_CONFIG_BYTES - count) {
+                "Updated client configuration exceeds the $MAX_PROVIDER_CONFIG_BYTES-byte safety limit"
+            }
+        }
+    }
+    clientConfigJson.encodeToStream(JsonObject.serializer(), config, output)
+    return output.toByteArray()
+}
 
 internal fun readBoundedClientConfig(path: Path): String {
     requireNoSymlinkComponents(path)

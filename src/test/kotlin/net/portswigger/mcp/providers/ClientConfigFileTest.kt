@@ -1,5 +1,11 @@
 package net.portswigger.mcp.providers
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -16,6 +22,57 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ClientConfigFileTest {
+    @Test
+    fun `bounded encoding preserves existing pretty JSON and UTF-8 round trips`() {
+        val document = buildJsonObject {
+            put("mcpServers", buildJsonObject {})
+            put("unrelated", "한글 🚀\n\"value\"\\path")
+        }
+        val previousFormat = Json { prettyPrint = true; encodeDefaults = true }
+            .encodeToString(JsonObject.serializer(), document).toByteArray(Charsets.UTF_8)
+        val encoded = encodeBoundedClientConfig(document)
+
+        assertContentEquals(previousFormat, encoded)
+        assertEquals(document, Json.parseToJsonElement(readBoundedClientConfig(encoded.inputStream())))
+    }
+
+    @Test
+    fun `output accepts the exact byte budget and rejects an extra byte`() {
+        val overhead = encodeBoundedClientConfig(buildJsonObject { put("padding", "") }).size
+        val document = buildJsonObject { put("padding", "a".repeat(MAX_PROVIDER_CONFIG_BYTES - overhead)) }
+        val encoded = encodeBoundedClientConfig(document)
+        assertEquals(MAX_PROVIDER_CONFIG_BYTES, encoded.size)
+        assertEquals(document, Json.parseToJsonElement(readBoundedClientConfig(encoded.inputStream())))
+
+        val oversized = buildJsonObject { put("padding", "a".repeat(MAX_PROVIDER_CONFIG_BYTES - overhead + 1)) }
+        assertThrows<IllegalArgumentException> { encodeBoundedClientConfig(oversized) }
+    }
+
+    @Test
+    fun `output bound counts UTF-8 bytes and JSON escaping rather than source characters`() {
+        listOf("é".repeat(MAX_PROVIDER_CONFIG_BYTES / 2), "\u0000".repeat(MAX_PROVIDER_CONFIG_BYTES / 4))
+            .forEach { value ->
+                val error = assertThrows<IllegalArgumentException> {
+                    encodeBoundedClientConfig(buildJsonObject { put("padding", value) })
+                }
+                assertEquals(
+                    "Updated client configuration exceeds the $MAX_PROVIDER_CONFIG_BYTES-byte safety limit",
+                    error.message,
+                )
+            }
+    }
+
+    @Test
+    fun `pretty print growth cannot produce a file beyond the next read budget`() {
+        val zero = JsonPrimitive(0)
+        val document = buildJsonObject {
+            put("values", JsonArray(List(MAX_PROVIDER_CONFIG_BYTES / 10 + 1) { zero }))
+        }
+        val compact = Json.encodeToString(JsonObject.serializer(), document)
+        assertTrue(compact.toByteArray(Charsets.UTF_8).size < MAX_PROVIDER_CONFIG_BYTES)
+        assertThrows<IllegalArgumentException> { encodeBoundedClientConfig(document) }
+    }
+
     @Test
     fun `regular client config is read without modifying it`(@TempDir directory: Path) {
         val path = directory.resolve("client.json")

@@ -487,7 +487,9 @@ maximum age. Records contain the timestamp, a one-way 12-hex session correlation
 declared argument **field names only**, approval decisions, duration, outcome, and exception type when applicable. They never contain argument values,
 request/response bodies, header values, credentials, paths, or raw exception messages. Writes are asynchronously
 debounced and stored in Burp extension data with a 1 MiB document cap. **Copy recent redacted audit** exports at most
-100 complete JSONL records and 64 KiB of text. Disabling logging preserves existing records; **Clear audit...** deletes
+100 complete JSONL records and 64 KiB of text. If the text cap is reached, the export retains the newest complete
+suffix in its original append order; it does not substitute older records or return partial JSON. This is a bounded
+excerpt, not the complete audit history. Disabling logging preserves existing records; **Clear audit...** deletes
 them after confirmation.
 
 **Recent redacted activity** displays the retained audit snapshot directly in Burp, newest first. Sort by time, tool,
@@ -1037,8 +1039,9 @@ A typical Windows installation resolves those placeholders to paths like:
 
 The actual Burp installation path can differ, so prefer the installer-generated values. The installer validates the
 endpoint and bearer format before any file work. Existing configuration must be a regular, non-symlinked UTF-8 file
-within 4 MiB; the read itself is bounded even if another process grows the file. It validates the packaged proxy
-checksum, backs up the existing client configuration as `*.independent-mcp-bridge.bak`, and replaces configuration and
+within 4 MiB; the read itself is bounded even if another process grows the file. Updated JSON is also capped at 4 MiB
+during UTF-8 serialization, including indentation and escaping, before backup or replacement; an oversized update leaves
+the existing configuration untouched. It validates the packaged proxy checksum, backs up the existing client configuration as `*.independent-mcp-bridge.bak`, and replaces configuration and
 proxy files atomically with owner-only POSIX permissions where supported. Claude Desktop requires its environment value
 in local configuration, so that file and its backup contain the token in plaintext; do not share either file. Restart
 Claude Desktop after installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as
