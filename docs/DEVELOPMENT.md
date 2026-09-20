@@ -598,8 +598,12 @@ coverage for supported behavior and keep each known unsupported behavior as narr
 
 ### Manual Burp smoke test
 
-Before merging a change that touches Montoya, lifecycle, Swing, or approvals, test the built JAR in the supported Burp
-editions:
+For changes touching Montoya, lifecycle, Swing, or approvals, test the built JAR in the supported Burp editions.
+Under the maintainer's [main-only integration policy](BRANCH_POLICY.md), reviewed development work may merge after
+passing automated/CI gates while unavailable native checks are explicitly recorded as `NOT RUN`. Such a merge is not
+release approval: real native verification remains mandatory for release evidence, and fixture tests cannot replace it.
+
+Exercise:
 
 - start, stop, failed start, and restart;
 - native HTTP initialize/list/call/DELETE;

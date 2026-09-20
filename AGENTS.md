@@ -21,7 +21,8 @@ or an explicit review of superseded/unneeded changes. Preserve a SHA inventory a
 retired commits not reachable from `main`; do not discard unreviewed changes or a live PR just to reduce branch count.
 Recheck branch tips before deletion, prune remote-tracking refs, and report the actual remaining branches.
 
-Branch cleanup must not bypass required Burp smoke tests, branch protections, or release evidence. The existing
-protected `release/v4.11` is required by `docs/RELEASING.md`; reaching the requested single-branch state therefore
-requires a separately reviewed, evidence-preserving release-policy migration. Until blockers are resolved, report
-branch cleanup and release as incomplete rather than force-merging, removing protections, or deleting required history.
+Follow `docs/BRANCH_POLICY.md` for main-only integration and retirement of the historical v4.11 promotion track.
+Development integration requires review and passing automated/CI checks; explicitly record unavailable native Burp
+checks as NOT RUN. Integration does not satisfy the mandatory real-Burp release/publication evidence. Keep main/tag
+protections and every release gate intact; never invent smoke results or reinterpret retired evidence to authorize a
+release. Report successful branch consolidation separately from any remaining release blockers.

@@ -42,11 +42,23 @@ keeps the different products' authority boundaries intact and adds two narrowly 
 These changes add no tool, resource, approval bypass, network operation, or dependency. reburp source was inspected
 without executing its REST server or importing its raw-logging or unauthenticated-access model.
 
+## Main-only consolidation follow-up
+
+The maintainer requested integration of needed work and retirement of all non-main branches. PR #56's useful
+`McpErrorPolicy` and exact status-contract test are ported unchanged onto the current tree; its conflict is resolved by
+keeping the newer exhaustive native-status classifier. Existing wire outcomes remain unchanged, while newly added
+unlisted outcomes in the retained classifiers default to errors until reviewed. This changes no execution or approval
+path. [BRANCH_POLICY.md](BRANCH_POLICY.md) records the distinction between verified development integration and release
+approval, plus the evidence-preserving retirement of the separate v4.11 promotion track. Native Burp checks are
+explicitly **NOT RUN**; no Burp installation is available in this environment.
+
 ## Local verification
 
-The baseline suite passed 1,008 tests and the initial endpoint fixes passed 1,021. With the audit/serialization follow-up,
-the clean build passes **1,030 tests**, with zero failures, errors, or skips. The two validation-order regressions and the
-recent-export regression were observed failing against their original implementations before their fixes.
+The baseline suite passed 1,008 tests, initial endpoint fixes 1,021, and audit/serialization fixes 1,030. The consolidated
+clean build passes **1,031 tests**, with zero failures, errors, or skips. The two validation-order regressions and the
+recent-export regression were observed failing against their original implementations before their fixes. The four
+Python live-harness/smoke/observation/vulnerability contract suites also pass 74 fixture tests; those are not real Burp,
+live vulnerability-query, or elapsed-observation evidence.
 
 ```bash
 ./gradlew clean test embedProxyJar generateSbom --no-build-cache
