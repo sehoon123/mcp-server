@@ -5,8 +5,8 @@ import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.mockk.verify
 import net.portswigger.mcp.config.Dialogs
+import net.portswigger.mcp.config.McpEndpoint
 import net.portswigger.mcp.providers.ClientSetupDefinition
-import net.portswigger.mcp.providers.ClientSetupEndpoint
 import net.portswigger.mcp.providers.ClientSetupId
 import net.portswigger.mcp.providers.ConnectionDoctor
 import net.portswigger.mcp.providers.DoctorExchange
@@ -51,7 +51,7 @@ class ClientSetupPanelTest {
                 clipboard = ClientSetupClipboard(copied::set),
                 endpointProvider = {
                     endpointSnapshots.incrementAndGet()
-                    ClientSetupEndpoint.from("::1", 9999)
+                    McpEndpoint.from("::1", 9999)
                 },
                 installConfigProvider = {
                     installSnapshots.incrementAndGet()
@@ -107,7 +107,7 @@ class ClientSetupPanelTest {
                 endpointProvider = {
                     assertTrue(SwingUtilities.isEventDispatchThread())
                     endpointSnapshots.incrementAndGet()
-                    ClientSetupEndpoint.from("::1", 9999)
+                    McpEndpoint.from("::1", 9999)
                 },
                 clipboard = ClientSetupClipboard { value ->
                     assertTrue(SwingUtilities.isEventDispatchThread())
@@ -819,13 +819,13 @@ class ClientSetupPanelTest {
         notice: WarningLabel = WarningLabel().apply { isVisible = true },
         clipboard: ClientSetupClipboard = ClientSetupClipboard { },
         doctor: ConnectionDoctor = ConnectionDoctor(DoctorExchange { 400 }),
-        endpointProvider: () -> ClientSetupEndpoint = { ClientSetupEndpoint.from("127.0.0.1", 9876) },
+        endpointProvider: () -> McpEndpoint = { McpEndpoint.from("127.0.0.1", 9876) },
         installConfigProvider: () -> ProviderInstallConfig = { installConfig() },
         doctorConfigProvider: () -> DoctorRequestConfig = {
             DoctorRequestConfig("127.0.0.1", 9876, SENTINEL_TOKEN, DoctorListenerCode.RUNNING)
         },
     ) = ClientSetupPanel(
-        initialEndpoint = ClientSetupEndpoint.from("127.0.0.1", 9876),
+        initialEndpoint = McpEndpoint.from("127.0.0.1", 9876),
         claudeDesktopInstaller = provider,
         prepareProxyExtraction = prepareExtraction,
         reinstallNotice = notice,

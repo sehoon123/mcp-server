@@ -256,6 +256,49 @@ class KtorServerManagerLifecycleTest {
         }
     }
 
+    @Test
+    fun `zero port with a valid credential cannot create an undiscoverable ephemeral listener`() {
+        val logging = mockk<Logging>(relaxed = true)
+        val api = mockApi(logging)
+        val manager = KtorServerManager(api)
+        val states = LinkedBlockingQueue<ServerState>()
+        try {
+            manager.start(config(0, logging), states::add)
+
+            assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
+            val failed = assertInstanceOf(ServerState.Failed::class.java, states.poll(10, TimeUnit.SECONDS))
+            assertEquals("Port is not within valid range", failed.exception.message)
+            assertEquals(null, manager.diagnostics().endpoint)
+            verify(exactly = 0) { api.burpSuite() }
+        } finally {
+            manager.shutdown()
+        }
+    }
+
+    @Test
+    fun `invalid persisted ports fail before catalog registration or credential access`() {
+        listOf(Int.MIN_VALUE, -1, 0, 1, 1023, 65536, Int.MAX_VALUE).forEach { port ->
+            val logging = mockk<Logging>(relaxed = true)
+            val api = mockApi(logging)
+            val manager = KtorServerManager(api)
+            val states = LinkedBlockingQueue<ServerState>()
+            try {
+                // A credential failure must not mask the earlier endpoint validation failure.
+                manager.start(config(port, logging, failTokenRead = true), states::add)
+
+                assertInstanceOf(ServerState.Starting::class.java, states.poll(5, TimeUnit.SECONDS))
+                val failed = assertInstanceOf(ServerState.Failed::class.java, states.poll(10, TimeUnit.SECONDS))
+                assertInstanceOf(IllegalArgumentException::class.java, failed.exception, "port=$port")
+                assertEquals("Port is not within valid range", failed.exception.message, "port=$port")
+                assertEquals("failed", manager.diagnostics().state)
+                assertEquals(null, manager.diagnostics().endpoint)
+                verify(exactly = 0) { api.burpSuite() }
+            } finally {
+                manager.shutdown()
+            }
+        }
+    }
+
     private fun startAndAwaitRunning(
         manager: KtorServerManager,
         config: McpConfig,

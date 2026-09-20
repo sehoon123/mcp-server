@@ -1,6 +1,9 @@
 package net.portswigger.mcp.providers
 
+import burp.api.montoya.logging.Logging
+import io.mockk.Called
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -65,6 +68,28 @@ class ClaudeDesktopProviderTest {
         assertEquals(3, paths.size)
         assertTrue(paths.any { it.endsWith(Path.of("Claude_aaa/LocalCache/Roaming/Claude")) })
         assertTrue(paths.any { it.endsWith(Path.of("Claude_bbb/LocalCache/Roaming/Claude")) })
+    }
+
+    @Test
+    fun `installer rejects invalid endpoint and credentials before filesystem or proxy work`() {
+        val logging = mockk<Logging>(relaxed = true)
+        val proxy = mockk<ProxyJarManager>()
+        val installer = ClaudeDesktopProvider(logging, proxy)
+        val validToken = "a".repeat(43)
+        val invalidConfigurations = listOf(
+            ProviderInstallConfig("0.0.0.0", 9876, validToken),
+            ProviderInstallConfig("127.0.0.1", 0, validToken),
+            ProviderInstallConfig("127.0.0.1", 1023, validToken),
+            ProviderInstallConfig("127.0.0.1", 65536, validToken),
+            ProviderInstallConfig("127.0.0.1", 9876, ""),
+            ProviderInstallConfig("127.0.0.1", 9876, "secret\nvalue"),
+        )
+
+        invalidConfigurations.forEach { config ->
+            assertThrows<IllegalArgumentException> { installer.prepareInstall(config).execute() }
+        }
+        verify { proxy wasNot Called }
+        verify { logging wasNot Called }
     }
 
     @Test

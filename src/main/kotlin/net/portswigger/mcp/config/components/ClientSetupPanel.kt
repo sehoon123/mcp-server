@@ -3,10 +3,10 @@ package net.portswigger.mcp.config.components
 import net.portswigger.mcp.config.Anchor
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.Dialogs
+import net.portswigger.mcp.config.McpEndpoint
 import net.portswigger.mcp.providers.BEARER_TOKEN_ENVIRONMENT_VARIABLE
 import net.portswigger.mcp.providers.ClientSetupCatalog
 import net.portswigger.mcp.providers.ClientSetupDefinition
-import net.portswigger.mcp.providers.ClientSetupEndpoint
 import net.portswigger.mcp.providers.ClientSetupId
 import net.portswigger.mcp.providers.ClientSetupTransport
 import net.portswigger.mcp.providers.ConnectionDoctor
@@ -97,12 +97,12 @@ private object SystemClientSetupClipboard : ClientSetupClipboard {
 }
 
 internal class ClientSetupPanel(
-    private val initialEndpoint: ClientSetupEndpoint?,
+    private val initialEndpoint: McpEndpoint?,
     private val claudeDesktopInstaller: Provider?,
     private val prepareProxyExtraction: (() -> ProviderInstallOperation?)?,
     private val reinstallNotice: WarningLabel,
     private val parentComponent: JComponent,
-    private val endpointProvider: () -> ClientSetupEndpoint,
+    private val endpointProvider: () -> McpEndpoint,
     private val installConfigProvider: () -> ProviderInstallConfig,
     private val doctorConfigProvider: () -> DoctorRequestConfig,
     private val connectionDoctor: ConnectionDoctor = ConnectionDoctor(),
@@ -123,7 +123,7 @@ internal class ClientSetupPanel(
     @Volatile
     private var activeFuture: Future<*>? = null
     private var actionInProgress = false
-    private var currentEndpoint: ClientSetupEndpoint? = initialEndpoint
+    private var currentEndpoint: McpEndpoint? = initialEndpoint
     private var doctorEvidence: String? = null
     // Opaque identity fences late results without retaining endpoint, listener, or credential values.
     private var doctorContextGeneration = Any()
@@ -484,7 +484,7 @@ internal class ClientSetupPanel(
         rebuildClientActions()
     }
 
-    private fun renderPreview(endpoint: ClientSetupEndpoint? = currentEndpoint) {
+    private fun renderPreview(endpoint: McpEndpoint? = currentEndpoint) {
         val renderedPreview = if (endpoint == null) {
             "Configuration preview unavailable. Enter a valid numeric loopback host and port, then choose " +
                 "Refresh preview or $REFRESH_AND_COPY_CONFIGURATION_LABEL."

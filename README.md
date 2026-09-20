@@ -458,7 +458,7 @@ Open the **MCP Bridge** tab in Burp:
   the server.
 - The settings surface tracks the available Burp viewport width, wraps explanatory text, and stacks action buttons when needed. Styled buttons, links, and the server toggle retain visible keyboard focus and support Enter/Space; Escape safely closes MCP dialogs. Persistent approval choices use warning styling and state that they do not expire automatically.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
-- Only numeric loopback bind hosts `127.0.0.1` and `::1` are accepted. Wildcard, hostname, and remote binds are rejected.
+- Only numeric loopback bind hosts `127.0.0.1` and `::1`, with ports `1024`–`65535`, are accepted. Wildcard, hostname, remote binds, and port `0` are rejected. These checks also apply to saved settings at listener startup, not only UI edits.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
 - Configure approval requirements for outbound HTTP requests, stable-ID request actions, Target scope changes, and access to sensitive Burp data, including Site Map and Collaborator items. Bambda import and local commands additionally require the disabled-by-default **Enable Bambda and local command tools** switch.
 - **Enable YOLO mode...** is a local, persistent master override for every MCP approval prompt, including sensitive configuration, Scanner, code-execution, editor, and Burp global-control actions. Enabling it requires one warning confirmation. It preserves the granular policies shown below it and resumes them when disabled. An authenticated client can read sensitive data, send traffic, execute separately enabled code, and mutate Burp state without another prompt while the mode is active. Authentication, input validation, project binding, operation bounds, execution-state handling, and Emergency read-only mode remain active. YOLO mode cannot enable the separate code-execution toggle.
@@ -1036,8 +1036,9 @@ A typical Windows installation resolves those placeholders to paths like:
 ```
 
 The actual Burp installation path can differ, so prefer the installer-generated values. The installer validates the
-packaged proxy checksum, backs up the existing client configuration as `*.independent-mcp-bridge.bak`, and replaces
-configuration and
+endpoint and bearer format before any file work. Existing configuration must be a regular, non-symlinked UTF-8 file
+within 4 MiB; the read itself is bounded even if another process grows the file. It validates the packaged proxy
+checksum, backs up the existing client configuration as `*.independent-mcp-bridge.bak`, and replaces configuration and
 proxy files atomically with owner-only POSIX permissions where supported. Claude Desktop requires its environment value
 in local configuration, so that file and its backup contain the token in plaintext; do not share either file. Restart
 Claude Desktop after installation. Previously generated `--sse-url http://127.0.0.1:9876` entries remain accepted as

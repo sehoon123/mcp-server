@@ -1,24 +1,9 @@
 package net.portswigger.mcp.providers
 
+import net.portswigger.mcp.config.McpEndpoint
 import java.nio.charset.StandardCharsets
 
 internal const val MAX_CLIENT_SETUP_PREVIEW_BYTES = 16 * 1024
-
-@ConsistentCopyVisibility
-internal data class ClientSetupEndpoint private constructor(
-    val host: String,
-    val port: Int,
-) {
-    companion object {
-        fun from(host: String, port: Int): ClientSetupEndpoint {
-            val normalized = requireNotNull(
-                net.portswigger.mcp.config.ConfigValidation.normalizeLoopbackHost(host),
-            ) { "MCP endpoint host must be 127.0.0.1 or ::1" }
-            require(port in 1024..65535) { "MCP endpoint port is outside the valid range" }
-            return ClientSetupEndpoint(normalized, port)
-        }
-    }
-}
 
 internal enum class ClientSetupId {
     CLAUDE_DESKTOP,
@@ -82,8 +67,8 @@ internal object ClientSetupCatalog {
         ),
     )
 
-    fun render(id: ClientSetupId, endpoint: ClientSetupEndpoint): String {
-        val url = streamableHttpEndpoint(endpoint.host, endpoint.port)
+    fun render(id: ClientSetupId, endpoint: McpEndpoint): String {
+        val url = endpoint.url
         val preview = when (id) {
             ClientSetupId.CLAUDE_DESKTOP -> claudeDesktopPreview(url)
             ClientSetupId.CLAUDE_CODE -> claudeCodePreview(url)

@@ -114,11 +114,25 @@ Execution Engine handles, and reset project-bound state before new-project reque
 | `src/main/kotlin/net/portswigger/mcp/tools/*` | Bounded service implementations and result types |
 | `src/main/kotlin/net/portswigger/mcp/security/*` | Approval gates, session grants, audit, safe logging |
 | `src/main/kotlin/net/portswigger/mcp/schema/*` | JSON Schema derivation and legacy serialization |
-| `src/main/kotlin/net/portswigger/mcp/config/*` | Persisted configuration and Swing UI |
-| `src/main/kotlin/net/portswigger/mcp/providers/*` | Client configuration and verified proxy extraction |
+| `src/main/kotlin/net/portswigger/mcp/config/*` | Persisted configuration, shared validated `McpEndpoint`, and Swing UI |
+| `src/main/kotlin/net/portswigger/mcp/providers/*` | Client configuration, bounded UTF-8 config reads, and verified proxy extraction |
 | `src/test/kotlin/net/portswigger/mcp/*` | Unit, lifecycle, transport, schema, and integration tests |
 | `libs/mcp-proxy-all.jar` | Pinned embedded stdio proxy binary |
 | `libs/mcp-proxy-source.txt` | Proxy source commit, version, component list, and JAR hash |
+
+### Shared endpoint configuration
+
+`McpEndpoint` is the credential-free, immutable endpoint value for listener startup, client previews, installation, and
+Connection Doctor. Its factory delegates to `ConfigValidation`, so UI and persisted runtime settings both require a
+numeric loopback host and port 1024–65535. Validate the captured startup snapshot before registering tools, reading the
+credential, or creating a listener; port zero must never create an undiscoverable ephemeral listener. Keep invalid
+endpoints out of diagnostics and route failures through the existing serialized lifecycle.
+
+The Claude installer must validate endpoint and bearer format before proxy extraction or client-file work.
+`ClientConfigFile` reads only regular, non-symlinked files, checks size on the opened channel, and additionally bounds the
+actual stream read to 4 MiB plus one overflow-detection byte. Preserve strict UTF-8 decoding. An earlier size check is
+not a bound on a later read, and these checks are not a filesystem transaction against hostile concurrent directory
+replacement. See [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) for this review's scope and retained contracts.
 
 ## Request and session lifecycle
 
