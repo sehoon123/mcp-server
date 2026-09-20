@@ -59,6 +59,7 @@ import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.TestStreamableHttpMcpClient
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.presets.WorkflowPresetStore
+import net.portswigger.mcp.schema.assertSchemaDefaultsValid
 import net.portswigger.mcp.security.DataAccessApprovalHandler
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
@@ -275,6 +276,10 @@ class ToolsKtTest {
         assertNonNullOutputFieldsAreRequired(tool)
         assertTruncatedStringsAdvertiseBounds(tool)
         assertBurpErrorGuidanceIsSelfContained(tool)
+        val wireTool = catalogJson.encodeToJsonElement(Tool.serializer(), tool).jsonObject
+        for (role in listOf("inputSchema", "outputSchema")) {
+            assertSchemaDefaultsValid(wireTool.getValue(role), "${tool.name}/$role")
+        }
     }
 
     // Strip schema prose, not a real property named "description" or literal values in defaults/enums.

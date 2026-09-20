@@ -15,6 +15,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
+private const val MAX_SCHEMA_ANNOTATION_CHARS = 512
+
 @OptIn(ExperimentalSerializationApi::class)
 @SerialInfo
 @Target(AnnotationTarget.PROPERTY)
@@ -44,8 +46,9 @@ annotation class JsonSchemaMetadata(
  * This only takes effect where the annotated class is used as a *nested* schema, for example
  * as a `List<T>` item type or a nested object property. The MCP Kotlin SDK's `ToolSchema` has
  * a fixed shape (`type`/`properties`/`required`/`defs`) with no slot for root-level schema
- * combinators, so applying this annotation to a tool's own top-level input class has no
- * effect; such constraints must remain documented in field descriptions instead.
+ * combinators. Applying this annotation to a tool's own top-level input or output class is
+ * rejected rather than silently dropping the constraint. Use a nested object and retain
+ * runtime validation; field descriptions alone are not an enforceable schema constraint.
  */
 @OptIn(ExperimentalSerializationApi::class)
 @SerialInfo
@@ -62,6 +65,9 @@ fun SerialDescriptor.asOutputSchema(): ToolSchema = asToolSchema("output")
 private fun SerialDescriptor.asToolSchema(schemaRole: String): ToolSchema {
     require(kind == StructureKind.CLASS || kind == StructureKind.OBJECT) {
         "Tool $schemaRole must serialize as an object, but $serialName uses $kind"
+    }
+    require(annotations.none { it is JsonSchemaExactlyOneOf }) {
+        "JsonSchemaExactlyOneOf on $serialName requires a nested schema; root ToolSchema cannot represent it"
     }
     val properties = buildMap {
         for (index in 0 until elementsCount) {
@@ -169,12 +175,13 @@ private fun SerialDescriptor.elementSchema(index: Int): JsonElement =
 private fun JsonElement.withMetadata(metadata: JsonSchemaMetadata?): JsonElement {
     if (metadata == null) return this
     val schema = this as? JsonObject ?: return this
+    metadata.validateBounds()
     return JsonObject(buildMap {
         putAll(schema)
-        if (metadata.description.isNotBlank()) put("description", JsonPrimitive(metadata.description.take(512)))
+        if (metadata.description.isNotBlank()) put("description", JsonPrimitive(metadata.description.take(MAX_SCHEMA_ANNOTATION_CHARS)))
         if (metadata.minLength >= 0) put("minLength", JsonPrimitive(metadata.minLength))
         if (metadata.maxLength >= 0) put("maxLength", JsonPrimitive(metadata.maxLength))
-        if (metadata.pattern.isNotEmpty()) put("pattern", JsonPrimitive(metadata.pattern.take(512)))
+        if (metadata.pattern.isNotEmpty()) put("pattern", JsonPrimitive(metadata.pattern))
         if (metadata.enumValues.isNotEmpty()) {
             val values = metadata.enumValues.distinct().map { value ->
                 JsonPrimitive(value) as JsonElement
@@ -190,6 +197,27 @@ private fun JsonElement.withMetadata(metadata: JsonSchemaMetadata?): JsonElement
         if (metadata.maxProperties >= 0) put("maxProperties", JsonPrimitive(metadata.maxProperties))
         if (metadata.defaultJson.isNotEmpty()) put("default", Json.parseToJsonElement(metadata.defaultJson))
     })
+}
+
+/** Checks trusted declaration mistakes, not request data or the full JSON Schema vocabulary. */
+private fun JsonSchemaMetadata.validateBounds() {
+    for ((name, lower, upper) in listOf(
+        Triple("length", minLength, maxLength),
+        Triple("items", minItems, maxItems),
+        Triple("properties", minProperties, maxProperties),
+    )) {
+        require(lower >= -1 && upper >= -1) { "Schema $name bounds must be non-negative or unset (-1)" }
+        require(lower == -1 || upper == -1 || lower <= upper) {
+            "Schema $name minimum must not exceed maximum"
+        }
+    }
+    require(minimum == Long.MIN_VALUE || maximum == Long.MIN_VALUE || minimum <= maximum) {
+        "Schema numeric minimum must not exceed maximum"
+    }
+    // Unlike prose, truncating a pattern changes its constraint (or makes it invalid).
+    require(pattern.length <= MAX_SCHEMA_ANNOTATION_CHARS) {
+        "Schema pattern must not exceed $MAX_SCHEMA_ANNOTATION_CHARS characters"
+    }
 }
 
 private fun typedSchema(type: String) = JsonObject(mapOf("type" to JsonPrimitive(type)))

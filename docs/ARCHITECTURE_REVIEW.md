@@ -73,11 +73,35 @@ No tool/catalog, schema, credential policy, approval, dependency, proxy, release
 A shutdown request does not prove termination of a native storage call that ignores interruption; real Burp validation
 remains **NOT RUN**.
 
+## Agent-facing contract guardrails
+
+Review baseline: `916c00603e84ae61936752573a9441c6d3a22b5b`. This preventive follow-up improves declaration checks and
+read-only discovery guidance; it does not add execution capabilities or claim the existing catalogs were invalid.
+
+- **Reject misleading declarations:** input/output schema generation now rejects unsupported root-level
+  `JsonSchemaExactlyOneOf`, contradictory bounds, and invalid negative size bounds. Patterns over 512 characters
+  fail instead of being truncated into a different or invalid constraint. Valid current declarations retain their
+  exact generated schemas; descriptions remain bounded prose. These checks are not a complete JSON Schema validator.
+- **Validate suggested defaults:** both edition catalog tests use the existing Draft 2020-12 validator to check every
+  declared input/output default against its inline schema, including nested schemas. Traversal distinguishes schema
+  property maps from literal data, including a real property named `default`. No default is inserted into requests and
+  no runtime dependency is added; runtime decoding, bounds, and nullable/default behavior still need independent tests.
+- **Explain read-only evidence:** fixed-resource descriptions distinguish a successful diagnostic snapshot read from
+  listener health or external-client verification, supported reference families from access grants or record existence,
+  and scope settings from membership or authorization. Native discovery tests pin these limits and the existing
+  description budget. Returned fields, status/error compatibility, and operation-specific checks do not change.
+
+Six boundary/discovery expectations failed against the baseline before the fixes. No tool name, title, annotation,
+input/output schema, resource URI/count, prompt, approval, dependency, proxy pin, release gate, or version is changed.
+The descriptions are guidance, not proof that an external agent follows them. Native Burp/client verification remains
+**NOT RUN**.
+
 ## Local verification
 
-The suite progressed from baseline 1,008 to endpoint fixes 1,021, audit/serialization fixes 1,030, and consolidation
-1,031. The second-review clean build passes **1,038 tests**, with zero failures, errors, or skips. The initial two
-validation-order regressions and recent-export regression also failed on their original implementations before fixes.
+The suite progressed from baseline 1,008 to endpoint fixes 1,021, audit/serialization fixes 1,030, consolidation
+1,031, and diagnostic/cleanup fixes 1,038. The agent-contract clean build passes **1,050 tests**, with zero failures,
+errors, or skips; its focused schema/discovery rerun passes 21 tests. The initial two validation-order regressions,
+recent-export regression, and later boundary checks also failed on their original implementations before fixes.
 The four Python live-harness/smoke/observation/vulnerability contract suites pass 74 fixture tests; those are not real
 Burp, live vulnerability-query, or elapsed-observation evidence.
 

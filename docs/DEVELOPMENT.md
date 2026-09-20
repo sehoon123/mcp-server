@@ -456,8 +456,16 @@ Test the schema as an executable contract, not only as generated JSON structure.
 - `required` checks property presence, not non-null value.
 - Nullable enums must either include `null` in the allowed values or runtime decoding must reject explicit null.
 - `oneOf`/`anyOf` truth tables need a real JSON Schema validator.
-- Root-level combinators are constrained by the current Kotlin MCP SDK `ToolSchema`; keep runtime validation and prose
-  when a root constraint cannot be represented.
+- Root-level combinators are constrained by the current Kotlin MCP SDK `ToolSchema`. Root `JsonSchemaExactlyOneOf`
+  declarations are rejected rather than silently ignored; use a nested object when that constraint must be advertised.
+  Keep runtime validation regardless of whether a constraint can be represented.
+- Schema generation rejects contradictory size/numeric bounds and negative size bounds other than the unset `-1`.
+  Patterns longer than 512 characters are rejected, never truncated; prose descriptions may still be shortened.
+  These declaration checks are not a complete schema validator and do not validate incoming requests.
+- Community/Professional catalog tests validate every declared input/output `default` against its inline schema with
+  the existing Draft 2020-12 validator, including nested schemas. Defaults are annotations, not automatic request fills;
+  nullable handling and effective runtime defaults still need service tests. Literal objects inside `default`, `enum`,
+  `const`, and `examples` are data, not schemas to traverse.
 - Input and output schema changes require integration tests through `tools/list` and `tools/call`.
 
 ### 9. Register and test the catalog
@@ -505,6 +513,13 @@ entries for the native manager.
 
 Resources must execute through `executeRegisteredResource` so they receive the same bounded dispatcher, audit context,
 and session approval snapshot as tools. Reuse service-layer reads rather than implementing a second authorization path.
+
+Fixed-resource discovery descriptions must state interpretation limits. Diagnostics `status=ok` means a snapshot was
+read, not a healthy listener or verified external client; inspect `diagnostics.state` and `diagnostics.lastError`.
+Project `referenceKinds` lists supported families, not permission grants or evidence that records exist. The scope
+summary neither enumerates rules nor proves membership, and `mutationApprovalRequired` is a configuration setting,
+not authorization. Keep these instructions visible in `resources/list` and test them without changing result fields
+or bypassing operation-specific checks. Descriptions cannot enforce a client's behavior.
 
 Canonical `burp://` references must reuse the source-specific canonical reference builder's validation in both resource
 and prompt paths. Reject noncanonical numeric IDs and malformed Site Map IDs before data approval; HTTP resource URI
