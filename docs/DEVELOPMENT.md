@@ -548,14 +548,20 @@ probe, schema test, or substring assertion is not proof that an external client/
   action may invoke a native client writer; all other client entries remain preview-and-copy only.
 - Connection Doctor may read the bearer only when diagnostics report a running listener whose authoritative endpoint
   exactly matches the validated displayed endpoint. Its JDK client must bypass proxy selection, force HTTP/1.1, follow
-  no redirects, discard the response body, close after the single request, and expose only closed result enums. Copied
-  evidence must retain a fixed, value-free scope marker stating local admission only and external client not tested.
+  no redirects, collect status without awaiting response-body completion, immediately close the unread body stream,
+  close after the single request, and expose only closed result enums. `BodyHandlers.discarding()` still drains a body
+  and is not a status-only handler. Copied evidence must retain a fixed, value-free scope marker stating local admission
+  only and external client not tested.
 - `AuditActivityPanel` displays only sanitized `McpAuditSink.snapshot()` records. Reuse the diagnostics timer, cap the
   view at the configured retention, keep numeric sorting and literal filtering, preserve selected-record identity across
   refreshes, clear failed snapshots, and suppress reads after cleanup. Do not add traffic getters or another store.
   Bounded JSONL export must retain the newest complete suffix in append order, never the oldest prefix of that snapshot.
   Sanitized audit fields are ASCII, so the 64 Ki-character export cap also bounds UTF-8 bytes. Exact-fit lines need no
   trailing newline; exports never trim persisted records and must not be described as complete history.
+- Audit error reporting must tolerate unavailable Burp logging, including storage load/parse failures and teardown.
+  Preserve the caller's interrupt flag when a flush/close wait is interrupted. Always attempt shutdown of the log-owned
+  writer in `finally`, even if the final flush or error reporting fails; keep close idempotent and messages type-only.
+  A shutdown request is not proof that a non-interruptible native storage call terminated.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.

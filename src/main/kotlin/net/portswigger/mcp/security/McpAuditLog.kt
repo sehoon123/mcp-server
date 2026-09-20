@@ -155,6 +155,7 @@ internal object NoOpMcpAuditSink : McpAuditSink {
  *
  * Tool arguments are represented only by field names. Session identifiers are one-way correlated, and records never
  * contain request/response bodies, header values, credentials, file paths, or raw exception text.
+ * The writer (including an injected instance) is owned by this log; close always attempts its shutdown.
  */
 internal class PersistentMcpAuditLog(
     private val storage: PersistedObject,
@@ -162,12 +163,12 @@ internal class PersistentMcpAuditLog(
     private val logging: Logging,
     private val clock: Clock = Clock.systemUTC(),
     private val encodeSnapshot: (List<McpAuditRecord>) -> BoundedAuditEncoding = ::encodeBoundedAuditRecords,
+    private val writer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "BurpMcpAuditWriter").apply { isDaemon = true }
+    },
 ) : McpAuditSink {
     private val lock = Any()
     private val records = ArrayDeque<McpAuditRecord>()
-    private val writer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "BurpMcpAuditWriter").apply { isDaemon = true }
-    }
     private var revision = 0L
     private var flushScheduled = false
     private val closed = AtomicBoolean(false)
@@ -180,11 +181,14 @@ internal class PersistentMcpAuditLog(
         appendWithPolicy(record, requireEnabled = true)
     }
 
+    private fun logErrorSafely(message: String) {
+        // Burp logging may itself be unavailable during teardown; it must not prevent independent cleanup.
+        runCatching { logging.logToError(message) }
+    }
+
     private fun appendWithPolicy(record: McpAuditRecord, requireEnabled: Boolean) {
         runCatching { appendSafely(record, requireEnabled) }
-            .onFailure { error ->
-                runCatching { logging.logToError("MCP audit append failed: ${safeExceptionSummary(error)}") }
-            }
+            .onFailure { logErrorSafely("MCP audit append failed: ${safeExceptionSummary(it)}") }
     }
 
     private fun appendSafely(record: McpAuditRecord, requireEnabled: Boolean) {
@@ -261,7 +265,10 @@ internal class PersistentMcpAuditLog(
                 synchronized(lock) { flushScheduled = true }
                 flushLoop()
             }.get(5, TimeUnit.SECONDS)
-        }.onFailure { logging.logToError("MCP audit flush failed: ${safeExceptionSummary(it)}") }
+        }.onFailure {
+            if (it is InterruptedException) Thread.currentThread().interrupt()
+            logErrorSafely("MCP audit flush failed: ${safeExceptionSummary(it)}")
+        }
     }
 
     override fun exportJsonLines(limit: Int): String =
@@ -269,26 +276,33 @@ internal class PersistentMcpAuditLog(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        synchronized(lock) { flushScheduled = true }
-        runCatching {
-            writer.submit {
-                flushLoop()
-            }.get(5, TimeUnit.SECONDS)
-        }.onFailure { logging.logToError("MCP audit close failed: ${safeExceptionSummary(it)}") }
-        writer.shutdownNow()
+        try {
+            synchronized(lock) { flushScheduled = true }
+            runCatching {
+                writer.submit {
+                    flushLoop()
+                }.get(5, TimeUnit.SECONDS)
+            }.onFailure {
+                if (it is InterruptedException) Thread.currentThread().interrupt()
+                logErrorSafely("MCP audit close failed: ${safeExceptionSummary(it)}")
+            }
+        } finally {
+            runCatching { writer.shutdownNow() }
+                .onFailure { logErrorSafely("MCP audit shutdown failed: ${safeExceptionSummary(it)}") }
+        }
     }
 
     private fun loadPersistedRecords() {
         val raw = runCatching { storage.getString(AUDIT_STORAGE_KEY).orEmpty() }
-            .onFailure { logging.logToError("MCP audit load failed: ${safeExceptionSummary(it)}") }
+            .onFailure { logErrorSafely("MCP audit load failed: ${safeExceptionSummary(it)}") }
             .getOrDefault("")
         if (raw.isBlank()) return
         if (raw.length > MAX_PERSISTED_AUDIT_CHARS) {
-            logging.logToError("MCP audit storage exceeded its safety limit and was ignored")
+            logErrorSafely("MCP audit storage exceeded its safety limit and was ignored")
             return
         }
         val loaded = runCatching { auditJson.decodeFromString<McpAuditDocument>(raw) }
-            .onFailure { logging.logToError("MCP audit storage was invalid and was ignored") }
+            .onFailure { logErrorSafely("MCP audit storage was invalid and was ignored") }
             .getOrNull()
             ?.takeIf { it.version == AUDIT_DOCUMENT_VERSION }
             ?.records
@@ -334,7 +348,7 @@ internal class PersistentMcpAuditLog(
                     require(it.text.length <= MAX_PERSISTED_AUDIT_CHARS) { "bounded audit encoding exceeded its cap" }
                 }
             }.onFailure {
-                runCatching { logging.logToError("MCP audit encoding failed: ${safeExceptionSummary(it)}") }
+                logErrorSafely("MCP audit encoding failed: ${safeExceptionSummary(it)}")
             }.getOrNull()
             if (encoding == null) {
                 val retryCurrentRevision = synchronized(lock) {
@@ -346,7 +360,7 @@ internal class PersistentMcpAuditLog(
             }
             val succeeded = runCatching { storage.setString(AUDIT_STORAGE_KEY, encoding.text) }
                 .onFailure {
-                    runCatching { logging.logToError("MCP audit persistence failed: ${safeExceptionSummary(it)}") }
+                    logErrorSafely("MCP audit persistence failed: ${safeExceptionSummary(it)}")
                 }
                 .isSuccess
             val retryCurrentRevision = synchronized(lock) {
