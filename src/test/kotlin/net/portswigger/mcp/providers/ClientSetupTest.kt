@@ -5,6 +5,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import net.portswigger.mcp.config.McpEndpoint
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.nio.charset.StandardCharsets
@@ -49,7 +50,7 @@ class ClientSetupTest {
 
     @Test
     fun `JSON previews preserve each client's exact top-level shape`() {
-        val endpoint = ClientSetupEndpoint.from("127.0.0.1", 9876)
+        val endpoint = McpEndpoint.from("127.0.0.1", 9876)
 
         val desktop = Json.parseToJsonElement(
             ClientSetupCatalog.render(ClientSetupId.CLAUDE_DESKTOP, endpoint),
@@ -104,7 +105,7 @@ class ClientSetupTest {
 
     @Test
     fun `Codex preview is exact TOML and IPv6 previews use brackets`() {
-        val endpoint = ClientSetupEndpoint.from("[::1]", 9876)
+        val endpoint = McpEndpoint.from("[::1]", 9876)
         assertEquals(
             """
             [mcp_servers.burp-independent]
@@ -121,7 +122,7 @@ class ClientSetupTest {
 
     @Test
     fun `previews are bounded and cannot include runtime secrets or resolved paths`() {
-        val endpoint = ClientSetupEndpoint.from("127.0.0.1", 65535)
+        val endpoint = McpEndpoint.from("127.0.0.1", 65535)
         val forbidden = listOf(
             "sentinel-current-bearer-credential",
             "/Users/example/private/java",
@@ -137,13 +138,13 @@ class ClientSetupTest {
 
     @Test
     fun `endpoint accepts only bounded numeric loopback values`() {
-        assertEquals("127.0.0.1", ClientSetupEndpoint.from("127.0.0.1", 1024).host)
-        assertEquals("::1", ClientSetupEndpoint.from("[::1]", 65535).host)
+        assertEquals("127.0.0.1", McpEndpoint.from("127.0.0.1", 1024).host)
+        assertEquals("::1", McpEndpoint.from("[::1]", 65535).host)
         listOf("localhost", "0.0.0.0", "::", "192.0.2.1").forEach { host ->
-            assertThrows<IllegalArgumentException> { ClientSetupEndpoint.from(host, 9876) }
+            assertThrows<IllegalArgumentException> { McpEndpoint.from(host, 9876) }
         }
-        assertThrows<IllegalArgumentException> { ClientSetupEndpoint.from("127.0.0.1", 1023) }
-        assertThrows<IllegalArgumentException> { ClientSetupEndpoint.from("127.0.0.1", 65536) }
+        assertThrows<IllegalArgumentException> { McpEndpoint.from("127.0.0.1", 1023) }
+        assertThrows<IllegalArgumentException> { McpEndpoint.from("127.0.0.1", 65536) }
         assertThrows<IllegalArgumentException> { streamableHttpEndpoint("127.0.0.1", 1) }
     }
 }

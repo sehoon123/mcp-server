@@ -114,11 +114,27 @@ Execution Engine handles, and reset project-bound state before new-project reque
 | `src/main/kotlin/net/portswigger/mcp/tools/*` | Bounded service implementations and result types |
 | `src/main/kotlin/net/portswigger/mcp/security/*` | Approval gates, session grants, audit, safe logging |
 | `src/main/kotlin/net/portswigger/mcp/schema/*` | JSON Schema derivation and legacy serialization |
-| `src/main/kotlin/net/portswigger/mcp/config/*` | Persisted configuration and Swing UI |
-| `src/main/kotlin/net/portswigger/mcp/providers/*` | Client configuration and verified proxy extraction |
+| `src/main/kotlin/net/portswigger/mcp/config/*` | Persisted configuration, shared validated `McpEndpoint`, and Swing UI |
+| `src/main/kotlin/net/portswigger/mcp/providers/*` | Client configuration, bounded UTF-8 config reads, and verified proxy extraction |
 | `src/test/kotlin/net/portswigger/mcp/*` | Unit, lifecycle, transport, schema, and integration tests |
 | `libs/mcp-proxy-all.jar` | Pinned embedded stdio proxy binary |
 | `libs/mcp-proxy-source.txt` | Proxy source commit, version, component list, and JAR hash |
+
+### Shared endpoint configuration
+
+`McpEndpoint` is the credential-free, immutable endpoint value for listener startup, client previews, installation, and
+Connection Doctor. Its factory delegates to `ConfigValidation`, so UI and persisted runtime settings both require a
+numeric loopback host and port 1024–65535. Validate the captured startup snapshot before registering tools, reading the
+credential, or creating a listener; port zero must never create an undiscoverable ephemeral listener. Keep invalid
+endpoints out of diagnostics and route failures through the existing serialized lifecycle.
+
+The Claude installer must validate endpoint and bearer format before proxy extraction or client-file work.
+`ClientConfigFile` reads only regular, non-symlinked files, checks size on the opened channel, and additionally bounds the
+actual stream read to 4 MiB plus one overflow-detection byte. Preserve strict UTF-8 decoding. Use its bounded streaming
+encoder for both merged and default configuration: UTF-8, escaping, and pretty-print growth must fit the same 4 MiB
+budget before backup or replacement. Never fully serialize an unbounded string and only then check its length.
+An earlier size check is not a bound on a later read, and these checks are not a filesystem transaction against hostile
+concurrent directory replacement. See [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) for this review's scope and retained contracts.
 
 ## Request and session lifecycle
 
@@ -537,6 +553,9 @@ probe, schema test, or substring assertion is not proof that an external client/
 - `AuditActivityPanel` displays only sanitized `McpAuditSink.snapshot()` records. Reuse the diagnostics timer, cap the
   view at the configured retention, keep numeric sorting and literal filtering, preserve selected-record identity across
   refreshes, clear failed snapshots, and suppress reads after cleanup. Do not add traffic getters or another store.
+  Bounded JSONL export must retain the newest complete suffix in append order, never the oldest prefix of that snapshot.
+  Sanitized audit fields are ASCII, so the 64 Ki-character export cap also bounds UTF-8 bytes. Exact-fit lines need no
+  trailing newline; exports never trim persisted records and must not be described as complete history.
 - Keep listener lifecycle work serialized through `KtorServerManager`; do not start independent Ktor engines.
 - State shared across listener restarts belongs in `ToolServices` and must define project reset and extension close.
 - Avoid retaining Montoya request/response/project objects in long-lived indexes or global state.
@@ -579,8 +598,12 @@ coverage for supported behavior and keep each known unsupported behavior as narr
 
 ### Manual Burp smoke test
 
-Before merging a change that touches Montoya, lifecycle, Swing, or approvals, test the built JAR in the supported Burp
-editions:
+For changes touching Montoya, lifecycle, Swing, or approvals, test the built JAR in the supported Burp editions.
+Under the maintainer's [main-only integration policy](BRANCH_POLICY.md), reviewed development work may merge after
+passing automated/CI gates while unavailable native checks are explicitly recorded as `NOT RUN`. Such a merge is not
+release approval: real native verification remains mandatory for release evidence, and fixture tests cannot replace it.
+
+Exercise:
 
 - start, stop, failed start, and restart;
 - native HTTP initialize/list/call/DELETE;

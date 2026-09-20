@@ -12,14 +12,12 @@ import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.unavailableMcpDiagnosticsSnapshot
 import net.portswigger.mcp.presets.WorkflowPresetManagement
 import net.portswigger.mcp.providers.ClaudeDesktopProvider
-import net.portswigger.mcp.providers.ClientSetupEndpoint
 import net.portswigger.mcp.providers.ConnectionDoctor
 import net.portswigger.mcp.providers.DoctorListenerCode
 import net.portswigger.mcp.providers.DoctorRequestConfig
 import net.portswigger.mcp.providers.ManualProxyInstallerProvider
 import net.portswigger.mcp.providers.ProxyProvenance
 import net.portswigger.mcp.providers.doctorListenerCode
-import net.portswigger.mcp.providers.streamableHttpEndpoint
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.NoOpMcpAuditSink
 import net.portswigger.mcp.security.safeExceptionSummary
@@ -279,11 +277,11 @@ class ConfigUi internal constructor(
         }
     }
 
-    private fun initialClientSetupEndpoint(): ClientSetupEndpoint? = runCatching {
-        ClientSetupEndpoint.from(config.host, config.port)
+    private fun initialClientSetupEndpoint(): McpEndpoint? = runCatching {
+        McpEndpoint.from(config.host, config.port)
     }.getOrNull()
 
-    private fun clientSetupEndpointSnapshot(): ClientSetupEndpoint {
+    private fun clientSetupEndpointSnapshot(): McpEndpoint {
         check(SwingUtilities.isEventDispatchThread()) { "client endpoint must be captured on the EDT" }
         val hostText = hostField.text
         val portText = portField.text
@@ -291,7 +289,7 @@ class ConfigUi internal constructor(
             throw IllegalArgumentException(error)
         }
         val port = requireNotNull(portText.trim().toIntOrNull()) { "MCP endpoint port is invalid" }
-        return ClientSetupEndpoint.from(hostText, port)
+        return McpEndpoint.from(hostText, port)
     }
 
     private fun doctorRequestSnapshot(): DoctorRequestConfig {
@@ -306,7 +304,7 @@ class ConfigUi internal constructor(
                 listener = listener,
                 configurationValid = false,
             )
-        val displayedEndpoint = streamableHttpEndpoint(endpoint.host, endpoint.port)
+        val displayedEndpoint = endpoint.url
         val endpointMatchesListener = listener != DoctorListenerCode.RUNNING || diagnostics?.endpoint == displayedEndpoint
         val token = if (listener == DoctorListenerCode.RUNNING && endpointMatchesListener) {
             config.localBearerToken
@@ -324,16 +322,8 @@ class ConfigUi internal constructor(
 
     private fun providerInstallSnapshot(): ProviderInstallConfig {
         check(SwingUtilities.isEventDispatchThread()) { "provider configuration must be captured on the EDT" }
-        val hostText = hostField.text
-        val portText = portField.text
-        ConfigValidation.validateServerConfig(hostText, portText)?.let { error ->
-            throw IllegalArgumentException(error)
-        }
-        val host = requireNotNull(ConfigValidation.normalizeLoopbackHost(hostText)) {
-            "MCP endpoint host must be 127.0.0.1 or ::1"
-        }
-        val port = requireNotNull(portText.trim().toIntOrNull()) { "MCP endpoint port is invalid" }
-        return ProviderInstallConfig(host, port, config.localBearerToken)
+        val endpoint = clientSetupEndpointSnapshot()
+        return ProviderInstallConfig(endpoint.host, endpoint.port, config.localBearerToken)
     }
 
     fun onEnabledToggled(listener: (Boolean) -> Unit) {

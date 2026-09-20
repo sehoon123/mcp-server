@@ -1,17 +1,29 @@
 # Active release roadmap
 
-**Status date:** 2026-09-16<br>
+**Status date:** 2026-09-21<br>
 **Current candidate build:** `4.12.0-rc.5` / BApp SerialVersion 18 (canonical resource parts and cooperative read cancellation; publication gates remain open)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
-**Observed release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`<br>
-**Next stable target:** `v4.11.0` after the attested seven-day observation gate<br>
+**Historical release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`; separate promotion track retired<br>
+**Next stable target:** main-based successor, blocked pending reviewed identity/pin migration and fresh release evidence<br>
 **Planning model:** gate-based; versions have no promised calendar date
 
 This is the canonical near-term release plan for the independently maintained `sehoon123/mcp-server` fork. The longer
 [ROADMAP.md](ROADMAP.md) remains the capability history and long-range backlog. If the two documents conflict, this
 active roadmap controls release priority.
 
-## Product decision
+## Main-only policy update
+
+The maintainer has retired the separate v4.11 promotion branch in favor of [main-only development](BRANCH_POLICY.md).
+Its anchor remains in main history; historical tags, assets, and evidence remain immutable. The current workflow
+refusals remain effective and no old observation/smoke record is transferred to a successor release. A future
+main-based candidate needs reviewed successor identity/pins and fresh evidence before tagging/publication.
+
+The historical sequence and v4.11 promotion milestones below are retained for provenance and planning context, **not
+active instructions to recreate or publish the retired release line**. This update takes precedence over statements
+below that call v4.11.0 the next stable target. Main integration with `NOT RUN` native checks is development progress,
+not completion of any release gate.
+
+## Historical product decision
 
 The v4.8–v4.11 RC sequence accumulated the independent trust baseline, analysis workflows, correlation, lifecycle,
 credential-persistence, and release-evidence work without publishing an intervening stable artifact. The next stable

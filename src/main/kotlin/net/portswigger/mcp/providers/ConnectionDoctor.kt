@@ -2,6 +2,7 @@ package net.portswigger.mcp.providers
 
 import net.portswigger.mcp.MCP_MAX_SESSION_ID_CHARS
 import net.portswigger.mcp.MCP_SESSION_ID_HEADER
+import net.portswigger.mcp.config.McpEndpoint
 import net.portswigger.mcp.config.isValidLocalBearerToken
 import java.io.IOException
 import java.net.ConnectException
@@ -206,7 +207,7 @@ internal fun classifyDoctorStatus(status: Int): DoctorProbeCode = when (status) 
 }
 
 private fun isValidDoctorConfig(config: DoctorRequestConfig): Boolean {
-    if (runCatching { ClientSetupEndpoint.from(config.host, config.port) }.isFailure) return false
+    if (runCatching { McpEndpoint.from(config.host, config.port) }.isFailure) return false
     val token = config.bearerToken ?: return false
     return isValidLocalBearerToken(token)
 }

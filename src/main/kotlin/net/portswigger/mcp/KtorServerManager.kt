@@ -61,7 +61,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import net.portswigger.mcp.config.ConfigValidation
+import net.portswigger.mcp.config.McpEndpoint
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.McpAuditSink
 import net.portswigger.mcp.security.McpSessionApprovalRegistry
@@ -1147,12 +1147,9 @@ class KtorServerManager internal constructor(
 
         val requestedHost = config.host
         val requestedPort = config.port
-        val normalizedRequestedHost = ConfigValidation.normalizeLoopbackHost(requestedHost)
+        val requestedEndpoint = runCatching { McpEndpoint.from(requestedHost, requestedPort) }
         val metrics = McpRuntimeMetrics(serverVersion, MCP_MAX_CONCURRENT_HTTP_CALLS, MCP_MAX_SESSIONS)
-        val endpointPreview = normalizedRequestedHost
-            ?.takeIf { requestedPort in 1..65_535 }
-            ?.let { "http://${formatHostForUrl(it)}:$requestedPort/mcp" }
-        metrics.markStarting(endpointPreview)
+        metrics.markStarting(requestedEndpoint.getOrNull()?.url)
         runtimeMetrics = metrics
         callback(ServerState.Starting)
 
@@ -1177,13 +1174,11 @@ class KtorServerManager internal constructor(
             }
             try {
                 stopCurrentServer()
+                ensureStartupAllowed()
+                // Persisted configuration is untrusted too: validate before catalog, credentials, or a listener.
+                val endpoint = requestedEndpoint.getOrThrow()
                 metrics.setLoadedArtifactSha256(loadedArtifactSha256.get(30, TimeUnit.SECONDS))
                 ensureStartupAllowed()
-
-                val bindHost = normalizedRequestedHost
-                    ?: throw IllegalArgumentException(
-                        "MCP server host must be 127.0.0.1 or ::1; non-loopback listeners are not supported"
-                    )
                 val newMcpServer = Server(
                     serverInfo = Implementation(ProductIdentity.MCP_SERVER_NAME, serverVersion),
                     options = ServerOptions(
@@ -1216,15 +1211,15 @@ class KtorServerManager internal constructor(
                     environment = environment,
                     configure = {
                         connector {
-                            host = bindHost
-                            port = requestedPort
+                            host = endpoint.host
+                            port = endpoint.port
                         }
                         connectionIdleTimeoutSeconds = CIO_IDLE_TIMEOUT_SECONDS
                     },
                 ) {
                     configureMcpHttpEndpoint(
                         newMcpServer,
-                        requestedPort,
+                        endpoint.port,
                         config.localBearerToken,
                         metrics,
                         sessionApprovals = sessionApprovals,
@@ -1259,8 +1254,7 @@ class KtorServerManager internal constructor(
                     } else {
                         metrics.markRunning()
                         api.logging().logToOutput(
-                            "Started authenticated MCP Streamable HTTP server at " +
-                                "http://${formatHostForUrl(bindHost)}:$requestedPort/mcp"
+                            "Started authenticated MCP Streamable HTTP server at ${endpoint.url}"
                         )
                         callback(ServerState.Running)
                         true
@@ -1281,7 +1275,7 @@ class KtorServerManager internal constructor(
             } catch (e: Exception) {
                 cleanupUntrackedCandidates()
                 runCatching { stopCurrentServer() }
-                val failure = normalizeMcpServerStartFailure(e, normalizedRequestedHost, requestedPort)
+                val failure = normalizeMcpServerStartFailure(e, requestedEndpoint.getOrNull()?.host, requestedPort)
                 val summary = if (failure is McpServerStartupException) {
                     safeSingleLine(failure.message.orEmpty())
                 } else {

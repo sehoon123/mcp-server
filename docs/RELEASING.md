@@ -9,6 +9,19 @@ The checked-in `release-draft.yml` creates a one-shot draft only. The separately
 `release-publish.yml` workflows record exact-byte maintainer evidence and perform no-rebuild publication. A successful
 local build or draft workflow is not a release.
 
+## Main-only policy and retired historical track
+
+The maintainer has selected [main-only development and v4.11-track retirement](BRANCH_POLICY.md). All new development
+integrates on protected `main`; integration and CI test bundles do not constitute release approval. The frozen
+`release/v4.11` head `a28dd5b4b7f14dafa3c846f02e67d49594b0bf48` is retained in main history, but its separate stable-promotion
+plan is retired. References below to that branch, its RC7 observation, or v4.11 stable promotion describe the historical
+contract only and are **not instructions to recreate the branch or dispatch that retired sequence**.
+
+No old evidence is rebound to main or a successor version. The checked-in legacy workflow identity gates remain
+fail-closed, including refusal of unpinned successors and versions above v4.11.0. A future main-based release requires
+reviewed successor pins and fresh evidence. All tag signatures, vulnerability checks, exact-byte real Burp smoke,
+observation, provenance, and immutable-publication requirements below remain in force.
+
 ## Release principles
 
 1. **Independent identity:** artifacts must be clearly identified as an unofficial independent fork while preserving
@@ -49,10 +62,9 @@ sufficient.
 Configure these controls in GitHub before enabling publication:
 
 - protected `main` with required read-only CI;
-- protected `release/v4.11`, created once at the reviewed release-control anchor, with force-push and deletion disabled,
-  writes restricted to the release maintainer, and recorded independent review plus full validation before its one signed
-  stable-promotion commit; the tag-dispatched draft workflow is the mandatory CI gate before publication, and advancing
-  `main` must never be merged into this release line;
+- the historical v4.11 anchor retained in protected main history, with the exact retired branch name guarded against
+  recreation as described in [BRANCH_POLICY.md](BRANCH_POLICY.md); never merge advancing main into a reconstructed
+  release line or reuse its old evidence for a successor candidate;
 - protected `v*` tags restricted to authorized maintainers;
 - Actions restricted to approved, full-SHA-pinned actions;
 - minimal default `GITHUB_TOKEN` permissions;
@@ -81,17 +93,15 @@ no release mutation. Record upload and attestation run in separate jobs without 
 `IMMUTABLE_RELEASES_READ_TOKEN` remains limited to the repository-immutability check.
 
 The release workflows do not use GitHub environments or required-reviewer approvals. Remote repository settings cannot
-be proved by source review, so record API output for each release audit. For the one-time v4.11 migration, merge the
-reviewed release-control change through `main`, record that signed merge commit as the exact anchor, and create
-`release/v4.11` at that commit before any later `main` commit lands. Archive the anchor SHA and branch-rules evidence
-before allowing `main` to advance. Never repurpose the historical `release/v4.11-stability-gate` PR branch, force-push
-the release line, or move a release tag.
+be proved by source review, so record API output for each release audit. The one-time v4.11 anchor and original branch
+rules are historical evidence; retirement preserves that SHA in main history and prevents accidental recreation of the
+old trust ref. Never repurpose the historical `release/v4.11-stability-gate` PR branch or move a release tag.
 
 ## Version and source preparation
 
-A release candidate starts from a reviewed, clean commit on protected `main`. The one-time v4.11 stable promotion is
-isolated after RC7 on protected `release/v4.11`; once that branch is anchored, unrelated development may continue on
-`main` without entering the observed release line.
+A new release candidate starts from a reviewed, clean commit on protected `main`. The historical RC7-to-v4.11 promotion
+is retired, not transferred onto advancing main. Existing identity refusals must remain until exact successor source,
+predecessor, and serial pins are separately reviewed; this policy change itself authorizes no new release identity.
 
 ### 1. Select the version
 
@@ -272,7 +282,7 @@ After the smoke record succeeds, a minimal job must:
 
 The publish job performs no source build and runs no project-provided executable code.
 
-### Job H — attested RC observation gate
+### Job H — attested RC observation gate (historical v4.11 implementation)
 
 Stable publication requires a successful `release-rc-observation.yml` run. The observation window starts at the
 immutable public RC release's GitHub `published_at` timestamp and must be at least 604,800 seconds. Tag creation, draft
@@ -327,8 +337,8 @@ away from the immutable pin before stable draft creation, the stable flow fails 
 
 The evidence refs are fixed: RC7 draft provenance uses `refs/tags/v4.11.0-rc.7`; historical RC7 smoke and publication
 remain `refs/heads/main`; the new RC7 observation uses `refs/heads/release/v4.11`; stable draft provenance uses
-`refs/tags/v4.11.0`; and stable smoke/publication use `refs/heads/release/v4.11`. Run the sequence without choosing a
-trust ref:
+`refs/tags/v4.11.0`; and stable smoke/publication use `refs/heads/release/v4.11`. The following sequence is retained
+only to interpret historical evidence; **do not dispatch it or recreate its retired trust ref**:
 
 ```bash
 gh workflow run release-rc-observation.yml --ref release/v4.11 \
@@ -534,20 +544,21 @@ Do not use the manually built and later corrected v4.7.0 publication as evidence
 
 ## Final release checklist
 
+The retired v4.11 sequence is not a prerequisite to complete by reviving its branch. Its existing fail-closed workflow
+contract must instead be superseded by a reviewed main-based successor contract before any new release is eligible.
+
 - [ ] Fork name, UUID, vendor, maintainer, links, and disclaimer are consistent.
-- [ ] Protected main, `release/v4.11`, tag controls, and immutable-release settings are recorded; the release branch
-  prohibits force-push/deletion, points to the reviewed anchor, and has independent review/full-validation evidence for
-  its signed promotion commit before the tag-dispatched draft CI gate.
+- [ ] Protected main, immutable-tag controls, retired-ref creation guard, and immutable-release settings are recorded;
+  the historical release anchor remains reachable and no historical evidence is relabeled as successor evidence.
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
 - [ ] Stable publication inputs reference a successful attested RC observation whose window is at least 604,800 seconds
   after the RC's public `published_at` timestamp.
-- [ ] Retain `release/v4.11` as protected history and never merge advancing `main` into the frozen release line. The
-  draft identity job currently refuses every release above v4.11.0 and every newly drafted non-exact v4.11.0 identity.
-  After v4.11.0 publication, replace that refusal only
-  with reviewed exact source-SHA and serial pins that include non-ancestor v4.11.0 in both the SerialVersion ceiling and
-  previous-release provenance, including a predecessor commit identity revalidated by every consuming job.
+- [ ] Preserve the retired v4.11 anchor in main history. The draft identity job still refuses every release above
+  v4.11.0 and every newly drafted non-exact v4.11.0 identity. Replace that refusal only through a reviewed successor
+  migration with exact source-SHA, actual predecessor, and serial pins revalidated by every consuming job. Never invent
+  a published v4.11.0 predecessor or treat this branch retirement as successful stable promotion.
 - [ ] Two isolated builds produce identical JAR and SBOM bytes.
 - [ ] Wrapper, Gradle/npm dependencies, JDK/container, and Actions are integrity-pinned.
 - [ ] SBOM schema, hashes, relationships, and explicit licenses validate.

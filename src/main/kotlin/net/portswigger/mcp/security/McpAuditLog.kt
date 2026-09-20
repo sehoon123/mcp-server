@@ -106,6 +106,25 @@ internal fun encodeBoundedAuditRecords(
     return BoundedAuditEncoding(text, droppedRecords)
 }
 
+/** Keeps the newest complete suffix of a bounded, sanitized snapshot; JSONL remains in append order. */
+internal fun encodeBoundedAuditJsonLines(
+    records: List<McpAuditRecord>,
+    maxChars: Int = MAX_AUDIT_EXPORT_CHARS,
+): String {
+    require(maxChars in 0..MAX_AUDIT_EXPORT_CHARS) { "audit export character cap is out of range" }
+    require(records.size <= MAX_AUDIT_RETENTION_ENTRIES) { "audit export record count is out of range" }
+    val lines = ArrayDeque<String>()
+    var totalChars = 0
+    for (record in records.asReversed()) {
+        val line = auditJson.encodeToString(record)
+        val separatorChars = if (lines.isEmpty()) 0 else 1
+        if (line.length > maxChars - totalChars - separatorChars) break
+        lines.addFirst(line)
+        totalChars += line.length + separatorChars
+    }
+    return lines.joinToString("\n")
+}
+
 internal interface McpAuditSink : AutoCloseable {
     fun append(record: McpAuditRecord)
     fun recordLocalEvent(tool: String, outcome: String)
@@ -245,17 +264,8 @@ internal class PersistentMcpAuditLog(
         }.onFailure { logging.logToError("MCP audit flush failed: ${safeExceptionSummary(it)}") }
     }
 
-    override fun exportJsonLines(limit: Int): String {
-        val selected = snapshot(limit.coerceIn(0, MAX_AUDIT_RETENTION_ENTRIES))
-        return buildString {
-            for (record in selected) {
-                val line = auditJson.encodeToString(record)
-                if (length + line.length + 1 > MAX_AUDIT_EXPORT_CHARS) break
-                if (isNotEmpty()) append('\n')
-                append(line)
-            }
-        }
-    }
+    override fun exportJsonLines(limit: Int): String =
+        encodeBoundedAuditJsonLines(snapshot(limit.coerceIn(0, MAX_AUDIT_RETENTION_ENTRIES)))
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return

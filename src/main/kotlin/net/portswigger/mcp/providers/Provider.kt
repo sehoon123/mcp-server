@@ -3,12 +3,12 @@ package net.portswigger.mcp.providers
 import burp.api.montoya.logging.Logging
 import kotlinx.serialization.json.*
 import net.portswigger.mcp.ProductIdentity
-import net.portswigger.mcp.config.ConfigValidation
+import net.portswigger.mcp.config.McpEndpoint
+import net.portswigger.mcp.config.isValidLocalBearerToken
 import net.portswigger.mcp.security.safeExceptionSummary
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -23,7 +23,6 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
 
-private const val MAX_PROVIDER_CONFIG_BYTES = 4L * 1024 * 1024
 private val OWNER_ONLY_FILE_PERMISSIONS = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
 
 data class ProviderInstallConfig(
@@ -50,24 +49,7 @@ interface Provider {
 
 internal const val BEARER_TOKEN_ENVIRONMENT_VARIABLE = "INDEPENDENT_MCP_BRIDGE_BEARER_TOKEN"
 
-internal fun streamableHttpEndpoint(host: String, port: Int): String {
-    val normalized = requireNotNull(ConfigValidation.normalizeLoopbackHost(host)) {
-        "MCP endpoint host must be 127.0.0.1 or ::1"
-    }
-    require(port in 1024..65535) { "MCP endpoint port is outside the valid range" }
-    val connectHost = if (':' in normalized) "[$normalized]" else normalized
-    return "http://$connectHost:$port/mcp"
-}
-
-private fun readBoundedConfig(path: Path): String {
-    requireNoSymlinkComponents(path)
-    require(!Files.isSymbolicLink(path)) { "Refusing to read a symlinked client configuration" }
-    val size = Files.size(path)
-    require(size in 0..MAX_PROVIDER_CONFIG_BYTES) {
-        "Client configuration exceeds the $MAX_PROVIDER_CONFIG_BYTES-byte safety limit"
-    }
-    return Files.readString(path, StandardCharsets.UTF_8)
-}
+internal fun streamableHttpEndpoint(host: String, port: Int): String = McpEndpoint.from(host, port).url
 
 internal fun atomicWritePrivate(path: Path, bytes: ByteArray, createBackup: Boolean) {
     val absolute = path.toAbsolutePath().normalize()
@@ -158,15 +140,16 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
             "The current $claudeConfigFileName will be backed up before an atomic update."
 
     override fun prepareInstall(config: ProviderInstallConfig): ProviderInstallOperation = ProviderInstallOperation {
+        val mcpUrl = streamableHttpEndpoint(config.host, config.port)
+        require(isValidLocalBearerToken(config.localBearerToken)) { "Local MCP bearer token is invalid" }
         val proxyJarFile = proxyJarManager.getProxyJar()
 
         val path = configFilePath() ?: error("Could not find Claude config path")
-        val content = Json.parseToJsonElement(readBoundedConfig(path)).jsonObject.toMutableMap()
+        val content = Json.parseToJsonElement(readBoundedClientConfig(path)).jsonObject.toMutableMap()
 
         val javaPath = javaPath()
         logging.logToOutput("Using the current Burp Java runtime for the MCP proxy")
 
-        val mcpUrl = streamableHttpEndpoint(config.host, config.port)
         val burpServerConfig = buildJsonObject {
             put("command", JsonPrimitive(javaPath))
             put("args", buildJsonArray {
@@ -186,13 +169,9 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
         mcpServers[serverName] = burpServerConfig
         content["mcpServers"] = JsonObject(mcpServers)
 
-        val json = Json {
-            prettyPrint = true
-            encodeDefaults = true
-        }
         atomicWritePrivate(
             path,
-            json.encodeToString(JsonObject.serializer(), JsonObject(content)).toByteArray(StandardCharsets.UTF_8),
+            encodeBoundedClientConfig(JsonObject(content)),
             createBackup = true,
         )
 
@@ -255,14 +234,9 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
                 put("mcpServers", buildJsonObject {})
             }
 
-            val json = Json {
-                prettyPrint = true
-                encodeDefaults = true
-            }
-
             atomicWritePrivate(
                 path,
-                json.encodeToString(JsonObject.serializer(), defaultConfig).toByteArray(StandardCharsets.UTF_8),
+                encodeBoundedClientConfig(defaultConfig),
                 createBackup = false,
             )
             logging.logToOutput("Created a default Claude Desktop config")
