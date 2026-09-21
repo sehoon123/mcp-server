@@ -122,7 +122,7 @@ internal fun Server.registerMcpResources(
     addResource(
         uri = DIAGNOSTICS_RESOURCE_URI,
         name = "burp_diagnostics",
-        description = "Secret-free aggregate listener, transport/session, and fixed value-free history timing counters for this ${ProductIdentity.PRODUCT_NAME} listener.",
+        description = "Secret-free aggregate listener, transport/session, and value-free history timing snapshot. status=ok means the snapshot was read, not proof of listener health, external-client compatibility, or release readiness. Inspect diagnostics.state and diagnostics.lastError; aggregate counters are not a per-session authorization record.",
         mimeType = RESOURCE_MIME_TYPE,
     ) { request ->
         featureServer.secureResourceRead(this, request, "diagnostics") {
@@ -133,7 +133,7 @@ internal fun Server.registerMcpResources(
     addResource(
         uri = PROJECT_SUMMARY_RESOURCE_URI,
         name = "burp_project_summary",
-        description = "The opaque ID of the current Burp project for project-bound MCP references. Local project names and paths are omitted.",
+        description = "The opaque ID of the current Burp project for project-bound MCP references; use only when status=ok. referenceKinds lists supported reference families, not access grants or evidence that records exist. Existing references must not be rebound to a different projectId. Local project names and paths are omitted.",
         mimeType = RESOURCE_MIME_TYPE,
     ) { request ->
         featureServer.secureResourceRead(this, request, "project_summary") {
@@ -144,7 +144,7 @@ internal fun Server.registerMcpResources(
     addResource(
         uri = SCOPE_SUMMARY_RESOURCE_URI,
         name = "burp_scope_summary",
-        description = "Current project binding and MCP scope policy. Configured Target scope rules cannot be enumerated.",
+        description = "Current project binding and MCP scope policy, not scope membership or permission to send traffic. Configured Target scope rules cannot be enumerated. mutationApprovalRequired reports a setting, not authorization; all operation-specific checks still apply. A successful summary read does not grant access or mutation approval.",
         mimeType = RESOURCE_MIME_TYPE,
     ) { request ->
         featureServer.secureResourceRead(this, request, "scope_summary") {

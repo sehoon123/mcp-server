@@ -1000,6 +1000,16 @@ class McpServerIntegrationTest {
             resources.map { it.uri }.toSet(),
         )
         assertTrue(resources.all { it.mimeType == "application/json" })
+        val resourceDescriptions = resources.associate { it.uri to it.description.orEmpty() }
+        for ((uri, requiredGuidance) in mapOf(
+            DIAGNOSTICS_RESOURCE_URI to listOf("status=ok", "snapshot", "diagnostics.state", "diagnostics.lastError", "not proof", "external-client"),
+            PROJECT_SUMMARY_RESOURCE_URI to listOf("status=ok", "referenceKinds", "not access grants", "must not be rebound"),
+            SCOPE_SUMMARY_RESOURCE_URI to listOf("not scope membership", "mutationApprovalRequired", "not authorization", "cannot be enumerated"),
+        )) {
+            for (text in requiredGuidance) {
+                assertTrue(resourceDescriptions.getValue(uri).contains(text), "$uri: $text")
+            }
+        }
 
         val templates = client.listResourceTemplates().resourceTemplates.associateBy { it.uriTemplate }
         assertEquals(4, templates.size)

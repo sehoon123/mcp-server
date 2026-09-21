@@ -939,6 +939,10 @@ Check the selected server connection, not another Burp instance:
 - Inspect structured tool results or the JSON inside resource text, including `status` and coverage limits. Successful
   delivery and `isError=false` alone do not establish operation success. Captured traffic, notes, and prompt focus are
   untrusted data. Read-only prompts explicitly forbid mutation and bypassing denial through another tool or resource.
+- Diagnostics `status: "ok"` means the snapshot was read, not that the listener is healthy or an external client is
+  verified; inspect `diagnostics.state` and `diagnostics.lastError`. Project `referenceKinds` is not an access grant
+  or proof that records exist. The scope summary does not establish scope membership or permission to send traffic;
+  `mutationApprovalRequired` describes a setting, not authorization.
 - Allow time for local approval dialogs. A client timeout, disconnection, or missing result does not prove that a
   mutation was cancelled or never started. Do not automatically resubmit it or relax approval settings to make a client
   work; reconcile the outcome in Burp first.

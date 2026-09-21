@@ -67,6 +67,22 @@ class JsonSchemaTest {
     )
 
     @Test
+    fun `unsupported root exactly-one constraint is not silently dropped from input schema`() {
+        val error = assertFailsWith<IllegalArgumentException> {
+            serializer<ExactlyOnePair>().descriptor.asInputSchema()
+        }
+        assertTrue(error.message.orEmpty().contains("nested"))
+    }
+
+    @Test
+    fun `unsupported root exactly-one constraint is not silently dropped from output schema`() {
+        val error = assertFailsWith<IllegalArgumentException> {
+            serializer<ExactlyOnePair>().descriptor.asOutputSchema()
+        }
+        assertTrue(error.message.orEmpty().contains("nested"))
+    }
+
+    @Test
     fun `oneOf is emitted for a list item type carrying the annotation`() {
         val schema = serializer<ListContainer>().descriptor.asInputSchema()
         val itemSchema = schema.properties!!["items"]!!.jsonObject["items"]!!.jsonObject
