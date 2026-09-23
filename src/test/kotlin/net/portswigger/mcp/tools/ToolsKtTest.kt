@@ -669,7 +669,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "3e4de696601a3567ff631aff5e7ccdc9a01b6d3e69059271a055e2a06d721b71",
+            "08ec57dc036690988d403551e0a6eb34b1d12c5491e609fddda97baff084358e",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -791,6 +791,7 @@ class ToolsKtTest {
         assertTrue(tools.getValue("get_websocket_message_by_id").inputSchema.properties!!.getValue("id")
             .toString().contains("not a webSocketId connection id"))
         assertTrue(description("set_burp_control_state").contains("intentionally not project-scoped"))
+        assertTrue(description("set_burp_control_state").contains("Emergency read-only blocks stopping"))
         assertTrue(description("rank_http_messages").contains("relative ordinals"))
         assertTrue(description("rank_http_messages").contains("no interruptible deadline"))
         assertTrue(description("annotate_http_messages").contains("not atomic"))
@@ -2704,7 +2705,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "36df04ecff6565c3cd66f262d01e67373dfc1351d540372bdc8e33396fef5e9a",
+                "8f165ab24ea8df5c50dffdca9346e0f62a06a76ddef876eb4f233c079bc1932f",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2725,6 +2726,10 @@ class ToolsKtTest {
             assertTrue(chain.description.orEmpty().contains("Running or auto-running it sends requests"))
             assertTrue(chain.description.orEmpty().contains("outside MCP request, project, outbound and emergency-read-only fences"))
             assertEquals(false, chain.annotations?.readOnlyHint)
+            for (tool in listOf(bambdaImport, chain)) {
+                val statusDescription = tool.outputSchema?.properties?.get("status").toString()
+                assertTrue(statusDescription.contains("Even when ok, check importStatus and importErrors"))
+            }
 
             val createIssue = tools.single { it.name == "create_scanner_issue" }
             assertEquals(
@@ -2764,7 +2769,9 @@ class ToolsKtTest {
             val get = tools.single { it.name == "get_scanner_audit" }
             assertEquals(setOf("projectId", "taskId"), get.inputSchema.required?.toSet())
             assertNotNull(get.outputSchema?.properties?.get("issues"))
-            assertTrue(get.description.orEmpty().contains("issuesAccessDenied identifies an operator denial"))
+            assertTrue(get.description.orEmpty().contains("issuesAccessDenied means operator denial"))
+            assertTrue(get.description.orEmpty().contains("actionState is authoritative for side effects"))
+            assertTrue(get.description.orEmpty().contains("taskState is best-effort"))
             val issuesUnavailableDescription = get.outputSchema?.properties?.get("issuesUnavailable")
                 ?.jsonObject?.get("description")?.jsonPrimitive?.content.orEmpty()
             assertTrue(issuesUnavailableDescription.contains("access failed technically"))
@@ -2772,6 +2779,7 @@ class ToolsKtTest {
             assertEquals(true, get.annotations?.readOnlyHint)
 
             val cancel = tools.single { it.name == "cancel_scanner_audit" }
+            assertTrue(cancel.description.orEmpty().contains("Emergency read-only blocks cancellation"))
             assertEquals(false, cancel.annotations?.readOnlyHint)
             assertEquals(true, cancel.annotations?.destructiveHint)
             assertEquals(true, cancel.annotations?.idempotentHint)
@@ -2862,6 +2870,10 @@ class ToolsKtTest {
             assertTrue(interactions.description.orEmpty().contains("has no continuation cursor"))
             assertNotNull(interactions.inputSchema.properties?.get("waitSeconds"))
             assertTrue(interactions.inputSchema.properties?.get("detailEncoding").toString().contains("base64"))
+            assertTrue(interactions.inputSchema.properties?.get("detailLimitBytes").toString().contains("per detail field"))
+            assertTrue(interactions.inputSchema.properties?.get("detailLimitBytes").toString().contains("256 KiB"))
+            assertTrue(interactions.inputSchema.properties?.get("detailEncoding").toString().contains("nextOffsetBytes is informational"))
+            assertFalse("offset" in interactions.inputSchema.properties.orEmpty())
             assertNotNull(interactions.outputSchema?.properties?.get("detailsTruncated"))
             assertTrue(interactions.outputSchema?.properties?.get("hasMore").toString().contains("no continuation cursor"))
             val interactionSchema = interactions.outputSchema?.properties?.get("interactions")!!.jsonObject

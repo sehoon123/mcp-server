@@ -84,6 +84,9 @@ internal fun validateRawHttp2Input(
 ) {
     require(body.length <= MAX_RAW_HTTP2_BODY_CHARS) { "requestBody is too large" }
     require(pseudoHeaders.size + headers.size <= MAX_RAW_HTTP_HEADERS) { "too many HTTP headers" }
+    val pseudoNames = pseudoHeaders.keys.map { it.removePrefix(":").lowercase() }
+    require(pseudoNames.distinct().size == pseudoNames.size) { "duplicate HTTP/2 pseudo-header aliases" }
+    require(headers.keys.none { it.startsWith(":") }) { "HTTP/2 pseudo-headers must use pseudoHeaders, not headers" }
     val allHeaders = pseudoHeaders.asSequence() + headers.asSequence()
     val totalChars = body.length.toLong() + allHeaders.sumOf { (name, value) -> name.length.toLong() + value.length + 4 }
     require(totalChars <= MAX_RAW_REQUEST_CHARS) { "combined HTTP/2 request content is too large" }
@@ -110,6 +113,7 @@ internal fun validateSafeRegex(regex: String, caseSensitive: Boolean = true): Pa
     var escaped = false
     var inClass = false
     var unboundedQuantifiers = 0
+    var optionalQuantifiers = 0
     var previousWasQuantifier = false
     var previousClosedGroup = false
     for (character in regex) {
@@ -144,6 +148,8 @@ internal fun validateSafeRegex(regex: String, caseSensitive: Boolean = true): Pa
                 require(!previousWasQuantifier && !previousClosedGroup) {
                     "nested, repeated, or group quantifiers are not supported"
                 }
+                optionalQuantifiers++
+                require(optionalQuantifiers <= 1) { "at most one optional regex quantifier is supported" }
                 previousWasQuantifier = true
                 previousClosedGroup = false
             }
@@ -470,7 +476,7 @@ internal fun Server.registerTools(
 
         mcpStructuredToolWithContext<GetScannerAudit, ScannerAuditResult>(
             title = "Read Scanner audit status",
-            description = "Read vulnerability-scan status and bounded issue summaries for a taskId from start_scanner_audit_from_ids. Reading status refreshes the 6-hour inactivity lease but not the 24-hour maximum lifetime; requesting issues is subject to Scanner-issue access approval. issuesAccessDenied identifies an operator denial, while issuesUnavailable identifies a skipped or technically failed issue read. Treat normalized actionState and taskState as authoritative; bounded Burp statusMessage text may lag.",
+            description = "Read vulnerability-scan status and bounded issue summaries for a taskId from start_scanner_audit_from_ids. Refreshes the 6-hour inactivity lease, not the 24-hour lifetime. Issue reads require Scanner-issue access: issuesAccessDenied means operator denial; issuesUnavailable means a skipped or failed read. actionState is authoritative for side effects; taskState is best-effort normalization of Burp statusMessage, not independent proof of completion.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             val output = services.scannerAudits.get(input, config)
@@ -479,7 +485,7 @@ internal fun Server.registerTools(
 
         mcpStructuredToolWithContext<CancelScannerAudit, ScannerAuditResult>(
             title = "Cancel Scanner audit",
-            description = "Cancel (stop) a retained Scanner audit vulnerability scan by taskId from start_scanner_audit_from_ids, after approval unless the local operator enabled YOLO mode. Confirm the outcome with get_scanner_audit. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
+            description = "Cancel (stop) a retained Scanner audit vulnerability scan by taskId from start_scanner_audit_from_ids, after approval unless the local operator enabled YOLO mode. Confirm with get_scanner_audit. Emergency read-only blocks cancellation; use the local UI. If actionState is uncertain, the task may already be deleted; do not retry automatically.",
             annotations = SCANNER_CANCEL_TOOL_ANNOTATIONS,
         ) { input ->
             val output = services.scannerAudits.cancel(input, config)
@@ -687,7 +693,7 @@ internal fun Server.registerTools(
 
     mcpStructuredToolWithContext<SetBurpControlState, SetBurpControlStateResult>(
         title = "Set Burp control state",
-        description = "Set one Burp-wide control: task execution engine or Proxy Intercept. Approval applies unless YOLO allows it. This is intentionally not project-scoped: no projectId and not reverted by a project switch. If executionState is uncertain, the change may have occurred; do not retry automatically.",
+        description = "Set task execution engine or Proxy Intercept Burp-wide, intentionally not project-scoped: no projectId or rollback on project switch. Approval applies unless YOLO allows it. Emergency read-only blocks stopping too; use local UI. If executionState is uncertain, the change may have occurred; never retry automatically.",
         annotations = PROJECT_MUTATION_TOOL_ANNOTATIONS,
     ) { input ->
         val deniedMessage = when (input.control) {

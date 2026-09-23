@@ -17,6 +17,16 @@ class LegacyToolBoundsTest {
     }
 
     @Test
+    fun `optional regex quantifiers are bounded without counting literals`() {
+        listOf("a?b?c", "[ab]?c?", "(a?b?)").forEach { pattern ->
+            assertThrows<IllegalArgumentException> { validateSafeRegex(pattern) }
+        }
+        listOf("colou?r[0-9]+", "a\\?b\\?c", "[?]a[?]").forEach { pattern ->
+            assertEquals(pattern, validateSafeRegex(pattern).pattern())
+        }
+    }
+
+    @Test
     fun `legacy page output keeps complete records and emits explicit truncation metadata`() {
         val oversized = "x".repeat(MAX_LEGACY_PAGE_CHARS)
         val output = boundedLegacyPage(listOf<CharSequence>("first", oversized, "third").iterator())

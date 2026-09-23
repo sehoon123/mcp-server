@@ -327,7 +327,7 @@ data class ImportBambda(
 
 @Serializable
 internal data class BambdaImportResult(
-    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION)
+    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION + " Even when ok, check importStatus and importErrors.")
     val status: NativeToolStatus,
     @JsonSchemaMetadata(description = TOOL_RETRY_DESCRIPTION)
     val retry: ToolRetryGuidance,
@@ -378,7 +378,7 @@ data class GenerateBambdaChain(
 
 @Serializable
 internal data class GenerateBambdaChainResult(
-    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION)
+    @JsonSchemaMetadata(description = TOOL_STATUS_RETRY_DESCRIPTION + " Even when ok, check importStatus and importErrors.")
     val status: NativeToolStatus,
     @JsonSchemaMetadata(description = TOOL_RETRY_DESCRIPTION)
     val retry: ToolRetryGuidance,

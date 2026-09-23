@@ -6,7 +6,7 @@ import net.portswigger.mcp.config.McpConfig
 
 private const val MAX_SENSITIVE_ACTION_LABEL_CHARS = 128
 private const val MAX_SENSITIVE_ACTION_SUMMARY_CHARS = 4_096
-private const val MAX_SENSITIVE_ACTION_CONTENT_CHARS = 2 * 1024 * 1024
+internal const val MAX_SENSITIVE_ACTION_CONTENT_CHARS = 2 * 1024 * 1024
 
 interface SensitiveActionApprovalHandler {
     suspend fun requestApproval(

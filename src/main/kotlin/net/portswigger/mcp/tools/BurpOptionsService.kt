@@ -343,22 +343,32 @@ internal class BurpOptionsService(
             "${if (input.level == BurpOptionsLevel.PROJECT) "Project" else "User"} configuration has been applied"
         val callContext = currentCoroutineContext()
         callContext.ensureActive()
-        try {
+        var importStarted = false
+        val projectStableBeforeImport = try {
             when (input.level) {
                 BurpOptionsLevel.PROJECT -> {
                     api.logging().logToOutput("Applying project-level configuration through MCP")
                     httpMetadataIndex.withMutation {
-                        api.burpSuite().importProjectOptionsFromJson(input.json)
+                        if (!api.isCurrentProject(expectedProjectId)) return@withMutation false
+                        val burpSuite = api.burpSuite()
+                        callContext.ensureActive()
+                        importStarted = true
+                        burpSuite.importProjectOptionsFromJson(input.json)
+                        true
                     }
                 }
 
                 BurpOptionsLevel.USER -> {
                     api.logging().logToOutput("Applying user-level configuration through MCP")
-                    api.burpSuite().importUserOptionsFromJson(input.json)
+                    val burpSuite = api.burpSuite()
+                    callContext.ensureActive()
+                    importStarted = true
+                    burpSuite.importUserOptionsFromJson(input.json)
+                    true
                 }
             }
         } catch (e: CancellationException) {
-            if (!callContext.isActive) throw e
+            if (!callContext.isActive || !importStarted) throw e
             return setFailure(
                 input.level,
                 StandardToolStatus.BURP_ERROR,
@@ -372,6 +382,15 @@ internal class BurpOptionsService(
                 ),
             )
         } catch (e: Exception) {
+            if (!importStarted) {
+                return setFailure(
+                    input.level,
+                    StandardToolStatus.BURP_ERROR,
+                    ToolRetryGuidance.SAFE_TO_RETRY,
+                    StandardExecutionState.NOT_STARTED,
+                    standardToolException("Burp could not prepare configuration import", e),
+                )
+            }
             return setFailure(
                 input.level,
                 StandardToolStatus.BURP_ERROR,
@@ -382,6 +401,16 @@ internal class BurpOptionsService(
                     e,
                     maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
                 ),
+            )
+        }
+
+        if (!projectStableBeforeImport) {
+            return setFailure(
+                input.level,
+                StandardToolStatus.PROJECT_MISMATCH,
+                ToolRetryGuidance.AFTER_USER_ACTION,
+                StandardExecutionState.NOT_STARTED,
+                "Burp project changed before project configuration import",
             )
         }
 

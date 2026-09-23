@@ -691,6 +691,8 @@ class WebSocketMessageSearchTest {
             SearchWebsocketMessages(projectId = "other-project")
         )
 
+        val optional = service.search(SearchWebsocketMessages(projectId = currentProjectId, regex = "a?b?c"))
+        assertEquals(WebSocketSearchStatus.INVALID_ARGUMENT, optional.status)
         assertEquals(WebSocketSearchStatus.INVALID_ARGUMENT, unsafe.status)
         assertEquals(WebSocketSearchStatus.INVALID_ARGUMENT, malformed.status)
         assertTrue(malformed.error.orEmpty().length <= 384)

@@ -4,6 +4,8 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.collaborator.*
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.logging.Logging
+import burp.api.montoya.http.HttpProtocol
+import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.project.Project
 import io.mockk.*
@@ -282,6 +284,43 @@ class CollaboratorToolsTest {
         assertEquals(5, slice.returnedBytes)
         assertTrue(slice.hasMore)
         assertTrue(Base64.getDecoder().decode(slice.data).contentEquals("😀éa".toByteArray().copyOf(5)))
+    }
+
+    @Test
+    fun `HTTP detail previews use per-field limits and a shared aggregate budget`() = runBlocking {
+        val bytes = montoyaBytes(ByteArray(20_000) { 65 })
+        val exchange = mockk<HttpRequestResponse>()
+        every { exchange.request().toByteArray() } returns bytes
+        every { exchange.response().toByteArray() } returns bytes
+        val details = mockk<HttpDetails>()
+        every { details.protocol() } returns HttpProtocol.HTTP
+        every { details.requestResponse() } returns exchange
+        val interactions = (1..10).map { index ->
+            interaction("http-$index", ZonedDateTime.parse("2025-01-03T00:00:00Z"), type = InteractionType.HTTP).also {
+                every { it.httpDetails() } returns Optional.of(details)
+            }
+        }
+        every { client.getAllInteractions() } returns interactions
+        val service = CollaboratorToolService(api, pollIntervalMs = 1)
+        val small = service.interactions(
+            GetCollaboratorInteractions(projectId, maxResults = 1, detailLimitBytes = 8,
+                detailEncoding = CollaboratorDetailEncoding.BASE64), config(false),
+        ) { _, _, _ -> }.output
+        assertEquals(16, small.detailBytesReturned)
+        val detail = small.interactions.single().httpDetails!!
+        assertEquals(8, detail.request!!.returnedBytes)
+        assertEquals(8, detail.response!!.returnedBytes)
+        assertEquals(8, detail.request.nextOffsetBytes)
+        assertTrue(small.detailsTruncated)
+
+        val bounded = service.interactions(
+            GetCollaboratorInteractions(projectId, detailLimitBytes = 16_384,
+                detailEncoding = CollaboratorDetailEncoding.BASE64), config(false),
+        ) { _, _, _ -> }.output
+        assertEquals(10, bounded.returned)
+        assertEquals(256 * 1024, bounded.detailBytesReturned)
+        assertTrue(bounded.detailsTruncated)
+        assertFalse(bounded.detailsUnavailable)
     }
 
     @Test

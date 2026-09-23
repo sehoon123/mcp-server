@@ -71,9 +71,9 @@ data class GetCollaboratorInteractions(
     val waitSeconds: Int? = null,
     @JsonSchemaMetadata(description = "Maximum interaction records returned; no continuation cursor.", minimum = 1, maximum = 50, defaultJson = "20")
     val maxResults: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum detail bytes per interaction; zero omits details.", minimum = 0, maximum = 16384, defaultJson = "4096")
+    @JsonSchemaMetadata(description = "Maximum bytes per detail field; zero omits details. Shared 256 KiB total cap.", minimum = 0, maximum = 16384, defaultJson = "4096")
     val detailLimitBytes: Int? = null,
-    @JsonSchemaMetadata(description = "Encoding for bounded detail fields.", defaultJson = "\"text\"")
+    @JsonSchemaMetadata(description = "Detail prefix encoding; no offset input. nextOffsetBytes is informational, not continuation.", defaultJson = "\"text\"")
     val detailEncoding: CollaboratorDetailEncoding? = null,
     @JsonSchemaMetadata(description = "Return newest interactions first.", defaultJson = "true")
     val newestFirst: Boolean? = null,

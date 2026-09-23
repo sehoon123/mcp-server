@@ -78,6 +78,44 @@ class RawHttpToolsTest {
     }
 
     @Test
+    fun `HTTP2 pseudo header conflicts fail before construction for send and route`() = runBlocking {
+        val invalid = listOf(
+            RawHttp2Input(mapOf("method" to "GET", ":method" to "POST"), emptyMap(), ""),
+            RawHttp2Input(mapOf("METHOD" to "GET", ":method" to "POST"), emptyMap(), ""),
+            RawHttp2Input(mapOf("method" to "GET"), mapOf(":Method" to "POST"), ""),
+        )
+        for (input in invalid) {
+            val sent = service.send(SendRawHttpRequest(
+                protocol = RawHttpProtocol.HTTP_2, http2 = input,
+                targetHostname = "example.test", targetPort = 443, usesHttps = true,
+            ))
+            val routed = service.route(RouteRawHttpRequest(
+                protocol = RawHttpProtocol.HTTP_2, http2 = input,
+                targetHostname = "example.test", targetPort = 443, usesHttps = true,
+                destination = RawHttpRouteDestination.REPEATER,
+            ))
+            for (result in listOf(sent, routed)) {
+                assertEquals(HttpMessageActionStatus.INVALID_ARGUMENT, result.status)
+                assertEquals(HttpMessageExecutionState.NOT_STARTED, result.executionState)
+            }
+        }
+        verify(exactly = 0) { HttpService.httpService(any<String>(), any<Int>(), any<Boolean>()) }
+        verify(exactly = 0) { api.http() }
+        verify(exactly = 0) { api.repeater() }
+    }
+
+    @Test
+    fun `HTTP2 accepts standalone pseudo aliases and leaves regular header semantics intact`() {
+        for (name in listOf("method", ":method", "METHOD")) {
+            validateRawHttp2Input(
+                mapOf(name to "GET"),
+                mapOf("method" to "regular", "X-Example" to "first", "x-example" to "second"),
+                "",
+            )
+        }
+    }
+
+    @Test
     fun `raw send enforces explicit HTTP mode timeout and redirect denial`() = runBlocking {
         val fixture = http1Fixture()
         val options = mockk<RequestOptions>()

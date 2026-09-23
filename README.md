@@ -788,7 +788,10 @@ Burp Professional additionally exposes:
 These tools do not crawl. Every target must already be in Burp Target scope. Passive mode accepts only messages with a
 response and sends no target traffic. Active mode accepts at most four targets and requires explicit semantic insertion
 points for every target; no implicit whole-request audit is permitted. Starting and cancelling require explicit Burp
-approval unless the local operator enabled YOLO mode. Task IDs are random, project-bound, retained only by this extension
+approval unless the local operator enabled YOLO mode. Canonically duplicate references are rejected. Multi-target approval
+shows every full request; batches whose complete review exceeds 2,097,152 characters fail before approval or Scanner start,
+even under YOLO. Emergency read-only also blocks cancellation; use the local Burp UI to stop tasks in that mode.
+Task IDs are random, project-bound, retained only by this extension
 instance, and status/cancellation cannot address unrelated Burp tasks. `issuesAccessDenied` means the operator denied
 issue-summary access; `issuesUnavailable` instead means the requested read was skipped for an already-cancelled task,
 failed technically, or could not obtain issue objects from the current Burp runtime. Runtime issue-object limitations can
@@ -799,8 +802,9 @@ snapshotted. Project observations, reset tombstones, record attachment, and resu
 fail-closed boundary, so detached task metadata is scrubbed even when a project ID is reused. Status and issue
 observations are sequenced: an older sample cannot demote a newer terminal state, overwrite a newer retained issue count or
 payload, or republish its telemetry. A superseded issue payload is unavailable, not `issuesTruncated`, because its omission
-was not caused by the caller's result limit. Treat `actionState` and `taskState` as authoritative because bounded Burp
-status text may lag.
+was not caused by the caller's result limit. `actionState` is authoritative for MCP side effects; `taskState` is best-effort
+normalization of Burp status text, not independent completion proof. Only exact normalized terminal aliases mark a task
+finished, cancelled, or failed; partial, negative, or unknown phrases must not do so.
 If start or cancellation
 returns `actionState: "uncertain"`, do not retry it automatically; reconcile the returned task ID when present and use the
 Burp Scanner UI when project-bound task details were scrubbed. Burp deletion and cancellation publication are serialized;
@@ -811,7 +815,7 @@ after six hours without a status/cancel call, every task after 24 hours, and an 
 Status and cancel calls renew only the inactivity lease. Expiration and detected project transitions make at most one
 best-effort deletion attempt, so an ambiguous failed deletion is not retried automatically. An unresolved live cleanup
 keeps one of the eight owned-task capacity slots reserved until the extension is reloaded rather than hiding a possible
-orphan; if an already-sampled ordered observation later proves that detached task terminal, its reservation is released
+orphan; if an already-sampled ordered observation later reports that detached task terminal, its reservation is released
 exactly once.
 
 ## Collaborator polling
@@ -822,6 +826,8 @@ its interaction ID; optional `customData` follows Burp's 1–16 ASCII-alphanumer
 interaction-ID filter, `waitSeconds` from 0 to 120, up to 50 results, newest/oldest ordering, and text or base64 detail
 slices. At most four waits run concurrently. Polling emits MCP progress when the client supplies a progress token and
 propagates cancellation; returned metadata, per-field details, total detail bytes, and scanned interactions are bounded.
+`detailLimitBytes` applies separately to each detail field, with a shared 256 KiB cap per call. Details are prefix previews:
+this tool has no detail-offset input, so nested `nextOffsetBytes` is informational, not a continuation instruction.
 Collaborator interaction reads use their own **Always allow** data-access option in the MCP Bridge tab. `hasMore` is an
 omission signal, not a pagination promise: the current contract has no continuation cursor for older omitted
 interactions, so narrow the payload or time filter when possible.
@@ -831,7 +837,8 @@ interactions, so narrow the payload or time filter when possible.
 HTTP discovery uses `search_http_messages`; WebSocket discovery uses `search_websocket_messages`. Both return at most 50
 compact complete summaries, enforce 10,000-record and 32 MiB content-search budgets, and use signed raw-source-index
 cursors instead of offset-based compatibility lists. Their optional regex accepts at most 512 characters and
-conservatively rejects backreferences, lookarounds, quantified groups, and multiple unbounded quantifiers. Summaries
+conservatively rejects backreferences, lookarounds, quantified groups, multiple unbounded quantifiers, and multiple optional
+`?` quantifiers outside character classes or escapes. These restrictions are not a general linear-time guarantee. Summaries
 expose project-scoped references. Scanner issue IDs use the versioned
 `issue_v2_<locator>_<fingerprint>` form. Search locators bind a bounded snapshot index to a fingerprint derived only
 from bounded metadata; detail, remediation, and evidence content are never read to create or resolve an ID. Refresh a
