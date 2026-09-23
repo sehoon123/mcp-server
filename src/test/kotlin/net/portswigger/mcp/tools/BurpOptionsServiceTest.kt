@@ -10,6 +10,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
 import org.junit.jupiter.api.BeforeEach
@@ -101,8 +103,8 @@ class BurpOptionsServiceTest {
         every { api.logging() } returns logging
         every { project.id() } returns "project-a"
         every { burpSuite.importProjectOptionsFromJson(suppliedJson) } returns Unit
-        coEvery { metadataIndex.withMutation<Unit>(any()) } coAnswers {
-            firstArg<suspend () -> Unit>().invoke()
+        coEvery { metadataIndex.withMutation<Boolean>(any()) } coAnswers {
+            firstArg<suspend () -> Boolean>().invoke()
         }
 
         val response = service.set(SetBurpOptions(BurpOptionsLevel.PROJECT, suppliedJson))
@@ -110,9 +112,67 @@ class BurpOptionsServiceTest {
         assertEquals(StandardToolStatus.OK, response.output.status)
         assertEquals(ToolRetryGuidance.NOT_APPLICABLE, response.output.retry)
         assertEquals(StandardExecutionState.COMPLETED, response.output.executionState)
-        coVerify(exactly = 1) { metadataIndex.withMutation<Unit>(any()) }
+        coVerify(exactly = 1) { metadataIndex.withMutation<Boolean>(any()) }
         verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(suppliedJson) }
         verify(exactly = 0) { logging.logToOutput(match { "secret-value" in it }) }
+    }
+
+    @Test
+    fun `project change while waiting for mutation barrier prevents import`() = runBlocking {
+        var projectId = "project-a"
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        every { api.project().id() } answers { projectId }
+        coEvery { metadataIndex.withMutation<Boolean>(any()) } coAnswers {
+            entered.complete(Unit)
+            release.await()
+            firstArg<suspend () -> Boolean>().invoke()
+        }
+        val pending = async { service.set(SetBurpOptions(BurpOptionsLevel.PROJECT, "{}")) }
+        entered.await()
+        projectId = "project-b"
+        release.complete(Unit)
+
+        val result = pending.await()
+
+        assertEquals(StandardToolStatus.PROJECT_MISMATCH, result.output.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, result.output.executionState)
+        assertEquals(ToolRetryGuidance.AFTER_USER_ACTION, result.output.retry)
+        verify(exactly = 0) { burpSuite.importProjectOptionsFromJson(any()) }
+    }
+
+    @Test
+    fun `project accessor failure inside mutation barrier is not started`() = runBlocking {
+        every { api.project().id() } returns "project-a"
+        coEvery { metadataIndex.withMutation<Boolean>(any()) } coAnswers {
+            every { api.project().id() } throws IllegalStateException("PRIVATE_SENTINEL")
+            firstArg<suspend () -> Boolean>().invoke()
+        }
+
+        val result = service.set(SetBurpOptions(BurpOptionsLevel.PROJECT, "{}"))
+
+        assertEquals(StandardToolStatus.BURP_ERROR, result.output.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, result.output.executionState)
+        assertEquals(ToolRetryGuidance.SAFE_TO_RETRY, result.output.retry)
+        assertFalse(result.output.error.orEmpty().contains("PRIVATE_SENTINEL"))
+        verify(exactly = 0) { burpSuite.importProjectOptionsFromJson(any()) }
+    }
+
+    @Test
+    fun `project change during import retains uncertain no retry outcome`() = runBlocking {
+        var projectId = "project-a"
+        every { api.project().id() } answers { projectId }
+        coEvery { metadataIndex.withMutation<Boolean>(any()) } coAnswers {
+            firstArg<suspend () -> Boolean>().invoke()
+        }
+        every { burpSuite.importProjectOptionsFromJson(any()) } answers { projectId = "project-b" }
+
+        val result = service.set(SetBurpOptions(BurpOptionsLevel.PROJECT, "{}"))
+
+        assertEquals(StandardToolStatus.PROJECT_MISMATCH, result.output.status)
+        assertEquals(StandardExecutionState.UNCERTAIN, result.output.executionState)
+        assertEquals(ToolRetryGuidance.DO_NOT_RETRY, result.output.retry)
+        verify(exactly = 1) { burpSuite.importProjectOptionsFromJson(any()) }
     }
 
     @Test

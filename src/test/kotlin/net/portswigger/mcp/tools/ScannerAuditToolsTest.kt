@@ -130,6 +130,39 @@ class ScannerAuditToolsTest {
     }
 
     @Test
+    fun `numeric reference aliases are rejected before Scanner access or approval`() = runBlocking {
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = approval
+        for (mode in ScannerAuditMode.entries) {
+            for (source in listOf(HttpMessageSource.PROXY, HttpMessageSource.ORGANIZER)) {
+                val result = service.start(
+                    StartScannerAuditFromIds(
+                        "project-123", mode,
+                        listOf("1", "01").map { ScannerAuditTarget(HttpMessageReference(source, it)) },
+                    ),
+                    config,
+                )
+                assertEquals(ScannerAuditToolStatus.INVALID_ARGUMENT, result.status)
+                assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+                assertNull(result.projectId)
+            }
+        }
+        for (ids in listOf(listOf("", "not-an-id"), listOf("1", "01", "bad"))) {
+            val invalid = service.start(
+                StartScannerAuditFromIds(
+                    "project-123", ScannerAuditMode.PASSIVE,
+                    ids.map { ScannerAuditTarget(HttpMessageReference(HttpMessageSource.PROXY, it)) },
+                ),
+                config,
+            )
+            assertEquals(ScannerAuditToolStatus.INVALID_ID, invalid.status)
+        }
+        verify(exactly = 0) { api.project() }
+        verify(exactly = 0) { api.scanner() }
+        coVerify(exactly = 0) { approval.requestApproval(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `pre-capture Scanner task validation does not echo the caller project`() = runBlocking {
         val result = service.get(GetScannerAudit("caller-forged", "not-a-task-id"), config)
 
@@ -296,6 +329,50 @@ class ScannerAuditToolsTest {
 
         val afterCancel = service.get(GetScannerAudit("project-123", started.taskId!!), config)
         assertEquals(ScannerAuditTaskState.CANCELLED, afterCancel.taskState)
+    }
+
+    @Test
+    fun `multi-target approval contains every full request without stripping body whitespace`() = runBlocking {
+        val requests = listOf("first", "second").map { sentinel ->
+            "POST /same HTTP/1.1\r\nHost: example.test\r\nX-Review: $sentinel\r\n\r\n$sentinel  \n"
+        }
+        every { proxy.history(any()) } returns requests.mapIndexed { index, raw ->
+            val request = request(index + 1, raw.toByteArray(), raw.indexOf("\r\n\r\n") + 4)
+            every { request.url() } returns "https://example.test/same"
+            proxyItem(index + 1, response = mockk(), request = request)
+        }
+        every { scope.isInScope(any()) } returns true
+        val review = slot<String>()
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        coEvery { approval.requestApproval(any(), any(), capture(review), false, api) } returns false
+        SensitiveActionSecurity.approvalHandler = approval
+
+        val result = service.start(passiveInput(1).copy(targets = listOf(target(1), target(2))), config)
+
+        assertEquals(ScannerAuditToolStatus.ACTION_DENIED, result.status)
+        requests.forEach { assertTrue(review.captured.contains(it)) }
+        assertTrue(review.captured.endsWith(requests.last()))
+        verify(exactly = 0) { scanner.startAudit(any()) }
+    }
+
+    @Test
+    fun `oversized complete batch review is rejected before approval even in YOLO mode`() = runBlocking {
+        val raw = "x".repeat(512 * 1024).toByteArray()
+        every { proxy.history(any()) } returns (1..5).map { id ->
+            proxyItem(id, response = mockk(), request = request(id, raw))
+        }
+        every { scope.isInScope(any()) } returns true
+        val approval = mockk<SensitiveActionApprovalHandler>()
+        SensitiveActionSecurity.approvalHandler = approval
+        for (yolo in listOf(false, true)) {
+            config.approvalYoloMode = yolo
+            val result = service.start(passiveInput(1).copy(targets = (1..5).map(::target)), config)
+            assertEquals(ScannerAuditToolStatus.INVALID_ARGUMENT, result.status)
+            assertEquals(ScannerAuditActionState.NOT_STARTED, result.actionState)
+            assertTrue(result.error.orEmpty().contains("approval content is too large"))
+        }
+        coVerify(exactly = 0) { approval.requestApproval(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { api.scanner() }
     }
 
     @Test
@@ -914,6 +991,44 @@ class ScannerAuditToolsTest {
         advance(Duration.ofHours(4).plusNanos(1))
         assertEquals(1, service.cleanupExpired())
         verify(exactly = 1) { audit.delete() }
+    }
+
+    @Test
+    fun `partial and negative status text never terminalizes a live task or skips cancellation`() = runBlocking {
+        every { proxy.history(any()) } returns listOf(proxyItem(1, response = mockk()))
+        every { scope.isInScope(any()) } returns true
+        val audit = mockk<Audit>()
+        var message = "Running audit"
+        every { scanner.startAudit(configuration) } returns audit
+        every { audit.addRequestResponse(any()) } just runs
+        every { audit.statusMessage() } answers { message }
+        every { audit.insertionPointCount() } returns 0
+        every { audit.requestCount() } returns 1
+        every { audit.errorCount() } returns 0
+        every { audit.delete() } just runs
+        val taskId = service.start(passiveInput(1), config).taskId!!
+
+        for ((text, expected) in listOf(
+            "incomplete" to ScannerAuditTaskState.UNKNOWN,
+            "not completed" to ScannerAuditTaskState.UNKNOWN,
+            "running, 50% complete" to ScannerAuditTaskState.RUNNING,
+            "partially cancelled" to ScannerAuditTaskState.UNKNOWN,
+            "not failed" to ScannerAuditTaskState.UNKNOWN,
+            "미확인 상태" to ScannerAuditTaskState.UNKNOWN,
+        )) {
+            message = text
+            assertEquals(expected, service.get(GetScannerAudit("project-123", taskId, 0), config).taskState)
+            advance(Duration.ofHours(1).plusNanos(1))
+            assertEquals(0, service.cleanupExpired(), text)
+        }
+        val cancelled = service.cancel(CancelScannerAudit("project-123", taskId), config)
+        assertEquals(ScannerAuditTaskState.CANCELLED, cancelled.taskState)
+        verify(exactly = 1) { audit.delete() }
+        message = "Running audit"
+        assertEquals(
+            ScannerAuditTaskState.CANCELLED,
+            service.get(GetScannerAudit("project-123", taskId, 0), config).taskState,
+        )
     }
 
     @Test

@@ -209,6 +209,20 @@ class CodeExecutionToolsTest {
     }
 
     @Test
+    fun `chain rejects repeated optional regex quantifiers before native import`() = runBlocking {
+        val result = BambdaService(api, config(enabled = true)).generateAndImport(
+            GenerateBambdaChain(
+                "Rejected selector", "example.test", 443, true,
+                listOf(BambdaChainStep("GET", "/", extract = mapOf("value" to "(a?b?)"))),
+            )
+        )
+        assertEquals(NativeToolStatus.INVALID_ARGUMENT, result.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, result.executionState)
+        assertEquals(null, result.generatedBambda)
+        verify(exactly = 0) { bambda.importBambda(any()) }
+    }
+
+    @Test
     fun `chain generator escapes literals validates dataflow and never logs extracted values`() {
         val generated = generateChainSource(
             GenerateBambdaChain(

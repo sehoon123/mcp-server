@@ -81,6 +81,36 @@ class RequestExecutionToolsTest {
     }
 
     @Test
+    fun `raw HTTP2 conflicts are rejected for both engine start and queue`() = runBlocking {
+        val invalidItems = listOf(HttpRequestExecutionItem(raw = RawRequestExecutionSource(
+            protocol = RawHttpProtocol.HTTP_2,
+            http2 = RawHttp2Input(mapOf("method" to "GET", ":method" to "POST"), emptyMap(), ""),
+            targetHostname = "example.test", targetPort = 443, usesHttps = true,
+        )))
+        val service = HttpRequestExecutionService(api, config())
+        val rejected = service.start(StartHttpRequestExecution("project-1", invalidItems))
+        assertEquals(NativeToolStatus.INVALID_ARGUMENT, rejected.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, rejected.executionState)
+        verify(exactly = 0) { http.createRequestEngine() }
+
+        val request = request(120)
+        stubHistory(proxyItem(7, request))
+        every { engine.queue(request) } returns Unit
+        every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
+        every { lifetime.finished() } returns false
+        val started = service.start(StartHttpRequestExecution(
+            "project-1", listOf(HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)))),
+        ))
+        assertEquals(NativeToolStatus.OK, started.status, started.error)
+        val queued = service.queue(QueueHttpRequestExecution("project-1", assertNotNull(started.executionId), invalidItems))
+        assertEquals(NativeToolStatus.INVALID_ARGUMENT, queued.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, queued.executionState)
+        verify(exactly = 0) { execution.queue(any<HttpRequest>()) }
+        verify(exactly = 0) { execution.queue(any(), any()) }
+        service.close()
+    }
+
+    @Test
     fun `engine starts queues captures bounded metadata and supports lifecycle controls`() = runBlocking {
         val request = request(120)
         val item = proxyItem(7, request)

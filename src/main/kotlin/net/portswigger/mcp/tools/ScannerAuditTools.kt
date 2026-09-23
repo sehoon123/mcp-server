@@ -18,6 +18,7 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.SensitiveActionSecurity
+import net.portswigger.mcp.security.MAX_SENSITIVE_ACTION_CONTENT_CHARS
 import java.security.SecureRandom
 import java.time.Duration
 import java.time.Instant
@@ -331,7 +332,10 @@ internal class ScannerAuditService(
             )
         }
         val refs = input.targets.map { it.ref }
-        if (refs.distinct().size != refs.size) {
+        val identities = refs.mapNotNull(::canonicalHttpReferenceIdentity)
+        if (refs.distinct().size != refs.size ||
+            identities.size == refs.size && identities.distinct().size != identities.size
+        ) {
             return scannerAuditError(
                 ScannerAuditToolStatus.INVALID_ARGUMENT,
                 ScannerAuditActionState.NOT_STARTED,
@@ -574,6 +578,14 @@ internal class ScannerAuditService(
                 prepared.map { it.summary() },
                 buildScannerReview(input.mode, prepared),
                 buildScannerApprovalSummary(input.projectId, input.mode, prepared),
+            )
+        } catch (e: ScannerAuditValidationException) {
+            return scannerAuditError(
+                ScannerAuditToolStatus.INVALID_ARGUMENT,
+                ScannerAuditActionState.NOT_STARTED,
+                input.projectId,
+                input.mode,
+                e.message.orEmpty(),
             )
         } catch (e: CancellationException) {
             throw e
@@ -2030,22 +2042,35 @@ private fun buildScannerReview(
     targets: List<PreparedScannerAuditTarget>,
 ): ScannerReview {
     if (targets.size == 1) {
-        return ScannerReview(targets.single().message.request.toString(), renderAsHttp = true)
+        val request = targets.single().message.request.toString()
+        if (request.length > MAX_SENSITIVE_ACTION_CONTENT_CHARS) {
+            throw ScannerAuditValidationException("complete Scanner approval content is too large")
+        }
+        return ScannerReview(request, renderAsHttp = true)
     }
     return ScannerReview(
         content = buildString {
             targets.forEachIndexed { index, target ->
-                append(index + 1)
-                append(". ")
-                append(target.message.request.method().take(32))
-                append(' ')
-                appendLine(target.message.request.url().take(MAX_HTTP_SEARCH_URL_CHARS))
-                if (mode == ScannerAuditMode.ACTIVE) {
-                    append("   ")
-                    appendLine(requireNotNull(target.insertionPoints).summary)
+                val heading = buildString {
+                    if (index > 0) append("\n\n")
+                    append(index + 1)
+                    append(". ")
+                    append(target.message.request.method().take(32))
+                    append(' ')
+                    appendLine(target.message.request.url().take(MAX_HTTP_SEARCH_URL_CHARS))
+                    if (mode == ScannerAuditMode.ACTIVE) {
+                        append("   ")
+                        appendLine(requireNotNull(target.insertionPoints).summary)
+                    }
                 }
+                val request = target.message.request.toString()
+                if (length.toLong() + heading.length + request.length > MAX_SENSITIVE_ACTION_CONTENT_CHARS) {
+                    throw ScannerAuditValidationException("complete Scanner approval content is too large")
+                }
+                append(heading)
+                append(request)
             }
-        }.trimEnd(),
+        },
         renderAsHttp = false,
     )
 }
@@ -2452,9 +2477,9 @@ private fun classifyTaskState(message: String?, previous: ScannerAuditTaskState)
     val normalized = message?.trim()?.lowercase().orEmpty()
     return when {
         normalized.isEmpty() -> previous.takeIf { it != ScannerAuditTaskState.STARTING } ?: ScannerAuditTaskState.UNKNOWN
-        listOf("finished", "complete", "completed", "done").any(normalized::contains) -> ScannerAuditTaskState.FINISHED
-        listOf("cancelled", "canceled", "deleted").any(normalized::contains) -> ScannerAuditTaskState.CANCELLED
-        listOf("failed", "fatal").any(normalized::contains) -> ScannerAuditTaskState.FAILED
+        normalized in listOf("finished", "complete", "completed", "done") -> ScannerAuditTaskState.FINISHED
+        normalized in listOf("cancelled", "canceled", "deleted") -> ScannerAuditTaskState.CANCELLED
+        normalized in listOf("failed", "fatal") -> ScannerAuditTaskState.FAILED
         "paused" in normalized -> ScannerAuditTaskState.PAUSED
         listOf("running", "queued", "auditing", "scanning", "processing", "starting").any(normalized::contains) ->
             ScannerAuditTaskState.RUNNING

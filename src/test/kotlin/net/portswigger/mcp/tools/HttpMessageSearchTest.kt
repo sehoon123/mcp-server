@@ -668,6 +668,8 @@ class HttpMessageSearchTest {
             unsafeProgress += progress
         }
 
+        val optional = service.search(SearchHttpMessages(regex = "a?b?c"))
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, optional.status)
         assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, conflicting.status)
         assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, unsafe.status)
         assertEquals(listOf(0.0), conflictingProgress)
