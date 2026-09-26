@@ -249,6 +249,14 @@ class McpProfessionalResourcesIntegrationTest {
         val collaboratorSchema = tools.single { it.name == "get_collaborator_interactions" }.inputSchema.toString()
         assertTrue(collaboratorSchema.contains("Exclusive ISO-8601 instant lower-bound filter"))
 
+        assertEquals(
+            mapOf(
+                DIAGNOSTICS_RESOURCE_URI to "Burp diagnostics",
+                PROJECT_SUMMARY_RESOURCE_URI to "Burp project summary",
+                SCOPE_SUMMARY_RESOURCE_URI to "Burp scope policy summary",
+            ),
+            client.listResources().associate { it.uri to it.title },
+        )
         val templateDefinitions = client.listResourceTemplates().resourceTemplates
         val templates = templateDefinitions.map { it.uriTemplate }.toSet()
         for (uri in listOf(SCANNER_ISSUE_FIELD_RESOURCE_TEMPLATE, SCANNER_ISSUE_EVIDENCE_RESOURCE_TEMPLATE)) {

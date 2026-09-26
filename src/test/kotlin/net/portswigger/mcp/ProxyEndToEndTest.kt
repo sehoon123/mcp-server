@@ -200,6 +200,11 @@ class ProxyEndToEndTest {
     fun `proxy should list tools`() {
         runBlocking {
             assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
+            val identity = requireNotNull(client.serverInfo())
+            assertEquals(ProductIdentity.MCP_SERVER_NAME, identity.name)
+            assertEquals(serverManager.diagnostics().serverVersion, identity.version)
+            assertEquals(ProductIdentity.PRODUCT_NAME, identity.title)
+            assertEquals(ProductIdentity.SOURCE_URL, identity.websiteUrl)
             val tools = client.listTools()
             assertEquals(EXPECTED_COMMUNITY_TOOL_TITLES.size, tools.size)
             assertEquals(EXPECTED_COMMUNITY_TOOL_TITLES, tools.associate { it.name to it.title })
@@ -226,8 +231,12 @@ class ProxyEndToEndTest {
     @Test
     fun `proxy should transparently preserve native resources and prompts`() = runBlocking {
         assertEquals(
-            setOf(DIAGNOSTICS_RESOURCE_URI, PROJECT_SUMMARY_RESOURCE_URI, SCOPE_SUMMARY_RESOURCE_URI),
-            client.listResources().map { it.uri }.toSet(),
+            mapOf(
+                DIAGNOSTICS_RESOURCE_URI to "Burp diagnostics",
+                PROJECT_SUMMARY_RESOURCE_URI to "Burp project summary",
+                SCOPE_SUMMARY_RESOURCE_URI to "Burp scope policy summary",
+            ),
+            client.listResources().associate { it.uri to it.title },
         )
         val templates = client.listResourceTemplates().resourceTemplates.map { it.uriTemplate }.toSet()
         assertTrue(HTTP_RESOURCE_TEMPLATE in templates)

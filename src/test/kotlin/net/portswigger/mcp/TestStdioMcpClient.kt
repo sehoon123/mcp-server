@@ -47,6 +47,8 @@ class TestStdioMcpClient {
 
     fun serverInstructions(): String? = mcp.serverInstructions
 
+    fun serverInfo(): Implementation? = mcp.serverVersion
+
     suspend fun listResources(): List<Resource> = mcp.listResources().resources
 
     suspend fun listResourceTemplates(): ListResourceTemplatesResult =

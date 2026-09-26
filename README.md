@@ -192,6 +192,13 @@ action behavior are unchanged.
 See the [naming and compatibility contract](docs/DEVELOPMENT.md#tool-names-titles-and-compatibility) and
 [continuation/result guide](docs/DEVELOPMENT.md#continuation-and-result-interpretation). Catalog regression checks cover
 both editions; they do not establish real-client title rendering, model selection quality, or live Burp UI behavior.
+Initialize also advertises the independent product's display title and source URL. The three fixed resources have display
+titles alongside their unchanged names and URIs. These optional labels do not change capabilities or authorization.
+
+`get_burp_options` filters credentials by default; its redacted export is for inspection, not round-trip import.
+`set_burp_options` accepts partial Burp settings JSON and leaves omitted settings unchanged. Use the running Burp
+version's actual configuration format and submit only the intended changes, never a full redacted export: masked values
+such as `*****` are not preservation markers. This is guidance, not a new JSON rewrite or placeholder-rejection policy.
 
 ### Efficient agent reads (RC3)
 

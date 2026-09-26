@@ -58,7 +58,7 @@ data class SearchWebsocketMessages(
     val direction: WebSocketSearchDirection? = null,
     @JsonSchemaMetadata(description = "Filter by Proxy listener port.", minimum = 1, maximum = 65535)
     val listenerPort: Int? = null,
-    @JsonSchemaMetadata(description = "Conservatively safe payload regex.", minLength = 1, maxLength = 512)
+    @JsonSchemaMetadata(description = "Payload regex. Max one * or + and one ?; no {}, (?...), backrefs or group/repeated quantifiers.", minLength = 1, maxLength = 512)
     val regex: String? = null,
     @JsonSchemaMetadata(description = "Use case-sensitive regex matching.", defaultJson = "true")
     val caseSensitive: Boolean? = null,

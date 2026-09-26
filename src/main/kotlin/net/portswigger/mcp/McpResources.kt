@@ -5,6 +5,7 @@ import burp.api.montoya.core.BurpSuiteEdition
 import io.ktor.http.encodeURLPathPart
 import io.modelcontextprotocol.kotlin.sdk.server.ClientConnection
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import io.modelcontextprotocol.kotlin.sdk.server.RegisteredResource
 import io.modelcontextprotocol.kotlin.sdk.types.GetPromptRequest
 import io.modelcontextprotocol.kotlin.sdk.types.GetPromptResult
 import io.modelcontextprotocol.kotlin.sdk.types.Prompt
@@ -12,6 +13,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.PromptArgument
 import io.modelcontextprotocol.kotlin.sdk.types.PromptMessage
 import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceRequest
 import io.modelcontextprotocol.kotlin.sdk.types.ReadResourceResult
+import io.modelcontextprotocol.kotlin.sdk.types.Resource
 import io.modelcontextprotocol.kotlin.sdk.types.ResourceTemplate
 import io.modelcontextprotocol.kotlin.sdk.types.Role
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -99,7 +101,7 @@ internal data class ScopeSummaryResource(
     val mutationTool: String = "update_scope",
     val mutationApprovalRequired: Boolean,
     val emergencyReadOnlyMode: Boolean,
-    val note: String = "Montoya 2025.10 supports scope membership checks but does not expose configured scope rules.",
+    val note: String = "The Scope API supports membership checks but does not enumerate configured rules.",
     val error: String? = null,
 )
 
@@ -119,38 +121,47 @@ internal fun Server.registerMcpResources(
     val httpReadService = HttpMessageReadService(api, config)
     val webSocketReadService = WebSocketMessageReadService(api, config)
 
-    addResource(
-        uri = DIAGNOSTICS_RESOURCE_URI,
-        name = "burp_diagnostics",
-        description = "Secret-free aggregate listener, transport/session, and value-free history timing snapshot. status=ok means the snapshot was read, not proof of listener health, external-client compatibility, or release readiness. Inspect diagnostics.state and diagnostics.lastError; aggregate counters are not a per-session authorization record.",
-        mimeType = RESOURCE_MIME_TYPE,
-    ) { request ->
-        featureServer.secureResourceRead(this, request, "diagnostics") {
-            jsonResource(request.uri, DiagnosticsResource(NativeResourceStatus.OK, diagnosticsProvider()))
-        }
-    }
-
-    addResource(
-        uri = PROJECT_SUMMARY_RESOURCE_URI,
-        name = "burp_project_summary",
-        description = "The opaque ID of the current Burp project for project-bound MCP references; use only when status=ok. referenceKinds lists supported reference families, not access grants or evidence that records exist. Existing references must not be rebound to a different projectId. Local project names and paths are omitted.",
-        mimeType = RESOURCE_MIME_TYPE,
-    ) { request ->
-        featureServer.secureResourceRead(this, request, "project_summary") {
-            jsonResource(request.uri, currentProjectSummary(api))
-        }
-    }
-
-    addResource(
-        uri = SCOPE_SUMMARY_RESOURCE_URI,
-        name = "burp_scope_summary",
-        description = "Current project binding and MCP scope policy, not scope membership or permission to send traffic. Configured Target scope rules cannot be enumerated. mutationApprovalRequired reports a setting, not authorization; all operation-specific checks still apply. A successful summary read does not grant access or mutation approval.",
-        mimeType = RESOURCE_MIME_TYPE,
-    ) { request ->
-        featureServer.secureResourceRead(this, request, "scope_summary") {
-            jsonResource(request.uri, currentScopeSummary(api, config))
-        }
-    }
+    addResources(listOf(
+        RegisteredResource(
+            Resource(
+                uri = DIAGNOSTICS_RESOURCE_URI,
+                name = "burp_diagnostics",
+                title = "Burp diagnostics",
+                description = "Secret-free aggregate listener, transport/session, and value-free history timing snapshot. status=ok means the snapshot was read, not proof of listener health, external-client compatibility, or release readiness. Inspect diagnostics.state and diagnostics.lastError; aggregate counters are not a per-session authorization record.",
+                mimeType = RESOURCE_MIME_TYPE,
+            ),
+        ) { request ->
+            featureServer.secureResourceRead(this, request, "diagnostics") {
+                jsonResource(request.uri, DiagnosticsResource(NativeResourceStatus.OK, diagnosticsProvider()))
+            }
+        },
+        RegisteredResource(
+            Resource(
+                uri = PROJECT_SUMMARY_RESOURCE_URI,
+                name = "burp_project_summary",
+                title = "Burp project summary",
+                description = "The opaque ID of the current Burp project for project-bound MCP references; use only when status=ok. referenceKinds lists supported reference families, not access grants or evidence that records exist. Existing references must not be rebound to a different projectId. Local project names and paths are omitted.",
+                mimeType = RESOURCE_MIME_TYPE,
+            ),
+        ) { request ->
+            featureServer.secureResourceRead(this, request, "project_summary") {
+                jsonResource(request.uri, currentProjectSummary(api))
+            }
+        },
+        RegisteredResource(
+            Resource(
+                uri = SCOPE_SUMMARY_RESOURCE_URI,
+                name = "burp_scope_summary",
+                title = "Burp scope policy summary",
+                description = "Current project binding and MCP scope policy, not scope membership or permission to send traffic. This summary does not enumerate configured Target scope rules. mutationApprovalRequired reports a setting, not authorization; all operation-specific checks still apply. A successful summary read does not grant access or mutation approval.",
+                mimeType = RESOURCE_MIME_TYPE,
+            ),
+        ) { request ->
+            featureServer.secureResourceRead(this, request, "scope_summary") {
+                jsonResource(request.uri, currentScopeSummary(api, config))
+            }
+        },
+    ))
 
     addResourceTemplate(
         ResourceTemplate(

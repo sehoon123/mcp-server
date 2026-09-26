@@ -36,7 +36,7 @@ data class SetBurpOptions(
     @JsonSchemaMetadata(description = "Configuration level to change: project or user.")
     val level: BurpOptionsLevel,
     @JsonSchemaMetadata(
-        description = "Complete configuration JSON to import; project input requires project_options, user input requires user_options.",
+        description = "Partial or full Burp JSON; omitted settings stay unchanged. Never re-import redacted exports.",
         maxLength = MAX_CONFIGURATION_JSON_CHARS,
     )
     val json: String,

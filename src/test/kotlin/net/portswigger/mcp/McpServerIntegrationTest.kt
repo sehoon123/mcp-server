@@ -986,6 +986,11 @@ class McpServerIntegrationTest {
         client.connectToServer("http://127.0.0.1:${testPort}/mcp")
 
         val toolsBefore = client.listTools().map { it.name }
+        val identity = requireNotNull(client.serverInfo())
+        assertEquals(ProductIdentity.MCP_SERVER_NAME, identity.name)
+        assertEquals(serverManager.diagnostics().serverVersion, identity.version)
+        assertEquals(ProductIdentity.PRODUCT_NAME, identity.title)
+        assertEquals(ProductIdentity.SOURCE_URL, identity.websiteUrl)
         val capabilities = requireNotNull(client.serverCapabilities())
         assertEquals(false, capabilities.tools?.listChanged)
         assertNotNull(capabilities.resources)
@@ -1000,11 +1005,19 @@ class McpServerIntegrationTest {
             resources.map { it.uri }.toSet(),
         )
         assertTrue(resources.all { it.mimeType == "application/json" })
+        assertEquals(
+            mapOf(
+                DIAGNOSTICS_RESOURCE_URI to ("burp_diagnostics" to "Burp diagnostics"),
+                PROJECT_SUMMARY_RESOURCE_URI to ("burp_project_summary" to "Burp project summary"),
+                SCOPE_SUMMARY_RESOURCE_URI to ("burp_scope_summary" to "Burp scope policy summary"),
+            ),
+            resources.associate { it.uri to (it.name to it.title) },
+        )
         val resourceDescriptions = resources.associate { it.uri to it.description.orEmpty() }
         for ((uri, requiredGuidance) in mapOf(
             DIAGNOSTICS_RESOURCE_URI to listOf("status=ok", "snapshot", "diagnostics.state", "diagnostics.lastError", "not proof", "external-client"),
             PROJECT_SUMMARY_RESOURCE_URI to listOf("status=ok", "referenceKinds", "not access grants", "must not be rebound"),
-            SCOPE_SUMMARY_RESOURCE_URI to listOf("not scope membership", "mutationApprovalRequired", "not authorization", "cannot be enumerated"),
+            SCOPE_SUMMARY_RESOURCE_URI to listOf("not scope membership", "mutationApprovalRequired", "not authorization", "This summary does not enumerate"),
         )) {
             for (text in requiredGuidance) {
                 assertTrue(resourceDescriptions.getValue(uri).contains(text), "$uri: $text")
@@ -1133,6 +1146,10 @@ class McpServerIntegrationTest {
         assertEquals("ok", scope["status"]?.jsonPrimitive?.content)
         assertEquals("false", scope["scopeRuleEnumerationAvailable"]?.jsonPrimitive?.content)
         assertEquals("check_scope", scope["membershipCheckTool"]?.jsonPrimitive?.content)
+        assertEquals(
+            "The Scope API supports membership checks but does not enumerate configured rules.",
+            scope["note"]?.jsonPrimitive?.content,
+        )
 
         val prompt = client.getPrompt(
             "analyze_http_without_sending",
