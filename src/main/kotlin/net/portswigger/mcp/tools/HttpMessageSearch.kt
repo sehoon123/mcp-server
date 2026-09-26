@@ -83,9 +83,9 @@ data class SearchHttpMessages(
     val inScopeOnly: Boolean? = null,
     @JsonSchemaMetadata(description = "Filter by response presence when supplied.")
     val hasResponse: Boolean? = null,
-    @JsonSchemaMetadata(description = "Bounded literal request or response text to search for; mutually exclusive with regex.", maxLength = 512)
+    @JsonSchemaMetadata(description = "Literal request or response text; not with regex.", maxLength = 512)
     val text: String? = null,
-    @JsonSchemaMetadata(description = "Conservatively safe request or response regex; mutually exclusive with text.", minLength = 1, maxLength = 512)
+    @JsonSchemaMetadata(description = "Request/response regex; not with text. Max one * or + and one ?; no {}, (?...), backrefs or group/repeated quantifiers.", minLength = 1, maxLength = 512)
     val regex: String? = null,
     @JsonSchemaMetadata(description = "Message part searched by text or regex.", defaultJson = "\"both\"")
     val searchIn: HttpSearchLocation? = null,

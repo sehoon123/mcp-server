@@ -669,7 +669,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "08ec57dc036690988d403551e0a6eb34b1d12c5491e609fddda97baff084358e",
+            "8ef1e663f9cac868b385d45268ca9a5fd4602e030620b180fc06f117cd4a2830",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -718,6 +718,16 @@ class ToolsKtTest {
         assertTrue(description("search_http_messages").contains("10,000 scanned records"))
         assertTrue(description("search_http_messages").contains("MCP sends are absent"))
         assertTrue(description("search_http_messages").contains("{source,id}"))
+        for (name in listOf("search_http_messages", "search_websocket_messages")) {
+            val regexDescription = tools.getValue(name).inputSchema.properties!!.getValue("regex")
+                .jsonObject.getValue("description").jsonPrimitive.content
+            assertTrue(regexDescription.contains("Max one * or + and one ?"))
+            assertTrue(regexDescription.contains("no {}, (?...), backrefs or group/repeated quantifiers"))
+            assertFalse(regexDescription.contains("safe"))
+        }
+        val httpSearchInputs = tools.getValue("search_http_messages").inputSchema.properties!!
+        assertTrue(httpSearchInputs.getValue("text").toString().contains("not with regex"))
+        assertTrue(httpSearchInputs.getValue("regex").toString().contains("not with text"))
         // Lexical regression only: phrase presence does not establish client ranking or model selection.
         for ((phrase, expected) in mapOf(
             "replay" to "send_http_request_from_id",
@@ -1625,8 +1635,9 @@ class ToolsKtTest {
                 val setTool = tools.single { it.name == "set_burp_options" }
                 assertTrue(setTool.description.orEmpty().contains("capture and recheck the current project"))
                 val jsonSchema = setTool.inputSchema.properties?.get("json").toString()
-                assertTrue(jsonSchema.contains("project_options"))
-                assertTrue(jsonSchema.contains("user_options"))
+                assertTrue(jsonSchema.contains("Partial or full Burp JSON"))
+                assertTrue(jsonSchema.contains("omitted settings stay unchanged"))
+                assertTrue(jsonSchema.contains("Never re-import redacted exports"))
             }
 
             verify(exactly = 1) { burpSuite.exportProjectOptionsAsJson() }
@@ -2705,7 +2716,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "8f165ab24ea8df5c50dffdca9346e0f62a06a76ddef876eb4f233c079bc1932f",
+                "7c3c0951972476f1fddd7ee190942c6a160caa4f5c0b1b51880eb0febc5168e8",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2726,6 +2737,12 @@ class ToolsKtTest {
             assertTrue(chain.description.orEmpty().contains("Running or auto-running it sends requests"))
             assertTrue(chain.description.orEmpty().contains("outside MCP request, project, outbound and emergency-read-only fences"))
             assertEquals(false, chain.annotations?.readOnlyHint)
+            val extractDescription = chain.inputSchema.properties!!.getValue("steps").jsonObject
+                .getValue("items").jsonObject.getValue("properties").jsonObject.getValue("extract").jsonObject
+                .getValue("description").jsonPrimitive.content
+            assertTrue(extractDescription.contains("first-level $.key JSON selector or one-capture-group regex"))
+            assertTrue(extractDescription.contains("Max one * or + and one ?"))
+            assertTrue(extractDescription.contains("no {}, (?...), backrefs or group/repeated quantifiers"))
             for (tool in listOf(bambdaImport, chain)) {
                 val statusDescription = tool.outputSchema?.properties?.get("status").toString()
                 assertTrue(statusDescription.contains("Even when ok, check importStatus and importErrors"))

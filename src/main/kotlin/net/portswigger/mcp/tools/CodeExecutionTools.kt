@@ -356,7 +356,7 @@ data class BambdaChainStep(
     val headers: Map<String, String> = emptyMap(),
     @JsonSchemaMetadata(description = "Optional text body for this generated request.", maxLength = MAX_CHAIN_BODY_CHARS)
     val body: String? = null,
-    @JsonSchemaMetadata(description = "Variable to first-level $.key JSON selector or one-group safe regex.", maxProperties = MAX_CHAIN_VARIABLES)
+    @JsonSchemaMetadata(description = "Variable to first-level $.key JSON selector or one-capture-group regex. Max one * or + and one ?; no {}, (?...), backrefs or group/repeated quantifiers.", maxProperties = MAX_CHAIN_VARIABLES)
     val extract: Map<String, String> = emptyMap(),
     @JsonSchemaMetadata(description = "Previously extracted variable to a Header: value {{variable}} template.", maxProperties = MAX_CHAIN_VARIABLES)
     val inject: Map<String, String> = emptyMap(),

@@ -1180,7 +1180,12 @@ class KtorServerManager internal constructor(
                 metrics.setLoadedArtifactSha256(loadedArtifactSha256.get(30, TimeUnit.SECONDS))
                 ensureStartupAllowed()
                 val newMcpServer = Server(
-                    serverInfo = Implementation(ProductIdentity.MCP_SERVER_NAME, serverVersion),
+                    serverInfo = Implementation(
+                        name = ProductIdentity.MCP_SERVER_NAME,
+                        version = serverVersion,
+                        title = ProductIdentity.PRODUCT_NAME,
+                        websiteUrl = ProductIdentity.SOURCE_URL,
+                    ),
                     options = ServerOptions(
                         // Catalogs are immutable for one listener lifetime. SDK 0.14.0 subscriptions lack bounded,
                         // project-aware admission; see docs/PROJECT_BOUND_NOTIFICATIONS.md.
