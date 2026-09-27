@@ -19,7 +19,7 @@ internal const val DEFAULT_HISTORY_SLICE_BYTES = 8 * 1024
 internal const val MAX_HISTORY_SLICE_BYTES = 256 * 1024
 internal const val MAX_NOTES_CHARS = 2_000
 internal const val MCP_PROJECT_ID_INPUT_DESCRIPTION =
-    "Opaque projectId from burp://project/summary or a producing result; must match the current project and all refs/cursors."
+    "Opaque projectId from burp://project/summary or a producing result; match current project and all refs/cursors."
 private const val SCANNER_IDENTITY_CHUNK_CHARS = 8 * 1024
 private const val SCANNER_TEXT_ENCODING_BUFFER_BYTES = 8 * 1024
 private val HTTP_MESSAGE_PARTS = setOf(

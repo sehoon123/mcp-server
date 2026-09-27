@@ -77,7 +77,7 @@ data class SearchHttpMessages(
     val methods: List<String>? = null,
     @JsonSchemaMetadata(description = "HTTP response status codes to include.", minItems = 1, maxItems = 32)
     val statusCodes: List<Int>? = null,
-    @JsonSchemaMetadata(description = "MIME types to include.", minItems = 1, maxItems = 32)
+    @JsonSchemaMetadata(description = "Burp MIME labels (JSON/HTML), not media types.", minItems = 1, maxItems = 32)
     val mimeTypes: List<String>? = null,
     @JsonSchemaMetadata(description = "Restrict results to Burp Scope.", defaultJson = "false")
     val inScopeOnly: Boolean? = null,

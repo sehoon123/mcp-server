@@ -17,7 +17,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.InternalSerializationApi
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -307,6 +309,9 @@ internal suspend fun Server.executeRegisteredTool(
     } catch (e: CancellationException) {
         invocation.complete("cancelled")
         throw e
+    } catch (e: ToolInputDecodingException) {
+        invocation.complete("error", e.cause)
+        CallToolResult(content = listOf(TextContent(e.guidance)), isError = true)
     } catch (e: Exception) {
         val summary = safeExceptionSummary(e)
         invocation.complete("error", e)
@@ -316,6 +321,37 @@ internal suspend fun Server.executeRegisteredTool(
         )
     } finally {
         executionLease?.close()
+    }
+}
+
+private class ToolInputDecodingException(val guidance: String, cause: SerializationException) : Exception(null, cause)
+
+/** Registration-only boundary: handler/output failures must never claim the handler was not started. */
+@PublishedApi
+internal fun <I> decodeToolArguments(
+    serializer: DeserializationStrategy<I>,
+    schema: ToolSchema,
+    arguments: JsonObject?,
+): I {
+    val input = arguments ?: JsonObject(emptyMap())
+    return try {
+        Json.decodeFromJsonElement(serializer, input)
+    } catch (e: SerializationException) {
+        // Decoder messages may contain values, unknown keys and JSON excerpts. Use public schema names only.
+        val missing = schema.required.orEmpty().filterNot(input::containsKey)
+        val guidance = buildString {
+            append("Error: Invalid tool arguments; this call's handler was not started. ")
+            append("Check inputSchema for required fields (including nested objects), JSON types and enum values.")
+            if (input.keys.any { it !in schema.properties.orEmpty() }) {
+                append(" Unknown top-level fields are not accepted.")
+            }
+            if (missing.isNotEmpty()) {
+                append(" Missing required top-level fields: ")
+                append(missing.joinToString(limit = 8))
+                append('.')
+            }
+        }.take(MAX_STRUCTURED_TOOL_ERROR_CHARS)
+        throw ToolInputDecodingException(guidance, e)
     }
 }
 
@@ -338,10 +374,7 @@ inline fun <reified I : Any> Server.mcpTool(
             annotations,
             inputSchema.properties?.keys.orEmpty(),
         ) {
-            val input = Json.decodeFromJsonElement(
-                serializer,
-                request.params.arguments ?: JsonObject(emptyMap())
-            )
+            val input = decodeToolArguments(serializer, inputSchema, request.params.arguments)
             CallToolResult(
                 content = execute(input),
                 isError = false
@@ -506,10 +539,7 @@ inline fun <reified I : Any, reified O : Any> Server.mcpStructuredToolWithContex
             annotations,
             inputSchema.properties?.keys.orEmpty(),
         ) {
-            val input = Json.decodeFromJsonElement(
-                inputSerializer,
-                request.params.arguments ?: JsonObject(emptyMap()),
-            )
+            val input = decodeToolArguments(inputSerializer, inputSchema, request.params.arguments)
             val context = ToolCallContext(connection, request.params.meta?.progressToken)
             val response = context.execute(input)
             val structuredContent = Json.encodeToJsonElement(outputSerializer, response.output).jsonObject

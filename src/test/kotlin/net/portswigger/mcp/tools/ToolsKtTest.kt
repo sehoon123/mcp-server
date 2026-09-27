@@ -602,6 +602,20 @@ class ToolsKtTest {
     }
 
     @Test
+    fun `malformed tool arguments return safe recovery guidance as a tool error over HTTP`() = runBlocking {
+        val result = requireNotNull(client.callTool("compare_http_messages", mapOf(
+            "projectId" to "PRIVATE_PROJECT", "PRIVATE_UNKNOWN_KEY" to "PRIVATE_VALUE",
+        )))
+        val text = (result.content.single() as TextContent).text
+        assertEquals(true, result.isError)
+        assertNull(result.structuredContent)
+        assertTrue(text.contains("Missing required top-level fields: refs."), text)
+        assertTrue(text.contains("Unknown top-level fields"), text)
+        assertTrue(text.contains("this call's handler was not started"), text)
+        assertFalse(text.contains("PRIVATE"), text)
+    }
+
+    @Test
     fun `JSON comparison and saved comparison preset return the same bounded wire result`() = runBlocking {
         val items = listOf("{\"x\":\"PRIVATE_LEFT\"}", "{\"x\":\"PRIVATE_RIGHT\"}").mapIndexed { index, body ->
             mockk<ProxyHttpRequestResponse>().also { item ->
@@ -669,7 +683,7 @@ class ToolsKtTest {
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "8ef1e663f9cac868b385d45268ca9a5fd4602e030620b180fc06f117cd4a2830",
+            "04255cefb8bf0c183d622e0b687b181d89e622235d0c6e419e530f0f247e523b",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -726,6 +740,9 @@ class ToolsKtTest {
             assertFalse(regexDescription.contains("safe"))
         }
         val httpSearchInputs = tools.getValue("search_http_messages").inputSchema.properties!!
+        val mimeGuidance = "Burp MIME labels (JSON/HTML), not media types."
+        assertEquals(mimeGuidance, httpSearchInputs.getValue("mimeTypes").jsonObject.getValue("description").jsonPrimitive.content)
+        assertTrue(tools.getValue("save_workflow_preset").inputSchema.properties!!.getValue("definition").toString().contains(mimeGuidance))
         assertTrue(httpSearchInputs.getValue("text").toString().contains("not with regex"))
         assertTrue(httpSearchInputs.getValue("regex").toString().contains("not with text"))
         // Lexical regression only: phrase presence does not establish client ranking or model selection.
@@ -2716,7 +2733,7 @@ class ToolsKtTest {
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "7c3c0951972476f1fddd7ee190942c6a160caa4f5c0b1b51880eb0febc5168e8",
+                "8c718640c7237f9c9816b150f5c78813d5524877ebc93eab1ce9459be834c24a",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)

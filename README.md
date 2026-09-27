@@ -200,6 +200,17 @@ titles alongside their unchanged names and URIs. These optional labels do not ch
 version's actual configuration format and submit only the intended changes, never a full redacted export: masked values
 such as `*****` are not preservation markers. This is guidance, not a new JSON rewrite or placeholder-rejection policy.
 
+### Tool argument recovery
+
+Argument decoding failures return `isError: true` with a bounded text hint, not a result matching the tool's output schema.
+The hint states that this call did not enter the handler, identifies missing top-level required fields and flags unknown
+top-level fields without echoing their names or values. For nested fields, types and enum values, consult `inputSchema`;
+raw parser messages and input excerpts are never returned. This does not classify handler/output failures as safe to retry,
+and does not change approval, project or uncertain-outcome rules.
+
+HTTP search and saved HTTP presets use Burp MIME labels such as `JSON` or `HTML`, not media types such as
+`application/json`. Host filters take the host alone, not a URL. These are input guidance, not new normalization or validation.
+
 ### Efficient agent reads (RC3)
 
 - Reuse `projectId`, references, and summaries already returned; do not fetch each message just to discover its metadata.
