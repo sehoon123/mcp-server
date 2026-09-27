@@ -17,8 +17,11 @@ import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.McpAuditRecord
 import net.portswigger.mcp.security.McpAuditSink
@@ -29,6 +32,7 @@ import net.portswigger.mcp.security.isCurrentSessionApproved
 import net.portswigger.mcp.security.recordCurrentToolApproval
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CopyOnWriteArrayList
@@ -288,6 +292,131 @@ class McpToolPolicyTest {
         server.close()
     }
 
+    @Test
+    fun `typed input errors give only bounded schema-owned hints in both wrappers`() = runBlocking {
+        for (structured in listOf(false, true)) {
+            val server = Server(
+                Implementation("test", "1"),
+                ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+            )
+            val audit = RecordingAuditSink()
+            server.bindToolRuntimePolicy(configFixture(), audit)
+            var calls = 0
+            if (structured) {
+                server.mcpStructuredTool<DecodeProbe, DecodeOutput>("decode probe", READ_ONLY_TOOL_ANNOTATIONS) {
+                    calls++
+                    DecodeOutput(count.toDouble())
+                }
+            } else {
+                server.mcpTool<DecodeProbe>("decode probe", READ_ONLY_TOOL_ANNOTATIONS) {
+                    calls++
+                    listOf(TextContent("ok"))
+                }
+            }
+            val connection = mockk<ClientConnection>(relaxed = true) {
+                every { sessionId } returns "decode-session"
+            }
+            suspend fun call(json: String?) = server.tools.getValue("decode_probe").handler(
+                connection,
+                CallToolRequest(CallToolRequestParams("decode_probe", json?.let { Json.parseToJsonElement(it).jsonObject })),
+            )
+            try {
+                val invalid = listOf(
+                    null to "MissingFieldException",
+                    """{"PRIVATE_KEY":"PRIVATE_VALUE"}""" to "JsonDecodingException",
+                    """{"required":"ok","count":"PRIVATE_VALUE"}""" to "JsonDecodingException",
+                    """{"required":"ok","mode":"PRIVATE_ENUM"}""" to "SerializationException",
+                    """{"required":"ok","nested":{}}""" to "MissingFieldException",
+                    """{"required":null}""" to "JsonDecodingException",
+                    """{"required":"ok","nested":[]}""" to "JsonDecodingException",
+                    """{"required":"ok","labels":{"PRIVATE_MAP_KEY":1}}""" to "JsonDecodingException",
+                    """{"required":"ok","nested":{"child":"ok","PRIVATE_NESTED_KEY":"PRIVATE_VALUE"}}""" to "JsonDecodingException",
+                )
+                for ((index, entry) in invalid.withIndex()) {
+                    val result = call(entry.first)
+                    val text = (result.content.single() as TextContent).text
+                    assertTrue(result.isError == true)
+                    assertNull(result.structuredContent)
+                    assertTrue(text.contains("this call's handler was not started"), text)
+                    assertTrue(text.contains("inputSchema"), text)
+                    assertTrue(text.length <= MAX_STRUCTURED_TOOL_ERROR_CHARS)
+                    assertFalse(text.contains("PRIVATE"), text)
+                    assertFalse(text.contains("JSON input"), text)
+                    assertEquals(index <= 1, text.contains("Missing required top-level fields: required."), text)
+                    assertEquals(index == 1, text.contains("Unknown top-level fields"), text)
+                    assertEquals(entry.second, audit.records.last().errorType)
+                    assertEquals("error", audit.records.last().outcome)
+                    assertEquals(0, calls)
+                }
+                assertFalse(audit.records.toString().contains("PRIVATE"))
+                val valid = call("""{"required":"ok","count":2,"mode":"FIRST","nested":{"child":"ok"},"labels":{"key":"value"}}""")
+                assertFalse(valid.isError == true)
+                assertEquals(structured, valid.structuredContent != null)
+                if (structured) assertEquals(JsonPrimitive(2.0), valid.structuredContent?.get("value"))
+                assertEquals(1, calls)
+                assertEquals("completed", audit.records.last().outcome)
+            } finally {
+                server.unbindToolRuntimePolicy()
+                server.close()
+            }
+        }
+    }
+
+    @Test
+    fun `typed tool gates handler errors output errors and cancellation are not decoding errors`() = runBlocking {
+        val config = configFixture().apply { emergencyReadOnlyMode = true }
+        val audit = RecordingAuditSink()
+        val server = Server(
+            Implementation("test", "1"),
+            ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+        )
+        server.bindToolRuntimePolicy(config, audit)
+        var calls = 0
+        server.mcpStructuredTool<DecodeProbe, DecodeOutput>("decode probe", PROJECT_MUTATION_TOOL_ANNOTATIONS) {
+            calls++
+            when (required) {
+                "handler" -> throw SerializationException("PRIVATE_HANDLER_VALUE")
+                "cancel" -> throw CancellationException("PRIVATE_CANCELLATION_VALUE")
+                else -> DecodeOutput(Double.NaN) // Default Json rejects this during output encoding, after the handler.
+            }
+        }
+        val connection = mockk<ClientConnection>(relaxed = true) {
+            every { sessionId } returns "decode-boundary-session"
+        }
+        suspend fun call(json: String) = server.tools.getValue("decode_probe").handler(
+            connection,
+            CallToolRequest(CallToolRequestParams("decode_probe", Json.parseToJsonElement(json).jsonObject)),
+        )
+        try {
+            val blocked = call("{}")
+            assertEquals("Error: MCP emergency read-only mode blocks this tool", (blocked.content.single() as TextContent).text)
+            assertTrue(blocked.isError == true)
+            assertEquals(0, calls)
+            assertEquals("blocked_read_only", audit.records.last().outcome)
+            config.emergencyReadOnlyMode = false
+            for ((input, errorType) in listOf("handler" to "SerializationException", "output" to "JsonEncodingException")) {
+                val result = call("""{"required":"$input"}""")
+                assertTrue(result.isError == true)
+                assertEquals("Error: $errorType", (result.content.single() as TextContent).text)
+                assertEquals(errorType, audit.records.last().errorType)
+            }
+            assertEquals(2, calls)
+            var cancelled = false
+            try {
+                call("""{"required":"cancel"}""")
+            } catch (_: CancellationException) {
+                cancelled = true
+            }
+            assertTrue(cancelled)
+            assertEquals(3, calls)
+            assertEquals("cancelled", audit.records.last().outcome)
+            assertFalse(audit.records.toString().contains("PRIVATE"))
+        } finally {
+            server.unbindToolRuntimePolicy()
+            server.close()
+        }
+    }
+
     private fun configFixture(): McpConfig {
         val storage = mutableMapOf<String, Any>()
         val persistedObject = mockk<PersistedObject>().apply {
@@ -309,6 +438,24 @@ class McpToolPolicyTest {
 
     @Serializable
     private data class AuditArgumentProbe(val allowed: String)
+
+    @Serializable
+    private data class DecodeProbe(
+        val required: String,
+        val count: Int = 1,
+        val mode: DecodeMode = DecodeMode.FIRST,
+        val nested: DecodeNested? = null,
+        val labels: Map<String, String> = emptyMap(),
+    )
+
+    @Serializable
+    private enum class DecodeMode { FIRST, SECOND }
+
+    @Serializable
+    private data class DecodeNested(val child: String)
+
+    @Serializable
+    private data class DecodeOutput(val value: Double)
 
     @Serializable
     private data class PageProbe(
