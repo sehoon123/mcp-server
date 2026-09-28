@@ -25,6 +25,9 @@ import net.portswigger.mcp.security.DataAccessType
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -71,6 +74,56 @@ class ScannerIssueSearchTest {
     @AfterEach
     fun tearDown() {
         DataAccessSecurity.approvalHandler = originalDataHandler
+    }
+
+    @Test
+    fun `issue search rejects URL and path hosts but preserves bare host forms`() = runBlocking {
+        for (host in listOf("https://PRIVATE_HOST/path", "//PRIVATE_HOST/path", "example.test/PRIVATE_PATH", "example.test\\PRIVATE_PATH")) {
+            val result = service.get(GetScannerIssues(host = host))
+            assertTrue(result.isError)
+            assertEquals(ScannerIssuePageStatus.INVALID_ARGUMENT, result.output.status)
+            assertEquals("host must be a hostname or IP address, not a URL or path", result.output.error)
+            assertEquals(0, result.output.scanned)
+            assertFalse(result.toString().contains("PRIVATE"))
+        }
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { api.siteMap() }
+
+        every { siteMap.issues() } returns emptyList()
+        for (host in listOf("EXAMPLE.TEST.", "localhost", "127.0.0.1", "::1", "[::1]", "fe80::1%en0", "bücher.example")) {
+            val result = service.get(GetScannerIssues(host = host)).output
+            assertEquals(ScannerIssuePageStatus.OK, result.status, host)
+            assertEquals(0, result.returned, host)
+            assertNull(result.error, host)
+        }
+    }
+
+    @Test
+    fun `page snapshot and delta cursor-selected URL hosts fail before acquisition`() = runBlocking {
+        for ((fixture, page) in listOf(
+            GOLDEN_SCANNER_PAGE_CURSOR to true,
+            GOLDEN_SCANNER_SNAPSHOT_CURSOR to false,
+            GOLDEN_SCANNER_DELTA_CURSOR to false,
+        )) {
+            val payload = Base64.getUrlDecoder().decode(fixture.substringBefore('.')).toString(Charsets.UTF_8)
+            assertFalse(payload.contains("\"host\":"))
+            // Legacy-shaped query with the existing fixtures' synthetic key, never a live cursor/key.
+            val legacyPayload = payload.replace("\"query\":{", "\"query\":{\"host\":\"https://private.test/path\",").toByteArray()
+            val signature = Mac.getInstance("HmacSHA256").run {
+                init(SecretKeySpec(ByteArray(32) { it.toByte() }, "HmacSHA256"))
+                doFinal(legacyPayload)
+            }
+            val encoder = Base64.getUrlEncoder().withoutPadding()
+            val cursor = encoder.encodeToString(legacyPayload) + "." + encoder.encodeToString(signature)
+            val input = if (page) GetScannerIssues(cursor = cursor) else GetScannerIssues(sinceSnapshotCursor = cursor)
+            val result = service.get(input)
+            assertTrue(result.isError)
+            assertEquals(ScannerIssuePageStatus.INVALID_ARGUMENT, result.output.status)
+            assertFalse(result.toString().contains("private.test"))
+            assertEquals(ScannerIssuePageStatus.INVALID_CURSOR, service.get(input.copy(host = "other.test")).output.status)
+        }
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { api.siteMap() }
     }
 
     @Test

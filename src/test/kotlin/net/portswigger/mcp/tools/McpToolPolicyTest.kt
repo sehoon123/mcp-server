@@ -397,7 +397,13 @@ class McpToolPolicyTest {
             for ((input, errorType) in listOf("handler" to "SerializationException", "output" to "JsonEncodingException")) {
                 val result = call("""{"required":"$input"}""")
                 assertTrue(result.isError == true)
-                assertEquals("Error: $errorType", (result.content.single() as TextContent).text)
+                val text = (result.content.single() as TextContent).text
+                assertTrue(text.contains(errorType), text)
+                assertTrue(text.contains("Tool outcome is unconfirmed; changes may already have occurred."), text)
+                assertTrue(text.contains("Do not retry automatically. Verify the actual outcome before any manual retry."), text)
+                assertFalse(text.contains("handler was not started"), text)
+                assertFalse(text.contains("PRIVATE"), text)
+                assertNull(result.structuredContent)
                 assertEquals(errorType, audit.records.last().errorType)
             }
             assertEquals(2, calls)
@@ -414,6 +420,64 @@ class McpToolPolicyTest {
         } finally {
             server.unbindToolRuntimePolicy()
             server.close()
+        }
+    }
+
+    @Test
+    fun `fallback errors retain privacy and conservative guidance across every registration style`() = runBlocking {
+        for (annotations in listOf(READ_ONLY_TOOL_ANNOTATIONS, PROJECT_MUTATION_TOOL_ANNOTATIONS, null)) {
+            for (style in 0..2) {
+                val server = Server(
+                    Implementation("test", "1"),
+                    ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools())),
+                )
+                val audit = RecordingAuditSink()
+                server.bindToolRuntimePolicy(configFixture(), audit)
+                var calls = 0
+                when (style) {
+                    0 -> server.mcpTool("decode_probe", "named probe", annotations) {
+                        calls++
+                        throw IllegalStateException("PRIVATE_HANDLER_VALUE")
+                    }
+                    1 -> server.mcpTool<DecodeProbe>("generic probe", annotations) {
+                        calls++
+                        if (required == "fail") throw IllegalStateException("PRIVATE_HANDLER_VALUE")
+                        listOf(TextContent("ok"))
+                    }
+                    2 -> server.mcpStructuredTool<DecodeProbe, DecodeOutput>("structured probe", annotations) {
+                        calls++
+                        DecodeOutput(Double.NaN)
+                    }
+                }
+                val connection = mockk<ClientConnection>(relaxed = true) {
+                    every { sessionId } returns "fallback-session"
+                }
+                try {
+                    val result = server.tools.getValue("decode_probe").handler(
+                        connection,
+                        CallToolRequest(CallToolRequestParams("decode_probe", buildJsonObject {
+                            put("required", JsonPrimitive("fail"))
+                        })),
+                    )
+                    val text = (result.content.single() as TextContent).text
+                    val readOnly = annotations?.readOnlyHint == true
+                    assertTrue(result.isError == true)
+                    assertNull(result.structuredContent)
+                    assertEquals(1, calls)
+                    assertEquals(readOnly, text.contains("Read failed to produce a usable result."), text)
+                    assertEquals(!readOnly, text.contains("Tool outcome is unconfirmed"), text)
+                    assertEquals(!readOnly, text.contains("Do not retry automatically"), text)
+                    assertEquals(!readOnly, text.contains("Verify the actual outcome before any manual retry"), text)
+                    assertFalse(text.contains("handler was not started"), text)
+                    assertFalse(text.contains("PRIVATE"), text)
+                    assertTrue(text.length <= MAX_STRUCTURED_TOOL_ERROR_CHARS)
+                    assertEquals("error", audit.records.single().outcome)
+                    assertEquals(if (style == 2) "JsonEncodingException" else "IllegalStateException", audit.records.single().errorType)
+                } finally {
+                    server.unbindToolRuntimePolicy()
+                    server.close()
+                }
+            }
         }
     }
 

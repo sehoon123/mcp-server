@@ -323,7 +323,7 @@ internal class HttpMessageSearchService(
                 )
             }
             val query = try {
-                normalizeQuery(input)
+                normalizeQuery(input).also { validateSearchHostFilter(it.host) }
             } catch (e: IllegalArgumentException) {
                 return repeated(
                     searchError(
@@ -498,7 +498,7 @@ internal class HttpMessageSearchService(
                     supplied
                 }
                 else -> cursor.query
-            }
+            }.also { validateSearchHostFilter(it.host) }
         } catch (e: IllegalArgumentException) {
             return searchError(HttpMessageSearchStatus.INVALID_ARGUMENT, e.message ?: "invalid search arguments")
         } catch (e: ExpectedSearchError) {
@@ -1328,6 +1328,14 @@ private fun NormalizedHttpSearchQuery.metadataIndexSources(): List<HttpMessageSo
         mimeTypes != null || inScopeOnly || hasResponse != null
     if (hasContentPredicate() || !newestFirst || !hasMetadataPredicate) return emptyList()
     return sources.filter { it == HttpMessageSource.PROXY || it == HttpMessageSource.ORGANIZER }
+}
+
+// Execution-only: tightening the shared preset normalizer would invalidate entire legacy envelopes.
+// ponytail: reject URL/path syntax only; full hostname validation needs separate compatibility review.
+internal fun validateSearchHostFilter(host: String?) {
+    require(host?.any { it == '/' || it == '\\' } != true) {
+        "host must be a hostname or IP address, not a URL or path"
+    }
 }
 
 internal fun validateHttpMetadataSearchSettings(input: SearchHttpMessages) {
