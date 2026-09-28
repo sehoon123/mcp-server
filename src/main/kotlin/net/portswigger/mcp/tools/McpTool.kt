@@ -314,9 +314,15 @@ internal suspend fun Server.executeRegisteredTool(
         CallToolResult(content = listOf(TextContent(e.guidance)), isError = true)
     } catch (e: Exception) {
         val summary = safeExceptionSummary(e)
+        val guidance = if (readOnly) {
+            "Read failed to produce a usable result."
+        } else {
+            "Tool outcome is unconfirmed; changes may already have occurred. " +
+                "Do not retry automatically. Verify the actual outcome before any manual retry."
+        }
         invocation.complete("error", e)
         CallToolResult(
-            content = listOf(TextContent("Error: $summary")),
+            content = listOf(TextContent("Error: $guidance ($summary)".take(MAX_STRUCTURED_TOOL_ERROR_CHARS))),
             isError = true,
         )
     } finally {

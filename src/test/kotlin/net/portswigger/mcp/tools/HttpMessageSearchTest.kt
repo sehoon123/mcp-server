@@ -14,6 +14,7 @@ import burp.api.montoya.project.Project
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.sitemap.SiteMap
+import io.mockk.clearMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -386,6 +387,69 @@ class HttpMessageSearchTest {
         assertEquals(1, acquisition.completed)
         assertEquals(0, acquisition.cancelled)
         assertEquals(0, metrics.getValue(HistoryPerformanceMetric.HTTP_SEARCH_PROCESSING).attempts)
+    }
+
+    @Test
+    fun `URL and path hosts fail direct and reference batch searches before access`() = runBlocking {
+        config.requireDataAccessApproval = true
+        DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+            override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean =
+                error("invalid host must not request data access")
+        }
+        val authorization = HttpMessageResolutionAuthorization("project-123", setOf(HttpMessageSource.PROXY), resolver)
+        for (host in listOf("https://PRIVATE_HOST/path", "//PRIVATE_HOST/path", "example.test/PRIVATE_PATH", "example.test\\PRIVATE_PATH")) {
+            val input = SearchHttpMessages(host = host)
+            val results = listOf(service.search(input)) + service.searchReferenceMetadataBatch(
+                listOf(SearchHttpMessages(host = "example.test"), input), authorization, resolver,
+            )
+            for (result in results) {
+                assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, result.status)
+                assertEquals("host must be a hostname or IP address, not a URL or path", result.error)
+                assertTrue(result.items.isEmpty())
+                assertEquals(0, result.scanned)
+                assertFalse(result.toString().contains("PRIVATE"))
+            }
+        }
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { api.proxy() }
+        verify(exactly = 0) { api.siteMap() }
+    }
+
+    @Test
+    fun `bare host forms still allow an ordinary zero-match result`() = runBlocking {
+        for (host in listOf("EXAMPLE.TEST.", "localhost", "127.0.0.1", "::1", "[::1]", "fe80::1%en0", "bücher.example")) {
+            val result = service.search(SearchHttpMessages(host = host))
+            assertEquals(HttpMessageSearchStatus.OK, result.status, host)
+            assertEquals(0, result.returned, host)
+            assertEquals(null, result.error, host)
+        }
+    }
+
+    @Test
+    fun `cursor-selected URL hosts are rejected without changing cursor mismatch precedence`() = runBlocking {
+        proxyHistory += proxyItem(1, "GET", "https://example.test/one", 200).item
+        proxyHistory += proxyItem(2, "GET", "https://example.test/two", 200).item
+        val cursor = assertNotNull(service.search(SearchHttpMessages(host = "example.test", limit = 1)).nextCursor)
+        val payload = Base64.getUrlDecoder().decode(cursor.substringBefore('.')).toString(Charsets.UTF_8)
+        assertTrue(payload.contains("\"host\":\"example.test\""))
+        // A legacy query fixture signed with this test service's synthetic key, not a live cursor/key.
+        val legacyPayload = payload.replace("\"host\":\"example.test\"", "\"host\":\"https://private.test/path\"").toByteArray()
+        val signature = Mac.getInstance("HmacSHA256").run {
+            init(SecretKeySpec(ByteArray(32) { 7 }, "HmacSHA256"))
+            doFinal(legacyPayload)
+        }
+        val encoder = Base64.getUrlEncoder().withoutPadding()
+        val legacyCursor = encoder.encodeToString(legacyPayload) + "." + encoder.encodeToString(signature)
+        clearMocks(project, proxy, answers = false)
+
+        val invalid = service.search(SearchHttpMessages(cursor = legacyCursor))
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, invalid.status)
+        assertFalse(invalid.toString().contains("private.test"))
+        val mismatched = service.search(SearchHttpMessages(cursor = cursor, host = "https://other.test/path"))
+        assertEquals(HttpMessageSearchStatus.INVALID_CURSOR, mismatched.status)
+        verify(exactly = 0) { project.id() }
+        verify(exactly = 0) { proxy.history() }
+        verify(exactly = 0) { proxy.history(any()) }
     }
 
     @Test

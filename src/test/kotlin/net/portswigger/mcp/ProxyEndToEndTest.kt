@@ -298,6 +298,42 @@ class ProxyEndToEndTest {
     }
 
     @Test
+    fun `proxy preserves private input-error guidance and a usable session after malformed arguments`() = runBlocking {
+        val cases = listOf(
+            "compare_http_messages" to mapOf("projectId" to "proxy-e2e-project"),
+            "compare_http_messages" to mapOf("projectId" to "PRIVATE_PROJECT", "PRIVATE_UNKNOWN_KEY" to "PRIVATE_VALUE"),
+            "search_http_messages" to mapOf("limit" to "PRIVATE_VALUE"),
+            "get_http_message" to mapOf("projectId" to "proxy-e2e-project", "ref" to mapOf("source" to "PRIVATE_ENUM", "id" to "1")),
+            "get_http_message" to mapOf("projectId" to "proxy-e2e-project", "ref" to mapOf("source" to "proxy")),
+            "get_http_message" to mapOf("projectId" to "proxy-e2e-project", "ref" to listOf("PRIVATE_VALUE")),
+            "get_http_message" to mapOf("projectId" to "proxy-e2e-project", "ref" to mapOf(
+                "source" to "proxy", "id" to "1", "PRIVATE_NESTED_KEY" to "PRIVATE_VALUE",
+            )),
+        )
+        for ((index, entry) in cases.withIndex()) {
+            val result = requireNotNull(client.callTool(entry.first, entry.second))
+            val text = assertInstanceOf(TextContent::class.java, result.content.single()).text
+            assertEquals(true, result.isError)
+            assertNull(result.structuredContent)
+            assertTrue(text.contains("this call's handler was not started"), text)
+            assertTrue(text.contains("inputSchema"), text)
+            assertTrue(text.length <= 512)
+            assertFalse(result.toString().contains("PRIVATE"), text)
+            assertFalse(text.contains("JSON input"), text)
+            assertFalse(text.contains("Tool outcome is unconfirmed"), text)
+            if (index <= 1) assertTrue(text.contains("Missing required top-level fields: refs."), text)
+            assertEquals(index == 1, text.contains("Unknown top-level fields"), text)
+        }
+        verify(exactly = 0) { bridgeProxy.history() }
+        verify(exactly = 0) { bridgeProxy.history(any()) }
+        client.ping()
+        val valid = requireNotNull(client.callTool("list_workflow_presets", mapOf("projectId" to "proxy-e2e-project")))
+        assertEquals(false, valid.isError)
+        assertEquals("ok", valid.structuredContent?.get("status")?.jsonPrimitive?.content)
+        assertTrue(proxyProcess.isAlive)
+    }
+
+    @Test
     fun `proxy should preserve structured history results`() {
         val proxy = mockk<Proxy>()
         val item = mockk<ProxyHttpRequestResponse>()

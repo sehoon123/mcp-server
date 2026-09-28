@@ -1,6 +1,7 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.persistence.PersistedObject
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -9,6 +10,7 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.presets.DeleteWorkflowPreset
 import net.portswigger.mcp.presets.ExecuteWorkflowPreset
 import net.portswigger.mcp.presets.ListWorkflowPresets
@@ -309,6 +311,41 @@ class WorkflowPresetServiceTest {
         assertTrue(compared.delegatedSuccess())
         assertEquals(refs, compareInput.captured.refs)
         assertEquals(HttpComparisonPart.REQUEST_HEADERS, compareInput.captured.part)
+    }
+
+    @Test
+    fun `legacy URL host preset stays manageable while only its execution fails`() = runBlocking {
+        val original = """{"version":1,"presets":[{"name":"legacy","definition":{"httpSearch":{"host":"https://PRIVATE_HOST/path"}}},{"name":"valid","definition":{"httpSearch":{"host":"example.test"}}}]}"""
+        var raw = original
+        val storage = mockk<PersistedObject>()
+        every { storage.getString("workflowPresetsV1") } answers { raw }
+        every { storage.setString("workflowPresetsV1", any()) } answers { raw = secondArg() }
+        val realStore = WorkflowPresetStore(storage)
+        val settings = mockk<PersistedObject>(relaxed = true)
+        every { settings.getBoolean(any()) } returns false
+        val config = McpConfig(settings, mockk(relaxed = true), net.portswigger.mcp.testPreferences())
+        val realService = WorkflowPresetService(api, realStore, HttpMessageSearchService(api, config), webSocket, comparison)
+        every { api.project().id() } returns "p"
+
+        val listed = realService.list(ListWorkflowPresets("p"))
+        assertEquals(WorkflowPresetStatus.OK, listed.status)
+        assertEquals(listOf("legacy", "valid"), listed.items.map { it.name })
+        val rejected = realService.execute(ExecuteWorkflowPreset("p", "legacy"), NO_TOOL_PROGRESS_REPORTER)
+        assertEquals(WorkflowPresetStatus.OK, rejected.status)
+        assertEquals(HttpMessageSearchStatus.INVALID_ARGUMENT, rejected.httpSearch?.status)
+        assertFalse(rejected.delegatedSuccess())
+        assertFalse(rejected.toString().contains("PRIVATE"))
+        assertEquals(original, raw)
+        verify(exactly = 0) { storage.setString(any(), any()) }
+        verify(exactly = 0) { api.proxy() }
+
+        every { api.proxy().history() } returns emptyList()
+        every { api.proxy().history(any()) } returns emptyList()
+        assertTrue(realService.execute(ExecuteWorkflowPreset("p", "valid"), NO_TOOL_PROGRESS_REPORTER).delegatedSuccess())
+        assertEquals(WorkflowPresetStatus.OK, realService.save(saveInput("p")).status)
+        assertEquals("https://PRIVATE_HOST/path", realStore.list().single { it.name == "legacy" }.definition.httpSearch?.host)
+        assertEquals(WorkflowPresetStatus.OK, realService.delete(DeleteWorkflowPreset("p", "legacy")).status)
+        assertEquals(listOf("one", "valid"), WorkflowPresetStore(storage).list().map { it.name })
     }
 
     @Test

@@ -326,7 +326,7 @@ internal class ScannerIssueSearchService(
         }
 
         val preparedModes = try {
-            if (input.sinceSnapshotCursor != null) {
+            val modes = if (input.sinceSnapshotCursor != null) {
                 val decoded = decodeSinceCursor(input.sinceSnapshotCursor)
                 val query = if (input.hasExplicitCursorQuery()) {
                     normalizeQuery(input).also {
@@ -359,6 +359,8 @@ internal class ScannerIssueSearchService(
             } else {
                 null to null
             }
+            validateSearchHostFilter(modes.first?.query?.host ?: modes.second?.query?.host)
+            modes
         } catch (e: IllegalArgumentException) {
             return responseError(
                 ScannerIssuePageStatus.INVALID_ARGUMENT,

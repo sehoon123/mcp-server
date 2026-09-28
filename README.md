@@ -205,11 +205,21 @@ such as `*****` are not preservation markers. This is guidance, not a new JSON r
 Argument decoding failures return `isError: true` with a bounded text hint, not a result matching the tool's output schema.
 The hint states that this call did not enter the handler, identifies missing top-level required fields and flags unknown
 top-level fields without echoing their names or values. For nested fields, types and enum values, consult `inputSchema`;
-raw parser messages and input excerpts are never returned. This does not classify handler/output failures as safe to retry,
-and does not change approval, project or uncertain-outcome rules.
+raw parser messages and input excerpts are never returned.
+
+Unhandled fallback errors distinguish annotated reads from other or unannotated tools. Reads report that no usable result
+was produced; other calls warn that the outcome is unconfirmed, changes may already exist, and automatic retry is forbidden.
+Verify the actual outcome before any manual retry. This is conservative guidance, not proof that execution started or a change happened:
+the fallback can also catch infrastructure failures. Explicit structured `retry`/`executionState` results, cancellation,
+emergency read-only, approval and project rules are unchanged; exception messages remain private.
 
 HTTP search and saved HTTP presets use Burp MIME labels such as `JSON` or `HTML`, not media types such as
-`application/json`. Host filters take the host alone, not a URL. These are input guidance, not new normalization or validation.
+`application/json`; no automatic MIME conversion is added. HTTP and Scanner issue searches reject slash/backslash URL or
+path syntax in `host` with `invalid_argument`, without echoing the input. Use a hostname or IP address alone. This is not
+full DNS/IP validation, URL extraction or DNS resolution. Cursor-selected filters are checked too; existing cursor-mismatch
+precedence remains. Stored preset validation is unchanged so old URL-host presets remain listable, editable and deletable.
+Executing one fails in its nested HTTP search result rather than making the entire preset store unreadable; inspect nested
+status or MCP `isError`, since the outer preset status can still be `ok`.
 
 ### Efficient agent reads (RC3)
 
