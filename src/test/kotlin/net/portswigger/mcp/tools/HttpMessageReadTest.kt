@@ -641,6 +641,77 @@ class HttpMessageReadTest {
         }
     }
 
+    @Test
+    fun `parameter and timing parts omit general metadata and reject incompatible selectors`() = runBlocking {
+        for (part in listOf("request_parameters", "timing")) {
+            val f = fixture(List(20) { "project-a" })
+            every { f.request.bodyOffset() } returns 32
+            every { f.request.parameters() } returns emptyList()
+            every { f.item.timingData() } returns mockk(relaxed = true)
+            val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = part)
+            val result = f.service.read(input)
+            assertNull(result.metadata)
+            assertNull(result.content)
+            if (part == "request_parameters") assertEquals(HttpParameterInventoryStatus.OK, result.parameterInventory?.status)
+            verify(exactly = 0) { f.request.url(); f.request.httpService(); f.request.headers(); f.item.annotations(); f.item.time() }
+            if (part == "timing") verify(exactly = 0) { f.request.body(); f.request.parameters() }
+            for (invalid in listOf(input.copy(offset = 1), input.copy(encoding = "base64"),
+                input.copy(headerName = "Cookie"), input.copy(jsonPointer = ""))) {
+                assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, f.service.read(invalid).status)
+            }
+            verify(exactly = 1) { f.proxy.history(any()) }
+        }
+    }
+
+    @Test
+    fun `native Proxy timing is selected without resending and unavailable timing is explicit`() = runBlocking {
+        val f = fixture(List(20) { "project-a" })
+        val timing = mockk<burp.api.montoya.http.handler.TimingData>()
+        every { timing.timeRequestSent() } returns ZonedDateTime.parse("2026-01-01T09:00:00+09:00")
+        every { timing.timeBetweenRequestSentAndStartOfResponse() } returns java.time.Duration.ofMillis(12)
+        every { timing.timeBetweenRequestSentAndEndOfResponse() } returns null
+        every { f.item.timingData() } returns timing
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "timing")
+        val result = f.service.read(input)
+        assertEquals(HttpMessageReadStatus.OK, result.status)
+        assertEquals(HttpTimingSummary("2026-01-01T00:00:00Z", 12, null), result.timing)
+        every { f.item.timingData() } returns null
+        assertEquals(HttpMessageReadStatus.PART_UNAVAILABLE, f.service.read(input).status)
+        every { f.item.timingData() } throws IllegalStateException("PRIVATE_TIMING")
+        val failed = f.service.read(input)
+        assertEquals(HttpMessageReadStatus.PART_UNAVAILABLE, failed.status)
+        assertFalse(Json.encodeToString(failed).contains("PRIVATE_TIMING"))
+        verify(exactly = 0) { f.api.http() }
+    }
+
+    @Test
+    fun `new observation parts preserve source approvals and final project fence`() = runBlocking {
+        for (part in listOf("request_parameters", "timing")) {
+            val f = fixture(listOf("project-a", "project-a", "project-a", "project-b"))
+            every { f.request.bodyOffset() } returns 32
+            every { f.request.parameters() } returns emptyList()
+            every { f.item.timingData() } returns null
+            val result = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = part))
+            assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, result.status)
+            assertNull(result.parameterInventory)
+            assertNull(result.timing)
+        }
+        val previous = DataAccessSecurity.approvalHandler
+        try {
+            DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+                override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig): Boolean = false
+            }
+            for (part in listOf("request_parameters", "timing")) {
+                val f = fixture(List(10) { "project-a" }, requireApproval = true)
+                val result = f.service.read(GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = part))
+                assertEquals(HttpMessageReadStatus.ACCESS_DENIED, result.status)
+                verify(exactly = 0) { f.proxy.history(any()) }
+            }
+        } finally {
+            DataAccessSecurity.approvalHandler = previous
+        }
+    }
+
     private fun header(name: String, value: String): HttpHeader = mockk<HttpHeader>().also {
         every { it.name() } returns name
         every { it.value() } returns value

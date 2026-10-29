@@ -341,6 +341,10 @@ internal fun formatMcpDiagnostics(
     edtWatchdog: EdtWatchdogSnapshot = EdtWatchdogSnapshot(),
 ): String = buildString {
     appendLine("State: ${diagnostics.state}")
+    diagnostics.httpRateLimit?.let { snapshot ->
+        appendLine("Global HTTP limit: ${if (snapshot.enabled) "ON" else "OFF"}, ${snapshot.requestsPerSecond} requests/second")
+        appendLine(formatHttpRateLimitStatistics(snapshot))
+    }
     appendLine("Endpoint: ${diagnostics.endpoint ?: "not bound"}")
     appendLine("Server: ${ProductIdentity.MCP_SERVER_NAME} ${diagnostics.serverVersion}")
     appendLine("Loaded artifact SHA-256: ${diagnostics.loadedArtifactSha256 ?: "unavailable"}")

@@ -326,6 +326,7 @@ data class HttpActionResponseSummary(
     val httpVersion: String,
     val bodyBytes: Int,
     val body: HistoryContentSlice? = null,
+    val timing: HttpTimingSummary? = null,
 )
 
 @Serializable
@@ -476,7 +477,9 @@ internal class HttpMessageActionService(
         )?.let { return it }
         var summaryError = siteMapRecordingWarning(api, response)
         val responseSummary = try {
-            response?.response()?.toActionSummary(bodyLimit, bodyEncoding)
+            response?.response()?.toActionSummary(bodyLimit, bodyEncoding)?.copy(
+                timing = readHttpTiming { response.timingData().orElse(null) },
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -853,6 +853,45 @@ class HttpMessageActionsTest {
     }
 
     @Test
+    fun `optional replay timing preserves completed response on native telemetry failure`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(10)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            val exchange = mockk<HttpRequestResponse>()
+            val response = mockk<HttpResponse>()
+            val timing = mockk<burp.api.montoya.http.handler.TimingData>()
+            every { api.http() } returns http
+            every { http.sendRequest(fixture.request, options) } returns exchange
+            every { exchange.response() } returns response
+            every { response.body() } returns montoyaBytes("")
+            every { response.statusCode() } returns 200
+            every { response.mimeType() } returns MimeType.JSON
+            every { response.httpVersion() } returns "HTTP/1.1"
+            every { timing.timeRequestSent() } returns java.time.ZonedDateTime.parse("2026-01-01T00:00:00Z")
+            every { timing.timeBetweenRequestSentAndStartOfResponse() } returns java.time.Duration.ofMillis(12)
+            every { timing.timeBetweenRequestSentAndEndOfResponse() } returns java.time.Duration.ofMillis(34)
+            for (mode in listOf("available", "absent", "failure")) {
+                every { exchange.timingData() } answers {
+                    when (mode) {
+                        "available" -> java.util.Optional.of(timing)
+                        "absent" -> java.util.Optional.empty()
+                        else -> throw IllegalStateException("PRIVATE_TIMING")
+                    }
+                }
+                val result = service.send(SendHttpRequestFromId("project-123",
+                    HttpMessageReference(HttpMessageSource.PROXY, "10"), responseBodyLimit = 0))
+                assertEquals(HttpMessageActionStatus.OK, result.status)
+                assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+                assertEquals(200, result.response?.statusCode)
+                assertEquals(if (mode == "available") 12L else null, result.response?.timing?.responseStartMillis)
+                assertFalse(result.error.orEmpty().contains("PRIVATE_TIMING"))
+            }
+            verify(exactly = 3) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
     fun `routing session grant cannot bypass outbound HTTP approval`() = runBlocking {
         withMockedRequestOptions { options ->
             config.requireRequestActionApproval = true

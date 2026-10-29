@@ -34,13 +34,13 @@ data class GetHttpMessage(
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(
         description = "HTTP message section to return.",
-        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body", "response_mime"],
+        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body", "response_mime", "request_parameters", "timing"],
         defaultJson = "\"metadata\"",
     )
     val part: String? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0")
     val offset: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum content bytes to return.", minimum = 1, maximum = 262144, defaultJson = "8192")
+    @JsonSchemaMetadata(description = "Maximum content bytes; also bounds complete successful parameterInventory JSON.", minimum = 1, maximum = 262144, defaultJson = "8192")
     val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
@@ -164,6 +164,8 @@ data class GetHttpMessageResult(
     val jsonSelection: HttpJsonSelection? = null,
     val headerSelection: HttpHeaderSelection? = null,
     val mimeAnalysis: HttpMimeAnalysis? = null,
+    val parameterInventory: HttpParameterInventory? = null,
+    val timing: HttpTimingSummary? = null,
     val error: String? = null,
 )
 
@@ -197,8 +199,8 @@ internal class HttpMessageReadService(
                 require(input.part == "request_headers" || input.part == "response_headers") { "headerName requires explicit request_headers or response_headers" }
                 require(normalizedOffset == 0 && normalizedEncoding == "text") { "headerName requires offset 0 and text encoding" }
             }
-            if (normalizedPart == "response_mime") {
-                require(normalizedOffset == 0 && normalizedEncoding == "text") { "response_mime requires offset 0 and text encoding" }
+            if (normalizedPart in setOf("response_mime", "request_parameters", "timing")) {
+                require(normalizedOffset == 0 && normalizedEncoding == "text") { "$normalizedPart requires offset 0 and text encoding" }
             }
         } catch (e: IllegalArgumentException) {
             currentCoroutineContext().ensureActive()
@@ -215,10 +217,11 @@ internal class HttpMessageReadService(
             val resolution = resolver.resolve(
                 input.projectId,
                 input.ref,
-                sourceMetadata = if (normalizedJsonPointer == null && normalizedHeaderName == null && normalizedPart != "response_mime") {
-                    HttpSourceMetadataSelection.FULL
-                } else {
-                    HttpSourceMetadataSelection.NONE
+                sourceMetadata = when {
+                    normalizedPart == "timing" -> HttpSourceMetadataSelection.TIMING
+                    normalizedJsonPointer != null || normalizedHeaderName != null ||
+                        normalizedPart in setOf("response_mime", "request_parameters") -> HttpSourceMetadataSelection.NONE
+                    else -> HttpSourceMetadataSelection.FULL
                 },
             ).also { currentCoroutineContext().ensureActive() }
         ) {
@@ -305,6 +308,19 @@ private suspend fun readResolved(
 ): GetHttpMessageResult {
     val request = resolved.request
     val response = resolved.response
+    if (part == "request_parameters" || part == "timing") {
+        val timing = resolved.sourceMetadata?.timing
+        val unavailable = part == "timing" && timing == null
+        return GetHttpMessageResult(
+            status = if (unavailable) HttpMessageReadStatus.PART_UNAVAILABLE else HttpMessageReadStatus.OK,
+            projectId = projectId,
+            ref = resolved.ref,
+            part = part,
+            parameterInventory = if (part == "request_parameters") inspectHttpParameters(request, limit) else null,
+            timing = timing,
+            error = if (unavailable) "Native timing is unavailable" else null,
+        )
+    }
     if (headerName != null || part == "response_mime") {
         val message = if (part == "request_headers") request else response
         return GetHttpMessageResult(

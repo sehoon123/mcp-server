@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.portswigger.mcp.EdtWatchdogSnapshot
+import net.portswigger.mcp.HttpRateLimitSnapshot
 import net.portswigger.mcp.McpDiagnosticsSnapshot
 import net.portswigger.mcp.McpServerStartupException
 import net.portswigger.mcp.ProductIdentity
@@ -52,6 +53,7 @@ class ConfigUi internal constructor(
     private val connectionDoctor: ConnectionDoctor = ConnectionDoctor(),
     private val workflowPresetManager: WorkflowPresetManagement? = null,
     private val cleanupErrorReporter: (String) -> Unit = {},
+    private val httpRateLimitProvider: (() -> HttpRateLimitSnapshot?)? = null,
 ) {
     constructor(config: McpConfig, providers: List<Provider>) : this(
         config = config,
@@ -105,6 +107,7 @@ class ConfigUi internal constructor(
     private lateinit var advancedOptionsPanel: AdvancedOptionsPanel
     private lateinit var autoApproveTargetsPanel: AutoApproveTargetsPanel
     private lateinit var diagnosticsPanel: DiagnosticsPanel
+    private lateinit var httpRateLimitPanel: HttpRateLimitPanel
     private lateinit var workflowPresetPanel: WorkflowPresetPanel
     private lateinit var clientSetupPanel: ClientSetupPanel
 
@@ -140,6 +143,7 @@ class ConfigUi internal constructor(
     }
 
     private fun initializeComponents() {
+        httpRateLimitPanel = HttpRateLimitPanel(config, httpRateLimitProvider)
         serverConfigurationPanel = ServerConfigurationPanel(
             config = config, enabledToggle = enabledToggle, validationErrorLabel = validationErrorLabel
         )
@@ -255,6 +259,9 @@ class ConfigUi internal constructor(
         }
         if (::diagnosticsPanel.isInitialized) {
             cleanupStep(diagnosticsPanel::cleanup)
+        }
+        if (::httpRateLimitPanel.isInitialized) {
+            cleanupStep(httpRateLimitPanel::cleanup)
         }
         if (::workflowPresetPanel.isInitialized) {
             cleanupStep(workflowPresetPanel::cleanup)
@@ -448,7 +455,6 @@ class ConfigUi internal constructor(
             verticalScrollBar.unitIncrement = 16
         }
 
-        val httpRateLimitPanel = HttpRateLimitPanel(config)
         rightPanelContent.add(httpRateLimitPanel)
         rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
         rightPanelContent.add(serverConfigurationPanel)

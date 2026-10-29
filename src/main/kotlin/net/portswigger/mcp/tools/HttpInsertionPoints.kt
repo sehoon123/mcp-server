@@ -9,8 +9,8 @@ import net.portswigger.mcp.schema.JsonSchemaMetadata
 import java.nio.charset.StandardCharsets
 
 internal const val MAX_HTTP_INSERTION_POINTS = 32
-private const val MAX_INSERTION_POINT_NAME_CHARS = 512
-private const val MAX_INSERTION_POINT_OCCURRENCE = 31
+internal const val MAX_INSERTION_POINT_NAME_CHARS = 512
+internal const val MAX_INSERTION_POINT_OCCURRENCE = 31
 private val INSERTION_HEADER_NAME_PATTERN = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 @Serializable
@@ -150,9 +150,12 @@ private data class ResolvedInsertionOffset(
     val label: String,
 )
 
+internal fun isValidInsertionPointName(name: String): Boolean =
+    name.length in 1..MAX_INSERTION_POINT_NAME_CHARS && name.none(Char::isISOControl)
+
 private fun requireSelectorName(selector: HttpInsertionPointSelector, index: Int): String {
     val name = selector.name ?: throw HttpInsertionPointValidationException("insertionPoints[$index].name is required")
-    requireInsertionPointInput(name.length in 1..MAX_INSERTION_POINT_NAME_CHARS && name.none(Char::isISOControl)) {
+    requireInsertionPointInput(isValidInsertionPointName(name)) {
         "insertionPoints[$index].name is empty, too long, or contains control characters"
     }
     return name

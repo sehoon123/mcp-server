@@ -79,7 +79,11 @@ class McpServerIntegrationTest {
         override fun exportJsonLines(limit: Int): String = ""
         override fun close() = Unit
     }
-    private val serverManager = KtorServerManager(api, auditSink)
+    private val rateSnapshot = AtomicReference<HttpRateLimitSnapshot?>(null)
+    private val serverManager = KtorServerManager(api, auditSink,
+        workflowPresetStore = net.portswigger.mcp.presets.WorkflowPresetStore(api.persistence().extensionData()),
+        httpRateLimitProvider = rateSnapshot::get,
+    )
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
     private val preferences = mockk<Preferences>(relaxed = true)
@@ -685,6 +689,42 @@ class McpServerIntegrationTest {
         val mimePrompt = client.getPrompt("analyze_http_without_sending", mapOf("httpReference" to mimeUri))
         assertTrue(assertIs<TextContent>(mimePrompt.messages.single().content).text.contains(mimeUri))
 
+        val parameter = mockk<burp.api.montoya.http.message.params.ParsedHttpParameter>()
+        every { parameter.name() } returns "proof_parameter"
+        every { parameter.type() } returns burp.api.montoya.http.message.params.HttpParameterType.URL
+        every { parameter.valueOffsets().startIndexInclusive() } returns 4
+        every { parameter.valueOffsets().endIndexExclusive() } returns 6
+        every { request.parameters() } returns listOf(parameter)
+        val timing = mockk<burp.api.montoya.http.handler.TimingData>()
+        every { timing.timeRequestSent() } returns ZonedDateTime.parse("2026-01-01T00:00:00Z")
+        every { timing.timeBetweenRequestSentAndStartOfResponse() } returns Duration.ofMillis(12)
+        every { timing.timeBetweenRequestSentAndEndOfResponse() } returns Duration.ofMillis(34)
+        every { item.timingData() } returns timing
+        for ((part, field) in listOf("request_parameters" to "parameterInventory", "timing" to "timing")) {
+            val uri = "burp://http/integration-project/proxy/42/$part"
+            val resource = client.readResource(uri).singleTextResourceJson()
+            val tool = requireNotNull(client.callTool("get_http_message", mapOf(
+                "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"), "part" to part,
+            )))
+            val toolJson = tool.singleTextToolJson()
+            assertEquals("ok", resource.getValue("status").jsonPrimitive.content)
+            if (part == "request_parameters") {
+                val resourceParameter = resource.getValue(field).jsonObject.getValue("parameters").jsonArray.single().jsonObject
+                val toolParameter = toolJson.getValue(field).jsonObject.getValue("parameters").jsonArray.single().jsonObject
+                assertEquals(resourceParameter, toolParameter.filterValues { it != kotlinx.serialization.json.JsonNull })
+                assertEquals("proof_parameter", toolParameter.getValue("name").jsonPrimitive.content)
+            } else {
+                assertEquals(resource.getValue(field), toolJson.getValue(field))
+            }
+            assertEquals(tool.structuredContent, toolJson)
+            assertFalse(toolJson.containsKey("metadata"))
+            assertFalse(toolJson.containsKey("content"))
+            val prompt = client.getPrompt("analyze_http_without_sending", mapOf("httpReference" to uri))
+            assertTrue(assertIs<TextContent>(prompt.messages.single().content).text.contains(uri))
+        }
+        assertFalse(auditRecords.any { it.toString().contains("proof_parameter") })
+        verify(exactly = 0) { parameter.value(); parameter.nameOffsets() }
+
         val selected = mockk<burp.api.montoya.http.message.HttpHeader>()
         every { selected.name() } returns "X-Selected"
         every { selected.value() } returns "selected-only"
@@ -699,6 +739,21 @@ class McpServerIntegrationTest {
         assertFalse(headerJson.containsKey("content"))
         assertFalse(headerJson.containsKey("metadata"))
         assertFalse(auditRecords.any { it.toString().contains("selected-only") })
+    }
+
+    @Test
+    fun `diagnostics resource includes the shared secret-free HTTP rate snapshot`() = runBlocking {
+        val snapshot = HttpRateLimitSnapshot(true, 10, false, 42, 9, 3, 20, 12.25, 35.5, 2)
+        rateSnapshot.set(snapshot)
+        client.connectToServer("http://127.0.0.1:${testPort}/mcp")
+        val result = client.readResource(DIAGNOSTICS_RESOURCE_URI).singleTextResourceJson()
+        val rate = result.getValue("diagnostics").jsonObject.getValue("httpRateLimit").jsonObject
+        assertEquals("42", rate.getValue("pacedAdmissions").jsonPrimitive.content)
+        assertEquals("3", rate.getValue("waitingRequests").jsonPrimitive.content)
+        assertEquals(snapshot, serverManager.diagnostics().httpRateLimit)
+        assertFalse(rate.toString().contains(testBearerToken))
+        assertEquals(setOf("enabled", "requestsPerSecond", "closed", "pacedAdmissions", "lastCompleteSecondAdmissions",
+            "waitingRequests", "finishedWaits", "averageWaitMillis", "maxWaitMillis", "interruptedRequests"), rate.keys)
     }
 
     @Test

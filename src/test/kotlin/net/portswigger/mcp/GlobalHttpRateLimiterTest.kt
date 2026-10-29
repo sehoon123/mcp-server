@@ -93,6 +93,8 @@ class GlobalHttpRateLimiterTest {
             futures.forEach { it.get(5, TimeUnit.SECONDS) }
             assertTrue(System.nanoTime() - before >= TimeUnit.MILLISECONDS.toNanos(350),
                 "Eight requests at 20 RPS must span at least seven 50ms intervals")
+            assertEquals(8L, limiter.snapshot().pacedAdmissions)
+            assertEquals(0, limiter.snapshot().waitingRequests)
         } finally {
             pool.shutdownNow()
         }
@@ -185,6 +187,88 @@ class GlobalHttpRateLimiterTest {
             waiter.interrupt()
             waiter.join(1000)
         }
+    }
+
+    @Test
+    fun `snapshot reports complete monotonic buckets not stale idle traffic or disabled passes`() {
+        limiter.close()
+        val clock = java.util.concurrent.atomic.AtomicLong(0)
+        limiter = GlobalHttpRateLimiter(config, clock::get)
+        limiter.awaitPermit()
+        assertEquals(0L, limiter.snapshot().pacedAdmissions)
+        assertEquals(null, limiter.snapshot().lastCompleteSecondAdmissions)
+        config.httpRequestsPerSecond = 1000
+        config.httpRateLimitEnabled = true
+        limiter.awaitPermit()
+        clock.set(1_000_000)
+        repeat(10) { limiter.snapshot() }
+        limiter.awaitPermit()
+        assertEquals(2L, limiter.snapshot().pacedAdmissions)
+        clock.set(1_000_000_000)
+        repeat(10) { assertEquals(2L, limiter.snapshot().lastCompleteSecondAdmissions) }
+        limiter.awaitPermit()
+        assertEquals(2L, limiter.snapshot().lastCompleteSecondAdmissions)
+        clock.set(2_000_000_000)
+        assertEquals(1L, limiter.snapshot().lastCompleteSecondAdmissions)
+        clock.set(5_000_000_000)
+        assertEquals(0L, limiter.snapshot().lastCompleteSecondAdmissions)
+        config.httpRateLimitEnabled = false
+        limiter.awaitPermit()
+        assertEquals(3L, limiter.snapshot().pacedAdmissions)
+        limiter.close()
+        assertTrue(limiter.snapshot().closed)
+    }
+
+    @Test
+    fun `finished wait accounting includes interruption disable and close without counting extra admissions`() {
+        for (exit in listOf("interrupt", "disable", "close")) {
+            limiter.close()
+            config.httpRequestsPerSecond = 1
+            config.httpRateLimitEnabled = true
+            limiter = GlobalHttpRateLimiter(config)
+            limiter.awaitPermit()
+            val waiter = thread { runCatching { limiter.awaitPermit() } }
+            try {
+                awaitWaiting(waiter)
+                val pending = limiter.snapshot()
+                assertEquals(1, pending.waitingRequests)
+                assertEquals(0L, pending.finishedWaits)
+                assertEquals(1L, pending.pacedAdmissions)
+                when (exit) {
+                    "interrupt" -> waiter.interrupt()
+                    "disable" -> config.httpRateLimitEnabled = false
+                    else -> limiter.close()
+                }
+                waiter.join(1000)
+                assertFalse(waiter.isAlive)
+                val finished = limiter.snapshot()
+                assertEquals(0, finished.waitingRequests)
+                assertEquals(1L, finished.finishedWaits)
+                assertEquals(1L, finished.pacedAdmissions)
+                assertTrue(finished.averageWaitMillis > 0)
+                assertEquals(finished.averageWaitMillis, finished.maxWaitMillis)
+                assertEquals(if (exit == "interrupt") 1L else 0L, finished.interruptedRequests)
+            } finally {
+                waiter.interrupt()
+                waiter.join(1000)
+            }
+        }
+    }
+
+    @Test
+    fun `interruption before lock acquisition is counted without a condition wait`() {
+        config.httpRateLimitEnabled = true
+        Thread.currentThread().interrupt()
+        try {
+            assertSame(dropped, limiter.handleHttpRequestToBeSent(mockk(relaxed = true)))
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+        assertEquals(1L, limiter.snapshot().interruptedRequests)
+        assertEquals(0L, limiter.snapshot().pacedAdmissions)
+        assertEquals(0L, limiter.snapshot().finishedWaits)
+        assertEquals(0, limiter.snapshot().waitingRequests)
     }
 
     private fun awaitWaiting(worker: Thread) {

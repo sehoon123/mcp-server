@@ -78,6 +78,38 @@ class KtorServerManagerLifecycleTest {
     }
 
     @Test
+    fun `global HTTP statistics survive listener restart and remain available when MCP is stopped`() {
+        val logging = mockk<Logging>(relaxed = true)
+        val api = mockApi(logging)
+        val config = config(ServerSocket(0).use { it.localPort }, logging)
+        config.httpRateLimitEnabled = true
+        val limiter = GlobalHttpRateLimiter(config)
+        val manager = KtorServerManager(api, NoOpMcpAuditSink,
+            workflowPresetStore = WorkflowPresetStore(mockk(relaxed = true)),
+            httpRateLimitProvider = limiter::snapshot)
+        val states = LinkedBlockingQueue<ServerState>()
+        try {
+            limiter.awaitPermit()
+            assertEquals(1L, manager.diagnostics().httpRateLimit?.pacedAdmissions)
+            repeat(2) {
+                states.clear()
+                startAndAwaitRunning(manager, config, states)
+                assertEquals(1L, manager.diagnostics().httpRateLimit?.pacedAdmissions)
+                states.clear()
+                manager.stop(states::add)
+                assertInstanceOf(ServerState.Stopping::class.java, states.poll(5, TimeUnit.SECONDS))
+                assertInstanceOf(ServerState.Stopped::class.java, states.poll(10, TimeUnit.SECONDS))
+                assertEquals(1L, manager.diagnostics().httpRateLimit?.pacedAdmissions)
+            }
+            assertFalse(limiter.snapshot().closed)
+        } finally {
+            manager.shutdown()
+            limiter.close()
+            config.cleanup()
+        }
+    }
+
+    @Test
     fun `shutdown queued during startup leaves no listener or failed lifecycle state`() {
         val port = ServerSocket(0).use { it.localPort }
         val logging = mockk<Logging>(relaxed = true)

@@ -321,6 +321,36 @@ class HttpMessageResolverBatchTest {
         verify(exactly = 1) { fixture.siteMap.requestResponses() }
     }
 
+    @Test
+    fun `timing selection uses each native source while ordinary resolution never requests timing`() = runBlocking {
+        val proxy = proxyItem(1)
+        val organizer = organizerItem(2)
+        val site = siteMapItem("/timing")
+        val f = fixture(proxyItems = listOf(proxy), organizerItems = listOf(organizer), siteMapAnswer = { listOf(site) })
+        val refs = listOf(HttpMessageReference(HttpMessageSource.PROXY, "1"),
+            HttpMessageReference(HttpMessageSource.ORGANIZER, "2"),
+            HttpMessageReference(HttpMessageSource.SITE_MAP, stableSiteMapId("project-one", 0, site)))
+        assertIs<HttpMessageBatchResolution.Found>(f.resolver.resolveAll("project-one", refs))
+        verify(exactly = 0) { proxy.timingData(); organizer.timingData(); site.timingData() }
+        val timing = mockk<burp.api.montoya.http.handler.TimingData>()
+        every { timing.timeRequestSent() } returns java.time.ZonedDateTime.parse("2026-01-01T00:00:00Z")
+        every { timing.timeBetweenRequestSentAndStartOfResponse() } returns java.time.Duration.ofMillis(1)
+        every { timing.timeBetweenRequestSentAndEndOfResponse() } returns java.time.Duration.ofMillis(2)
+        every { proxy.timingData() } returns timing
+        every { organizer.timingData() } returns java.util.Optional.of(timing)
+        every { site.timingData() } returns java.util.Optional.of(timing)
+        val found = assertIs<HttpMessageBatchResolution.Found>(f.resolver.resolveAll("project-one", refs,
+            sourceMetadata = HttpSourceMetadataSelection.TIMING))
+        assertEquals(List(3) { HttpTimingSummary("2026-01-01T00:00:00Z", 1, 2) }, found.messages.map { it.sourceMetadata?.timing })
+        verify(exactly = 0) { proxy.annotations(); organizer.annotations(); site.annotations() }
+        every { proxy.timingData() } returns null
+        every { organizer.timingData() } returns java.util.Optional.empty()
+        every { site.timingData() } throws IllegalStateException("PRIVATE_SENTINEL")
+        val absent = assertIs<HttpMessageBatchResolution.Found>(f.resolver.resolveAll("project-one", refs,
+            sourceMetadata = HttpSourceMetadataSelection.TIMING))
+        assertEquals(List(3) { null }, absent.messages.map { it.sourceMetadata?.timing })
+    }
+
     private fun fixture(
         proxyItems: List<ProxyHttpRequestResponse> = emptyList(),
         organizerItems: List<OrganizerItem> = emptyList(),

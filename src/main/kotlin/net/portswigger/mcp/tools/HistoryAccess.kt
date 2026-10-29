@@ -31,6 +31,8 @@ private val HTTP_MESSAGE_PARTS = setOf(
     "response_headers",
     "response_body",
     "response_mime",
+    "request_parameters",
+    "timing",
 )
 private val SCANNER_ISSUE_FIELDS = setOf(
     "metadata",
@@ -362,7 +364,7 @@ internal fun isCanonicalHttpPart(part: String): Boolean = part in HTTP_MESSAGE_P
 internal fun normalizeHttpPart(part: String?): String {
     val normalized = part?.trim()?.lowercase()?.replace('-', '_') ?: "metadata"
     require(isCanonicalHttpPart(normalized)) {
-        "part must be metadata, request, request_headers, request_body, response, response_headers, response_body, or response_mime"
+        "part must be metadata, request, request_headers, request_body, response, response_headers, response_body, response_mime, request_parameters, or timing"
     }
     return normalized
 }

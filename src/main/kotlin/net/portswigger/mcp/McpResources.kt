@@ -127,7 +127,7 @@ internal fun Server.registerMcpResources(
                 uri = DIAGNOSTICS_RESOURCE_URI,
                 name = "burp_diagnostics",
                 title = "Burp diagnostics",
-                description = "Secret-free aggregate listener, transport/session, and value-free history timing snapshot. status=ok means the snapshot was read, not proof of listener health, external-client compatibility, or release readiness. Inspect diagnostics.state and diagnostics.lastError; aggregate counters are not a per-session authorization record.",
+                description = "Secret-free aggregate listener, transport/session, history timing and extension-lifetime global HTTP pacing snapshot. status=ok means the snapshot was read, not proof of listener health, external-client compatibility, or release readiness. Inspect diagnostics.state and diagnostics.lastError; aggregate counters are not a per-session authorization record.",
                 mimeType = RESOURCE_MIME_TYPE,
             ),
         ) { request ->
