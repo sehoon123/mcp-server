@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test
 import java.awt.Component
 import java.awt.Container
 import javax.swing.JButton
+import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JTable
 import javax.swing.JTextArea
@@ -162,6 +163,66 @@ class AuditActivityPanelTest {
         } finally {
             panel.cleanup()
         }
+    }
+
+    @Test
+    fun `visible export preserves field filters numeric sort column order and displayed UTC without details`() = onEdt {
+        val panel = AuditActivityPanel()
+        val table = descendants(panel).filterIsInstance<JTable>().single()
+        val filter = descendants(panel).filterIsInstance<JTextField>().single()
+        val field = descendants(panel).filterIsInstance<JComboBox<*>>().single()
+        panel.refresh(listOf(record(1000, "match", 20), record(2000, "second", 2).copy(outcome = "match"), record(3000, "match", 3)))
+        filter.text = "MATCH"
+        assertEquals(3, table.rowCount)
+        field.selectedIndex = 1
+        assertEquals(2, table.rowCount)
+        table.rowSorter.sortKeys = listOf(RowSorter.SortKey(3, SortOrder.ASCENDING))
+        table.moveColumn(3, 0)
+        val csv = panel.exportVisible(AuditExportFormat.CSV)
+        val rows = csv.split("\r\n").filter(String::isNotEmpty)
+        assertTrue(rows[0].startsWith("\"Duration (ms)\",\"Time (UTC)\""))
+        assertTrue(rows[1].startsWith("\"3\",\"1970-01-01T00:00:03Z\""))
+        assertTrue(rows[2].startsWith("\"20\",\"1970-01-01T00:00:01Z\""))
+        assertFalse(csv.contains("second"))
+        assertFalse(csv.contains("argumentKeys"))
+        assertFalse(csv.contains("allow_once"))
+        val html = panel.exportVisible(AuditExportFormat.HTML)
+        assertTrue(html.indexOf("<td>3</td>") < html.indexOf("<td>20</td>"))
+        field.selectedIndex = 2
+        assertEquals(1, table.rowCount)
+        assertTrue(panel.exportVisible(AuditExportFormat.CSV).contains("second"))
+        field.selectedIndex = 3
+        assertEquals(0, table.rowCount)
+        assertTrue(panel.exportVisible(AuditExportFormat.HTML).contains("0 visible records"))
+        panel.unavailable()
+        assertThrows(IllegalStateException::class.java) { panel.exportVisible(AuditExportFormat.CSV) }
+    }
+
+    @Test
+    fun `diagnostic export buttons are accessible use only the displayed snapshot and reject cleanup`() = onEdt {
+        val config = mockk<McpConfig>(relaxed = true)
+        every { config.auditRetentionEntries } returns 50
+        val audit = mockk<McpAuditSink>(relaxed = true)
+        every { audit.snapshot(50) } returns listOf(record(1, "displayed", 1))
+        val panel = DiagnosticsPanel(config, ::unavailableMcpDiagnosticsSnapshot, audit, null, false)
+        try {
+            every { audit.snapshot(any()) } throws IllegalStateException("must not resnapshot")
+            for (format in AuditExportFormat.entries) {
+                val button = descendants(panel).filterIsInstance<JButton>().single { it.name == "copyVisibleAudit$format" }
+                assertTrue(button.accessibleContext.accessibleDescription.contains("preserving filters"))
+                assertTrue(panel.exportVisibleAudit(format).contains("displayed"))
+            }
+            verify(exactly = 0) { audit.exportJsonLines(any()) }
+            panel.cleanup()
+            assertThrows(IllegalStateException::class.java) { panel.exportVisibleAudit(AuditExportFormat.CSV) }
+        } finally { panel.cleanup() }
+    }
+
+    @Test
+    fun `audit export cannot inspect Swing state off the EDT`() {
+        lateinit var panel: AuditActivityPanel
+        onEdt { panel = AuditActivityPanel() }
+        assertThrows(IllegalStateException::class.java) { panel.exportVisible(AuditExportFormat.CSV) }
     }
 
     private fun record(timestamp: Int, tool: String, duration: Long) = McpAuditRecord(

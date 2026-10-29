@@ -739,6 +739,59 @@ class McpServerIntegrationTest {
         assertFalse(headerJson.containsKey("content"))
         assertFalse(headerJson.containsKey("metadata"))
         assertFalse(auditRecords.any { it.toString().contains("selected-only") })
+
+        every { response.toByteArray() } returns montoyaBytes("RESPHREQREQ")
+        every { response.body() } returns montoyaBytes("REQREQ")
+        val reflected = requireNotNull(client.callTool("get_http_message", mapOf(
+            "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"),
+            "part" to "response", "reflectionParameter" to mapOf("kind" to "parameter", "name" to "proof_parameter", "parameterType" to "url"),
+        )))
+        val reflectedJson = reflected.singleTextToolJson()
+        assertEquals(reflected.structuredContent, reflectedJson)
+        assertEquals("ok", reflectedJson.getValue("reflection").jsonObject.getValue("status").jsonPrimitive.content)
+        assertEquals("2", reflectedJson.getValue("reflection").jsonObject.getValue("bodyCount").jsonPrimitive.content)
+        assertFalse(reflectedJson.containsKey("content"))
+        assertFalse(reflectedJson.containsKey("metadata"))
+        val ordinary = client.readResource("burp://http/integration-project/proxy/42/response").singleTextResourceJson()
+        assertFalse(ordinary.containsKey("reflection"))
+        assertEquals("RESPHREQREQ", ordinary.getValue("content").jsonObject.getValue("data").jsonPrimitive.content)
+
+        val plain = "x".repeat(8192) + "private-decoded-tail"
+        val compressed = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(plain.toByteArray()) }
+        }.toByteArray()
+        every { response.body() } returns montoyaBytes(compressed)
+        every { selected.name() } returns "Content-Encoding"
+        every { selected.value() } returns "gzip"
+        val decodedUri = "burp://http/integration-project/proxy/42/response_body_decoded"
+        val decoded = client.readResource(decodedUri).singleTextResourceJson()
+        assertEquals("ok", decoded.getValue("decodingStatus").jsonPrimitive.content)
+        assertEquals("8192", decoded.getValue("content").jsonObject.getValue("nextOffsetBytes").jsonPrimitive.content)
+        val decodedTail = requireNotNull(client.callTool("get_http_message", mapOf(
+            "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"),
+            "part" to "response_body_decoded", "offset" to 8192,
+        )))
+        assertEquals(decodedTail.structuredContent, decodedTail.singleTextToolJson())
+        assertEquals("private-decoded-tail", decodedTail.singleTextToolJson().getValue("content").jsonObject.getValue("data").jsonPrimitive.content)
+        val raw = client.callTool("get_http_message", mapOf(
+            "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"),
+            "part" to "response_body", "encoding" to "base64",
+        )).singleTextToolJson()
+        assertEquals(java.util.Base64.getEncoder().encodeToString(compressed), raw.getValue("content").jsonObject.getValue("data").jsonPrimitive.content)
+        assertFalse(raw.containsKey("decodingStatus"))
+        val decodedPrompt = client.getPrompt("analyze_http_without_sending", mapOf("httpReference" to decodedUri))
+        assertTrue(assertIs<TextContent>(decodedPrompt.messages.single().content).text.contains(decodedUri))
+        val invalidDecoded = requireNotNull(client.callTool("get_http_message", mapOf(
+            "projectId" to "integration-project", "ref" to mapOf("source" to "proxy", "id" to "42"),
+            "part" to "response_body_decoded", "jsonPointer" to "",
+        )))
+        assertTrue(invalidDecoded.isError == true)
+        every { selected.value() } returns "br"
+        val unsupported = client.readResource(decodedUri).singleTextResourceJson()
+        assertEquals("unsupported_encoding", unsupported.getValue("decodingStatus").jsonPrimitive.content)
+        assertFalse(unsupported.containsKey("content"))
+        assertFalse(auditRecords.any { it.toString().contains("private-decoded-tail") || it.toString().contains("proof_parameter") })
+        verify(exactly = 0) { parameter.value(); parameter.nameOffsets() }
     }
 
     @Test
@@ -1392,17 +1445,14 @@ class McpServerIntegrationTest {
         assertIs<TextContent>(requireNotNull(this).content.single()).text!!,
     ).jsonObject
 
-    private fun montoyaBytes(text: String): MontoyaByteArray {
-        val raw = text.toByteArray(Charsets.UTF_8)
-        return mockk<MontoyaByteArray>().also { value ->
-            every { value.length() } returns raw.size
-            every { value.getBytes() } returns raw
-            every { value.toString() } returns text
-            every { value.subArray(any(), any()) } answers {
-                val start = firstArg<Int>()
-                val end = secondArg<Int>()
-                montoyaBytes(raw.copyOfRange(start, end).toString(Charsets.UTF_8))
-            }
+    private fun montoyaBytes(text: String): MontoyaByteArray = montoyaBytes(text.toByteArray(Charsets.UTF_8))
+
+    private fun montoyaBytes(raw: ByteArray): MontoyaByteArray = mockk<MontoyaByteArray>().also { value ->
+        every { value.length() } returns raw.size
+        every { value.getBytes() } returns raw
+        every { value.toString() } returns raw.toString(Charsets.UTF_8)
+        every { value.subArray(any(), any()) } answers {
+            montoyaBytes(raw.copyOfRange(firstArg(), secondArg()))
         }
     }
 

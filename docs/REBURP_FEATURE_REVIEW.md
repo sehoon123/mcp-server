@@ -1,6 +1,34 @@
 # reburp feature and architecture selection
 
-## Latest configuration and audit follow-up
+## Current follow-up — stored inspection and diagnostic export
+
+Reference: [forefy/reburp 1.1.15 at `892e475cf3d74020cdb82cc1c6368187b5e69404`](https://github.com/forefy/reburp/tree/892e475cf3d74020cdb82cc1c6368187b5e69404).
+Source inspection only: the reference extension was not built, loaded or sent target requests.
+
+The next development changes select three ideas without copying upstream implementation or expanding execution rights:
+
+- `HttpRoutes.kt:250–265` motivates passive parameter reflection. The bridge uses one bounded stored-reference selector,
+  exact raw request-value bytes, complete counts and first-16 offsets for separate header/body sections. It does not use
+  unbounded string splitting, return values/excerpts, decode representations, or label a reflection as XSS.
+- `UtilityRoutes.kt:187–200` motivates explicit stored gzip reading. The earlier decompression deferral remains valid
+  for generic codecs/stacks. This narrow successor validates a single declared gzip member with input/output caps,
+  optional-header and trailer checks using JDK primitives, and fails closed without content on mismatch or limits.
+  Native Burp normalization/provenance is still **NOT RUN**; current headers/bytes are validated, not guessed or resubmitted.
+- `ActivityLogExport.kt` and `ActivityLogFilter.kt` motivate field-specific literal filters and view-order HTML/CSV export.
+  Only the existing redacted six-column metadata table reaches the clipboard; no raw traffic log, filesystem writer,
+  report content, credentials, filter text, or additional persistence is introduced.
+
+Existing tools/resources retain approvals, project fencing and read-only semantics; no tool, dependency, network action
+or release gate is added/relaxed. See README for exact schemas/caps and DEVELOPMENT for regression/native scenarios.
+The request-parameter inventory, stored timing, and global pacing counters from the preceding follow-up remain intact.
+
+Not selected: generic UI click/type automation can operate approval dialogs or send traffic outside reviewed APIs;
+internal Swing locator paths are not a stable public Burp contract. Authentication-diff orchestration largely overlaps
+existing tools and requires separate bounded multi-send/result-association design. Status/body-length equality is not
+proof of authorization bypass, and omitting one header does not establish an unauthenticated request. Existing loaded
+artifact SHA-256 diagnostics already cover build identification without nondeterministic build timestamps.
+
+## Previous configuration and audit follow-up
 
 Reference: [forefy/reburp 1.1.7 at `432349394b49ca8fa72fda6cf940796d38e39851`](https://github.com/forefy/reburp/tree/432349394b49ca8fa72fda6cf940796d38e39851).
 Source inspection only: reburp was not built, loaded into Burp, or queried against any target.

@@ -10,6 +10,7 @@ import java.awt.Dimension
 import java.time.Instant
 import java.util.regex.Pattern
 import javax.swing.BoxLayout
+import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JScrollPane
@@ -20,11 +21,20 @@ import javax.swing.ListSelectionModel
 import javax.swing.RowFilter
 import javax.swing.RowSorter
 import javax.swing.SortOrder
+import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.TableRowSorter
+
+private enum class AuditFilterField(private val label: String, val columns: IntArray) {
+    ALL("Tool / outcome / session", intArrayOf(1, 2, 5)),
+    TOOL("Tool / event", intArrayOf(1)),
+    OUTCOME("Outcome", intArrayOf(2)),
+    SESSION("Session correlation", intArrayOf(5));
+    override fun toString() = label
+}
 
 /** Local view of the existing sanitized audit snapshot; never reads traffic or owns persistence. */
 internal class AuditActivityPanel : JPanel() {
@@ -59,6 +69,11 @@ internal class AuditActivityPanel : JPanel() {
         accessibleContext.accessibleName = "Filter audit tool, outcome or session"
         toolTipText = "Case-insensitive literal text, not a regular expression"
     }
+    private val filterFieldSelector = JComboBox(AuditFilterField.entries.toTypedArray()).apply {
+        name = "auditActivityFilterField"
+        accessibleContext.accessibleName = "Audit fields to search"
+        addActionListener { filter() }
+    }
     private val clearFilterButton = Design.createOutlinedButton("Clear filter").apply {
         name = "auditActivityClearFilter"
         accessibleContext.accessibleDescription = "Clear the activity filter without deleting audit records"
@@ -89,7 +104,7 @@ internal class AuditActivityPanel : JPanel() {
         }.apply {
             isOpaque = false
             alignmentX = LEFT_ALIGNMENT
-            add(JLabel("Filter:").apply { labelFor = filterField }, BorderLayout.WEST)
+            add(filterFieldSelector, BorderLayout.WEST)
             add(filterField, BorderLayout.CENTER)
             add(clearFilterButton, BorderLayout.EAST)
         })
@@ -141,10 +156,24 @@ internal class AuditActivityPanel : JPanel() {
         updateCount()
     }
 
+    internal fun exportVisible(format: AuditExportFormat): String {
+        check(SwingUtilities.isEventDispatchThread()) { "Audit export requires the EDT" }
+        check(available) { "Audit unavailable" }
+        val columns = (0 until table.columnCount).map { table.getColumnName(it) }
+        val rows = (0 until table.rowCount).map { row ->
+            (0 until table.columnCount).map { column ->
+                val value = table.getValueAt(row, column)
+                if (table.convertColumnIndexToModel(column) == 0) Instant.ofEpochMilli(value as Long).toString() else value.toString()
+            }
+        }
+        return exportAuditTable(columns, rows, format)
+    }
+
     private fun filter() {
         clearFilterButton.isEnabled = filterField.text.isNotEmpty()
+        val columns = (filterFieldSelector.selectedItem as AuditFilterField).columns
         sorter.rowFilter = filterField.text.takeIf { it.isNotEmpty() }?.let {
-            RowFilter.regexFilter("(?iu)${Pattern.quote(it)}", 1, 2, 5)
+            RowFilter.regexFilter("(?iu)${Pattern.quote(it)}", *columns)
         }
         showSelection()
         updateCount()
