@@ -1105,6 +1105,7 @@ class KtorServerManager internal constructor(
     private val projectIdProvider: (() -> String)? = { api.project().id() },
     workflowPresetStore: WorkflowPresetStore,
     private val shutdownTimeoutMillis: Long = 10_000,
+    private val httpRateLimitProvider: () -> HttpRateLimitSnapshot? = { null },
 ) : ServerManager {
 
     internal constructor(
@@ -1365,6 +1366,7 @@ class KtorServerManager internal constructor(
             webSocketSearchCompleted = webSocketOutcomes.completed,
             webSocketSearchCancelled = webSocketOutcomes.cancelled,
             historyPerformance = performance,
+            httpRateLimit = httpRateLimitProvider(),
         )
     }
 

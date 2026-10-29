@@ -34,6 +34,7 @@ internal enum class HttpSourceMetadataSelection {
     FULL,
     PROXY_CAPTURE_TIME,
     ANNOTATIONS,
+    TIMING,
 }
 
 internal data class ResolvedHttpMessage(
@@ -53,6 +54,7 @@ internal data class ResolvedHttpSourceMetadata(
     val inScope: Boolean? = null,
     val notes: String? = null,
     val notesTruncated: Boolean = false,
+    val timing: HttpTimingSummary? = null,
 )
 
 internal data class HttpMessageResolutionPerformanceAttribution(
@@ -395,6 +397,9 @@ internal class HttpMessageResolver(
                                 proxyCaptureTimeEpochMillis = item.time().toInstant().toEpochMilli(),
                             )
                             HttpSourceMetadataSelection.ANNOTATIONS -> null
+                            HttpSourceMetadataSelection.TIMING -> ResolvedHttpSourceMetadata(
+                                timing = readHttpTiming { item.timingData() },
+                            )
                         }
                         ResolvedItemOutcome.Found(
                             ResolvedHttpMessage(
@@ -419,6 +424,8 @@ internal class HttpMessageResolver(
                         val sourceMetadata = if (sourceMetadataSelection == HttpSourceMetadataSelection.FULL) {
                             val notes = item.annotations().notes().boundedResolvedNotes()
                             ResolvedHttpSourceMetadata(notes = notes.first, notesTruncated = notes.second)
+                        } else if (sourceMetadataSelection == HttpSourceMetadataSelection.TIMING) {
+                            ResolvedHttpSourceMetadata(timing = readHttpTiming { item.timingData().orElse(null) })
                         } else null
                         ResolvedItemOutcome.Found(
                             ResolvedHttpMessage(
@@ -451,6 +458,8 @@ internal class HttpMessageResolver(
                                 notes = notes.first,
                                 notesTruncated = notes.second,
                             )
+                        } else if (sourceMetadataSelection == HttpSourceMetadataSelection.TIMING) {
+                            ResolvedHttpSourceMetadata(timing = readHttpTiming { item.timingData().orElse(null) })
                         } else null
                         ResolvedItemOutcome.Found(
                             ResolvedHttpMessage(

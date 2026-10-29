@@ -96,7 +96,11 @@ MCP listener. Its installation-scoped opt-in/rate settings publish after persist
 state. All sources share one monotonic paced admission budget without idle/catch-up credit. Rate changes, disable,
 and close wake waiters; interrupted waiters restore the interrupt and drop rather than send unpaced. Unload closes
 and deregisters this handler before stopping MCP services. It is not a wire-level throttle and cannot cover traffic
-that bypasses Montoya HTTP handlers.
+that bypasses Montoya HTTP handlers. Its fixed-cardinality snapshot is shared by the server's diagnostics resource and
+an EDT-refreshed panel; ConfigUi stops that panel's timer at cleanup. Counts survive MCP restarts and project changes,
+not extension recreation. Wait metrics exclude lock acquisition and unfinished waits, but include waits ended by
+interruption/disable/close. Completed one-second buckets measure paced admissions, not wire RPS; no request data is
+retained. See README for field semantics.
 
 `KtorServerManager` owns listener start/stop/restart serialization, request admission, Streamable HTTP sessions, project
 epoch alignment, and the MCP SDK `Server`. A listener restart gets a new SDK server, while `ToolServices` retains the
@@ -330,7 +334,12 @@ request a sufficient explicit limit instead of incurring extra small-page calls.
 RC3's serialized tool arrays were 130,667/197,455 bytes (Community/Professional); focused header/MIME reads and routing
 clarifications reached 131,989/198,777. Role titles and compact contract prose now measure 131,876/199,314, including output
 schemas. These are serialized byte counts, not tokenizer savings or evidence of better agent selection. Clients differ
-in which fields reach a model. Fingerprint tests retain the 132,000/200,000-byte ceilings to make growth deliberate.
+in which fields reach a model. The parameter/timing additions deliberately revise synthetic catalog-byte ceilings from
+132,000/200,000 to 136,000/204,000 after independent review: measured Community/Professional totals are 135,907/203,516
+bytes. New inventory schemas and timing repeated in shared send/routing result schemas explain the growth; retaining
+fully typed output and safety prose is preferable to unrelated schema/prose cuts. Counts remain exactly 24/38, and
+contract/fingerprint/default/initialization-budget checks remain strict. This changes no runtime input/output bound or
+release/security/conformance gate; any future catalog growth needs another explicit review.
 Initialize instructions use 1,474 bytes; keep them below 1,500. Include the metadata-only project-summary bootstrap,
 reference/project binding, and no-automatic-retry guidance for uncertain or lost mutation results.
 
@@ -637,6 +646,13 @@ Exercise:
 - global HTTP RPS off/on/live edits across mixed Proxy, Repeater, Intruder, Scanner (Professional), and extension/MCP
   requests to a disposable local server, including MCP stopped, concurrent senders, restart/project-switch persistence,
   and disable/unload with queued callbacks; count server timestamps separately from callback-pacing fixture assertions;
+- parameter inventories across Proxy, Organizer and Site Map: duplicate/type ordering, empty values, invalid names,
+  and round-tripping eligible selectors through approved existing Intruder/Scanner paths; no value/offset disclosure;
+- native timing availability on each source, missing/incomplete responses, optional timing in one-shot sends, and
+  project changes/cancellation during reads; verify no extra request is sent to obtain timing;
+- HTTP pacing UI/resource counts during concurrency, disable, interrupt, MCP restart and unload; verify idle buckets
+  clear and statistics updates do not steal focus/scroll or survive UI cleanup. These new native scenarios are NOT RUN
+  until an operator records exact-byte Burp results; unit/transport fixtures are not native evidence;
 - native HTTP initialize/list/call/DELETE;
 - embedded stdio proxy startup and graceful shutdown;
 - approval deny, allow-once, session grant, reset, and persistent-policy reset;

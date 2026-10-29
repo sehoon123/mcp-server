@@ -258,7 +258,9 @@ internal class RawHttpActionService(
         )?.let { return it }
         var warning = siteMapRecordingWarning(api, exchange)
         val response = try {
-            exchange?.response()?.toActionSummary(bodyLimit, encoding)
+            exchange?.response()?.toActionSummary(bodyLimit, encoding)?.copy(
+                timing = readHttpTiming { exchange.timingData().orElse(null) },
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

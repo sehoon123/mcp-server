@@ -36,10 +36,12 @@ class ExtensionBase : BurpExtension {
         // Keep project preset persistence outside the SDK transport adapter so native UI and MCP tools share one lock.
         val workflowPresetStore = WorkflowPresetStore(extensionStorage)
         val workflowPresetManager = LocalWorkflowPresetManager(workflowPresetStore) { api.project().id() }
+        val httpRateLimiter = GlobalHttpRateLimiter(config)
         val serverManager = KtorServerManager(
             api,
             auditLog,
             workflowPresetStore = workflowPresetStore,
+            httpRateLimitProvider = httpRateLimiter::snapshot,
         )
 
         val proxyJarManager = ProxyJarManager(api.logging())
@@ -68,6 +70,7 @@ class ExtensionBase : BurpExtension {
             edtWatchdogProvider = edtWatchdog::snapshot,
             workflowPresetManager = workflowPresetManager,
             cleanupErrorReporter = { message -> api.logging().logToError(message) },
+            httpRateLimitProvider = httpRateLimiter::snapshot,
         )
 
         configUi.onEnabledToggled { enabled ->
@@ -84,7 +87,6 @@ class ExtensionBase : BurpExtension {
             }
         }
 
-        val httpRateLimiter = GlobalHttpRateLimiter(config)
         val httpRateLimitRegistration = api.http().registerHttpHandler(httpRateLimiter)
 
         api.userInterface().registerSuiteTab(ProductIdentity.SUITE_TAB_NAME, configUi.component)

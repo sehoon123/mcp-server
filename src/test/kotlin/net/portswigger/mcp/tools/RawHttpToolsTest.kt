@@ -240,6 +240,56 @@ class RawHttpToolsTest {
     }
 
     @Test
+    fun `raw send timing preserves completion and observes cancellation and project changes`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        val exchange = mockk<HttpRequestResponse>()
+        val response = mockk<burp.api.montoya.http.message.responses.HttpResponse>()
+        val timing = mockk<burp.api.montoya.http.handler.TimingData>()
+        every { api.http() } returns http
+        every { http.sendRequest(fixture.request, options) } returns exchange
+        every { exchange.response() } returns response
+        every { response.body().length() } returns 0
+        every { response.statusCode() } returns 200
+        every { response.mimeType() } returns burp.api.montoya.http.message.MimeType.JSON
+        every { response.httpVersion() } returns "HTTP/1.1"
+        every { timing.timeRequestSent() } returns java.time.ZonedDateTime.parse("2026-01-01T00:00:00Z")
+        every { timing.timeBetweenRequestSentAndStartOfResponse() } returns java.time.Duration.ofMillis(12)
+        every { timing.timeBetweenRequestSentAndEndOfResponse() } returns java.time.Duration.ofMillis(34)
+        val input = defaultHttp1Send().copy(responseBodyLimit = 0)
+        for (mode in listOf("available", "absent", "failure")) {
+            every { exchange.timingData() } answers {
+                when (mode) {
+                    "available" -> java.util.Optional.of(timing)
+                    "absent" -> java.util.Optional.empty()
+                    else -> throw IllegalStateException("PRIVATE_TIMING")
+                }
+            }
+            val result = service.send(input)
+            assertEquals(HttpMessageActionStatus.OK, result.status)
+            assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+            assertEquals(200, result.response?.statusCode)
+            assertEquals(if (mode == "available") 34L else null, result.response?.timing?.responseEndMillis)
+            assertTrue(result.error.orEmpty().contains("PRIVATE_TIMING").not())
+        }
+        every { exchange.timingData() } throws CancellationException("cancelled telemetry")
+        assertFailsWith<CancellationException> { service.send(input) }
+        every { exchange.timingData() } answers {
+            currentProjectId = "replacement-project"
+            java.util.Optional.of(timing)
+        }
+        val changed = service.send(input)
+        assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, changed.status)
+        assertNull(changed.response)
+        verify(exactly = 5) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
     fun `Site Map warning is silent without a response and survives logging failure`() {
         assertNull(siteMapRecordingWarning(api, null))
         verify(exactly = 0) { api.logging() }

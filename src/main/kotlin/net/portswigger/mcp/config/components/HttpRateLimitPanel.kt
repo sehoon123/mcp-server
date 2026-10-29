@@ -1,9 +1,11 @@
 package net.portswigger.mcp.config.components
 
+import net.portswigger.mcp.HttpRateLimitSnapshot
 import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.MAX_HTTP_REQUESTS_PER_SECOND
 import net.portswigger.mcp.config.McpConfig
 import java.awt.FlowLayout
+import java.util.Locale
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -11,8 +13,13 @@ import javax.swing.JCheckBox
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextField
+import javax.swing.SwingUtilities
+import javax.swing.Timer
 
-internal class HttpRateLimitPanel(private val config: McpConfig) : JPanel() {
+internal class HttpRateLimitPanel(
+    private val config: McpConfig,
+    private val snapshotProvider: (() -> HttpRateLimitSnapshot?)? = null,
+) : JPanel() {
     private val enabled = JCheckBox("Limit HTTP requests across Burp", config.httpRateLimitEnabled).apply {
         name = "httpRateLimitEnabled"
         font = Design.Typography.bodyLarge
@@ -24,6 +31,9 @@ internal class HttpRateLimitPanel(private val config: McpConfig) : JPanel() {
         accessibleContext.accessibleDescription = "Whole number from 1 to $MAX_HTTP_REQUESTS_PER_SECOND"
     }
     private val status = WrappingText("").apply { name = "httpRateLimitStatus" }
+    private val statistics = WrappingText("").apply { name = "httpRateLimitStatistics" }
+    private var closed = false
+    private val refreshTimer = Timer(1_000) { refreshStatistics() }
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -47,9 +57,25 @@ internal class HttpRateLimitPanel(private val config: McpConfig) : JPanel() {
         ))
         add(Box.createVerticalStrut(Design.Spacing.SM))
         add(status)
+        add(statistics)
         enabled.addActionListener { save(toggle = true) }
         rate.addActionListener { save(toggle = false) }
         showState()
+        if (SwingUtilities.isEventDispatchThread()) refreshStatistics() else SwingUtilities.invokeLater(::refreshStatistics)
+        if (snapshotProvider != null) refreshTimer.start()
+    }
+
+    internal fun refreshStatistics() {
+        check(SwingUtilities.isEventDispatchThread()) { "HTTP rate statistics must refresh on the EDT" }
+        if (closed) return
+        statistics.updateContent(runCatching { snapshotProvider?.invoke()?.let(::formatHttpRateLimitStatistics) }
+            .getOrNull() ?: "HTTP rate statistics unavailable.")
+    }
+
+    fun cleanup() {
+        check(SwingUtilities.isEventDispatchThread()) { "HTTP rate statistics cleanup must run on the EDT" }
+        closed = true
+        refreshTimer.stop()
     }
 
     override fun updateUI() {
@@ -100,4 +126,14 @@ internal class HttpRateLimitPanel(private val config: McpConfig) : JPanel() {
             if (config.httpRateLimitEnabled) "ON at ${config.httpRequestsPerSecond} requests/second."
             else "OFF.")
     }
+}
+
+internal fun formatHttpRateLimitStatistics(snapshot: HttpRateLimitSnapshot): String = with(snapshot) {
+    val average = String.format(Locale.ROOT, "%.1f", averageWaitMillis)
+    val maximum = String.format(Locale.ROOT, "%.1f", maxWaitMillis)
+    "Last full second: ${lastCompleteSecondAdmissions ?: "warming up"} paced admissions; waiting: $waitingRequests.\n" +
+        "Since extension load: $pacedAdmissions paced admissions; $finishedWaits finished waits " +
+        "(average/max $average/$maximum ms); $interruptedRequests interrupted admissions.\n" +
+        "Callback pacing, not wire RPS. Waits exclude lock acquisition and include disable/unload/interruption. " +
+        if (closed) "Limiter closed." else "Counters are not persisted."
 }

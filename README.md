@@ -258,6 +258,37 @@ above 1 MiB is skipped before MIME getters. Indeterminate native labels yield `d
 observation, not a vulnerability verdict. This mode requires offset zero/text and returns neither body nor ordinary metadata.
 Native accessor allocation and runtime are not an interruptible heap/deadline guarantee. No decompression is added.
 
+### Parameter inventory and native HTTP timing (unreleased)
+
+`get_http_message` supports two additional read-only parts, also available through the existing
+`burp://http/{projectId}/{source}/{id}/{part}` resource template. Both require offset zero/text, reject `jsonPointer`
+and `headerName`, and return neither raw content nor ordinary metadata. Existing source approval, project checks and
+cancellation apply; Site Map identity validation still inspects its bounded private samples.
+
+- **`request_parameters`** returns `parameterInventory`. Check its nested `status`: `ok` means a complete inventory,
+  including an empty list; `input_limit_exceeded` or `output_limit_exceeded` returns no entries and proves no absence.
+  Each entry has an exact `name`, `parameterType`, zero-based `occurrence` within that exact type/name, and nullable
+  `unavailableReason`. No parameter values or raw offsets are returned. A null reason permits using those fields with
+  `kind: "parameter"` in existing insertion selectors; the later action still revalidates the request and rejects
+  overlapping selections. Invalid names are omitted, not shortened. Reasons distinguish `invalid_name`,
+  `occurrence_limit`, `invalid_range` and `empty_value`, in that precedence. Names themselves remain sensitive project data.
+  Complete requests must fit 2 MiB before the native parser is invoked; at most 128 native parameters and 65,536 aggregate
+  name characters are inspected. Selectable names fit 1–512 characters without control characters, occurrences 0–31,
+  and nonempty in-bounds value ranges. The complete successful inventory JSON, including nulls/escaping, must fit `limit`
+  (8 KiB default, 256 KiB maximum); the small failure-status envelope is not limited by a tiny `limit`.
+- **`timing`** returns native `requestSentAt` (UTC), `responseStartMillis` and `responseEndMillis` under `timing`.
+  Durations run from Burp's request-sent time to response start/completion, rounded down to whole milliseconds.
+  Individual unavailable/negative/overflowing durations are null; completion earlier than response start is omitted.
+  Missing, unreadable or wholly unavailable timing produces `part_unavailable`, never a measurement request.
+  Proxy, Organizer and Site Map use their respective native timing accessors. Normal reads do not query timing.
+
+Existing `send_raw_http_request` and `send_http_request_from_id` results also include optional `response.timing` from
+that same completed exchange. Optional telemetry failure does not discard a valid response, change a completed send
+into a retryable failure, or trigger another request. Tool results retain nullable fields; resources may omit nulls.
+These observations are not DNS/TCP/TLS breakdowns, limiter wait times, or vulnerability evidence. Native parser/getter
+allocation and runtime remain outside an interruptible heap/deadline guarantee. Actual Burp source availability and
+parameter ordering require native validation; fixture tests alone do not establish either.
+
 ### Bounded evidence reading and reporting
 
 `get_http_message` accepts optional `jsonPointer` with an explicit `request_body` or `response_body`. It selects a
@@ -513,6 +544,16 @@ It paces the common Montoya request-to-be-sent handler used by Proxy/browser tra
 and requests sent through Burp by extensions, including MCP. Requests are spaced evenly without accumulated idle
 burst credit. The setting is saved in installation preferences across projects and Burp restarts. It is independent
 of MCP server enablement, approval settings, YOLO mode, and Emergency read-only mode.
+
+The panel refreshes aggregate runtime statistics every second; `burp://diagnostics` exposes the same limiter under
+`diagnostics.httpRateLimit`, independently of MCP listener restarts. `pacedAdmissions` counts only enabled limiter
+admissions, not disabled/unload bypasses. `lastCompleteSecondAdmissions` counts the previous complete one-second bucket
+anchored to extension creation (initially null, then zero after idle gaps), not an instantaneous/wire RPS measurement.
+`waitingRequests` counts requests that entered the condition wait, excluding fair-lock acquisition.
+`finishedWaits`, `averageWaitMillis` and `maxWaitMillis` include those waits ended by admission, disable, unload or
+interruption; unfinished waits are excluded from the durations. `interruptedRequests` includes permit interruptions
+before lock acquisition. Counters saturate rather than wrap, contain no request/host/URL/header values, are not persisted,
+and reset only when the limiter is recreated. Refreshing statistics never reserves an admission or changes pacing.
 
 The limiter delays Burp's request callbacks; large backlogs can occupy Burp workers and trigger client/tool timeouts.
 Disabling it or unloading the extension releases waiting requests immediately, potentially producing a burst.

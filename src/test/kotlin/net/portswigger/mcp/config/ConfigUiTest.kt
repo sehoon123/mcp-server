@@ -149,6 +149,30 @@ class ConfigUiTest {
     }
 
     @Test
+    fun `configuration cleanup stops HTTP statistics publication`() {
+        val config = McpConfig(mockk(relaxed = true), mockk(relaxed = true), net.portswigger.mcp.testPreferences())
+        val reads = AtomicInteger()
+        lateinit var ui: ConfigUi
+        SwingUtilities.invokeAndWait {
+            ui = ConfigUi(config, emptyList(), ::unavailableMcpDiagnosticsSnapshot, NoOpMcpAuditSink,
+                null, false, { 0 }, httpRateLimitProvider = { reads.incrementAndGet(); null })
+        }
+        val ratePanel = ui.component.descendants()
+            .filterIsInstance<net.portswigger.mcp.config.components.HttpRateLimitPanel>().single()
+        try {
+            SwingUtilities.invokeAndWait { ratePanel.refreshStatistics() }
+            assertTrue(reads.get() > 0)
+            ui.cleanup()
+            val before = reads.get()
+            SwingUtilities.invokeAndWait { ratePanel.refreshStatistics() }
+            assertEquals(before, reads.get())
+        } finally {
+            ui.cleanup()
+            config.cleanup()
+        }
+    }
+
+    @Test
     fun `setup preview and Doctor read bearer only for the matching running listener`() {
         val token = "t".repeat(43)
         val storage = mockk<PersistedObject>(relaxed = true)

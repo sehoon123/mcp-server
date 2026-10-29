@@ -108,6 +108,42 @@ class HttpRateLimitPanelTest {
         assertTrue(status.text.endsWith("OFF."))
     }
 
+    @Test
+    fun `statistics refresh on EDT without replacing form errors and stop after cleanup`() = onEdt {
+        var reads = 0
+        var unavailable = false
+        val snapshot = net.portswigger.mcp.HttpRateLimitSnapshot(true, 10, false, 42, 9, 3, 20, 12.25, 35.5, 2)
+        val panel = HttpRateLimitPanel(config()) {
+            assertTrue(SwingUtilities.isEventDispatchThread())
+            reads++
+            if (unavailable) throw IllegalStateException("PRIVATE_SENTINEL")
+            snapshot
+        }
+        try {
+            val stats = panel.descendants().filterIsInstance<WrappingText>().single { it.name == "httpRateLimitStatistics" }
+            assertTrue(stats.text.contains("Last full second: 9"))
+            assertTrue(stats.text.contains("waiting: 3"))
+            assertTrue(stats.text.contains("12.3/35.5 ms"))
+            val rate = panel.descendants().filterIsInstance<JTextField>().single()
+            rate.text = "invalid"
+            panel.descendants().filterIsInstance<JButton>().single().doClick(0)
+            val status = panel.descendants().filterIsInstance<WrappingText>().single { it.name == "httpRateLimitStatus" }
+            panel.refreshStatistics()
+            assertTrue(status.text.contains("unchanged"))
+            assertEquals("invalid", rate.text)
+            unavailable = true
+            panel.refreshStatistics()
+            assertEquals("HTTP rate statistics unavailable.", stats.text)
+            panel.cleanup()
+            val before = reads
+            panel.refreshStatistics()
+            assertEquals(before, reads)
+            panel.cleanup()
+        } finally {
+            panel.cleanup()
+        }
+    }
+
     private fun config(preferences: Preferences = testPreferences()) =
         McpConfig(mockk(relaxed = true), mockk(relaxed = true), preferences)
 
