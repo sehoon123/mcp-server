@@ -243,6 +243,17 @@ internal class DiagnosticsPanel(
             }
         }
         add(AdaptiveButtonPanel(listOf(refreshButton, copyDiagnosticsButton, copyAuditButton, clearAuditButton)))
+        add(AdaptiveButtonPanel(AuditExportFormat.entries.map { format ->
+            Design.createOutlinedButton("Copy visible redacted $format").apply {
+                name = "copyVisibleAudit$format"
+                accessibleContext.accessibleDescription = "Copy the visible audit table, preserving filters and order; 64 KiB maximum"
+                addActionListener {
+                    runCatching { exportVisibleAudit(format) }
+                        .onSuccess { copyToClipboard(it, "Visible redacted $format copied") }
+                        .onFailure { statusLabel.updateContent("Audit export unavailable, closed, or exceeds 64 KiB") }
+                }
+            }
+        }))
         add(statusLabel)
     }
 
@@ -316,6 +327,11 @@ internal class DiagnosticsPanel(
             "Diagnostics unavailable: ${error::class.simpleName ?: "Exception"}"
         }
         diagnosticsArea.caretPosition = 0
+    }
+
+    internal fun exportVisibleAudit(format: AuditExportFormat): String {
+        check(!closed.get()) { "Diagnostics closed" }
+        return activityPanel.exportVisible(format)
     }
 
     private fun copyToClipboard(value: String, success: String) {

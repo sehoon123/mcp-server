@@ -179,7 +179,7 @@ internal fun Server.registerMcpResources(
             uriTemplate = HTTP_PART_RESOURCE_TEMPLATE,
             name = "burp_http_message_part",
             title = "Burp HTTP message part",
-            description = "Reads HTTP metadata/MIME summaries or a first content slice of up to 8 KiB. If JSON status=ok and content.hasMore=true and more is needed, use get_http_message with the same projectId, ref and part and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. Source approval and project/ID checks apply on every read; never bypass a denial.",
+            description = "Reads HTTP observations or the first content slice, up to 8 KiB. response_body_decoded validates one gzip member; content offsets count decoded bytes. If JSON status=ok and content.hasMore=true and more is needed, use get_http_message with the same projectId, ref, part and content.nextOffsetBytes as offset (bytes). Repeating the URI restarts at zero. Source approval and project/ID checks apply on every read; never bypass a denial.",
             mimeType = RESOURCE_MIME_TYPE,
         ),
     ) { request, variables ->

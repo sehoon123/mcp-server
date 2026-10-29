@@ -340,8 +340,42 @@ bytes. New inventory schemas and timing repeated in shared send/routing result s
 fully typed output and safety prose is preferable to unrelated schema/prose cuts. Counts remain exactly 24/38, and
 contract/fingerprint/default/initialization-budget checks remain strict. This changes no runtime input/output bound or
 release/security/conformance gate; any future catalog growth needs another explicit review.
+The reflection/gzip read follow-up adds 2,338 bytes per edition, measured at 138,245/205,854. Independent review approves
+only the new synthetic ceilings of 139,000/206,000, retaining all typed fields, bounds, fingerprints and 24/38 tool counts;
+no runtime limit or security/release gate changes. The schema reuses the general insertion-selector DTO, so the enclosing
+reflection description and pre-access runtime validation (not structural schema constraints alone) restrict it to a valid
+parameter name/type/occurrence.
 Initialize instructions use 1,474 bytes; keep them below 1,500. Include the metadata-only project-summary bootstrap,
 reference/project binding, and no-automatic-retry guidance for uncertain or lost mutation results.
+
+### Reflection, stored gzip and visible audit export
+
+The unreleased `reflectionParameter` projection is tool-only on explicit `response`, like the existing header/JSON
+selectors rather than a new query-bearing resource URI. Reuse the parameter selector DTO but do not invoke active
+insertion-point preparation. Resolve exactly one native type/name/occurrence under request/parameter/name bounds, copy
+only after checking native byte-array lengths, and compare raw value bytes against separately bounded raw header/body
+sections. Counts are complete only on `reflection.status=ok`; failure discards all counts/offsets. Test overlapping hits,
+URL-encoded bytes, section boundaries, duplicate type/name occurrences, all bounds, native length inconsistencies,
+cancellation and final project fencing. Keep the original inventory value-free and raw-copy-free.
+
+`response_body_decoded` is a canonical resource part with the existing first-slice/tool-pagination contract. It accepts
+only a single gzip Content-Encoding and validates the stored header/body representation. Montoya 2026.7 documents
+`HttpMessage.body()` as a byte array, not a native guarantee about compression normalization. No Burp process was
+available for native validation: **NOT RUN**. Never infer that fixture tests establish original-wire representation.
+Strict framing uses JDK Inflater/CRC32 because GZIPInputStream accepts concatenated members/trailing junk. Test optional
+headers/FHCRC, malformed headers/deflate, every truncation of a valid fixture, CRC/ISIZE, concatenation/trailing bytes,
+empty and exact-cap streams, inflation bombs, input bounds before copying and cancellation. No decoded content is
+exposed until full validation; output-cap failure is not a truncated success. Decoded text explicitly uses UTF-8
+replacement (including split characters), whereas unchanged raw slices retain Montoya text behavior. No JSON-pointer,
+implicit decoding, recursive encoding stack, new dependency or network request is added.
+
+Audit exports snapshot view rows/columns on the EDT and format only displayed metadata, preserving UTC rendering and
+sort/filter/column order. They reuse the clipboard path, not a new filesystem writer. Tests cover selected-field literal
+filtering, unavailable/empty/closed/off-EDT views, complete 64 KiB UTF-8 caps including escaping, multibyte characters,
+HTML text escaping and CSV formulas behind whitespace/controls. Do not export filter text, detail JSON or raw traffic.
+Existing recent-JSONL export semantics are unchanged. UI fixture tests exercise the export method and button presence,
+not the native clipboard or click-to-clipboard call counts. Cancellation fixtures exercise native-copy/pre-cancelled
+boundaries; checkpoints inside matching, optional-header scanning and inflation are source-reviewed, not a native soak.
 
 ### Read cancellation and URI regression checks
 
@@ -648,6 +682,10 @@ Exercise:
   and disable/unload with queued callbacks; count server timestamps separately from callback-pacing fixture assertions;
 - parameter inventories across Proxy, Organizer and Site Map: duplicate/type ordering, empty values, invalid names,
   and round-tripping eligible selectors through approved existing Intruder/Scanner paths; no value/offset disclosure;
+- **NOT RUN — reflection/gzip/export:** in both editions, verify native parameter ranges and encoded-value matching;
+  inspect exact stored gzip header/body bytes on Proxy/Organizer/Site Map, including already-normalized and malformed
+  responses; confirm raw versus decoded offset semantics, no extra traffic, cancellation/project discard; verify
+  visible CSV/HTML clipboard content after field filtering/sorting/column movement and after unload;
 - native timing availability on each source, missing/incomplete responses, optional timing in one-shot sends, and
   project changes/cancellation during reads; verify no extra request is sent to obtain timing;
 - HTTP pacing UI/resource counts during concurrency, disable, interrupt, MCP restart and unload; verify idle buckets

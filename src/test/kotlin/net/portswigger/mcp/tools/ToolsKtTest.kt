@@ -309,8 +309,8 @@ class ToolsKtTest {
         val inputBytes = wireTools.sumOf { it.getValue("inputSchema").toString().toByteArray(Charsets.UTF_8).size }
         val outputBytes = wireTools.sumOf { it.getValue("outputSchema").toString().toByteArray(Charsets.UTF_8).size }
         println("CATALOG_BYTES edition=$edition total=$catalogBytes input=$inputBytes output=$outputBytes")
-        // Reviewed parameter/timing schemas measure 135,907/203,516 bytes; retain typed outputs and safety prose.
-        assertTrue(catalogBytes <= if (edition == "Community") 136_000 else 204_000, "Review catalog byte-budget growth")
+        // Reviewed reflection/gzip schemas measure 138,245/205,854 bytes; retain typed outputs and safety prose.
+        assertTrue(catalogBytes <= if (edition == "Community") 139_000 else 206_000, "Review catalog byte-budget growth")
         tools.filter { it.name in setOf("get_http_message", "get_websocket_message_by_id", "get_scanner_issue_by_id") }
             .forEach { tool ->
                 val limit = tool.inputSchema.properties!!.getValue("limit").jsonObject
@@ -680,11 +680,11 @@ class ToolsKtTest {
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         tools.values.forEach(::assertCatalogToolContract)
-        assertCatalogContract("Community", tools.values, "de2813512a7b1f918a57eb60cbb5810891785f8bfb89b1c6ba99b69a1563bd5b")
+        assertCatalogContract("Community", tools.values, "6fdff03f697e3d2c026970814cf3cb91dd8807ad99e0ddcf80d58526b765dbc6")
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "ff75eec6cde7602323b8c14cdb3fa153b28328a90a13f92b497826d90edc8ab7",
+            "313e0a30681fb388f268bfd27dd2d4c769771d0bfca47b802cf7d6d861a96448",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -765,6 +765,8 @@ class ToolsKtTest {
         assertTrue(description("get_http_message").contains("response_mime"))
         assertTrue(description("get_http_message").contains("request_parameters"))
         assertTrue(description("get_http_message").contains("timing"))
+        assertTrue(description("get_http_message").contains("reflectionParameter"))
+        assertTrue(description("get_http_message").contains("response_body_decoded"))
         val headerNameSchema = tools.getValue("get_http_message").inputSchema.properties!!.getValue("headerName").jsonObject
         assertEquals("1", headerNameSchema.getValue("minLength").toString())
         assertEquals("256", headerNameSchema.getValue("maxLength").toString())
@@ -2732,11 +2734,11 @@ class ToolsKtTest {
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertCatalogToolContract)
-            assertCatalogContract("Professional", tools, "33b06652a8b7ef8db38c580e302b60a33f42245faf06de0b4ea5e63a285fe149")
+            assertCatalogContract("Professional", tools, "6bd22ff0e6be8fb2115c1182480968629f718b7982cc89f442bcb0307d10844f")
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "619a89c3599d974717d38287e1c753d900764116f811fe7e7e88b37daa831220",
+                "c6b5f80c22662a4f272b4a35b22436a859e337e86348fcff3351d65ed0037d8c",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)

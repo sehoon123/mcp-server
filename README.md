@@ -256,7 +256,7 @@ including for credential-bearing headers. Site Map reference validation may stil
 It also works at `burp://http/{projectId}/{source}/{id}/response_mime`; header selection is tool-only. A complete response
 above 1 MiB is skipped before MIME getters. Indeterminate native labels yield `disagrees: null`; disagreement is an
 observation, not a vulnerability verdict. This mode requires offset zero/text and returns neither body nor ordinary metadata.
-Native accessor allocation and runtime are not an interruptible heap/deadline guarantee. No decompression is added.
+Native accessor allocation and runtime are not an interruptible heap/deadline guarantee. MIME inspection does not decompress bodies.
 
 ### Parameter inventory and native HTTP timing (unreleased)
 
@@ -289,13 +289,61 @@ These observations are not DNS/TCP/TLS breakdowns, limiter wait times, or vulner
 allocation and runtime remain outside an interruptible heap/deadline guarantee. Actual Burp source availability and
 parameter ordering require native validation; fixture tests alone do not establish either.
 
+### Passive reflection and explicit gzip body reads (unreleased)
+
+Use the existing parameter inventory's exact name/type/occurrence with a **parameter-only** `reflectionParameter`:
+
+```json
+{
+  "projectId": "project-id-from-summary",
+  "ref": {"source": "proxy", "id": "42"},
+  "part": "response",
+  "reflectionParameter": {"kind": "parameter", "name": "q", "parameterType": "url", "occurrence": 0}
+}
+```
+
+This tool-only projection requires literal `part: "response"`, offset zero, text encoding, and no `headerName` or
+`jsonPointer`. It returns `reflection`, not ordinary metadata/content. Only `reflection.status: "ok"` supplies complete
+`headerCount`/`bodyCount`; `headerOffsets`/`bodyOffsets` contain the first 16 ascending positions per section. A larger
+count means more positions exist, not an incomplete count. Offsets are zero-based bytes relative to `response_headers`
+(including its status line) or `response_body`; matches never cross the section boundary and overlapping matches count.
+The needle is the **raw stored request value range**, not Montoya's decoded `parameter.value()`. Matching is byte-exact,
+with no URL/HTML/charset/content-encoding conversion. Short/common values can coincide accidentally. Zero means no exact
+match in these complete stored sections, not absence of reflection in rendered/decoded content; a hit is not XSS evidence.
+No values, excerpts or request offsets are returned or logged.
+
+Reflection bounds: 2 MiB complete request, 128 parameters, 65,536 aggregate name characters, a 1–1,024-byte needle,
+1 MiB complete response, and 8 Mi byte comparisons across both sections. Missing/empty/invalid parameter ranges return
+`parameter_unavailable`; input/work/output limits have distinct statuses and return no partial counts/positions. The
+complete successful reflection JSON must fit `limit`; small failure envelopes may exceed a tiny `limit`.
+
+`part: "response_body_decoded"` explicitly reads one gzip member from the stored response body. It is also available at
+`burp://http/{projectId}/{source}/{id}/response_body_decoded`. Require `decodingStatus: "ok"` before using `content`.
+Absent, identity, duplicate, stacked or non-gzip Content-Encoding is `unsupported_encoding`; a gzip declaration over
+non-gzip bytes, damaged framing/checksums, truncation, trailing bytes or multiple members is `invalid_data`. There is no
+sniffing, raw fallback or recursive decoding. Headers are capped at 64 KiB/128 entries/65,536 aggregate name/value
+characters; compressed input and decoded output each have a 1 MiB cap, with distinct input/output-limit statuses.
+Inflation stops at the output bound, and the entire member, CRC and size trailer are validated before any content is
+returned. Every page revalidates the stored body; nothing is cached.
+
+The usual 8 KiB default/256 KiB maximum `limit`, `offset`, `hasMore` and `nextOffsetBytes` apply to **decoded bytes**, not raw
+body coordinates. Text slices use UTF-8 replacement for malformed bytes or split characters; base64 preserves exact bytes.
+`jsonPointer` and `headerName` are not supported for this part. Existing raw reads, JSON selection and resources never
+automatically decode. Both additions retain source approvals, cancellation and the final project fence, send nothing,
+and return no unrelated metadata. Missing responses give outer `part_unavailable`; bounded analysis/decode failures give
+outer `ok` with their nested/status field and no content. Check both levels.
+
+Native Burp stored-body representation remains **NOT RUN**: header/magic validation checks the available representation,
+not its historical wire provenance. It refuses mismatches instead of guessing whether Burp has already decoded a body.
+Native accessors still provide no hard interruptible allocation/deadline guarantee.
+
 ### Bounded evidence reading and reporting
 
 `get_http_message` accepts optional `jsonPointer` with an explicit `request_body` or `response_body`. It selects a
 complete RFC 6901 JSON value, not a truncated fragment. Full input must fit 64 KiB, depth 32, and 10,000 node visits;
 the selected UTF-8 value must fit `limit`. Empty pointer selects the root, `found` with `valueJson: "null"` differs from
 `missing`, and nonzero offsets/base64 are rejected. This branch returns no raw body or unrelated metadata. No decoding
-of compressed content is added.
+of compressed content occurs in JSON selection.
 
 `compare_http_messages.responseKeywords` accepts 1–32 distinct keywords (256 characters each, 4,096 total), for response
 parts only. Burp analyzes complete stored responses, not just the comparison preview, under 1 MiB per-response and 4 MiB
@@ -591,6 +639,14 @@ records), preserves selection and the selected detail's reading position while t
 stale data if audit reads fail. **Clear filter** restores the view without deleting records; filtering cannot hide an
 **Audit unavailable** status. It adds no traffic capture, persistence store, MCP tool, or endpoint. Existing audit copy
 and confirmed clear controls still apply.
+
+Choose all three searchable fields or a single Tool / event, Outcome, or Session correlation field. **Copy visible redacted
+CSV / HTML** copies exactly the displayed six-column table in its current filtered, sorted and reordered-column view,
+including UTC-rendered timestamps. It does not resnapshot the sink, export the detail JSON, or include the filter text.
+The complete UTF-8 export is capped at 64 KiB and 1,000 retained rows; overflow/unavailable/closed views copy nothing,
+while an empty available view exports headers/an empty table. HTML escapes cells and has no scripts or external assets;
+CSV quotes cells and neutralizes leading formula operators after whitespace/controls. These clipboard exports are
+operator diagnostics, not vulnerability evidence reports; no file-writing API, traffic capture or new MCP tool is added.
 
 Emergency read-only mode is a local safety interlock, not a replacement for Scope, approval, or authentication policy.
 Read and comparison tools continue to work and retain their normal data-access approvals. Request sending, routing,

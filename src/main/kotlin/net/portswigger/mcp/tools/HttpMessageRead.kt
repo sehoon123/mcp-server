@@ -34,13 +34,13 @@ data class GetHttpMessage(
     val ref: HttpMessageReference,
     @JsonSchemaMetadata(
         description = "HTTP message section to return.",
-        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body", "response_mime", "request_parameters", "timing"],
+        enumValues = ["metadata", "request", "request_headers", "request_body", "response", "response_headers", "response_body", "response_mime", "request_parameters", "timing", "response_body_decoded"],
         defaultJson = "\"metadata\"",
     )
     val part: String? = null,
     @JsonSchemaMetadata(description = "Zero-based byte offset within the selected content.", minimum = 0, defaultJson = "0")
     val offset: Int? = null,
-    @JsonSchemaMetadata(description = "Maximum content bytes; also bounds complete successful parameterInventory JSON.", minimum = 1, maximum = 262144, defaultJson = "8192")
+    @JsonSchemaMetadata(description = "Maximum content bytes; also bounds complete successful parameterInventory/reflection JSON.", minimum = 1, maximum = 262144, defaultJson = "8192")
     val limit: Int? = null,
     @JsonSchemaMetadata(description = "Encoding used for returned content.", enumValues = ["text", "base64"], defaultJson = "\"text\"")
     val encoding: String? = null,
@@ -48,6 +48,8 @@ data class GetHttpMessage(
     val jsonPointer: String? = null,
     @JsonSchemaMetadata(description = "Select complete parsed values for one header from explicit request_headers/response_headers; offset 0, text only. Limit bounds the values JSON.", minLength = 1, maxLength = 256)
     val headerName: String? = null,
+    @JsonSchemaMetadata(description = "Exact raw request-value reflection in stored response headers/body. Parameter selector only (name <=512, occurrence 0..31); explicit response, offset 0, text, no other projection. No decoding, values, or XSS verdict.")
+    val reflectionParameter: HttpInsertionPointSelector? = null,
 )
 
 @Serializable
@@ -166,6 +168,9 @@ data class GetHttpMessageResult(
     val mimeAnalysis: HttpMimeAnalysis? = null,
     val parameterInventory: HttpParameterInventory? = null,
     val timing: HttpTimingSummary? = null,
+    val reflection: HttpParameterReflection? = null,
+    @JsonSchemaMetadata(description = "response_body_decoded only: content is present only for ok, after complete single-member gzip validation. Offsets count decoded bytes; text is UTF-8 with replacement.")
+    val decodingStatus: HttpBodyDecodingStatus? = null,
     val error: String? = null,
 )
 
@@ -183,6 +188,7 @@ internal class HttpMessageReadService(
         val normalizedEncoding: String
         val normalizedJsonPointer: List<String>?
         val normalizedHeaderName: String?
+        val reflectionParameter: HttpInsertionPointSelector?
         try {
             normalizedPart = normalizeHttpPart(input.part)
             normalizedOffset = normalizeHistoryOffset(input.offset)
@@ -198,6 +204,13 @@ internal class HttpMessageReadService(
                 require(name.length in 1..256 && name.matches(HTTP_TOKEN_PATTERN)) { "headerName must be an ASCII HTTP token of 1..256 characters" }
                 require(input.part == "request_headers" || input.part == "response_headers") { "headerName requires explicit request_headers or response_headers" }
                 require(normalizedOffset == 0 && normalizedEncoding == "text") { "headerName requires offset 0 and text encoding" }
+            }
+            reflectionParameter = input.reflectionParameter?.also {
+                require(input.part == "response" && normalizedOffset == 0 && normalizedEncoding == "text") {
+                    "reflectionParameter requires explicit response, offset 0 and text encoding"
+                }
+                require(input.headerName == null && input.jsonPointer == null) { "reflectionParameter cannot combine with another projection" }
+                validateReflectionParameter(it)
             }
             if (normalizedPart in setOf("response_mime", "request_parameters", "timing")) {
                 require(normalizedOffset == 0 && normalizedEncoding == "text") { "$normalizedPart requires offset 0 and text encoding" }
@@ -219,8 +232,8 @@ internal class HttpMessageReadService(
                 input.ref,
                 sourceMetadata = when {
                     normalizedPart == "timing" -> HttpSourceMetadataSelection.TIMING
-                    normalizedJsonPointer != null || normalizedHeaderName != null ||
-                        normalizedPart in setOf("response_mime", "request_parameters") -> HttpSourceMetadataSelection.NONE
+                    normalizedJsonPointer != null || normalizedHeaderName != null || reflectionParameter != null ||
+                        normalizedPart in setOf("response_mime", "request_parameters", "response_body_decoded") -> HttpSourceMetadataSelection.NONE
                     else -> HttpSourceMetadataSelection.FULL
                 },
             ).also { currentCoroutineContext().ensureActive() }
@@ -246,6 +259,7 @@ internal class HttpMessageReadService(
                 encoding = normalizedEncoding,
                 jsonPointer = normalizedJsonPointer,
                 headerName = normalizedHeaderName,
+                reflectionParameter = reflectionParameter,
             )
         } catch (e: CancellationException) {
             throw e
@@ -305,9 +319,25 @@ private suspend fun readResolved(
     encoding: String,
     jsonPointer: List<String>?,
     headerName: String?,
+    reflectionParameter: HttpInsertionPointSelector?,
 ): GetHttpMessageResult {
     val request = resolved.request
     val response = resolved.response
+    if (reflectionParameter != null || part == "response_body_decoded") {
+        if (response == null) return GetHttpMessageResult(
+            HttpMessageReadStatus.PART_UNAVAILABLE, projectId, resolved.ref, part, error = "Response is unavailable",
+        )
+        val decoded = if (part == "response_body_decoded") decodeStoredResponseBody(response) else null
+        return GetHttpMessageResult(
+            status = HttpMessageReadStatus.OK,
+            projectId = projectId,
+            ref = resolved.ref,
+            part = part,
+            reflection = reflectionParameter?.let { inspectParameterReflection(request, response, it, limit) },
+            decodingStatus = decoded?.status,
+            content = decoded?.bytes?.toDecodedHistorySlice(offset, limit, encoding),
+        )
+    }
     if (part == "request_parameters" || part == "timing") {
         val timing = resolved.sourceMetadata?.timing
         val unavailable = part == "timing" && timing == null

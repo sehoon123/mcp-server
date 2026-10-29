@@ -712,6 +712,106 @@ class HttpMessageReadTest {
         }
     }
 
+    @Test
+    fun `reflection and decoding reject conflicting projections before source access`() = runBlocking {
+        val f = fixture(List(20) { "project-a" })
+        val selector = HttpInsertionPointSelector(HttpInsertionPointKind.PARAMETER, "id", HttpActionParameterType.URL)
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response", reflectionParameter = selector)
+        for (invalid in listOf(input.copy(part = null), input.copy(part = " RESPONSE "), input.copy(offset = 1),
+            input.copy(encoding = "base64"), input.copy(headerName = "Cookie"), input.copy(jsonPointer = ""),
+            input.copy(reflectionParameter = selector.copy(kind = HttpInsertionPointKind.HEADER)),
+            input.copy(part = "response_body_decoded"),
+            input.copy(part = "response_body_decoded", reflectionParameter = null, jsonPointer = ""),
+            input.copy(part = "response_body_decoded", reflectionParameter = null, headerName = "Content-Encoding"))) {
+            val result = f.service.read(invalid)
+            assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, result.status)
+            assertNull(result.projectId)
+        }
+        verify(exactly = 0) { f.api.project(); f.proxy.history(any()) }
+    }
+
+    @Test
+    fun `decoded reads paginate fully validated UTF8 without accessing unrelated metadata`() = runBlocking {
+        val f = fixture(List(30) { "project-a" })
+        val compressed = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write("abcdef".toByteArray()) }
+        }.toByteArray()
+        val response = response(f, compressed.size)
+        val body = response.body()
+        every { body.getBytes() } returns compressed
+        every { response.headers() } returns listOf(header("Content-Encoding", "gzip"))
+        val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response_body_decoded", limit = 3)
+        val first = f.service.read(input)
+        assertEquals(HttpBodyDecodingStatus.OK, first.decodingStatus)
+        assertEquals("abc", first.content?.data)
+        assertEquals(3, first.content?.nextOffsetBytes)
+        assertEquals("def", f.service.read(input.copy(offset = 3)).content?.data)
+        assertEquals(HttpMessageReadStatus.INVALID_ARGUMENT, f.service.read(input.copy(offset = 7)).status)
+        every { response.headers() } returns emptyList()
+        val unsupported = f.service.read(input)
+        assertEquals(HttpMessageReadStatus.OK, unsupported.status)
+        assertEquals(HttpBodyDecodingStatus.UNSUPPORTED_ENCODING, unsupported.decodingStatus)
+        assertNull(unsupported.content)
+        assertNull(first.metadata)
+        verify(exactly = 0) { f.request.url(); f.request.httpService(); f.request.body(); f.item.annotations(); f.item.time(); f.api.http() }
+    }
+
+    @Test
+    fun `inspection projections retain missing-response denial and project fences`() = runBlocking {
+        val selector = HttpInsertionPointSelector(HttpInsertionPointKind.PARAMETER, "id", HttpActionParameterType.URL)
+        val inputs = listOf(
+            GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response", reflectionParameter = selector),
+            GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"), part = "response_body_decoded"),
+        )
+        for (input in inputs) {
+            val f = fixture(List(20) { "project-a" })
+            val missing = f.service.read(input)
+            assertEquals(HttpMessageReadStatus.PART_UNAVAILABLE, missing.status)
+            assertNull(missing.reflection)
+            assertNull(missing.decodingStatus)
+            val response = response(f, 0)
+            var projectId = "project-a"
+            every { f.project.id() } answers { projectId }
+            every { f.request.bodyOffset() } returns 0
+            every { f.request.parameters() } answers { projectId = "project-b"; emptyList() }
+            every { response.headers() } answers { projectId = "project-b"; emptyList() }
+            val changed = f.service.read(input)
+            assertEquals(HttpMessageReadStatus.PROJECT_MISMATCH, changed.status)
+            assertNull(changed.reflection)
+            assertNull(changed.decodingStatus)
+            assertNull(changed.content)
+        }
+        val previous = DataAccessSecurity.approvalHandler
+        try {
+            DataAccessSecurity.approvalHandler = object : DataAccessApprovalHandler {
+                override suspend fun requestDataAccess(accessType: DataAccessType, config: McpConfig) = false
+            }
+            for (input in inputs) {
+                val f = fixture(List(20) { "project-a" }, requireApproval = true)
+                assertEquals(HttpMessageReadStatus.ACCESS_DENIED, f.service.read(input).status)
+                verify(exactly = 0) { f.proxy.history(any()) }
+            }
+        } finally { DataAccessSecurity.approvalHandler = previous }
+    }
+
+    @Test
+    fun `inspection projection failures are sanitized and cancellation propagates`() = runBlocking {
+        for (reflection in listOf(true, false)) {
+            val f = fixture(List(20) { "project-a" })
+            val response = response(f, 0)
+            every { response.bodyOffset() } throws IllegalStateException("PRIVATE_INSPECTION")
+            val input = GetHttpMessage("project-a", HttpMessageReference(HttpMessageSource.PROXY, "7"),
+                part = if (reflection) "response" else "response_body_decoded",
+                reflectionParameter = if (reflection) HttpInsertionPointSelector(HttpInsertionPointKind.PARAMETER, "id", HttpActionParameterType.URL) else null)
+            every { f.request.bodyOffset() } returns 0
+            val failure = f.service.read(input)
+            assertEquals(HttpMessageReadStatus.BURP_ERROR, failure.status)
+            assertFalse(Json.encodeToString(failure).contains("PRIVATE_INSPECTION"))
+            every { response.bodyOffset() } throws CancellationException()
+            assertFailsWith<CancellationException> { f.service.read(input) }
+        }
+    }
+
     private fun header(name: String, value: String): HttpHeader = mockk<HttpHeader>().also {
         every { it.name() } returns name
         every { it.value() } returns value

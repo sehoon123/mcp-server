@@ -30,6 +30,7 @@ private val HTTP_MESSAGE_PARTS = setOf(
     "response",
     "response_headers",
     "response_body",
+    "response_body_decoded",
     "response_mime",
     "request_parameters",
     "timing",
@@ -364,7 +365,7 @@ internal fun isCanonicalHttpPart(part: String): Boolean = part in HTTP_MESSAGE_P
 internal fun normalizeHttpPart(part: String?): String {
     val normalized = part?.trim()?.lowercase()?.replace('-', '_') ?: "metadata"
     require(isCanonicalHttpPart(normalized)) {
-        "part must be metadata, request, request_headers, request_body, response, response_headers, response_body, response_mime, request_parameters, or timing"
+        "part must be metadata, request, request_headers, request_body, response, response_headers, response_body, response_body_decoded, response_mime, request_parameters, or timing"
     }
     return normalized
 }
@@ -429,6 +430,18 @@ internal fun MontoyaByteArray.toHistorySlice(offset: Int, limit: Int, encoding: 
         hasMore = hasMore,
         nextOffsetBytes = if (hasMore) end else null,
     )
+}
+
+internal fun ByteArray.toDecodedHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
+    requireHistoryOffsetInRange(offset, size.toLong())
+    val end = min(size.toLong(), offset.toLong() + limit).toInt()
+    val selected = copyOfRange(offset, end)
+    val data = when (encoding) {
+        "text" -> selected.toString(Charsets.UTF_8)
+        "base64" -> Base64.getEncoder().encodeToString(selected)
+        else -> error("Unsupported encoding: $encoding")
+    }
+    return HistoryContentSlice(encoding, data, offset, end - offset, size, end < size, end.takeIf { it < size })
 }
 
 private fun String.toHistorySlice(offset: Int, limit: Int, encoding: String): HistoryContentSlice {
