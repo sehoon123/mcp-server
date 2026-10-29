@@ -309,8 +309,8 @@ class ToolsKtTest {
         val inputBytes = wireTools.sumOf { it.getValue("inputSchema").toString().toByteArray(Charsets.UTF_8).size }
         val outputBytes = wireTools.sumOf { it.getValue("outputSchema").toString().toByteArray(Charsets.UTF_8).size }
         println("CATALOG_BYTES edition=$edition total=$catalogBytes input=$inputBytes output=$outputBytes")
-        // Reviewed reflection/gzip schemas measure 138,245/205,854 bytes; retain typed outputs and safety prose.
-        assertTrue(catalogBytes <= if (edition == "Community") 139_000 else 206_000, "Review catalog byte-budget growth")
+        // Reviewed marker input measures 138,245/206,569 bytes; Community and all runtime limits stay unchanged.
+        assertTrue(catalogBytes <= if (edition == "Community") 139_000 else 207_000, "Review catalog byte-budget growth")
         tools.filter { it.name in setOf("get_http_message", "get_websocket_message_by_id", "get_scanner_issue_by_id") }
             .forEach { tool ->
                 val limit = tool.inputSchema.properties!!.getValue("limit").jsonObject
@@ -2734,11 +2734,11 @@ class ToolsKtTest {
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertCatalogToolContract)
-            assertCatalogContract("Professional", tools, "6bd22ff0e6be8fb2115c1182480968629f718b7982cc89f442bcb0307d10844f")
+            assertCatalogContract("Professional", tools, "a8b7f68e5da62d4c7d6ab56606dd1479b742d85b2235434490404e8d2b0f103c")
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "c6b5f80c22662a4f272b4a35b22436a859e337e86348fcff3351d65ed0037d8c",
+                "e20e57ae46dc849f3cfe731934b7bd930cf6c4a11e4a86302ab3f8a6b1ba61f4",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2777,6 +2777,15 @@ class ToolsKtTest {
             )
             assertTrue(createIssue.inputSchema.properties?.get("refs").toString().contains("\"maxItems\":8"))
             assertTrue(createIssue.inputSchema.properties?.get("humanReviewed").toString().contains("not proof"))
+            val markerSchema = createIssue.inputSchema.properties!!.getValue("markers").jsonObject
+            assertEquals(64, markerSchema.getValue("maxItems").jsonPrimitive.int)
+            val markerItem = markerSchema.getValue("items").jsonObject
+            assertEquals(setOf("evidenceIndex", "part", "start", "end"), markerItem.getValue("required").jsonArray.map { it.jsonPrimitive.content }.toSet())
+            val markerFields = markerItem.getValue("properties").jsonObject
+            assertEquals(setOf("request", "response"), markerFields.getValue("part").jsonObject.getValue("enum").jsonArray.map { it.jsonPrimitive.content }.toSet())
+            assertEquals(7, markerFields.getValue("evidenceIndex").jsonObject.getValue("maximum").jsonPrimitive.int)
+            assertEquals(0, markerFields.getValue("start").jsonObject.getValue("minimum").jsonPrimitive.int)
+            assertEquals(262144, markerFields.getValue("end").jsonObject.getValue("maximum").jsonPrimitive.int)
             assertEquals(false, createIssue.annotations?.readOnlyHint)
             assertEquals(true, createIssue.annotations?.destructiveHint)
             assertEquals(false, createIssue.annotations?.idempotentHint)
@@ -3036,6 +3045,29 @@ class ToolsKtTest {
             assertEquals("uncertain", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals("do_not_retry", result?.structuredContent?.get("retry")?.jsonPrimitive?.content)
             verify(exactly = 1) { collaboratorClient.generatePayload() }
+        }
+
+        @Test
+        fun `Scanner marker validation crosses the MCP wire without source access`() = runBlocking {
+            clearMocks(api, answers = false) // Exclude server-start observer registration from call assertions.
+            val arguments = mapOf(
+                "projectId" to collaboratorProjectId,
+                "refs" to listOf(mapOf("source" to "proxy", "id" to "1")),
+                "name" to "Reviewed example", "detail" to "Caller evidence", "severity" to "information",
+                "confidence" to "tentative", "humanReviewed" to true,
+            )
+            val invalid = client.callTool("create_scanner_issue", arguments + ("markers" to listOf(
+                mapOf("evidenceIndex" to 0, "part" to "response", "start" to 2, "end" to 1),
+            )))
+            assertEquals(true, invalid?.isError)
+            assertEquals("invalid_argument", invalid?.structuredContent?.get("status")?.jsonPrimitive?.content)
+            assertEquals("not_started", invalid?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
+            verify(exactly = 0) { api.proxy() }
+            val badPart = client.callTool("create_scanner_issue", arguments + ("markers" to listOf(
+                mapOf("evidenceIndex" to 0, "part" to "response_body_decoded", "start" to 0, "end" to 1),
+            )))
+            assertEquals(true, badPart?.isError)
+            verify(exactly = 0) { api.proxy() }
         }
 
         @Test

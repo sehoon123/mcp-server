@@ -2,6 +2,7 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.core.Marker
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
@@ -199,7 +200,9 @@ class ScannerIssueCreationTest {
         )
         SensitiveActionSecurity.approvalHandler = allowApproval()
 
-        val result = fixture.service.create(fixture.input)
+        val result = fixture.service.create(fixture.input.copy(markers = listOf(
+            ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, 0, 1),
+        )))
 
         assertEquals(NativeToolStatus.STALE_STATE, result.status)
         assertEquals(StandardExecutionState.NOT_STARTED, result.executionState)
@@ -366,6 +369,157 @@ class ScannerIssueCreationTest {
         verify(exactly = 0) { fixture.siteMap.add(any<AuditIssue>()) }
     }
 
+    @Test
+    fun `marker shape index counts duplicates and overlaps fail before source access`() = runBlocking {
+        val fixture = fixture()
+        val range = ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, 0, 2)
+        val invalid = listOf(
+            listOf(range.copy(evidenceIndex = -1)), listOf(range.copy(evidenceIndex = 1)),
+            listOf(range.copy(start = -1)), listOf(range.copy(end = 0)),
+            listOf(range.copy(start = 2)), listOf(range.copy(end = 262145)),
+            listOf(range, range), listOf(range, range.copy(start = 1, end = 3)),
+            List(65) { range.copy(start = it * 2, end = it * 2 + 1) },
+        )
+        for (markers in invalid) {
+            val result = fixture.service.create(fixture.input.copy(markers = markers))
+            assertEquals(NativeToolStatus.INVALID_ARGUMENT, result.status)
+            assertEquals(StandardExecutionState.NOT_STARTED, result.executionState)
+        }
+        verify(exactly = 0) { fixture.api.project() }
+        verify(exactly = 0) { fixture.proxy.history(any()) }
+        verify(exactly = 0) { fixture.siteMap.add(any<AuditIssue>()) }
+    }
+
+    @Test
+    fun `missing response and actual byte overflow fail before issue approval`() = runBlocking {
+        var prompts = 0
+        SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String, summary: String, reviewContent: String?, renderContentAsHttp: Boolean, api: MontoyaApi,
+            ): Boolean { prompts++; return true }
+        }
+        for (part in ScannerEvidencePart.entries) {
+            val fixture = fixture(responseBytes = null)
+            val end = if (part == ScannerEvidencePart.REQUEST) fixture.requestBytes.size + 1 else 1
+            val result = fixture.service.create(fixture.input.copy(markers = listOf(ScannerEvidenceMarker(0, part, 0, end))))
+            assertEquals(NativeToolStatus.INVALID_ARGUMENT, result.status)
+            assertEquals(StandardExecutionState.NOT_STARTED, result.executionState)
+            verify(exactly = 0) { fixture.siteMap.add(any<AuditIssue>()) }
+        }
+        assertEquals(0, prompts)
+    }
+
+    @Test
+    fun `marker limits accept 64 adjacent ranges and exact maximum byte boundary`() = runBlocking {
+        val fixture = fixture(requestBytes = ByteArray(262144) { 'a'.code.toByte() })
+        var preview: String? = null
+        SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String, summary: String, reviewContent: String?, renderContentAsHttp: Boolean, api: MontoyaApi,
+            ): Boolean { preview = reviewContent; return false }
+        }
+        val markers = List(63) { ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, it, it + 1) } +
+            ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, 63, 262144)
+        val result = fixture.service.create(fixture.input.copy(markers = markers))
+        assertEquals(NativeToolStatus.ACCESS_DENIED, result.status)
+        assertTrue(preview.orEmpty().contains("\"end\":262144"))
+        verify(exactly = 0) { fixture.siteMap.add(any<AuditIssue>()) }
+    }
+
+    @Test
+    fun `frozen refs and markers apply raw multibyte ranges only to new evidence copies`() = runBlocking {
+        val raw = "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n한글".toByteArray()
+        val fixture = fixture(requestBytes = raw)
+        val refs = fixture.input.refs.toMutableList()
+        val markers = mutableListOf(
+            ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, raw.size - 3, raw.size),
+            ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, raw.size - 6, raw.size - 3),
+            ScannerEvidenceMarker(0, ScannerEvidencePart.RESPONSE, 0, 2),
+        )
+        var preview: String? = null
+        SensitiveActionSecurity.approvalHandler = object : SensitiveActionApprovalHandler {
+            override suspend fun requestApproval(
+                action: String, summary: String, reviewContent: String?, renderContentAsHttp: Boolean, api: MontoyaApi,
+            ): Boolean {
+                preview = reviewContent
+                refs.clear()
+                markers.clear()
+                return true
+            }
+        }
+        val native = mockNativeIssueFactories(raw, fixture.responseBytes!!)
+        val first = mockk<Marker>()
+        val second = mockk<Marker>()
+        val response = mockk<Marker>()
+        val requestMarked = mockk<HttpRequestResponse>()
+        val bothMarked = mockk<HttpRequestResponse>()
+        every { Marker.marker(raw.size - 6, raw.size - 3) } returns first
+        every { Marker.marker(raw.size - 3, raw.size) } returns second
+        every { Marker.marker(0, 2) } returns response
+        every { native.evidence.withRequestMarkers(listOf(first, second)) } returns requestMarked
+        every { requestMarked.withResponseMarkers(listOf(response)) } returns bothMarked
+        try {
+            val result = fixture.service.create(fixture.input.copy(refs = refs, markers = markers))
+            assertEquals(NativeToolStatus.OK, result.status)
+            assertEquals(1, result.evidenceCount)
+            assertTrue(preview.orEmpty().contains("\"evidenceIndex\":0"))
+            assertTrue(preview.orEmpty().contains("\"part\":\"request\""))
+            assertTrue(preview.orEmpty().contains("\"end\":${raw.size}"))
+            assertTrue(raw.size > raw.toString(Charsets.UTF_8).length)
+            verify(exactly = 1) { native.evidence.withRequestMarkers(listOf(first, second)) }
+            verify(exactly = 1) { requestMarked.withResponseMarkers(listOf(response)) }
+            verify(exactly = 1) {
+                AuditIssue.auditIssue(any(), any(), any(), any(), any(), any(), any(), any(), any(), listOf(bothMarked))
+            }
+            verify(exactly = 0) { fixture.sourceRequest.withMarkers(any<List<Marker>>()) }
+            verify(exactly = 0) { fixture.sourceResponse!!.withMarkers(any<List<Marker>>()) }
+            verify(exactly = 1) { fixture.siteMap.add(native.issue) }
+        } finally { native.close() }
+    }
+
+    @Test
+    fun `markers are attached to the selected evidence index only`() = runBlocking {
+        val fixture = fixture(evidenceCount = 2)
+        SensitiveActionSecurity.approvalHandler = allowApproval()
+        val native = mockNativeIssueFactories(fixture.requestBytes, fixture.responseBytes!!)
+        val second = mockk<HttpRequestResponse>()
+        val marked = mockk<HttpRequestResponse>()
+        every { HttpRequestResponse.httpRequestResponse(any(), any()) } returnsMany listOf(native.evidence, second)
+        every { second.withResponseMarkers(any<List<Marker>>()) } returns marked
+        try {
+            val result = fixture.service.create(fixture.input.copy(markers = listOf(
+                ScannerEvidenceMarker(1, ScannerEvidencePart.RESPONSE, 0, 1),
+            )))
+            assertEquals(NativeToolStatus.OK, result.status)
+            verify(exactly = 0) { native.evidence.withResponseMarkers(any<List<Marker>>()) }
+            verify(exactly = 1) {
+                AuditIssue.auditIssue(any(), any(), any(), any(), any(), any(), any(), any(), any(), listOf(native.evidence, marked))
+            }
+        } finally { native.close() }
+    }
+
+    @Test
+    fun `null and empty markers retain unmarked submission and marker failures do not submit`() = runBlocking {
+        val fixture = fixture()
+        SensitiveActionSecurity.approvalHandler = allowApproval()
+        val native = mockNativeIssueFactories(fixture.requestBytes, fixture.responseBytes!!)
+        try {
+            for (markers in listOf(null, emptyList<ScannerEvidenceMarker>())) {
+                assertEquals(NativeToolStatus.OK, fixture.service.create(fixture.input.copy(markers = markers)).status)
+            }
+            verify(exactly = 0) { Marker.marker(any<Int>(), any<Int>()) }
+            verify(exactly = 0) { native.evidence.withRequestMarkers(any<List<Marker>>()) }
+            every { native.evidence.withRequestMarkers(any<List<Marker>>()) } throws IllegalStateException("private marker failure")
+            val failed = fixture.service.create(fixture.input.copy(markers = listOf(
+                ScannerEvidenceMarker(0, ScannerEvidencePart.REQUEST, 0, 1),
+            )))
+            assertEquals(NativeToolStatus.BURP_ERROR, failed.status)
+            assertEquals(StandardExecutionState.NOT_STARTED, failed.executionState)
+            assertFalse(failed.error.orEmpty().contains("private marker failure"))
+            verify(exactly = 2) { fixture.siteMap.add(native.issue) }
+        } finally { native.close() }
+    }
+
     private fun allowApproval() = object : SensitiveActionApprovalHandler {
         override suspend fun requestApproval(
             action: String,
@@ -381,6 +535,7 @@ class ScannerIssueCreationTest {
         responseBytes: ByteArray? = "HTTP/1.1 200 OK\r\n\r\nresponse".toByteArray(),
         refreshedRequestBytes: ByteArray = requestBytes,
         requestLengthOverride: Int? = null,
+        evidenceCount: Int = 1,
         requireDataApproval: Boolean = false,
         available: () -> Boolean = { true },
         refreshedUrl: String = "https://example.test/evidence",
@@ -417,9 +572,16 @@ class ScannerIssueCreationTest {
         every { api.proxy() } returns proxy
         every { api.siteMap() } returns siteMap
         every { api.logging() } returns logging
+        val items = listOf(item) + (2..evidenceCount).map { id ->
+            mockk<ProxyHttpRequestResponse>().also {
+                every { it.id() } returns id
+                every { it.request() } returns request
+                every { it.response() } returns response
+            }
+        }
         every { proxy.history(any()) } answers {
             val filter = firstArg<burp.api.montoya.proxy.ProxyHistoryFilter>()
-            if (available()) listOf(item).filter(filter::matches) else emptyList()
+            if (available()) items.filter(filter::matches) else emptyList()
         }
         every { item.id() } returns 1
         every { item.request() } returns request
@@ -442,7 +604,7 @@ class ScannerIssueCreationTest {
 
         val input = CreateScannerIssue(
             projectId = "project-a",
-            refs = listOf(HttpMessageReference(HttpMessageSource.PROXY, "1")),
+            refs = (1..evidenceCount).map { HttpMessageReference(HttpMessageSource.PROXY, it.toString()) },
             name = "Example issue",
             detail = "Human reviewed detail",
             severity = ScannerIssueSeverity.HIGH,
@@ -458,6 +620,8 @@ class ScannerIssueCreationTest {
             responseBytes,
             input,
             ScannerIssueCreationService(api, config, withMutation),
+            sourceRequest = request,
+            sourceResponse = response,
         )
     }
 
@@ -474,6 +638,8 @@ class ScannerIssueCreationTest {
         mockkStatic(HttpResponse::class)
         mockkStatic(HttpRequestResponse::class)
         mockkStatic(AuditIssue::class)
+        mockkStatic(Marker::class)
+        every { Marker.marker(any<Int>(), any<Int>()) } answers { mockk<Marker>() }
         val service = mockk<HttpService>()
         val requestRaw = mockk<MontoyaByteArray>()
         val responseRaw = mockk<MontoyaByteArray>()
@@ -487,12 +653,14 @@ class ScannerIssueCreationTest {
         every { HttpRequest.httpRequest(service, requestRaw) } returns request
         every { HttpResponse.httpResponse(responseRaw) } returns response
         every { HttpRequestResponse.httpRequestResponse(request, response) } returns evidence
+        every { evidence.withRequestMarkers(any<List<Marker>>()) } returns evidence
+        every { evidence.withResponseMarkers(any<List<Marker>>()) } returns evidence
         every {
             AuditIssue.auditIssue(
                 any(), any(), any(), any(), any(), any(), any(), any(), any(), any<List<HttpRequestResponse>>()
             )
         } returns issue
-        return NativeFactories(issue)
+        return NativeFactories(issue, evidence)
     }
 
     private data class Fixture(
@@ -504,6 +672,8 @@ class ScannerIssueCreationTest {
         val responseBytes: ByteArray?,
         val input: CreateScannerIssue,
         val service: ScannerIssueCreationService,
+        val sourceRequest: HttpRequest,
+        val sourceResponse: HttpResponse?,
     )
 
     private class RecordingAuditSink : McpAuditSink {
@@ -519,8 +689,9 @@ class ScannerIssueCreationTest {
         override fun close() = Unit
     }
 
-    private data class NativeFactories(val issue: AuditIssue) : AutoCloseable {
+    private data class NativeFactories(val issue: AuditIssue, val evidence: HttpRequestResponse) : AutoCloseable {
         override fun close() {
+            unmockkStatic(Marker::class)
             unmockkStatic(AuditIssue::class)
             unmockkStatic(HttpRequestResponse::class)
             unmockkStatic(HttpResponse::class)

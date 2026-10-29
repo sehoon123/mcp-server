@@ -1,6 +1,29 @@
 # reburp feature and architecture selection
 
-## Current follow-up — stored inspection and diagnostic export
+## Current follow-up — reference batches and marked issue evidence
+
+Reference: [forefy/reburp 1.1.15 at `892e475cf3d74020cdb82cc1c6368187b5e69404`](https://github.com/forefy/reburp/tree/892e475cf3d74020cdb82cc1c6368187b5e69404),
+unchanged when HEAD/latest release were rechecked. Source inspection only: no upstream build, load or target request.
+
+- `UiRoutes.kt:230` / `UiElementRoutes.kt` motivate selection-to-follow-up ergonomics, **not** an upstream bulk-copy
+  equivalent or generic UI automation. The bridge extends its own public context menu to copy 2–8 HTTP references.
+  It preserves single-item behavior, freezes project binding before queueing, rejects partial results and uses only
+  direct native IDs or one bounded object-identity lookup, not sampled-content identity guesses. No new MCP schema/tool.
+- `MessageRoutes.kt:770–849` motivates optional raw byte markers on the existing Professional `create_scanner_issue`.
+  Flat ranges point into frozen `refs`; they are approved with exact evidence and applied only to new issue copies.
+  Upstream character-length range checks and shared-history mutation assumptions are not copied. This does not turn
+  reflection offsets into full ranges or decoded-gzip positions into raw evidence coordinates, and proves no finding.
+- `HttpRoutes.kt:610–704` motivates only a documented role-labelled evidence recipe using existing comparison/session
+  tools and prompt `focus`. No active auth-diff orchestrator, new prompt, credential/role persistence or status/length
+  vulnerability verdict is introduced. The actual callable issue tool is `create_scanner_issue`; the earlier research
+  phrase `record_scanner_issue_from_ids` was not a callable name.
+
+Native batch-wrapper compatibility, clipboard behavior, and Professional marker rendering/persistence remain **NOT RUN**.
+Existing approvals, complete-byte evidence rechecks, project fences, 24/38 tool counts and release gates remain intact.
+Native report export and send-result storage/ref association remain deferred for explicit sensitive-export or
+retention/project-atomicity design. `find-references` does not justify a new tool beside existing text/regex search.
+
+## Previous follow-up — stored inspection and diagnostic export
 
 Reference: [forefy/reburp 1.1.15 at `892e475cf3d74020cdb82cc1c6368187b5e69404`](https://github.com/forefy/reburp/tree/892e475cf3d74020cdb82cc1c6368187b5e69404).
 Source inspection only: the reference extension was not built, loaded or sent target requests.
