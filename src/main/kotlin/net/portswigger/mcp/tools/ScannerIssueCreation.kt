@@ -2,6 +2,7 @@ package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.ByteArray as MontoyaByteArray
+import burp.api.montoya.core.Marker
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
@@ -26,6 +27,7 @@ import java.net.URI
 import java.util.Base64
 
 private const val MAX_SCANNER_ISSUE_REFS = 8
+private const val MAX_SCANNER_EVIDENCE_MARKERS = 64
 private const val MAX_SCANNER_ISSUE_NAME_CHARS = 256
 private const val MAX_SCANNER_ISSUE_TEXT_CHARS = 8_192
 private const val MAX_SCANNER_ISSUE_URL_CHARS = 2_048
@@ -52,6 +54,23 @@ enum class ScannerIssueConfidence {
 }
 
 @Serializable
+enum class ScannerEvidencePart {
+    @SerialName("request") REQUEST,
+    @SerialName("response") RESPONSE,
+}
+
+@Serializable
+data class ScannerEvidenceMarker(
+    @JsonSchemaMetadata(description = "Zero-based index into refs.", minimum = 0, maximum = 7)
+    val evidenceIndex: Int,
+    val part: ScannerEvidencePart,
+    @JsonSchemaMetadata(description = "Inclusive raw-message byte offset.", minimum = 0, maximum = 262143)
+    val start: Int,
+    @JsonSchemaMetadata(description = "Exclusive raw-message byte offset.", minimum = 1, maximum = 262144)
+    val end: Int,
+)
+
+@Serializable
 data class CreateScannerIssue(
     @JsonSchemaMetadata(description = MCP_PROJECT_ID_INPUT_DESCRIPTION, minLength = 1, maxLength = 256)
     val projectId: String,
@@ -69,6 +88,8 @@ data class CreateScannerIssue(
     val humanReviewed: Boolean,
     @JsonSchemaMetadata(description = "Optional caller-authored plain-text remediation.", maxLength = MAX_SCANNER_ISSUE_TEXT_CHARS)
     val remediation: String? = null,
+    @JsonSchemaMetadata(description = "Optional raw-byte evidence markers, not decoded offsets. No overlaps per evidence/part. Applied only to new issue copies; null/empty leaves evidence unmarked.", maxItems = MAX_SCANNER_EVIDENCE_MARKERS)
+    val markers: List<ScannerEvidenceMarker>? = null,
 )
 
 @Serializable
@@ -107,6 +128,7 @@ private data class ScannerIssueApprovalPreview(
     val humanReviewed: Boolean,
     val baseUrl: String,
     val evidence: List<ScannerEvidencePreview>,
+    val markers: List<ScannerEvidenceMarker>,
 )
 
 @Serializable
@@ -141,7 +163,11 @@ internal class ScannerIssueCreationService(
 ) {
     private val resolver = HttpMessageResolver(api, config)
 
-    suspend fun create(input: CreateScannerIssue): CreateScannerIssueResult {
+    suspend fun create(request: CreateScannerIssue): CreateScannerIssueResult {
+        if (request.refs.size > MAX_SCANNER_ISSUE_REFS ||
+            (request.markers?.size ?: 0) > MAX_SCANNER_EVIDENCE_MARKERS
+        ) return failure(NativeToolStatus.INVALID_ARGUMENT, null, 0, "refs or markers exceed their count limit")
+        val input = request.copy(refs = request.refs.toList(), markers = request.markers?.toList())
         validateScannerIssueInput(input)?.let {
             return failure(NativeToolStatus.INVALID_ARGUMENT, null, 0, it)
         }
@@ -171,6 +197,17 @@ internal class ScannerIssueCreationService(
                 0,
                 "the first evidence request does not have a safe bounded HTTP(S) URL",
             )
+        if (input.markers.orEmpty().any { marker ->
+            val snapshot = approvedEvidence[marker.evidenceIndex]
+            val size = when (marker.part) {
+                ScannerEvidencePart.REQUEST -> snapshot.requestBytes.size
+                ScannerEvidencePart.RESPONSE -> snapshot.responseBytes?.size ?: 0
+            }
+            marker.end > size
+        }) return failure(
+            NativeToolStatus.INVALID_ARGUMENT, found.projectId, 0,
+            "marker exceeds complete raw evidence or selects a missing response",
+        )
         val preview = approvalPreview(input, found.projectId, baseUrl, approvedEvidence)
         val approved = try {
             SensitiveActionSecurity.checkPermission(
@@ -390,11 +427,20 @@ internal class ScannerIssueCreationService(
         baseUrl: String,
         evidence: List<ScannerEvidenceSnapshot>,
     ): AuditIssue {
-        val requestResponses = evidence.map { snapshot ->
+        val requestResponses = evidence.mapIndexed { index, snapshot ->
             val service = HttpService.httpService(snapshot.host, snapshot.port, snapshot.secure)
             val request = HttpRequest.httpRequest(service, MontoyaByteArray.byteArray(*snapshot.requestBytes))
             val response = snapshot.responseBytes?.let { HttpResponse.httpResponse(MontoyaByteArray.byteArray(*it)) }
-            HttpRequestResponse.httpRequestResponse(request, response)
+            var pair = HttpRequestResponse.httpRequestResponse(request, response)
+            fun markers(part: ScannerEvidencePart) = input.markers.orEmpty()
+                .filter { it.evidenceIndex == index && it.part == part }
+                .sortedBy { it.start }
+                .map { Marker.marker(it.start, it.end) }
+            val requestMarkers = markers(ScannerEvidencePart.REQUEST)
+            val responseMarkers = markers(ScannerEvidencePart.RESPONSE)
+            if (requestMarkers.isNotEmpty()) pair = pair.withRequestMarkers(requestMarkers)
+            if (responseMarkers.isNotEmpty()) pair = pair.withResponseMarkers(responseMarkers)
+            pair
         }
         return AuditIssue.auditIssue(
             html(input.name),
@@ -453,6 +499,14 @@ private fun validateScannerIssueInput(input: CreateScannerIssue): String? {
         return "refs must contain between 1 and $MAX_SCANNER_ISSUE_REFS items"
     }
     val identities = input.refs.map(::canonicalHttpReferenceIdentity)
+    val markers = input.markers.orEmpty()
+    if (markers.any {
+        it.evidenceIndex !in input.refs.indices || it.start < 0 || it.start >= it.end ||
+            it.end > MAX_SCANNER_EVIDENCE_PART_BYTES
+    }) return "markers must select an existing ref and a valid raw-byte range"
+    if (markers.groupBy { it.evidenceIndex to it.part }.values.any { ranges ->
+        ranges.sortedBy { it.start }.zipWithNext().any { (left, right) -> right.start < left.end }
+    }) return "markers must not overlap within the same evidence part"
     return when {
         identities.any { it == null } -> "refs contain an invalid HTTP reference"
         identities.filterNotNull().distinct().size != identities.size ->
@@ -509,6 +563,7 @@ private fun approvalPreview(
                 response = it.responseBytes?.let(Base64.getEncoder()::encodeToString),
             )
         },
+        markers = input.markers.orEmpty(),
     )
 )
 

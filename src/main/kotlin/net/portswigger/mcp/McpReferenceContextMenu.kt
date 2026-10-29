@@ -27,6 +27,7 @@ import java.awt.datatransfer.StringSelection
 import java.net.URI
 import java.security.MessageDigest
 import java.util.HexFormat
+import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -35,6 +36,9 @@ import java.util.concurrent.TimeUnit
 import javax.swing.JMenuItem
 
 internal const val COPY_MCP_REFERENCE_LABEL = "Copy MCP reference"
+internal const val COPY_MCP_REFERENCES_LABEL = "Copy MCP references"
+private const val MAX_BATCH_REFERENCES = 8
+private const val MAX_BATCH_REFERENCE_BYTES = 16 * 1024
 private const val COPY_MCP_REFERENCE_DESCRIPTION =
     "Copies a project-scoped reference for use with ${ProductIdentity.PRODUCT_NAME}. No raw traffic is copied."
 private const val COPY_MCP_REFERENCE_SUCCESS = "MCP reference copied"
@@ -87,7 +91,7 @@ private class SystemMcpReferenceClipboard : McpReferenceClipboard {
 /**
  * Adds a user-initiated, read-only context-menu action for canonical MCP references.
  *
- * Menu construction only inspects selection count/type and directly exposed source IDs. Fallback source matching and
+ * Menu construction binds the project and inspects selection count/type and directly exposed source IDs. Fallback matching and
  * Scanner hashing run on a bounded background executor so Burp's event dispatch thread is not blocked by source scans
  * or large issue detail.
  */
@@ -104,87 +108,88 @@ internal class McpReferenceContextMenuProvider(
     @Volatile
     private var closed = false
 
-    override fun provideMenuItems(event: ContextMenuEvent): List<Component> = menuFor(
-        runCatching { selectedHttpReference(event) }.getOrNull(),
-    )
-
-    override fun provideMenuItems(event: WebSocketContextMenuEvent): List<Component> = menuFor(
-        runCatching {
-            val selected = event.selectedWebSocketMessages().singleOrNull() ?: return@runCatching null
-            if (selected is ProxyWebSocketMessage && selected.id() >= 0) {
-                SelectedMcpReference.WebSocketId(selected.id())
-            } else {
-                SelectedMcpReference.WebSocketMessage(selected)
-            }
-        }.getOrNull(),
-    )
-
-    override fun provideMenuItems(event: AuditIssueContextMenuEvent): List<Component> {
-        if (!professionalEdition) return emptyList()
-        return menuFor(
-            runCatching { event.selectedIssues().singleOrNull()?.let(SelectedMcpReference::ScannerIssue) }.getOrNull(),
-        )
+    override fun provideMenuItems(event: ContextMenuEvent): List<Component> = menuFor {
+        selectedHttpReference(event)
     }
 
-    private fun selectedHttpReference(event: ContextMenuEvent): SelectedMcpReference? {
-        val selected = event.selectedRequestResponses().singleOrNull() ?: return null
-        return when {
-            event.invocationType() == InvocationType.SITE_MAP_TREE ||
-                event.invocationType() == InvocationType.SITE_MAP_TABLE ->
-                SelectedMcpReference.SiteMap(selected)
-
-            event.invocationType() == InvocationType.PROXY_HISTORY -> {
-                val id = (selected as? ProxyHttpRequestResponse)?.id()?.takeIf { it >= 0 }
-                if (id != null) {
-                    SelectedMcpReference.Http(HttpMessageReference(HttpMessageSource.PROXY, id.toString()))
-                } else {
-                    SelectedMcpReference.ProxyHistory(selected)
-                }
-            }
-
-            event.toolType() == ToolType.ORGANIZER -> {
-                val id = (selected as? OrganizerItem)?.id()?.takeIf { it >= 0 }
-                if (id != null) {
-                    SelectedMcpReference.Http(HttpMessageReference(HttpMessageSource.ORGANIZER, id.toString()))
-                } else {
-                    SelectedMcpReference.Organizer(selected)
-                }
-            }
-
-            else -> null
+    override fun provideMenuItems(event: WebSocketContextMenuEvent): List<Component> = menuFor {
+        val selected = event.selectedWebSocketMessages().singleOrNull() ?: return@menuFor null
+        if (selected is ProxyWebSocketMessage && selected.id() >= 0) {
+            SelectedMcpReference.WebSocketId(selected.id())
+        } else {
+            SelectedMcpReference.WebSocketMessage(selected)
         }
     }
 
-    private fun menuFor(selection: SelectedMcpReference?): List<Component> {
-        if (selection == null) return emptyList()
-        return synchronized(lifecycleLock) {
-            if (closed) {
-                emptyList()
-            } else {
-                listOf(
-                    JMenuItem(COPY_MCP_REFERENCE_LABEL).apply {
+    override fun provideMenuItems(event: AuditIssueContextMenuEvent): List<Component> {
+        if (!professionalEdition) return emptyList()
+        return menuFor { event.selectedIssues().singleOrNull()?.let(SelectedMcpReference::ScannerIssue) }
+    }
+
+    private fun selectedHttpReference(event: ContextMenuEvent): SelectedMcpReference? {
+        val items = event.selectedRequestResponses()
+        if (items.size !in 1..MAX_BATCH_REFERENCES) return null
+        val source = when (event.invocationType()) {
+            InvocationType.SITE_MAP_TREE, InvocationType.SITE_MAP_TABLE -> HttpMessageSource.SITE_MAP
+            InvocationType.PROXY_HISTORY -> HttpMessageSource.PROXY
+            else -> if (event.toolType() == ToolType.ORGANIZER) HttpMessageSource.ORGANIZER else return null
+        }
+        val selections = items.map { selected ->
+            when (source) {
+                HttpMessageSource.SITE_MAP -> SelectedMcpReference.SiteMap(selected)
+                HttpMessageSource.PROXY -> {
+                    val id = (selected as? ProxyHttpRequestResponse)?.id()?.takeIf { it >= 0 }
+                    if (id != null) SelectedMcpReference.Http(HttpMessageReference(source, id.toString()))
+                    else SelectedMcpReference.ProxyHistory(selected)
+                }
+                HttpMessageSource.ORGANIZER -> {
+                    val id = (selected as? OrganizerItem)?.id()?.takeIf { it >= 0 }
+                    if (id != null) SelectedMcpReference.Http(HttpMessageReference(source, id.toString()))
+                    else SelectedMcpReference.Organizer(selected)
+                }
+            }
+        }
+        return selections.singleOrNull() ?: SelectedMcpReference.HttpBatch(source, selections)
+    }
+
+    private fun menuFor(select: () -> SelectedMcpReference?): List<Component> = try {
+        if (closed) emptyList() else {
+            val projectId = api.project().id()
+            check(validMcpProjectId(projectId))
+            val selection = select()
+            check(api.project().id() == projectId)
+            synchronized(lifecycleLock) {
+                if (closed || selection == null) emptyList() else listOf(
+                    JMenuItem(if (selection is SelectedMcpReference.HttpBatch) COPY_MCP_REFERENCES_LABEL else COPY_MCP_REFERENCE_LABEL).apply {
                         accessibleContext.accessibleDescription = COPY_MCP_REFERENCE_DESCRIPTION
                         toolTipText = COPY_MCP_REFERENCE_DESCRIPTION
-                        addActionListener { enqueueCopy(selection) }
+                        addActionListener { enqueueCopy(selection, projectId) }
                     },
                 )
             }
         }
+    } catch (_: Exception) {
+        emptyList()
     }
 
-    private fun enqueueCopy(selection: SelectedMcpReference) {
+    private fun enqueueCopy(selection: SelectedMcpReference, projectId: String) {
         if (closed) return
-        if (!taskExecutor.submit { copyReference(selection) }) {
-            raiseErrorIfOpen(COPY_MCP_REFERENCE_BUSY)
+        try {
+            check(api.project().id() == projectId)
+            if (!taskExecutor.submit { copyReference(selection, projectId) }) {
+                raiseErrorIfOpen(COPY_MCP_REFERENCE_BUSY)
+            }
+        } catch (_: Exception) {
+            raiseErrorIfOpen(COPY_MCP_REFERENCE_FAILURE)
         }
     }
 
-    private fun copyReference(selection: SelectedMcpReference) {
+    private fun copyReference(selection: SelectedMcpReference, projectId: String) {
         try {
             checkCopyActive()
-            val projectId = api.project().id()
-            check(validMcpProjectId(projectId))
+            check(api.project().id() == projectId)
             val reference = when (selection) {
+                is SelectedMcpReference.HttpBatch -> copyHttpBatch(selection, projectId)
                 is SelectedMcpReference.Http -> canonicalHttpMcpReference(projectId, selection.reference)
                 is SelectedMcpReference.ProxyHistory -> canonicalHttpMcpReference(
                     projectId,
@@ -214,11 +219,71 @@ internal class McpReferenceContextMenuProvider(
                 check(api.project().id() == projectId)
                 check(!Thread.currentThread().isInterrupted)
                 clipboard.setText(reference)
-                raiseInfo(COPY_MCP_REFERENCE_SUCCESS)
+                raiseInfo(if (selection is SelectedMcpReference.HttpBatch) "MCP references copied" else COPY_MCP_REFERENCE_SUCCESS)
             }
         } catch (_: Exception) {
             raiseErrorIfOpen(COPY_MCP_REFERENCE_FAILURE)
         }
+    }
+
+    private fun copyHttpBatch(batch: SelectedMcpReference.HttpBatch, projectId: String): String {
+        val refs = arrayOfNulls<HttpMessageReference>(batch.selections.size)
+        val identities = IdentityHashMap<Any, Int>()
+        batch.selections.forEachIndexed { index, selection ->
+            val item = when (selection) {
+                is SelectedMcpReference.Http -> { refs[index] = selection.reference; null }
+                is SelectedMcpReference.ProxyHistory -> selection.item
+                is SelectedMcpReference.Organizer -> selection.item
+                is SelectedMcpReference.SiteMap -> selection.item
+                else -> error("Unsupported batch selection")
+            }
+            if (item != null) check(identities.put(item, index) == null)
+        }
+        check(refs.filterNotNull().distinct().size == refs.count { it != null })
+        val items: List<*> = if (identities.isEmpty()) emptyList<Any>() else when (batch.source) {
+            HttpMessageSource.PROXY -> api.proxy().history()
+            HttpMessageSource.ORGANIZER -> api.organizer().items()
+            HttpMessageSource.SITE_MAP -> api.siteMap().requestResponses()
+        }
+        val size = items.size
+        check(size <= MAX_REFERENCE_SOURCE_SCAN)
+        val matched = IntArray(refs.size) { -1 }
+        val idCounts = HashMap<Int, Int>()
+        fun nativeId(item: Any): Int? = when (batch.source) {
+            HttpMessageSource.PROXY -> (item as ProxyHttpRequestResponse).id()
+            HttpMessageSource.ORGANIZER -> (item as OrganizerItem).id()
+            HttpMessageSource.SITE_MAP -> null
+        }
+        // A sampled content fingerprint is not proof that a different wrapper is the selected object.
+        for (index in 0 until size) {
+            checkReferenceScanActive(index)
+            val item = requireNotNull(items[index])
+            val id = nativeId(item)
+            if (id != null) idCounts[id] = (idCounts[id] ?: 0) + 1
+            val selectedIndex = identities[item] ?: continue
+            check(matched[selectedIndex] == -1)
+            matched[selectedIndex] = index
+            refs[selectedIndex] = HttpMessageReference(
+                batch.source,
+                id?.also { check(it >= 0) }?.toString()
+                    ?: stableSiteMapId(projectId, index, item as HttpRequestResponse),
+            )
+        }
+        val resolved = refs.map { requireNotNull(it) }
+        check(resolved.distinct().size == resolved.size)
+        if (identities.isNotEmpty() && batch.source != HttpMessageSource.SITE_MAP) {
+            check(resolved.all { idCounts[it.id.toInt()] == 1 })
+        }
+        val text = resolved.joinToString("\n") { canonicalHttpMcpReference(projectId, it) }
+        check(text.toByteArray(Charsets.UTF_8).size <= MAX_BATCH_REFERENCE_BYTES)
+        checkCopyActive()
+        check(items.size == size)
+        identities.forEach { item, selectedIndex ->
+            val index = matched[selectedIndex]
+            check(index >= 0 && items[index] === item)
+            nativeId(item)?.let { check(it.toString() == resolved[selectedIndex].id) }
+        }
+        return text
     }
 
     private fun findCurrentProxyId(selected: HttpRequestResponse): Int {
@@ -346,6 +411,7 @@ internal class McpReferenceContextMenuProvider(
 private data class MatchedSiteMapItem(val index: Int, val item: HttpRequestResponse)
 
 private sealed interface SelectedMcpReference {
+    data class HttpBatch(val source: HttpMessageSource, val selections: List<SelectedMcpReference>) : SelectedMcpReference
     data class Http(val reference: HttpMessageReference) : SelectedMcpReference
     data class ProxyHistory(val item: HttpRequestResponse) : SelectedMcpReference
     data class Organizer(val item: HttpRequestResponse) : SelectedMcpReference

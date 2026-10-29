@@ -281,7 +281,8 @@ class McpReferenceContextMenuProviderTest {
 
     @Test
     fun `project transition fails closed without copying a stale reference`() {
-        every { project.id() } returnsMany listOf("project-before", "project-after")
+        var projectId = "project-before"
+        every { project.id() } answers { projectId }
         val selected = mockk<OrganizerItem>(relaxed = true)
         every { selected.id() } returns 3
         val event = mockk<ContextMenuEvent>()
@@ -289,23 +290,23 @@ class McpReferenceContextMenuProviderTest {
         every { event.invocationType() } returns InvocationType.MESSAGE_VIEWER_REQUEST
         every { event.toolType() } returns ToolType.ORGANIZER
 
-        val provider = provider()
-        (provider.provideMenuItems(event).single() as JMenuItem).doClick()
+        val tasks = DeferredTaskExecutor()
+        val provider = provider(tasks = tasks)
+        val item = provider.provideMenuItems(event).single() as JMenuItem
+        projectId = "project-after"
+        item.doClick()
 
+        assertEquals(0, tasks.submissions)
         assertNull(clipboard.value)
-        verify {
-            logging.raiseErrorEvent(
-                "MCP reference could not be copied. Run the corresponding MCP search to obtain a current stable reference."
-            )
-        }
+        verify { logging.raiseErrorEvent(any()) }
     }
 
     @Test
-    fun `multiple selections and unsupported contexts do not add a menu item`() {
+    fun `invalid selection counts and unsupported contexts do not add a menu item`() {
         val first = mockk<OrganizerItem>(relaxed = true)
         val second = mockk<OrganizerItem>(relaxed = true)
         val multiple = mockk<ContextMenuEvent>()
-        every { multiple.selectedRequestResponses() } returns listOf(first, second)
+        every { multiple.selectedRequestResponses() } returns List(9) { if (it == 0) first else second }
 
         val unsupported = mockk<ContextMenuEvent>()
         every { unsupported.selectedRequestResponses() } returns listOf(mockk(relaxed = true))
@@ -427,6 +428,261 @@ class McpReferenceContextMenuProviderTest {
         }
     }
 
+    @Test
+    fun `HTTP batches preserve selection order with one bounded clipboard write and no source reads`() {
+        for (size in listOf(2, 8)) {
+            val ids = (1..size).reversed().toList()
+            val selected = ids.map(::proxySelection)
+            val before = clipboard.writes
+            val item = provider().provideMenuItems(httpEvent(selected)).single() as JMenuItem
+            assertEquals(COPY_MCP_REFERENCES_LABEL, item.text)
+            item.doClick()
+            assertEquals(ids.joinToString("\n") { "burp://http/project-A/proxy/$it" }, clipboard.value)
+            assertEquals(before + 1, clipboard.writes)
+            selected.forEach {
+                verify(exactly = 0) { it.request() }
+                verify(exactly = 0) { it.response() }
+            }
+        }
+        verify(exactly = 0) { api.proxy() }
+    }
+
+    @Test
+    fun `organizer batch copies captured IDs without retaining the caller selection list`() {
+        val first = mockk<OrganizerItem>(relaxed = true)
+        val second = mockk<OrganizerItem>(relaxed = true)
+        every { first.id() } returns 2
+        every { second.id() } returns 1
+        val selected = mutableListOf<HttpRequestResponse>(first, second)
+        val tasks = DeferredTaskExecutor()
+        val item = provider(tasks = tasks).provideMenuItems(
+            httpEvent(selected, InvocationType.MESSAGE_VIEWER_REQUEST)
+        ).single() as JMenuItem
+        selected.clear()
+        item.doClick()
+        tasks.runPending()
+        assertEquals("burp://http/project-A/organizer/2\nburp://http/project-A/organizer/1", clipboard.value)
+        verify(exactly = 0) { api.organizer() }
+    }
+
+    @Test
+    fun `project changes during selection or queued work never publish batch references`() {
+        var current = "project-A"
+        every { project.id() } answers { current }
+        val event = httpEvent(listOf(proxySelection(1), proxySelection(2)))
+        val tasks = DeferredTaskExecutor()
+        val provider = provider(tasks = tasks)
+        val item = provider.provideMenuItems(event).single() as JMenuItem
+        item.doClick()
+        current = "project-B"
+        tasks.runPending()
+        assertNull(clipboard.value)
+        verify(exactly = 0) { api.proxy() }
+
+        every { event.selectedRequestResponses() } answers {
+            current = "project-C"
+            listOf(proxySelection(1), proxySelection(2))
+        }
+        assertTrue(provider.provideMenuItems(event).isEmpty())
+        assertEquals(1, tasks.submissions)
+    }
+
+    @Test
+    fun `queued single selection is bound to the original project too`() {
+        var current = "project-A"
+        every { project.id() } answers { current }
+        val tasks = DeferredTaskExecutor()
+        val item = provider(tasks = tasks).provideMenuItems(httpEvent(listOf(proxySelection(1)))).single() as JMenuItem
+        item.doClick()
+        current = "project-B"
+        tasks.runPending()
+        assertNull(clipboard.value)
+    }
+
+    @Test
+    fun `site map batch acquires once scans once then rechecks matched slots`() {
+        val first = siteMapItem("https://example.test/first")
+        val second = siteMapItem("https://example.test/second")
+        var reads = 0
+        val snapshot = object : AbstractList<HttpRequestResponse>() {
+            override val size = 2
+            override fun get(index: Int): HttpRequestResponse {
+                reads++
+                return if (index == 0) second else first
+            }
+        }
+        val siteMap = setSiteMap(snapshot)
+        val item = provider().provideMenuItems(httpEvent(listOf(first, second), InvocationType.SITE_MAP_TABLE)).single() as JMenuItem
+        assertEquals(0, reads)
+        item.doClick()
+        val lines = clipboard.value.orEmpty().lines()
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].startsWith("burp://http/project-A/site_map/sitemap_1_"))
+        assertTrue(lines[1].startsWith("burp://http/project-A/site_map/sitemap_0_"))
+        assertEquals(4, reads)
+        verify(exactly = 1) { siteMap.requestResponses() }
+    }
+
+    @Test
+    fun `duplicate unresolved and partial batch results preserve the clipboard`() {
+        val first = siteMapItem()
+        val second = siteMapItem("https://example.test/second")
+        clipboard.setText("keep")
+        val before = clipboard.writes
+        val selections = listOf(
+            listOf(first, first),
+            listOf(first, siteMapItem("https://example.test/missing")),
+            listOf(siteMapItem(), second), // Equal content is not object identity.
+        )
+        for (selected in selections) {
+            setSiteMap(listOf(first, second))
+            (provider().provideMenuItems(httpEvent(selected, InvocationType.SITE_MAP_TABLE)).single() as JMenuItem).doClick()
+            assertEquals("keep", clipboard.value)
+            assertEquals(before, clipboard.writes)
+        }
+        val duplicateIds = httpEvent(listOf(proxySelection(1), proxySelection(1)))
+        (provider().provideMenuItems(duplicateIds).single() as JMenuItem).doClick()
+        assertEquals(before, clipboard.writes)
+    }
+
+    @Test
+    fun `batch rejects later object duplicates over-limit sources and changed slots`() {
+        val first = siteMapItem()
+        val second = siteMapItem("https://example.test/second")
+        val event = httpEvent(listOf(first, second), InvocationType.SITE_MAP_TABLE)
+        setSiteMap(listOf(first, second, first))
+        (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        assertNull(clipboard.value)
+
+        setSiteMap(object : AbstractList<HttpRequestResponse>() {
+            override val size = 100_001
+            override fun get(index: Int): HttpRequestResponse = error("over-limit source must not be scanned")
+        })
+        (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        assertNull(clipboard.value)
+
+        var firstReads = 0
+        setSiteMap(object : AbstractList<HttpRequestResponse>() {
+            override val size = 2
+            override fun get(index: Int): HttpRequestResponse =
+                if (index == 1) second else if (firstReads++ == 0) first else second
+        })
+        (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        assertNull(clipboard.value)
+    }
+
+    @Test
+    fun `batch scans exact source cap and interruption prevents clipboard publication`() {
+        val first = siteMapItem()
+        val second = siteMapItem("https://example.test/second")
+        val other = siteMapItem("https://example.test/other")
+        val event = httpEvent(listOf(first, second), InvocationType.SITE_MAP_TABLE)
+        var reads = 0
+        var interrupt = false
+        setSiteMap(object : AbstractList<HttpRequestResponse>() {
+            override val size = 100_000
+            override fun get(index: Int): HttpRequestResponse {
+                reads++
+                if (interrupt && reads == 64) Thread.currentThread().interrupt()
+                return when (index) { 0 -> first; 1 -> second; else -> other }
+            }
+        })
+        (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        assertEquals(100_002, reads)
+        val previous = clipboard.value
+        val writes = clipboard.writes
+        reads = 0
+        interrupt = true
+        try {
+            (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        } finally { Thread.interrupted() }
+        assertEquals(64, reads)
+        assertEquals(previous, clipboard.value)
+        assertEquals(writes, clipboard.writes)
+    }
+
+    @Test
+    fun `project changes during batch lookup preserve clipboard`() {
+        val first = siteMapItem()
+        val second = siteMapItem("https://example.test/second")
+        var current = "project-A"
+        every { project.id() } answers { current }
+        setSiteMap(object : AbstractList<HttpRequestResponse>() {
+            override val size = 2
+            override fun get(index: Int): HttpRequestResponse {
+                current = "project-B"
+                return if (index == 0) first else second
+            }
+        })
+        clipboard.setText("keep")
+        (provider().provideMenuItems(httpEvent(listOf(first, second), InvocationType.SITE_MAP_TABLE)).single() as JMenuItem).doClick()
+        assertEquals("keep", clipboard.value)
+        assertEquals(1, clipboard.writes)
+    }
+
+    @Test
+    fun `mixed proxy batch rejects native ID collision even before identity match`() {
+        var revealId = false
+        val fallback = proxySelection(2)
+        every { (fallback as ProxyHttpRequestResponse).id() } answers { if (revealId) 2 else -1 }
+        val direct = proxySelection(1)
+        val collision = proxySelection(2)
+        val proxy = mockk<Proxy>()
+        every { api.proxy() } returns proxy
+        every { proxy.history() } returns listOf(direct, collision, fallback).map { it as ProxyHttpRequestResponse }
+        val item = provider().provideMenuItems(httpEvent(listOf(direct, fallback))).single() as JMenuItem
+        revealId = true
+        item.doClick()
+        assertNull(clipboard.value)
+        verify(exactly = 1) { proxy.history() }
+    }
+
+    @Test
+    fun `batch rejects encoded output overflow and preserves clipboard after closure or rejection`() {
+        clipboard.setText("keep")
+        val before = clipboard.writes
+        every { project.id() } returns "한".repeat(256)
+        val event = httpEvent((1..8).map(::proxySelection))
+        (provider().provideMenuItems(event).single() as JMenuItem).doClick()
+        assertEquals(before, clipboard.writes)
+        every { project.id() } returns "project-A"
+        (provider(tasks = RejectingTaskExecutor).provideMenuItems(event).single() as JMenuItem).doClick()
+        val provider = provider()
+        val item = provider.provideMenuItems(event).single() as JMenuItem
+        provider.close()
+        item.doClick()
+        assertEquals("keep", clipboard.value)
+        assertEquals(before, clipboard.writes)
+    }
+
+    @Test
+    fun `empty HTTP and multiple WebSocket or Scanner selections remain unsupported`() {
+        val provider = provider(professional = true)
+        assertTrue(provider.provideMenuItems(httpEvent(emptyList())).isEmpty())
+        val ws = mockk<WebSocketContextMenuEvent>()
+        every { ws.selectedWebSocketMessages() } returns listOf(mockk(), mockk())
+        assertTrue(provider.provideMenuItems(ws).isEmpty())
+        val issues = mockk<AuditIssueContextMenuEvent>()
+        every { issues.selectedIssues() } returns listOf(mockk(), mockk())
+        assertTrue(provider.provideMenuItems(issues).isEmpty())
+    }
+
+    private fun proxySelection(id: Int): HttpRequestResponse = mockk<HttpRequestResponse>(
+        moreInterfaces = arrayOf(ProxyHttpRequestResponse::class),
+    ).also { every { (it as ProxyHttpRequestResponse).id() } returns id }
+
+    private fun httpEvent(items: List<HttpRequestResponse>, invocation: InvocationType = InvocationType.PROXY_HISTORY) =
+        mockk<ContextMenuEvent>().also {
+            every { it.selectedRequestResponses() } returns items
+            every { it.invocationType() } returns invocation
+            every { it.toolType() } returns ToolType.ORGANIZER
+        }
+
+    private fun setSiteMap(items: List<HttpRequestResponse>) = mockk<SiteMap>().also {
+        every { api.siteMap() } returns it
+        every { it.requestResponses() } returns items
+    }
+
     private fun provider(
         professional: Boolean = false,
         tasks: McpReferenceTaskExecutor = ImmediateTaskExecutor,
@@ -472,7 +728,10 @@ class McpReferenceContextMenuProviderTest {
 
 private class CapturingClipboard : McpReferenceClipboard {
     var value: String? = null
+    var writes = 0
+        private set
     override fun setText(value: String) {
+        writes++
         this.value = value
     }
 }
@@ -488,9 +747,12 @@ private object ImmediateTaskExecutor : McpReferenceTaskExecutor {
 
 private class DeferredTaskExecutor : McpReferenceTaskExecutor {
     private var pending: (() -> Unit)? = null
+    var submissions = 0
+        private set
 
     override fun submit(task: () -> Unit): Boolean {
         check(pending == null)
+        submissions++
         pending = task
         return true
     }

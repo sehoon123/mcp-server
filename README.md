@@ -358,6 +358,23 @@ audit trail. The evidence is re-resolved after approval and checked for stale ch
 nothing and starts no scan. Native completion is not independently verified persistence; inspect Burp before any manual
 retry, and never retry `execution_uncertain` automatically. A subsequent project switch cannot undo an accepted issue.
 
+Optional `markers` highlights precise evidence ranges on the **new issue copies**, never shared history. Omitted, null,
+or empty markers preserve the unmarked behavior. Supply at most 64 total entries, for example this input fragment:
+
+```json
+{"markers": [{"evidenceIndex": 0, "part": "response", "start": 9, "end": 12}]}
+```
+
+`evidenceIndex` is zero-based into `refs`; `part` is `request` or `response`. Coordinates are **complete raw-message byte
+offsets**, with inclusive `start` and exclusive `end`, not characters or body-relative offsets. The example marks the
+status code only if those are its actual raw positions; it is not vulnerability evidence. Empty, out-of-range, duplicate,
+or overlapping ranges within one evidence/part are rejected before issue approval; adjacent ranges are allowed.
+Application order is ascending start within each part. A missing response cannot carry response markers. Refs and markers
+are frozen before source access and the exact marker list appears alongside the evidence in the approval preview.
+Reflection results contain section-relative starts, not complete marker ranges; account for header/body coordinates and
+match byte length independently. Never use decoded-gzip offsets as raw evidence offsets. Native marker rendering and
+persistence remain **NOT RUN**; the human-reviewed attestation and uncertain-result restrictions still apply.
+
 ### v4.1 structured results
 
 Version 4.1 keeps the 26/19 tool names and inputs stable while completing output-schema coverage. Every advertised tool
@@ -461,6 +478,20 @@ path. Potentially expensive fallback source matching and Scanner issue hashing r
 rather than Burp's event dispatch thread, and project transitions or ambiguous matches fail closed. Resource URIs remain
 scoped by the MCP server connection, so users with multiple Burp servers should use the reference with the originating
 configured server. No instance identifier was added to the stable v4 URI templates.
+
+For **2–8 selected HTTP items** in Proxy history, Site Map or Organizer, choose **Copy MCP references**. It copies canonical
+URIs in the selection order, separated by LF with no trailing LF, within a 16 KiB UTF-8 cap. Paste those refs into an
+existing comparison/session workflow; no raw message, new tool or network action is involved. Duplicate refs or any
+partial resolution failure leave the previous clipboard untouched. WebSocket and Scanner selections remain single-only.
+
+Selections bind to the project while the menu is built, before click/queueing, and are rechecked before lookup and copy.
+Batch lookup uses direct native Proxy/Organizer IDs when available; otherwise it acquires one source snapshot, refuses
+sources over 100,000 entries and scans once for the **same objects**, rechecking matched slots afterward. Unlike legacy
+single-copy fallback, it does not match different wrappers by sampled content. If native wrappers cannot be identified,
+use MCP search instead. The native-ID contract and existing sampled Site Map IDs remain authoritative; these references
+can become stale, do not prove full-message identity, and must be used with the originating server/project. Native source
+calls and the final project/clipboard operation are not hard-time-bounded or atomic. Actual Burp batch selection and
+clipboard behavior remain **NOT RUN**.
 
 ### Bounded operation progress and cancellation
 
@@ -925,6 +956,35 @@ URIs, Site Map reference resolution can privately inspect the existing bounded i
 Cookie and redirect Location values are privately inspected only to produce fixed value-free classifications; raw bodies,
 authentication values, cookie values, redirect targets, and Domain/Path/expiry/Max-Age values are never returned. Results
 are observations with explicit evidence limits, not chronology, browser behavior, severity, or vulnerability claims.
+
+### Role-labelled stored-evidence recipe
+
+Access-control comparison does not need another sending tool. Use already stored evidence and existing tools:
+
+1. Select/copy 2–8 HTTP references from the same server/project, or obtain them with `search_http_messages`.
+   Label each role from operator knowledge, not cookies, URLs, or response similarity. Keep secret values out of labels.
+2. Use `compare_http_messages` with `projectId` and `refs`. Select `response_json` only for complete stored UTF-8 JSON;
+   otherwise choose the required raw comparison part. Inspect nested JSON status and truncation, not just outer success.
+3. Use `analyze_http_session_security` with the same project and refs for bounded session observations. This does not
+   authenticate the claimed roles or establish that an apparently anonymous request contained no other credentials.
+4. Record the expected policy, observed differences and unresolved questions. Example template, **not test evidence**:
+
+| Operator-asserted role | Project/ref | Expected access | Observed response | Coverage / unresolved questions |
+| --- | --- | --- | --- | --- |
+| Resource owner | `<project>`, ref A | Allowed by supplied policy | `<observed status and data>` | `<complete/truncated/unavailable>` |
+| Different user | `<project>`, ref B | Denied by supplied policy | `<observed status and data>` | `<identity and resource comparability>` |
+| Operator-verified anonymous | `<project>`, ref C | Denied by supplied policy | `<observed status and data>` | `<other authentication channels>` |
+
+For two references, the existing `compare_http_references` or `review_auth_session_handling` **prompt** accepts a `focus`
+such as: “A is operator-labelled owner; B is another user. Compare expected versus observed access; do not send requests
+or infer a vulnerability from equal status or length.” `focus` is a prompt argument, not a comparison-tool argument.
+No new prompt, preset, role store, or authentication engine is introduced. Equal status/length or even JSON structural
+equality is not proof of authorization correctness or bypass. Requests may differ in resource, state or other credentials;
+report those uncertainties rather than automatically filing an issue. Approval denial/unavailable data remains a limitation,
+not permission to use another route. MCP sends do **not** automatically yield stored comparison refs (`recordedRef=null`);
+do not resend traffic or guess a matching history item to fill a missing row.
+
+### Focused Scanner audits
 
 Burp Professional additionally exposes:
 

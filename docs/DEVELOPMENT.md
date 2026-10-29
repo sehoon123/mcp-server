@@ -345,8 +345,45 @@ only the new synthetic ceilings of 139,000/206,000, retaining all typed fields, 
 no runtime limit or security/release gate changes. The schema reuses the general insertion-selector DTO, so the enclosing
 reflection description and pre-access runtime validation (not structural schema constraints alone) restrict it to a valid
 parameter name/type/occurrence.
+The optional Scanner evidence-marker input adds exactly 715 bytes to Professional only: measured totals are now
+138,245/206,569. Independent review approves the precise Professional synthetic ceiling change from 206,000 to 207,000;
+Community remains 139,000. The four required typed marker fields, strict hashes/default checks, 24/38 tool counts and
+all runtime/security/release limits remain intact. This is not approval for further catalog growth.
 Initialize instructions use 1,474 bytes; keep them below 1,500. Include the metadata-only project-summary bootstrap,
 reference/project binding, and no-automatic-retry guidance for uncertain or lost mutation results.
+
+### HTTP reference batches and Scanner evidence markers
+
+The context-menu provider binds project ID before evaluating the selection, rechecks after selection, before queueing,
+at worker entry and before clipboard publication. HTTP batches contain 2–8 captured selections and emit only canonical
+URIs in selection order, LF-separated without a trailing LF, bounded to 16,384 UTF-8 bytes including percent encoding.
+No partial clipboard writes are allowed. Duplicate canonical refs are rejected. Direct Proxy/Organizer IDs rely on the
+native ID contract without an acquisition; if fallback is needed, acquire once and reject a source above 100,000 items.
+Scan the entire bounded source once with an identity-keyed selection map, including later duplicate positions and
+relevant native-ID collisions. Recheck source size and matched slot identities/IDs before returning. Different native
+wrappers are not matched by sampled data: users must use search instead. Legacy single-item fallback is unchanged
+apart from project binding; no new full-content identity claim is made. Returned native lists need not be immutable,
+Site Map IDs use existing bounded samples, and the checks do not create an atomic native snapshot/clipboard transaction.
+Native getter allocation and duration remain outside a hard interruptible guarantee.
+
+`create_scanner_issue` adds nullable `markers` (null/absent/empty are equivalent), at most 64 required-field flat records:
+`evidenceIndex`, `part` (`request`/`response`), `start`, `end`. Freeze both refs and markers before validation/source access,
+after count checks. Validate actual reference index, integer bounds and same-part non-overlap (adjacency is allowed)
+before source access; validate complete raw byte bounds and response presence before issue approval. Report those caller
+errors as `invalid_argument` / `not_started`. Include exact ranges in the preview, then retain existing full-evidence
+revalidation, project/emergency/cancellation fences and uncertain-result behavior. Sort within each evidence/part when
+applying native `Marker.marker` and retain the immutable `withRequestMarkers`/`withResponseMarkers` return values on
+newly reconstructed issue copies. Never mutate shared history. Pinned Montoya 2026.7 binary signatures were inspected;
+that and mock factories do not establish native rendering or verified persistence. Decoded/body-relative coordinates
+cannot silently become complete raw-message offsets.
+
+Fixture checks cover batch order, bounds, direct-ID no-read behavior, one source acquisition/scan, duplicate and
+unresolved identities, source cap/matched-slot changes, queued/project transitions, partial-failure clipboard preservation,
+interrupt/close/rejection behavior; and marker schema/wire rejection, byte and count boundaries, multibyte coordinates,
+frozen association through approval, immutable native-copy chaining and unchanged source messages. The role-labelled
+comparison recipe is documentation only, using existing tools/prompts with operator assertions rather than auth verdicts.
+Actual Community/Professional context-menu wrappers, native clipboard and Professional marker rendering/persistence:
+**NOT RUN**. No test results in this section authorize release/publication.
 
 ### Reflection, stored gzip and visible audit export
 
