@@ -796,6 +796,8 @@ class McpConfigTest {
 
     private fun preferenceStorage(values: MutableMap<String, String>): Preferences =
         mockk<Preferences>().apply {
+            every { getBoolean(any()) } returns null
+            every { getInteger(any()) } returns null
             every { getString(any()) } answers { values[firstArg()] }
             every { setString(any(), any()) } answers { values[firstArg<String>()] = secondArg<String>() }
             every { deleteString(any()) } answers { values.remove(firstArg<String>()); Unit }

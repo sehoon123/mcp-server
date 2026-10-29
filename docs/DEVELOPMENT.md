@@ -91,7 +91,12 @@ Stdio client → embedded mcp-proxy → HTTP /mcp ──┤
 
 `ExtensionBase` is the composition root. It creates configuration, durable audit state, the EDT watchdog, the server
 manager, provider installers, the Swing tab, and the context-menu provider. Extension unload closes those owners in a
-bounded sequence.
+bounded sequence. `GlobalHttpRateLimiter` registers one extension-lifetime Montoya HTTP handler, independently of the
+MCP listener. Its installation-scoped opt-in/rate settings publish after persistence; callbacks read only in-memory
+state. All sources share one monotonic paced admission budget without idle/catch-up credit. Rate changes, disable,
+and close wake waiters; interrupted waiters restore the interrupt and drop rather than send unpaced. Unload closes
+and deregisters this handler before stopping MCP services. It is not a wire-level throttle and cannot cover traffic
+that bypasses Montoya HTTP handlers.
 
 `KtorServerManager` owns listener start/stop/restart serialization, request admission, Streamable HTTP sessions, project
 epoch alignment, and the MCP SDK `Server`. A listener restart gets a new SDK server, while `ToolServices` retains the
@@ -627,6 +632,11 @@ release approval: real native verification remains mandatory for release evidenc
 Exercise:
 
 - start, stop, failed start, and restart;
+- configuration-editing checkbox confirmation by mouse and keyboard: allow, deny, and close, with visible selection
+  matching the saved permission; tab entry starts at the top and periodic status updates do not steal scroll position;
+- global HTTP RPS off/on/live edits across mixed Proxy, Repeater, Intruder, Scanner (Professional), and extension/MCP
+  requests to a disposable local server, including MCP stopped, concurrent senders, restart/project-switch persistence,
+  and disable/unload with queued callbacks; count server timestamps separately from callback-pacing fixture assertions;
 - native HTTP initialize/list/call/DELETE;
 - embedded stdio proxy startup and graceful shutdown;
 - approval deny, allow-once, session grant, reset, and persistent-policy reset;

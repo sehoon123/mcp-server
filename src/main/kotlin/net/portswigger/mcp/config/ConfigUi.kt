@@ -29,6 +29,8 @@ import net.portswigger.mcp.providers.ProviderInstallConfig
 import java.awt.BorderLayout
 import java.awt.Component.CENTER_ALIGNMENT
 import java.awt.GridBagLayout
+import java.awt.Point
+import java.awt.event.HierarchyEvent
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -437,6 +439,7 @@ class ConfigUi internal constructor(
         }
 
         val rightPanel = JScrollPane(rightPanelContent).apply {
+            name = "mcpSettingsScroll"
             border = null
             background = Design.Colors.surface
             viewport.background = Design.Colors.surface
@@ -445,6 +448,9 @@ class ConfigUi internal constructor(
             verticalScrollBar.unitIncrement = 16
         }
 
+        val httpRateLimitPanel = HttpRateLimitPanel(config)
+        rightPanelContent.add(httpRateLimitPanel)
+        rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
         rightPanelContent.add(serverConfigurationPanel)
         rightPanelContent.add(createVerticalStrut(Design.Spacing.LG))
 
@@ -466,6 +472,16 @@ class ConfigUi internal constructor(
 
         val columnsPanel = ResponsiveColumnsPanel(leftPanel, rightPanel)
         panel.add(columnsPanel, BorderLayout.CENTER)
+        panel.addHierarchyListener { event ->
+            if (event.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L && panel.isShowing) {
+                SwingUtilities.invokeLater {
+                    if (!statePublicationClosed.get() && panel.isShowing) {
+                        httpRateLimitPanel.focusEnabledControl()
+                        rightPanel.viewport.viewPosition = Point(0, 0)
+                    }
+                }
+            }
+        }
     }
 }
 

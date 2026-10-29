@@ -4,7 +4,6 @@ import net.portswigger.mcp.config.Design
 import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 import java.awt.FlowLayout
-import java.awt.event.ItemEvent
 import javax.swing.*
 import javax.swing.Box.createHorizontalStrut
 import javax.swing.Box.createVerticalStrut
@@ -492,25 +491,19 @@ class ServerConfigurationPanel(
         onSettled: () -> Unit = {},
         onChange: (Boolean) -> Unit,
     ) {
-        var restoringSelection = false
-
         fun restoreEffectiveSelection(fallback: Boolean) {
-            restoringSelection = true
-            try {
-                isSelected = runCatching(currentValue).getOrDefault(fallback)
-            } finally {
-                restoringSelection = false
-            }
+            isSelected = runCatching(currentValue).getOrDefault(fallback)
         }
 
-        addItemListener { event ->
-            if (restoringSelection || refreshingPersistentApprovalControls) return@addItemListener
-            val selected = event.stateChange == ItemEvent.SELECTED
+        // Modal confirmation must run after the toggle model finishes releasing its pressed state.
+        addActionListener {
+            if (refreshingPersistentApprovalControls) return@addActionListener
+            val selected = isSelected
             if (selected == unsafeSelection &&
                 !confirmUnsafeSelection(unsafeConfirmationTitle, unsafeConfirmation)
             ) {
                 restoreEffectiveSelection(!selected)
-                return@addItemListener
+                return@addActionListener
             }
             try {
                 onChange(selected)

@@ -23,6 +23,7 @@ import net.portswigger.mcp.security.safeExceptionSummary
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.KeyboardFocusManager
+import java.awt.Rectangle
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.event.FocusAdapter
@@ -52,6 +53,7 @@ import javax.swing.JScrollPane
 import javax.swing.JTextArea
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
+import javax.swing.text.DefaultCaret
 
 internal fun interface ClientSetupClipboard {
     fun copy(value: String)
@@ -85,6 +87,7 @@ private fun DoctorResultStaleReason.summary(): String =
         "Run a new check when available. This check does not prove that an external client works."
 
 private fun applyPreviewAreaStyle(area: JTextArea) {
+    (area.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
     area.font = Font(Font.MONOSPACED, Font.PLAIN, Design.Typography.bodyMedium.size)
     area.foreground = Design.Colors.onSurface
     area.background = Design.Colors.surface
@@ -155,6 +158,11 @@ internal class ClientSetupPanel(
         fallbackMaxWidth = SETUP_TEXT_FALLBACK_WIDTH,
     )
     private val previewArea = object : JTextArea(12, 56) {
+        override fun scrollRectToVisible(rectangle: Rectangle) {
+            // Only user navigation in the preview may scroll its enclosing settings tab.
+            if (hasFocus()) super.scrollRectToVisible(rectangle)
+        }
+
         override fun updateUI() {
             super.updateUI()
             applyPreviewAreaStyle(this)
