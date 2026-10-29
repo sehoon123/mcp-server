@@ -15,6 +15,10 @@ import kotlin.reflect.KProperty
 internal const val MIN_AUDIT_RETENTION_ENTRIES = 50
 internal const val MAX_AUDIT_RETENTION_ENTRIES = 1000
 internal const val DEFAULT_AUDIT_RETENTION_ENTRIES = 250
+internal const val DEFAULT_HTTP_REQUESTS_PER_SECOND = 10
+internal const val MAX_HTTP_REQUESTS_PER_SECOND = 10_000
+private const val HTTP_RATE_LIMIT_ENABLED_KEY = "independentMcpBridge.httpRateLimitEnabled.v1"
+private const val HTTP_REQUESTS_PER_SECOND_KEY = "independentMcpBridge.httpRequestsPerSecond.v1"
 
 private const val TARGET_SEPARATOR = "\n"
 private const val LEGACY_PROJECT_BEARER_TOKEN_KEY = "localBearerToken"
@@ -29,7 +33,7 @@ internal fun isValidLocalBearerToken(value: String): Boolean = LOCAL_BEARER_TOKE
 class McpConfig(
     private val storage: PersistedObject,
     private val logging: Logging,
-    installationPreferences: Preferences,
+    private val installationPreferences: Preferences,
 ) {
     private val localBearerTokens = InstallationBearerTokenStore(installationPreferences, storage, logging)
 
@@ -39,6 +43,33 @@ class McpConfig(
     var host by storage.string("127.0.0.1")
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(true)
+
+    @Volatile
+    private var cachedHttpRateLimitEnabled = installationPreferences.getBoolean(HTTP_RATE_LIMIT_ENABLED_KEY) ?: false
+    @Volatile
+    private var cachedHttpRequestsPerSecond =
+        (installationPreferences.getInteger(HTTP_REQUESTS_PER_SECOND_KEY) ?: DEFAULT_HTTP_REQUESTS_PER_SECOND)
+            .coerceIn(1, MAX_HTTP_REQUESTS_PER_SECOND)
+
+    /** Installation-wide traffic pacing, independent of project and MCP listener/approval state. */
+    var httpRateLimitEnabled: Boolean
+        get() = cachedHttpRateLimitEnabled
+        @Synchronized
+        set(value) {
+            installationPreferences.setBoolean(HTTP_RATE_LIMIT_ENABLED_KEY, value)
+            cachedHttpRateLimitEnabled = value
+            notifyHttpRateLimitChanged()
+        }
+
+    var httpRequestsPerSecond: Int
+        get() = cachedHttpRequestsPerSecond
+        @Synchronized
+        set(value) {
+            require(value in 1..MAX_HTTP_REQUESTS_PER_SECOND) { "HTTP requests per second is out of range" }
+            installationPreferences.setInteger(HTTP_REQUESTS_PER_SECOND_KEY, value)
+            cachedHttpRequestsPerSecond = value
+            notifyHttpRateLimitChanged()
+        }
 
     @Volatile
     private var cachedApprovalYoloMode = runCatching {
@@ -159,6 +190,7 @@ class McpConfig(
     private val dataAccessChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val requestActionApprovalChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
     private val scopeChangeApprovalChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
+    private val httpRateLimitChangeListeners = CopyOnWriteArrayList<ListenerRegistration>()
 
     var autoApproveTargets: String
         get() = _autoApproveTargets
@@ -326,6 +358,23 @@ class McpConfig(
         }
     }
 
+    fun addHttpRateLimitChangeListener(listener: () -> Unit): ListenerHandle {
+        val registration = ListenerRegistration(listener)
+        httpRateLimitChangeListeners.add(registration)
+        return ListenerHandle { httpRateLimitChangeListeners.remove(registration) }
+    }
+
+    private fun notifyHttpRateLimitChanged() {
+        cleanupStaleListeners(httpRateLimitChangeListeners)
+        httpRateLimitChangeListeners.mapNotNull { it.listener.get() }.forEach { listener ->
+            try {
+                listener()
+            } catch (e: Exception) {
+                logging.logToError("HTTP rate limit listener failed: ${safeExceptionSummary(e)}")
+            }
+        }
+    }
+
     private fun cleanupStaleListeners(listenerList: CopyOnWriteArrayList<ListenerRegistration>) {
         val staleListeners = listenerList.filter { it.listener.get() == null }
         listenerList.removeAll(staleListeners)
@@ -336,6 +385,7 @@ class McpConfig(
         dataAccessChangeListeners.clear()
         requestActionApprovalChangeListeners.clear()
         scopeChangeApprovalChangeListeners.clear()
+        httpRateLimitChangeListeners.clear()
     }
 }
 

@@ -84,11 +84,16 @@ class ExtensionBase : BurpExtension {
             }
         }
 
+        val httpRateLimiter = GlobalHttpRateLimiter(config)
+        val httpRateLimitRegistration = api.http().registerHttpHandler(httpRateLimiter)
+
         api.userInterface().registerSuiteTab(ProductIdentity.SUITE_TAB_NAME, configUi.component)
         val referenceMenuProvider = McpReferenceContextMenuProvider(api)
         val referenceMenuRegistration = api.userInterface().registerContextMenuItemsProvider(referenceMenuProvider)
 
         api.extension().registerUnloadingHandler {
+            httpRateLimiter.close()
+            runCatching { httpRateLimitRegistration.deregister() }
             edtWatchdog.close()
             runCatching { referenceMenuRegistration.deregister() }
             referenceMenuProvider.close()

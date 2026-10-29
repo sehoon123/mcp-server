@@ -6,6 +6,7 @@ import java.awt.Insets
 import javax.swing.JTextArea
 import javax.swing.plaf.TextUI
 import javax.swing.plaf.UIResource
+import javax.swing.text.DefaultCaret
 import javax.swing.text.View
 import kotlin.math.ceil
 
@@ -99,6 +100,8 @@ internal class WrappingText(
     }
 
     private fun applyStyle() {
+        // Status/document updates must not scroll the enclosing settings tab to this label.
+        (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
         font = when (style) {
             WrappingTextStyle.BODY_MEDIUM,
             WrappingTextStyle.PRIMARY_BODY_MEDIUM -> Design.Typography.bodyMedium

@@ -144,6 +144,35 @@ class ServerConfigurationPanelTest {
     }
 
     @Test
+    fun `modal confirmation cannot toggle the checkbox again while releasing focus`() {
+        val config = config()
+        SwingUtilities.invokeAndWait {
+            val panel = ServerConfigurationPanel(config, Design.createToggleSwitch(true) {}, WarningLabel())
+            val checkBox = descendants(panel).filterIsInstance<JCheckBox>()
+                .single { it.text == "Enable tools that can edit your config" }
+            mockkObject(Dialogs)
+            try {
+                every {
+                    Dialogs.showConfirmDialog(any(), any(), JOptionPane.YES_NO_OPTION, any())
+                } answers {
+                    // A modal dialog transfers focus while the original click is still on the EDT stack.
+                    checkBox.model.isPressed = false
+                    checkBox.model.isArmed = false
+                    JOptionPane.YES_OPTION
+                }
+                checkBox.doClick(0)
+                assertTrue(config.configEditingTooling)
+                assertTrue(checkBox.isSelected, "The visible checkbox must match the enabled setting")
+                checkBox.doClick(0)
+                assertFalse(config.configEditingTooling)
+                assertFalse(checkBox.isSelected)
+            } finally {
+                unmockkObject(Dialogs)
+            }
+        }
+    }
+
+    @Test
     fun `trust toggle confirmation failure keeps the persisted and visible state safe`() {
         val config = config()
         lateinit var panel: ServerConfigurationPanel

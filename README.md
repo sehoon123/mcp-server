@@ -484,7 +484,7 @@ Open the **MCP Bridge** tab in Burp:
 
 - Confirm the **Independent MCP Bridge** name, unofficial-fork notice, and loaded extension version before enabling
   the server.
-- The settings surface tracks the available Burp viewport width, wraps explanatory text, and stacks action buttons when needed. Styled buttons, links, and the server toggle retain visible keyboard focus and support Enter/Space; Escape safely closes MCP dialogs. Persistent approval choices use warning styling and state that they do not expire automatically.
+- The tab opens at the top whenever you enter it; background status/preview updates do not pull the settings viewport down. The settings surface tracks the available Burp viewport width, wraps explanatory text, and stacks action buttons when needed. Styled buttons, links, and the server toggle retain visible keyboard focus and support Enter/Space; Escape safely closes MCP dialogs. Persistent approval choices use warning styling and state that they do not expire automatically.
 - Configure its bind host and port; the default endpoint is `http://127.0.0.1:9876/mcp`.
 - Only numeric loopback bind hosts `127.0.0.1` and `::1`, with ports `1024`–`65535`, are accepted. Wildcard, hostname, remote binds, and port `0` are rejected. These checks also apply to saved settings at listener startup, not only UI edits.
 - Copy or rotate the per-installation bearer token under **Advanced Options**.
@@ -499,6 +499,28 @@ Open the **MCP Bridge** tab in Burp:
 
 The production endpoint always requires its bearer token in addition to the loopback restriction. This release does not
 support a remote listener; do not weaken the bind or use an unauthenticated forwarding proxy.
+
+### Global HTTP requests-per-second limit
+
+At the top of **MCP Bridge**, enable **Limit HTTP requests across Burp** and enter a whole-number rate from
+**1 to 10,000 requests/second**. The default is **OFF**, with a suggested rate of **10**. Enabling applies the entered
+rate; **Apply limit** (or Enter in the rate field) changes it immediately without restarting the MCP server.
+The ON/OFF status shows the current runtime rate; invalid values and failed saves are reported without silently
+changing it. If storage reports a failure, check the setting again after reload because persistence could not be confirmed. Unchecking the limit works even if the rate field contains an invalid unfinished edit.
+
+This is **one shared budget across all destinations and Burp HTTP tools**, not a per-tool or per-host limit.
+It paces the common Montoya request-to-be-sent handler used by Proxy/browser traffic, Repeater, Intruder, Scanner,
+and requests sent through Burp by extensions, including MCP. Requests are spaced evenly without accumulated idle
+burst credit. The setting is saved in installation preferences across projects and Burp restarts. It is independent
+of MCP server enablement, approval settings, YOLO mode, and Emergency read-only mode.
+
+The limiter delays Burp's request callbacks; large backlogs can occupy Burp workers and trigger client/tool timeouts.
+Disabling it or unloading the extension releases waiting requests immediately, potentially producing a burst.
+An interrupted waiting callback is dropped rather than sent outside the limit. It does not change request/response
+bytes or annotations, and it retains no traffic data. This is callback pacing, not a strict wire-arrival guarantee:
+network scheduling or subsequent handlers can change actual transmission timing. WebSocket messages, TLS pass-through,
+Burp-internal traffic not exposed to HTTP handlers, and extensions using their own sockets/HTTP clients bypass this
+API and cannot be limited by this setting. Use an external network/proxy throttle if those paths must also be covered.
 
 ### Diagnostics, audit, and emergency read-only mode
 
