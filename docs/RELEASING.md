@@ -289,6 +289,17 @@ and `observed_rc_source_sha` for a stable tag and refuses them for a prerelease 
 still implements the 604,800-second window, eleven-path continuity, and issue-triage checks. Until those are deleted, a
 stable tag that supplies observation inputs is still verified against them. Prerelease tags are unaffected.
 
+## Published without a smoke record: v4.12.4
+
+`v4.12.4` was published on 2026-10-30 by explicit maintainer decision from its immutable CI draft, without a
+`release-smoke` attestation. The exact draft bytes, checksums, SBOM, legal/source bundle, OSV/npm evidence, and both
+isolated builds are the attested ones and no asset was rebuilt or replaced; the only missing evidence is the private
+exact-byte Burp matrix. The release body states that absence instead of implying a pass.
+
+`release-publish.yml` still requires `smoke_run_id`, so that dispatch path stays closed for the next release. Either run
+the matrix and dispatch it, or delete the requirement in a reviewed change that also states the resulting weaker
+evidence in the release notes. Do not treat this one publication as precedent for silently skipping it.
+
 ## Required release assets
 
 Use stable names and include every other distributed asset in `SHA256SUMS`. Exclude `SHA256SUMS` itself and explicitly
