@@ -56,7 +56,7 @@ locally assembled corrective artifact or reuse RC evidence as stable exact-byte 
 | `v4.8.0` | Independent Trust Baseline | None | Security, boundedness, identity, legal, and protected-release gates |
 | `v4.9.0` | Analysis and Reusable Workflows | Session analyzer; project presets; planning-only Repeater prompt | Exact catalogs, project persistence, no-mutation client matrix |
 | `v4.10.0` | Scale and Demand-driven Client UX | No default catalog expansion | Live scale evidence; separately reviewed UX scope |
-| `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, seven-day attested observation, fresh stable evidence |
+| `v4.11.0` | Correlation, lifecycle, and release hardening | Bounded correlation and stable credential lifecycle | Immutable RC7, fresh stable evidence (observation window retired) |
 | `v4.12.0` | Native utilities, evidence reporting, and local client UX | Five-client Setup Center; bounded native utilities; opt-in execution; human-reviewed issue reporting | Exact 24/38 catalogs, privacy/lifecycle/accessibility and real-client evidence |
 | `v5.0.0` | Modern per-request MCP | Stable protocol/SDK/client capabilities only | All v5 gates plus a 14-day RC |
 
@@ -266,11 +266,6 @@ following are true:
 - [ ] SBOM schema, hashes, dependency relationships, and explicit licenses validate.
 - [ ] Required legal, fork, source, checksum, vulnerability report/evidence, and attestation assets validate.
 - [ ] The exact draft JAR digest equals the attested smoke-test digest.
-- [ ] `release-rc-observation.yml`, dispatched only from protected `release/v4.11`, attests at least 604,800 seconds
-  from immutable `v4.11.0-rc.7` publication with complete issue triage, no unresolved release-blocking P0/P1 defect,
-  and exact eleven-path RC7-to-observation continuity.
-- [ ] The observation head to stable source changes exactly `gradle.properties`, `BappManifest.bmf`,
-  `docs/VULNERABILITY_REPORT.md`, and `docs/releases/4.11.0.md`; later `main` work is absent from the release line.
 - [ ] The no-rebuild publish job passes a dry run against the draft and is ready to revalidate the tag and exact assets.
 
 ### Mandatory publication completion
@@ -474,10 +469,9 @@ aliases or families.
   unload, SBOM, conformance, reproducibility, and no-rebuild publication gates passed for immutable RC7. Same-process
   project replacement and deterministic uncertain-operation reconciliation remain outside the release contract rather
   than being represented as passing evidence.
-- [ ] RC7 completes the attested 604,800-second public observation window on protected `release/v4.11`, with complete
-  issue triage and no unresolved release-blocking P0/P1, before the exact four-path stable promotion is created.
-- [x] The release-control track keeps the MCP surface unchanged at 21 Community / 28 Professional tools and allows
-  unrelated post-anchor development to continue on `main` without entering v4.11 stable evidence.
+- [x] The observation window requirement is retired; no elapsed-time attestation stands between a reviewed candidate and
+  its public release. The release-control track keeps the MCP surface unchanged at 21 Community / 28 Professional tools
+  and allows unrelated post-anchor development to continue on `main` without entering v4.11 stable evidence.
 
 ## v4.12.0 — Native Utilities, Execution Workflows, and Local Client UX
 
