@@ -704,10 +704,11 @@ and dependencies remain unchanged.
 RC2 adds bounded evidence/reporting only: strict complete-value JSON selection and runtime-only response keywords extend
 existing reads, while Professional adds human-reviewed issue submission from approved existing HTTP references. Its
 catalog is 24/38, with prompts/resources/templates and dependencies unchanged. Issue completion does not prove finding
-validity or persistence; exact-candidate native keyword and issue read-back smoke remain gates. No event timeline,
+validity or persistence; exact-candidate native keyword and issue read-back behavior stay unverified until a smoke run
+records it. No event timeline,
 subscription, compression framework, or additional send/scan workflow is introduced.
-- [ ] Exact-candidate Professional smoke proves Request Execution start/queue/status/control and generated/raw Repeater
-  Bambda import/compile/run behavior. Community and Professional smoke prove RankingUtils, live annotations, direct argv,
+- [ ] Recorded exact-candidate Professional smoke, when run, proves Request Execution start/queue/status/control and
+  generated/raw Repeater Bambda import/compile/run behavior. Community and Professional smoke prove RankingUtils, live annotations, direct argv,
   system-shell timeout/error behavior, and code-execution toggle/emergency precedence. Use disposable data and commands.
 - [ ] Documented acceptance explicitly acknowledges that ShellUtils materializes full output before MCP truncation and
   that imported/auto-running Bambda code, child processes, and already-started native requests are not retroactively
@@ -853,9 +854,9 @@ Create implementation issues only after the external gates are released:
 2. Authorization separation blocks policy profiles and every later active workflow.
 3. Scanner ID/output design blocks schema migration notes and stable-ID compatibility decisions.
 4. Legal/source asset specification blocks final packaging and release-workflow implementation.
-5. Immutable identity blocks reproducible, attested, smoke-tested, no-rebuild publication.
+5. Immutable identity blocks reproducible, attested, no-rebuild publication.
 6. Owned installer lifecycle blocks additional automatic client providers.
-7. A repeatable Professional test environment blocks every stable release that claims Professional support.
+7. A repeatable Professional test environment is required before claiming Professional verification.
 8. Stable protocol/SDK/conformance/client releases block v5 implementation.
 
 Work inside a milestone may proceed in parallel, but its stable release gate is atomic.

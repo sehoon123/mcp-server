@@ -129,6 +129,6 @@ not release or exact-byte Burp smoke evidence.
   nor a cross-process lock for simultaneous client configuration writers.
 - Real Community/Professional Burp startup, UI installation, and external-client tests remain required. Local mocks and
   protocol fixtures do not prove those integrations work.
-- Signed source, fresh candidate vulnerability/conformance evidence, independent reproducibility, and exact-byte Burp
-  smoke/publication gates in [RELEASING.md](RELEASING.md) remain mandatory. These changes do not authorize a release tag
-  or publication of release assets.
+- Signed source, fresh candidate vulnerability/conformance evidence, independent reproducibility, and the publication
+  gates in [RELEASING.md](RELEASING.md) remain mandatory. Exact-byte Burp smoke evidence is recorded when a maintainer
+  runs it and no longer blocks publication. These changes do not authorize a release tag or publication of release assets.

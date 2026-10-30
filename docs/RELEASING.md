@@ -265,8 +265,8 @@ and publication evidence remains bound to the `main` revision that produced it. 
 adaptation is instead anchored on protected `release/v4.11`: its observation record is bound to the exact branch head,
 and the later stable smoke and publication runs must use the exact four-path stable promotion head on that same branch.
 Draft provenance remains bound to the immutable candidate tag. Other prerelease workflows retain their existing `main`
-behavior: prerelease publication must run from the same `main` revision as its successful smoke run, and a later `main`
-change requires a new smoke run. No workflow input may select a trust branch or source ref.
+behavior: when a smoke run is supplied, prerelease publication must run from the same `main` revision as that run, and a
+later `main` change requires a new smoke run. No workflow input may select a trust branch or source ref.
 
 ### Job G — no-rebuild publication
 
@@ -468,8 +468,8 @@ and source identity, emits a bounded `smoke-result.json`, and attests the record
 `release-publish.yml` supports both SemVer prereleases and stable tags. Its read-only preflight and publication job
 independently re-resolve the signed tag, exact expected execution ref, one-shot draft, exact asset/API-digest snapshot,
 checksums, source identity, release body, and draft provenance, and verify the authorized smoke run, tester identity,
-smoke attestation, and JAR digest whenever `smoke_run_id` is supplied. Prereleases remain `main`-bound; exact `v4.11.0` observation, smoke, and publication are
-bound to `release/v4.11`. Stable tags additionally accept the retired observation inputs described in Job H; prerelease
+smoke attestation, and JAR digest whenever `smoke_run_id` is supplied. Prereleases remain `main`-bound; exact `v4.11.0`
+observation, smoke, and publication are bound to `release/v4.11`. Stable tags additionally accept the retired observation inputs described in Job H; prerelease
 tags reject them. The publication step first checks the repository immutable-release setting using a read-only
 administration token, sends only `draft=false`, requires the resulting release to report `immutable=true`, does not rebuild
 or replace assets, and is followed by an anonymous checksum/source/provenance check.
