@@ -844,7 +844,9 @@ class HttpMessageActionsTest {
             assertEquals(8, result.response?.body?.nextOffsetBytes)
             assertEquals(false, result.recordedInSiteMap)
             assertEquals(null, result.recordedRef)
-            assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
+            assertTrue(result.warning.orEmpty().contains("atomic project-bound add"))
+            assertEquals(null, result.error)
+            assertEquals(HttpResponseState.AVAILABLE, result.responseState)
             verify(exactly = 1) { http.sendRequest(fixture.request, options) }
             verify(exactly = 0) { api.siteMap() }
         } finally {
@@ -884,10 +886,40 @@ class HttpMessageActionsTest {
                 assertEquals(HttpMessageActionStatus.OK, result.status)
                 assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
                 assertEquals(200, result.response?.statusCode)
+                assertEquals(HttpResponseState.AVAILABLE, result.responseState)
                 assertEquals(if (mode == "available") 12L else null, result.response?.timing?.responseStartMillis)
                 assertFalse(result.error.orEmpty().contains("PRIVATE_TIMING"))
             }
             verify(exactly = 3) { http.sendRequest(fixture.request, options) }
+        }
+    }
+
+    @Test
+    fun `replay response absence and unreadable presence remain completed without retry`() = runBlocking {
+        withMockedRequestOptions { options ->
+            val fixture = proxyFixture(10)
+            filteredHistory(fixture.item)
+            val http = mockk<Http>()
+            every { api.http() } returns http
+            for (case in listOf("null_exchange", "null_response", "accessor")) {
+                val exchange = mockk<HttpRequestResponse>()
+                every { http.sendRequest(fixture.request, options) } returns if (case == "null_exchange") null else exchange
+                every { exchange.response() } returns null
+                if (case == "accessor") every { exchange.response() } throws IllegalStateException("PRIVATE_RESPONSE")
+                val result = service.send(SendHttpRequestFromId("project-123",
+                    HttpMessageReference(HttpMessageSource.PROXY, "10")))
+                assertEquals(HttpMessageActionStatus.OK, result.status, case)
+                assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState, case)
+                assertEquals(if (case == "accessor") HttpResponseState.UNAVAILABLE else HttpResponseState.NO_RESPONSE,
+                    result.responseState, case)
+                assertEquals(null, result.response, case)
+                assertEquals(case == "accessor", result.error != null, case)
+                assertEquals(case != "null_exchange", result.warning != null, case)
+                assertFalse(result.error.orEmpty().contains("PRIVATE_RESPONSE"))
+                verify(exactly = 0) { exchange.request() }
+            }
+            verify(exactly = 3) { http.sendRequest(fixture.request, options) }
+            verify(exactly = 0) { api.siteMap() }
         }
     }
 
@@ -1377,6 +1409,8 @@ class HttpMessageActionsTest {
 
             assertEquals(HttpMessageActionStatus.OK, result.status)
             assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
+            assertEquals(HttpResponseState.PREVIEW_FAILED, result.responseState)
+            assertTrue(result.warning.orEmpty().contains("atomic project-bound add"))
             assertTrue(result.error.orEmpty().contains("response preview could not be created"))
             assertFalse(result.error.orEmpty().contains("preview unavailable"))
             assertEquals(null, result.response)

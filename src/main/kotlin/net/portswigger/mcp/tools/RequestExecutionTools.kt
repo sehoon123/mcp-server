@@ -4,6 +4,8 @@ import burp.api.montoya.MontoyaApi
 import burp.api.montoya.http.execution.ExecutionStats
 import burp.api.montoya.http.execution.RequestEngineOptions
 import burp.api.montoya.http.execution.RequestExecution
+import burp.api.montoya.http.execution.RequestExecutionResult
+import burp.api.montoya.http.execution.RequestResult
 import burp.api.montoya.http.execution.ResourcePool
 import burp.api.montoya.http.execution.ResponseHandler
 import burp.api.montoya.http.execution.Retention
@@ -86,7 +88,7 @@ data class HttpRequestExecutionItem(
     val stored: StoredRequestExecutionSource? = null,
     @JsonSchemaMetadata(description = "Caller-supplied HTTP/1 or HTTP/2 request; exactly one of stored or raw is required.")
     val raw: RawRequestExecutionSource? = null,
-    @JsonSchemaMetadata(description = "Optional correlation label echoed in completion-order results.", maxLength = MAX_REQUEST_EXECUTION_LABEL_CHARS)
+    @JsonSchemaMetadata(description = "Optional display label preserved in results; use requestId for identity even when labels are missing or repeated.", maxLength = MAX_REQUEST_EXECUTION_LABEL_CHARS)
     val label: String? = null,
 )
 
@@ -196,6 +198,8 @@ data class HttpRequestExecutionItemResult(
     val responseStatusCode: Int?,
     @JsonSchemaMetadata(minimum = 0)
     val responseBytes: Int?,
+    @JsonSchemaMetadata(description = "Input identity scoped to executionId, not a stored HTTP ref. Null when native label lookup failed; never infer from result order.", minimum = 0, maximum = 63)
+    val requestId: Int? = null,
 )
 
 @Serializable
@@ -214,6 +218,8 @@ internal data class HttpRequestExecutionActionResult(
     val stats: HttpRequestExecutionStats? = null,
     @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
     val error: String? = null,
+    @JsonSchemaMetadata(description = "Start/queue input i has requestId=firstRequestId+i within executionId. Allocated range, not proof of acceptance or delivery. Uncertain batches reserve all input IDs; never retry automatically. Null before native queue entry or without a usable handle.", minimum = 0, maximum = 63)
+    val firstRequestId: Int? = null,
 )
 
 @Serializable
@@ -227,11 +233,13 @@ internal data class HttpRequestExecutionStatusResult(
     val finished: Boolean?,
     val cancelled: Boolean?,
     val stats: HttpRequestExecutionStats?,
-    @JsonSchemaMetadata(description = "Bounded completion-order result metadata retained without request or response content.", maxItems = MAX_REQUEST_EXECUTION_ITEMS)
+    @JsonSchemaMetadata(description = "Callback completion-order metadata, followed by reconciled never-sent dropped items in native terminal order. Order is not input order or chronology; no request/response content is retained.", maxItems = MAX_REQUEST_EXECUTION_ITEMS)
     val results: List<HttpRequestExecutionItemResult>,
     val resultsTruncated: Boolean,
     @JsonSchemaMetadata(maxLength = MAX_STANDARD_TOOL_ERROR_CHARS)
     val error: String? = null,
+    @JsonSchemaMetadata(description = "True only for a finished run with readable terminal reconciliation and one known identity/status per native requested item. Nullable optional metadata does not affect coverage; false never proves an input was not sent.")
+    val resultsComplete: Boolean,
 )
 
 private data class PreparedExecutionRequest(
@@ -245,32 +253,98 @@ private data class PreparedExecutionRequest(
     val review: () -> String,
 )
 
+private inline fun <T> readExecutionMetadata(read: () -> T): T? = try {
+    read()
+} catch (_: Exception) {
+    null
+}
+
+private inline fun <T> readExecutionStatusMetadata(read: () -> T): T? = try {
+    read()
+} catch (e: CancellationException) {
+    throw e
+} catch (_: Exception) {
+    null
+}
+
+private data class ExecutionSnapshot(
+    val results: List<HttpRequestExecutionItemResult>,
+    val truncated: Boolean,
+    val reconciled: Boolean,
+)
+
 private class ExecutionCapture {
     private val lock = Any()
+    private val labels = HashMap<String, Pair<Int, String?>>()
     private val results = ArrayList<HttpRequestExecutionItemResult>()
     private var truncated = false
 
-    fun capture(result: burp.api.montoya.http.execution.RequestResult) {
-        val captured = try {
-            val exchange = result.requestResponse()
-            val response = exchange.response()
-            HttpRequestExecutionItemResult(
-                label = result.label()?.take(MAX_REQUEST_EXECUTION_LABEL_CHARS),
-                status = result.status().name.lowercase().take(32),
-                requestBytes = requestByteLength(exchange.request()).coerceAtMost(MAX_ACTION_REQUEST_BYTES),
-                responseStatusCode = response?.statusCode()?.toInt(),
-                responseBytes = response?.let(::responseByteLength),
-            )
-        } catch (_: Exception) {
-            HttpRequestExecutionItemResult(null, "unavailable", null, null, null)
-        }
+    fun register(requestId: Int, label: String?): String = synchronized(lock) {
+        require(requestId in 0 until MAX_REQUEST_EXECUTION_ITEMS)
+        val nativeLabel = "mcp-request-$requestId"
+        check(nativeLabel !in labels)
+        labels[nativeLabel] = requestId to label
+        nativeLabel
+    }
+
+    private fun identity(nativeLabel: String?): Pair<Int, String?>? = synchronized(lock) { labels[nativeLabel] }
+
+    fun capture(result: RequestResult) {
+        val identity = readExecutionMetadata { identity(result.label()) }
+        val status = readExecutionMetadata { result.status().name.lowercase().take(32) } ?: "unavailable"
+        val exchange = readExecutionMetadata { result.requestResponse() }
+        val response = readExecutionMetadata { exchange?.response() }
+        val captured = HttpRequestExecutionItemResult(
+            label = identity?.second,
+            status = status,
+            requestBytes = readExecutionMetadata {
+                exchange?.request()?.let(::requestByteLength)?.coerceAtMost(MAX_ACTION_REQUEST_BYTES)
+            },
+            responseStatusCode = readExecutionMetadata { response?.statusCode()?.toInt() },
+            responseBytes = readExecutionMetadata { response?.let(::responseByteLength) },
+            requestId = identity?.first,
+        )
         synchronized(lock) {
             if (results.size < MAX_REQUEST_EXECUTION_ITEMS) results += captured else truncated = true
         }
     }
 
-    fun snapshot(): Pair<List<HttpRequestExecutionItemResult>, Boolean> = synchronized(lock) {
-        results.toList() to truncated
+    suspend fun snapshot(completion: RequestExecutionResult?): ExecutionSnapshot {
+        val terminal = ArrayList<HttpRequestExecutionItemResult>()
+        val terminalIds = HashSet<Int>()
+        val nativeResults = readExecutionStatusMetadata { completion?.results() }
+        val nativeCount = readExecutionStatusMetadata { nativeResults?.size }
+        var reconciled = nativeCount != null && nativeCount >= 0
+        var terminalTruncated = nativeCount != null && nativeCount > MAX_REQUEST_EXECUTION_ITEMS
+        if (nativeCount != null && nativeCount >= 0) {
+            repeat(minOf(nativeCount, MAX_REQUEST_EXECUTION_ITEMS)) { index ->
+                currentCoroutineContext().ensureActive()
+                val result = readExecutionStatusMetadata { nativeResults?.get(index) }
+                val status = readExecutionStatusMetadata { result?.status() }
+                val identity = readExecutionStatusMetadata { identity(result?.label()) }
+                if (status == null || identity == null || !terminalIds.add(identity.first)) reconciled = false
+                if (status != null) terminal += HttpRequestExecutionItemResult(
+                    identity?.second, status.name.lowercase(), null, null, null, identity?.first,
+                )
+            }
+        }
+        // Take the callback snapshot after observing terminal state; never hold its lock across native getters.
+        val captured = synchronized(lock) {
+            terminalTruncated = terminalTruncated || truncated
+            results.toMutableList()
+        }
+        for (item in terminal) {
+            val matching = if (item.requestId == null) emptyList() else captured.filter { it.requestId == item.requestId }
+            if (matching.isNotEmpty()) {
+                if (matching.size != 1 || matching.single().status != item.status) reconciled = false
+            } else if (item.status == "dropped") {
+                if (captured.size < MAX_REQUEST_EXECUTION_ITEMS) captured += item else terminalTruncated = true
+            } else {
+                reconciled = false
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        return ExecutionSnapshot(captured, terminalTruncated, reconciled)
     }
 }
 
@@ -369,11 +443,12 @@ internal class HttpRequestExecutionService(
                             "Burp could not create the request execution engine: ${safeExceptionSummary(e)}",
                         )
                     }
+                    val capture = ExecutionCapture()
                     try {
                         // RequestExecutionEngine has no close operation; before sendAll it owns only this local queue and has
                         // started no network work, so a queue failure is safely abandoned as a not-started preparation error.
-                        prepared.requests.forEach { request ->
-                            if (request.label == null) engine.queue(request.request) else engine.queue(request.request, request.label)
+                        prepared.requests.forEachIndexed { index, request ->
+                            engine.queue(request.request, capture.register(index, request.label))
                         }
                     } catch (e: CancellationException) {
                         throw e
@@ -386,7 +461,6 @@ internal class HttpRequestExecutionService(
                             "Burp could not queue the initial requests: ${safeExceptionSummary(e)}",
                         )
                     }
-                    val capture = ExecutionCapture()
                     val handler = ResponseHandler { result, _ ->
                         capture.capture(result)
                         Retention.DROP
@@ -455,6 +529,7 @@ internal class HttpRequestExecutionService(
                         executionId = id,
                         queued = prepared.requests.size,
                         stats = stats,
+                        firstRequestId = 0,
                     )
                 } catch (e: CancellationException) {
                     publishedId?.let { id -> synchronized(stateLock) { executions.remove(id) } }
@@ -534,10 +609,14 @@ internal class HttpRequestExecutionService(
                 )
             }
             var queued = 0
+            val firstRequestId = owned.queued
+            var allocatedFirstId: Int? = null
             try {
-                prepared.requests.forEach { request ->
+                prepared.requests.forEachIndexed { index, request ->
                     currentCoroutineContext().ensureActive()
-                    queueUnderFence(input.projectId, input.executionId, owned, request)
+                    queueUnderFence(input.projectId, input.executionId, owned, request, firstRequestId + index) {
+                        allocatedFirstId = firstRequestId
+                    }
                     queued++
                 }
                 owned.queued += queued
@@ -556,6 +635,7 @@ internal class HttpRequestExecutionService(
                     null,
                     e,
                     "Burp may have queued requests before an execution fence changed",
+                    allocatedFirstId,
                 )
             } catch (e: CancellationException) {
                 owned.queued = (owned.queued + prepared.requests.size).coerceAtMost(MAX_REQUEST_EXECUTION_ITEMS)
@@ -569,6 +649,7 @@ internal class HttpRequestExecutionService(
                     null,
                     e,
                     "Burp may have queued additional requests",
+                    allocatedFirstId,
                 )
             } catch (e: Exception) {
                 owned.queued = (owned.queued + prepared.requests.size).coerceAtMost(MAX_REQUEST_EXECUTION_ITEMS)
@@ -581,6 +662,7 @@ internal class HttpRequestExecutionService(
                     null,
                     e,
                     "Burp may have queued additional requests",
+                    allocatedFirstId,
                 )
             }
             val postProject = currentProjectIdOrNull(api)
@@ -594,6 +676,7 @@ internal class HttpRequestExecutionService(
                     null,
                     IllegalStateException("a request execution fence changed while requests were queued"),
                     "Burp may have queued requests before project or emergency policy changed",
+                    allocatedFirstId,
                 )
             }
             HttpRequestExecutionActionResult(
@@ -604,6 +687,7 @@ internal class HttpRequestExecutionService(
                 executionId = input.executionId,
                 queued = queued,
                 stats = runCatching { owned.execution.stats().toDto() }.getOrNull(),
+                firstRequestId = allocatedFirstId,
             )
         }
     }
@@ -629,7 +713,8 @@ internal class HttpRequestExecutionService(
         return try {
             if (wait > 0) {
                 val deadline = System.nanoTime() + wait * 1_000_000L
-                while (!owned.execution.lifetime().finished() && System.nanoTime() < deadline) {
+                while (System.nanoTime() < deadline) {
+                    if (readExecutionStatusMetadata { owned.execution.lifetime().finished() } != false) break
                     delay(50)
                 }
             }
@@ -649,10 +734,19 @@ internal class HttpRequestExecutionService(
                     "Burp project changed while execution status was read",
                 )
             }
-            val finished = owned.execution.lifetime().finished()
-            val cancelled = if (finished) owned.execution.lifetime().awaitCompletion().cancelled() else null
-            val captured = owned.capture.snapshot()
-            val stats = owned.execution.stats().toDto()
+            val finished = readExecutionStatusMetadata { owned.execution.lifetime().finished() }
+            val completion = if (finished == true) readExecutionStatusMetadata {
+                owned.execution.lifetime().awaitCompletion()
+            } else null
+            val cancelled = readExecutionStatusMetadata { completion?.cancelled() }
+            val captured = owned.capture.snapshot(completion)
+            val nativeStats = readExecutionStatusMetadata { owned.execution.stats() }
+            val requested = readExecutionStatusMetadata { nativeStats?.requested() }
+            val stats = readExecutionStatusMetadata { requested?.let { nativeStats?.toDto(it) } }
+            val complete = finished == true && cancelled != null && captured.reconciled && !captured.truncated &&
+                requested != null && requested in 0..MAX_REQUEST_EXECUTION_ITEMS &&
+                captured.results.size == requested && captured.results.all { it.requestId != null && it.status != "unavailable" } &&
+                captured.results.map { it.requestId }.distinct().size == captured.results.size
             currentCoroutineContext().ensureActive()
             val finalProject = currentProjectIdOrNull(api)
                 ?: return statusFailure(
@@ -685,8 +779,9 @@ internal class HttpRequestExecutionService(
                 finished = finished,
                 cancelled = cancelled,
                 stats = stats,
-                results = captured.first,
-                resultsTruncated = captured.second,
+                results = captured.results,
+                resultsTruncated = captured.truncated,
+                resultsComplete = complete,
             )
         } catch (e: CancellationException) {
             throw e
@@ -1215,6 +1310,8 @@ internal class HttpRequestExecutionService(
         executionId: String,
         expected: OwnedRequestExecution,
         request: PreparedExecutionRequest,
+        requestId: Int,
+        beforeNativeQueue: () -> Unit,
     ) {
         if (config.emergencyReadOnlyMode) {
             throw RequestExecutionFenceException(
@@ -1243,8 +1340,9 @@ internal class HttpRequestExecutionService(
                     "request execution crossed a lifecycle boundary before native queueing",
                 )
             }
-            if (request.label == null) expected.execution.queue(request.request)
-            else expected.execution.queue(request.request, request.label)
+            val label = expected.capture.register(requestId, request.label)
+            beforeNativeQueue()
+            expected.execution.queue(request.request, label)
         }
     }
 
@@ -1301,6 +1399,7 @@ internal class HttpRequestExecutionService(
         control: HttpRequestExecutionControl?,
         error: Exception,
         summary: String,
+        firstRequestId: Int? = null,
     ) = HttpRequestExecutionActionResult(
         status = NativeToolStatus.EXECUTION_UNCERTAIN,
         retry = ToolRetryGuidance.DO_NOT_RETRY,
@@ -1315,6 +1414,7 @@ internal class HttpRequestExecutionService(
             preserveCancellation = false,
             maxChars = MAX_STANDARD_TOOL_ERROR_CHARS,
         ),
+        firstRequestId = firstRequestId,
     )
 
     private fun statusFailure(
@@ -1333,6 +1433,7 @@ internal class HttpRequestExecutionService(
         results = emptyList(),
         resultsTruncated = false,
         error = nativeToolError(error),
+        resultsComplete = false,
     )
 
     private sealed interface PreparedRequests {
@@ -1345,8 +1446,8 @@ internal class HttpRequestExecutionService(
     }
 }
 
-private fun ExecutionStats.toDto() = HttpRequestExecutionStats(
-    requested = requested().coerceIn(0, MAX_REQUEST_EXECUTION_ITEMS),
+private fun ExecutionStats.toDto(requestedCount: Int = requested()) = HttpRequestExecutionStats(
+    requested = requestedCount.coerceIn(0, MAX_REQUEST_EXECUTION_ITEMS),
     completed = completed().coerceIn(0, MAX_REQUEST_EXECUTION_ITEMS),
     failed = failed().coerceIn(0, MAX_REQUEST_EXECUTION_ITEMS),
     inFlight = inFlight().coerceIn(0, MAX_REQUEST_EXECUTION_ITEMS),

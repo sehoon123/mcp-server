@@ -10,6 +10,8 @@ import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.RedirectionMode
 import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.HttpRequestResponse
+import burp.api.montoya.http.message.MimeType
+import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.organizer.Organizer
@@ -144,6 +146,7 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageActionDestination.HTTP, result.destination)
         assertEquals(48, result.requestBytes)
         assertNull(result.response)
+        assertEquals(HttpResponseState.NO_RESPONSE, result.responseState)
         assertEquals(false, result.recordedInSiteMap)
         assertNull(result.recordedRef)
         assertNull(result.error)
@@ -151,6 +154,58 @@ class RawHttpToolsTest {
         verify(exactly = 1) { options.withRedirectionMode(RedirectionMode.NEVER) }
         verify(exactly = 1) { options.withResponseTimeout(2500) }
         verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
+    fun `raw sends distinguish native response observation without changing execution or retrying`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        every { api.http() } returns http
+        val cases = listOf("null_exchange", "null_response", "accessor", "preview", "200", "403", "500")
+        for (case in cases) {
+            val exchange = mockk<HttpRequestResponse>()
+            val response = mockk<HttpResponse>()
+            val body = mockk<MontoyaByteArray>()
+            every { body.length() } returns 0
+            every { response.body() } returns body
+            every { response.statusCode() } returns (case.toShortOrNull() ?: 200)
+            every { response.mimeType() } returns MimeType.JSON
+            every { response.httpVersion() } returns "HTTP/1.1"
+            every { exchange.response() } returns response
+            every { exchange.timingData() } returns java.util.Optional.empty()
+            every { http.sendRequest(fixture.request, options) } returns if (case == "null_exchange") null else exchange
+            when (case) {
+                "null_response" -> every { exchange.response() } returns null
+                "accessor" -> every { exchange.response() } throws IllegalStateException("PRIVATE_RESPONSE")
+                "preview" -> every { body.length() } throws IllegalStateException("PRIVATE_PREVIEW")
+            }
+            val result = service.send(defaultHttp1Send().copy(responseBodyLimit = 0))
+            val expected = when (case) {
+                "null_exchange", "null_response" -> HttpResponseState.NO_RESPONSE
+                "accessor" -> HttpResponseState.UNAVAILABLE
+                "preview" -> HttpResponseState.PREVIEW_FAILED
+                else -> HttpResponseState.AVAILABLE
+            }
+            assertEquals(expected, result.responseState, case)
+            assertEquals(HttpMessageActionStatus.OK, result.status, case)
+            assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState, case)
+            assertEquals(case.toIntOrNull(), result.response?.statusCode, case)
+            assertEquals(case in listOf("accessor", "preview"), result.error != null, case)
+            assertEquals(case != "null_exchange", result.warning != null, case)
+            assertTrue(!result.error.orEmpty().contains("PRIVATE_"), case)
+            assertNull(result.response?.body)
+            assertEquals(false, result.recordedInSiteMap)
+            assertNull(result.recordedRef)
+            verify(exactly = 0) { exchange.request() }
+            verify(exactly = 0) { response.toByteArray() }
+        }
+        verify(exactly = cases.size) { http.sendRequest(fixture.request, options) }
+        verify(exactly = 0) { api.siteMap() }
     }
 
     @Test
@@ -169,6 +224,8 @@ class RawHttpToolsTest {
 
         assertEquals(HttpMessageActionStatus.EXECUTION_UNCERTAIN, result.status)
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
+        assertNull(result.responseState)
+        assertNull(result.warning)
         assertTrue(result.error.orEmpty().contains("do not retry automatically"))
         assertTrue(!result.error.orEmpty().contains("/home/user/value"))
         assertTrue(result.error.orEmpty().contains("SocketTimeoutException"))
@@ -219,6 +276,43 @@ class RawHttpToolsTest {
         }
 
         verify(exactly = 1) { http.sendRequest(fixture.request, options) }
+    }
+
+    @Test
+    fun `native null response cannot return a service result after observed cancellation`() = runBlocking {
+        val fixture = http1Fixture()
+        val options = mockk<RequestOptions>()
+        every { RequestOptions.requestOptions() } returns options
+        every { options.withHttpMode(HttpMode.HTTP_1) } returns options
+        every { options.withRedirectionMode(RedirectionMode.NEVER) } returns options
+        every { options.withResponseTimeout(30_000) } returns options
+        val http = mockk<Http>()
+        every { api.http() } returns http
+        for (cancelInResponseGetter in listOf(false, true)) {
+            lateinit var invocationJob: Job
+            var returned = false
+            val exchange = mockk<HttpRequestResponse>()
+            every { http.sendRequest(fixture.request, options) } answers {
+                if (cancelInResponseGetter) exchange else {
+                    invocationJob.cancel()
+                    null
+                }
+            }
+            every { exchange.response() } answers {
+                invocationJob.cancel()
+                null
+            }
+            supervisorScope {
+                val invocation = async {
+                    invocationJob = currentCoroutineContext()[Job]!!
+                    service.send(defaultHttp1Send())
+                    returned = true
+                }
+                assertFailsWith<CancellationException> { invocation.await() }
+            }
+            assertTrue(!returned)
+        }
+        verify(exactly = 2) { http.sendRequest(fixture.request, options) }
     }
 
     @Test
@@ -323,7 +417,7 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageExecutionState.COMPLETED, result.executionState)
         assertEquals(false, result.recordedInSiteMap)
         assertNull(result.recordedRef)
-        assertTrue(result.error.orEmpty().contains("atomic project-bound add"))
+        assertTrue(result.warning.orEmpty().contains("atomic project-bound add"))
         verify(exactly = 0) { api.siteMap() }
     }
 
@@ -540,6 +634,8 @@ class RawHttpToolsTest {
         assertEquals(HttpMessageExecutionState.UNCERTAIN, result.executionState)
         assertEquals("project-raw", result.projectId)
         assertNull(result.response)
+        assertNull(result.responseState)
+        assertNull(result.warning)
     }
 
     @Test

@@ -329,9 +329,28 @@ data class HttpActionResponseSummary(
     val timing: HttpTimingSummary? = null,
 )
 
+internal const val HTTP_RESPONSE_STATE_DESCRIPTION =
+    "Native response observation, not delivery proof: available=summary readable; no_response=none returned; " +
+        "preview_failed=response present but preview failed; unavailable=presence unreadable; null=not observed. Never grants retry."
+
+@Serializable
+enum class HttpResponseState {
+    @SerialName("available")
+    AVAILABLE,
+
+    @SerialName("no_response")
+    NO_RESPONSE,
+
+    @SerialName("preview_failed")
+    PREVIEW_FAILED,
+
+    @SerialName("unavailable")
+    UNAVAILABLE,
+}
+
 @Serializable
 data class HttpMessageActionResult(
-    @JsonSchemaMetadata(description = "Success requires status=ok and executionState=completed, not just isError=false.")
+    @JsonSchemaMetadata(description = "ok/completed means the native action returned; inspect responseState for HTTP observations, not isError alone.")
     val status: HttpMessageActionStatus,
     @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
@@ -342,6 +361,7 @@ data class HttpMessageActionResult(
     @JsonSchemaMetadata(description = "True when bounded structured changes were applied; always present.")
     val patchApplied: Boolean,
     val changes: String? = null,
+    @JsonSchemaMetadata(description = "Prepared request length, not a final wire-byte observation.")
     val requestBytes: Int? = null,
     @JsonSchemaMetadata(description = "Supplied caption, not a tab ID.")
     val tabName: String? = null,
@@ -352,6 +372,10 @@ data class HttpMessageActionResult(
     @JsonSchemaMetadata(description = "Organizer only: whether the unchanged source response was preserved.")
     val preservedResponseInOrganizer: Boolean? = null,
     val error: String? = null,
+    @JsonSchemaMetadata(description = HTTP_RESPONSE_STATE_DESCRIPTION)
+    val responseState: HttpResponseState? = null,
+    @JsonSchemaMetadata(description = "Non-failure storage notice; never a reason to retry.", maxLength = 512)
+    val warning: String? = null,
 )
 
 internal class HttpMessageActionService(
@@ -475,19 +499,9 @@ internal class HttpMessageActionService(
             HttpMessageActionDestination.HTTP,
             patched,
         )?.let { return it }
-        var summaryError = siteMapRecordingWarning(api, response)
-        val responseSummary = try {
-            response?.response()?.toActionSummary(bodyLimit, bodyEncoding)?.copy(
-                timing = readHttpTiming { response.timingData().orElse(null) },
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val message = "request completed but its response preview could not be created: ${safeException(e)}"
-            summaryError = listOfNotNull(summaryError, message).joinToString("; ")
-            runCatching { api.logging().logToError(message) }
-            null
-        }
+        val warning = siteMapRecordingWarning(api, response)
+        val observed = observeHttpActionResponse(response, bodyLimit, bodyEncoding)
+        observed.error?.let { message -> runCatching { api.logging().logToError(message) } }
         recheckProjectAfterExecution(
             input.projectId,
             input.ref,
@@ -504,10 +518,12 @@ internal class HttpMessageActionService(
             input.ref,
             HttpMessageActionDestination.HTTP,
             patched,
-            response = responseSummary,
+            response = observed.summary,
             recordedInSiteMap = false,
             recordedRef = null,
-            error = summaryError,
+            error = observed.error,
+            responseState = observed.state,
+            warning = warning,
         )
     }
 
@@ -1190,6 +1206,40 @@ private fun HttpActionParameterType.serialName(): String = name.lowercase()
 private fun HttpMessageSource.serialName(): String = name.lowercase()
 private fun String.boundedDiff(): String = replace("\r", "\\r").replace("\n", "\\n").take(256)
 
+internal data class ObservedHttpActionResponse(
+    val state: HttpResponseState,
+    val summary: HttpActionResponseSummary? = null,
+    val error: String? = null,
+)
+
+internal suspend fun observeHttpActionResponse(
+    exchange: MontoyaHttpRequestResponse?,
+    limit: Int,
+    encoding: String,
+): ObservedHttpActionResponse {
+    currentCoroutineContext().ensureActive()
+    var failureState = HttpResponseState.UNAVAILABLE
+    return try {
+        val response = exchange?.response() ?: return ObservedHttpActionResponse(HttpResponseState.NO_RESPONSE)
+        failureState = HttpResponseState.PREVIEW_FAILED
+        ObservedHttpActionResponse(
+            HttpResponseState.AVAILABLE,
+            response.toActionSummary(limit, encoding).copy(
+                timing = readHttpTiming { exchange.timingData().orElse(null) },
+            ),
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        ObservedHttpActionResponse(
+            failureState,
+            error = "request completed but its response preview could not be created: ${safeExceptionSummary(e)}".take(512),
+        )
+    } finally {
+        currentCoroutineContext().ensureActive()
+    }
+}
+
 internal fun HttpResponse.toActionSummary(limit: Int, encoding: String): HttpActionResponseSummary {
     val responseBody = body()
     return HttpActionResponseSummary(
@@ -1309,6 +1359,8 @@ private fun success(
     recordedRef: HttpMessageReference? = null,
     preservedResponseInOrganizer: Boolean? = null,
     error: String? = null,
+    responseState: HttpResponseState? = null,
+    warning: String? = null,
 ) = HttpMessageActionResult(
     status = HttpMessageActionStatus.OK,
     executionState = HttpMessageExecutionState.COMPLETED,
@@ -1326,6 +1378,8 @@ private fun success(
     recordedRef = recordedRef,
     preservedResponseInOrganizer = preservedResponseInOrganizer,
     error = error?.take(512),
+    responseState = responseState,
+    warning = warning,
 )
 
 private fun uncertain(

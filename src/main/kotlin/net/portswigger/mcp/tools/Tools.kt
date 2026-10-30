@@ -393,7 +393,7 @@ internal fun Server.registerTools(
 
         mcpStructuredToolWithContext<GetHttpRequestExecution, HttpRequestExecutionStatusResult>(
             title = "Read HTTP request execution status",
-            description = "Read live stats and bounded completion-order metadata for an executionId from start_http_request_execution; optionally wait up to 30 seconds. This extension never returns or retains request/response content; native results are dropped after metadata capture. No requests are sent or queued and no execution control is changed; use control_http_request_execution to pause, resume, or cancel.",
+            description = "Read live stats and bounded result metadata for an executionId from start_http_request_execution; optionally wait up to 30 seconds. Match requestId, not completion order or user labels, and check resultsComplete. Never-sent cancelled items are reconciled at completion without reading raw traffic. This extension retains metadata only. No requests are sent or queued and no execution control is changed; use control_http_request_execution to pause, resume, or cancel.",
             annotations = READ_ONLY_TOOL_ANNOTATIONS,
         ) { input ->
             val output = requestExecutionService.get(input)
