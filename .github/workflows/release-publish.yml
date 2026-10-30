@@ -12,8 +12,9 @@ on:
         required: true
         type: string
       smoke_run_id:
-        description: Successful release-smoke workflow run ID for these exact draft bytes
-        required: true
+        description: Optional release-smoke run ID; verified against these exact draft bytes when supplied
+        required: false
+        default: ''
         type: string
       rc_observation_run_id:
         description: Retired RC observation run ID; verified only when supplied
@@ -83,7 +84,9 @@ jobs:
             expected_workflow_ref=$DEFAULT_REF
           fi
           [[ "$GITHUB_REF" == "$expected_workflow_ref" ]]
-          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          # Exact-byte Burp smoke evidence is published when supplied, not required to publish.
+          [[ -z "$SMOKE_RUN_ID" || "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           [[ "$RELEASE_TAG" =~ $semver ]]
           tag_without_build=${RELEASE_TAG%%+*}
@@ -219,6 +222,7 @@ jobs:
               --source-ref "refs/tags/$RELEASE_TAG" >/dev/null
           done
 
+          if [[ -n "$SMOKE_RUN_ID" ]]; then
           smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
           jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
             .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
@@ -265,6 +269,8 @@ jobs:
               "unloadDuringBackgroundWork"] and
             ([.scenarios[]] | all(. == "pass"))
           ' "$smoke_dir/record/smoke-result.json" >/dev/null
+
+          fi
 
           if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
@@ -609,7 +615,9 @@ jobs:
             expected_workflow_ref=$DEFAULT_REF
           fi
           [[ "$GITHUB_REF" == "$expected_workflow_ref" ]]
-          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ && "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          # Exact-byte Burp smoke evidence is published when supplied, not required to publish.
+          [[ -z "$SMOKE_RUN_ID" || "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           tag_without_build=${RELEASE_TAG%%+*}
           if [[ "$tag_without_build" == *-* ]]; then
             expected_prerelease=true
@@ -713,6 +721,7 @@ jobs:
               --source-ref "refs/tags/$RELEASE_TAG" >/dev/null
           done
 
+          if [[ -n "$SMOKE_RUN_ID" ]]; then
           smoke_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SMOKE_RUN_ID")
           jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
             .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
@@ -753,6 +762,8 @@ jobs:
               "unloadDuringBackgroundWork"] and
             ([.scenarios[]] | all(. == "pass"))
           ' "$RUNNER_TEMP/smoke/record/smoke-result.json" >/dev/null
+
+          fi
 
           if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")

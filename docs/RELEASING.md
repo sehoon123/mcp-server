@@ -20,7 +20,8 @@ contract only and are **not instructions to recreate the branch or dispatch that
 No old evidence is rebound to main or a successor version. The single-use v4.11 predecessor bridge and the RC
 observation gate are retired, so a main-based candidate is admitted by the exact-tag signature, ancestry,
 `SerialVersion` ceiling, and previous-published-release checks alone. All tag signatures, vulnerability checks,
-exact-byte real Burp smoke, provenance, and immutable-publication requirements below remain in force.
+provenance, and immutable-publication requirements below remain in force. Smoke evidence is optional and is
+published when it exists.
 
 ## Release principles
 
@@ -32,7 +33,9 @@ exact-byte real Burp smoke, provenance, and immutable-publication requirements b
 4. **Reproducibility:** two isolated builds produce identical JAR and SBOM bytes.
 5. **Complete distribution:** required licenses, notices, corresponding-source information, SBOM, checksums, and
    provenance ship with the binary.
-6. **Human Burp verification:** automation is followed by a recorded smoke test using the exact candidate bytes.
+6. **Published verification evidence:** whatever independent verification is performed is recorded against the exact
+   published bytes and shipped with the release. It is evidence for readers, not a precondition, so a release without it
+   says so instead of waiting.
 7. **No replacement:** a published tag or executable asset is never moved, deleted, or overwritten to correct a defect.
    Corrections use a new patch version.
 
@@ -229,9 +232,11 @@ This job may request `id-token: write`, `attestations: write`, and narrowly scop
 - create a draft release only;
 - scope `GH_TOKEN` to the individual GitHub CLI step rather than the whole job.
 
-### Job F — exact-byte Burp smoke test
+### Job F — exact-byte Burp smoke test (optional evidence)
 
-Download the draft artifact into a clean environment and record:
+The maintainer may record a Burp smoke test for the exact draft bytes. It is published evidence, not a publication
+requirement: a release with no smoke run states that absence in its notes. When the test is run, download the draft
+artifact into a clean environment and record:
 
 - release/tag/commit and JAR SHA-256;
 - Burp version, edition, OS, and Java runtime;
@@ -265,14 +270,14 @@ change requires a new smoke run. No workflow input may select a trust branch or 
 
 ### Job G — no-rebuild publication
 
-After the smoke record succeeds, a minimal job must:
+After the draft exists, and after a smoke record when one is supplied, a minimal job must:
 
 1. re-resolve and verify the protected tag and full SHA;
 2. verify the draft still targets that SHA and is still a draft;
 3. download every draft asset into a clean workspace;
 4. enforce the exact asset allowlist and reject extras/missing files;
 5. verify all checksums and GitHub/Sigstore attestations;
-6. verify the recorded Burp smoke result references the same JAR digest;
+6. verify any supplied Burp smoke record references the same JAR digest;
 7. publish without replacing any asset;
 8. output the release URL, run URL, source SHA, and artifact digests.
 
@@ -289,16 +294,16 @@ and `observed_rc_source_sha` for a stable tag and refuses them for a prerelease 
 still implements the 604,800-second window, eleven-path continuity, and issue-triage checks. Until those are deleted, a
 stable tag that supplies observation inputs is still verified against them. Prerelease tags are unaffected.
 
-## Published without a smoke record: v4.12.4
+## Smoke evidence is optional
 
-`v4.12.4` was published on 2026-10-30 by explicit maintainer decision from its immutable CI draft, without a
-`release-smoke` attestation. The exact draft bytes, checksums, SBOM, legal/source bundle, OSV/npm evidence, and both
-isolated builds are the attested ones and no asset was rebuilt or replaced; the only missing evidence is the private
-exact-byte Burp matrix. The release body states that absence instead of implying a pass.
+`release-publish.yml` takes `smoke_run_id` as an optional input and verifies the attested record against the exact draft
+bytes only when it is supplied. Publication never waits on a private Burp matrix. The release notes and
+`docs/releases/<version>.md` must state whether exact-byte Community and Professional verification was performed,
+because silence about it would misrepresent the release.
 
-`release-publish.yml` still requires `smoke_run_id`, so that dispatch path stays closed for the next release. Either run
-the matrix and dispatch it, or delete the requirement in a reviewed change that also states the resulting weaker
-evidence in the release notes. Do not treat this one publication as precedent for silently skipping it.
+`v4.12.4` was published this way: immutable CI draft, attested assets, checksums, SBOM, legal/source bundle, OSV/npm
+evidence, two byte-identical isolated builds, and no maintainer smoke record. Its notes state that absence instead of
+implying a pass.
 
 ## Required release assets
 
@@ -461,9 +466,9 @@ downloaded JAR digest and environment versions. The workflow independently downl
 and source identity, emits a bounded `smoke-result.json`, and attests the record in a separate no-checkout OIDC job.
 
 `release-publish.yml` supports both SemVer prereleases and stable tags. Its read-only preflight and publication job
-independently re-resolve the signed tag, exact expected execution ref and smoke-head identity, one-shot draft, exact
-asset/API-digest snapshot, checksums, source identity, release body, draft provenance, authorized smoke workflow run,
-tester identity, smoke attestation, and JAR digest. Prereleases remain `main`-bound; exact `v4.11.0` observation, smoke, and publication are
+independently re-resolve the signed tag, exact expected execution ref, one-shot draft, exact asset/API-digest snapshot,
+checksums, source identity, release body, and draft provenance, and verify the authorized smoke run, tester identity,
+smoke attestation, and JAR digest whenever `smoke_run_id` is supplied. Prereleases remain `main`-bound; exact `v4.11.0` observation, smoke, and publication are
 bound to `release/v4.11`. Stable tags additionally accept the retired observation inputs described in Job H; prerelease
 tags reject them. The publication step first checks the repository immutable-release setting using a read-only
 administration token, sends only `draft=false`, requires the resulting release to report `immutable=true`, does not rebuild
@@ -475,7 +480,7 @@ to check it independently:
 - the signed protected tag, exact source SHA, and reviewed change range;
 - two-build byte equality, SBOM, legal/source bundle, `SHA256SUMS`, and attestations;
 - the vulnerability query inputs and their outputs;
-- the exact-byte Community and Professional smoke record and its workflow run; and
+- any exact-byte Community and Professional smoke record and its workflow run, when one was recorded; and
 - anonymous download and verification instructions.
 
 Community verification is the acceptance step: defects arrive as public issues and are corrected by a new patch version.
@@ -483,7 +488,7 @@ What remains mandatory is the work that prevents a damaged or unverifiable relea
 
 - GitHub immutable releases are enabled and write access to drafts/tags is restricted;
 - the checked-in Gradle/npm locks and verification metadata are reviewed for the candidate;
-- the exact-byte Community and Professional matrix is actually performed and its smoke workflow succeeds; and
+- every supplied smoke record matches the published JAR digest and passes; and
 - the unauthenticated post-publication job confirms the published bytes and provenance resolve.
 
 Do not use the manually built and later corrected v4.7.0 publication as evidence that the target process ran.
@@ -498,7 +503,7 @@ contract must instead be superseded by a reviewed main-based successor contract 
   the historical release anchor remains reachable and no historical evidence is relabeled as successor evidence.
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
-- [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
+- [ ] Full tests, client matrix, and conformance pass, and any manual Burp matrix result is recorded honestly.
 - [ ] Preserve the retired v4.11 anchor in main history. The single-use predecessor bridge is retired with the RC
   observation gate, so the draft identity job no longer refuses releases above v4.11.0; a main-based candidate is now
   admitted by the same exact-tag, ancestry, `SerialVersion` ceiling, and previous-published-release checks every other
@@ -509,7 +514,7 @@ contract must instead be superseded by a reviewed main-based successor contract 
 - [ ] JAR and release bundle contain complete GPL/Apache/MIT/NOTICE/fork/source material.
 - [ ] Exact asset allowlist and `SHA256SUMS` validate.
 - [ ] Attestations bind every artifact to the intended source SHA.
-- [ ] Draft asset digest equals the manually smoke-tested digest.
+- [ ] Draft asset digest equals any supplied manual smoke-test digest.
 - [ ] Publish job revalidated tag, assets, checksums, and attestations.
 - [ ] Public latest links, downloads, checksums, and attestations were rechecked from a clean environment.
 - [ ] Release and run URLs, full SHA, and artifact hashes were archived.

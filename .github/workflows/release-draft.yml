@@ -578,7 +578,7 @@ jobs:
             printf -- '- Vulnerability evidence SHA-256: `%s`\n\n' "$vulnerability_evidence_sha"
             printf 'Verify the downloaded bundle with `sha256sum -c SHA256SUMS` and verify GitHub artifact attestations against repository `sehoon123/mcp-server`.\n\n'
             printf '## Candidate status\n\n'
-            printf 'This is a draft only. Publication still requires attested exact-byte Community and Professional smoke evidence and every gate in `docs/RELEASING.md`.\n'
+            printf 'This is a draft only. Publication verifies the tag, assets, checksums, provenance, and every supplied smoke record; exact-byte Community and Professional smoke evidence is optional evidence, not a publication precondition.\n'
           } > "$stage/RELEASE_NOTES.md"
 
           jq -n \
