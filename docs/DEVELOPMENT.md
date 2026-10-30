@@ -352,6 +352,44 @@ all runtime/security/release limits remain intact. This is not approval for furt
 Initialize instructions use 1,474 bytes; keep them below 1,500. Include the metadata-only project-summary bootstrap,
 reference/project binding, and no-automatic-retry guidance for uncertain or lost mutation results.
 
+### Result-quality regression contract (4.12.5 candidate)
+
+The catalog remains 24/38. Existing action outputs add `responseState` and `warning`; execution actions add nullable
+`firstRequestId`, execution items add nullable `requestId`, and execution status adds required `resultsComplete`.
+Only these result families and their explanatory metadata change. The precise synthetic totals move from
+138,245/206,569 to 140,589/210,711 bytes (+2,344/+4,142); their new ceilings are 141,000/211,000. Runtime output/input
+bounds, approvals, names, annotations, dependencies, proxy bytes, and release gates do not change. Full wire and metadata
+fingerprints are updated for the reviewed output changes; this is not a token-efficiency measurement.
+
+Regression coverage must retain:
+
+- per-accessor failure isolation without losing independently readable identity/status or invoking raw-byte getters;
+- omitted, empty and duplicate labels; reverse/synchronous callbacks; input IDs across additional queue calls;
+- first native queue calls that accept then throw, partial prefixes, conservative whole-batch ID reservation, and no
+  ID allocation on a first pre-native fence rejection;
+- bounded terminal `DROPPED` label/status reconciliation without reading exchanges; repeat reads, terminal accessor
+  failures, unknown/duplicate/conflicting identities, unavailable statuses, missing callbacks and unclamped count checks;
+- project/ownership changes during terminal getters discarding all partial results, and cancellation propagating;
+- native-null/response-null, accessor and preview failures, 4xx/5xx, body-limit zero, optional timing failure and no second
+  send; cancellation must prevent service results even on native-null branches;
+- unchanged uncertainty, project fences, `isError`, 64-item/16-MiB execution caps and native `Retention.DROP` behavior.
+
+See README for output semantics and compatibility: normal disabled-storage guidance moves from `error` to `warning`;
+`requestBytes` remains prepared-request length, not a wire observation. A complete execution outcome set is not a set of
+successful requests. Internal native labels replace caller labels, which remain unchanged in MCP result metadata.
+
+Native validation is **NOT RUN** for these changes. Use an explicitly authorized disposable loopback project to verify
+synchronous/late callbacks, cancel-before-send terminal items, labels, partial queue outcomes and project cleanup in the
+actual Professional engine, plus response-state behavior in both editions. Do not infer native behavior from mocks.
+Use `scripts/run-live-v412-performance-attribution.py` for the existing 10k/50k/100k acquisition/processing split rather
+than adding another performance harness. Preserve exact source/JAR identity and the script's existing authorization,
+privacy and resource safeguards.
+
+Real-agent task evaluation is also **NOT RUN**. Fixed tasks should cover one JSON field read, stored-response comparison,
+incomplete/limited evidence, and uncertain/cancelled execution. Record tool-call counts, returned byte counts, token counts
+only when the client actually exposes them, incorrect completeness/success conclusions and unintended duplicate sends.
+Do not retain raw traffic or credentials in the measurement record or present catalog bytes as model token savings.
+
 ### HTTP reference batches and Scanner evidence markers
 
 The context-menu provider binds project ID before evaluating the selection, rechecks after selection, before queueing,

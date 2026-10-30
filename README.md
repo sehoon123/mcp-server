@@ -6,8 +6,9 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.4` (BApp SerialVersion 23) — the stable candidate promoted from the v4.12.0 RC line.**
-See the [v4.12.4 release notes](docs/releases/4.12.4.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
+**Current source version: `4.12.5` (BApp SerialVersion 24) — result-quality candidate; publication is not implied.**
+The last published version is `v4.12.4`. See the [4.12.5 candidate notes](docs/releases/4.12.5.md) and
+[reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
 v4.12 adds the five-client Setup Center, bounded native utilities, opt-in execution workflows, and human-reviewed
 issue reporting. RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache
 HttpClient5 `5.6.4` / HttpCore5 `5.4.3` stack; it adds no request, scan, or execution capability. The embedded proxy is
@@ -150,8 +151,8 @@ nested stored-reference or raw requests, validates and approves the whole batch,
 and outbound-target gates, and starts Burp's native engine. `queue_http_request_execution` adds at most 16 at a time;
 one handle accepts at most 64 requests and 16 MiB cumulatively. At most four active, completed, or cleanup-pending
 handles count against capacity. `get_http_request_execution` can wait up to 30 seconds and returns only live counters and
-completion-order label/status/length metadata; response handlers drop native request/response results after capturing
-that metadata. `control_http_request_execution` pauses, resumes, cancels, or cancel-and-deletes. Project transitions and
+bounded per-input label/status/length metadata; response handlers drop native request/response results after capturing
+that metadata. See the result identity and completion-coverage rules below. `control_http_request_execution` pauses, resumes, cancels, or cancel-and-deletes. Project transitions and
 extension shutdown attempt cancellation; a cleanup whose completion is not confirmed continues consuming capacity.
 
 `execute_local_command` uses Montoya ShellUtils for one direct argv or explicit system-shell command, serializes MCP
@@ -164,6 +165,44 @@ most 32 distinct MCP-imported IDs are retained per extension lifetime; replacing
 project, outbound-approval, toggle, and Emergency read-only checks. Both tool families therefore remain disabled until
 the local operator explicitly enables **Bambda and local command tools**; every invocation still requires sensitive
 action approval unless YOLO mode is active.
+
+### Result identity and response observations (4.12.5 candidate)
+
+No tool or input field is added. Clients should rediscover the additive output schemas; approvals, project fences,
+count/byte caps, and no-automatic-retry rules remain unchanged.
+
+Professional request execution now returns `firstRequestId` on start/queue when a usable handle and native queue entry
+are known. Input item `i` maps to `requestId = firstRequestId + i` within that `executionId`; IDs are zero-based, at most
+63, and are not stored HTTP references. An uncertain queue batch reserves its entire input range, even if `queued=0`,
+so later IDs may have gaps. An allocated ID proves neither acceptance nor delivery. Never retry an uncertain batch.
+Burp's native correlation labels are now internal IDs; returned `label` preserves the caller's optional label, including
+empty and duplicate labels. An unreadable or unrecognized native label yields null identity, never an order-based guess.
+
+`get_http_request_execution.results` preserves callback completion order and appends confirmed never-sent `dropped`
+items from bounded native terminal metadata. That combined order is not input order or chronology. Reconciliation reads
+only terminal label/status, not request/response content, and repeated reads do not append retained duplicates.
+`resultsComplete=true` means a finished run has readable terminal reconciliation and one known ID/status for every
+native requested item. It does not mean the requests succeeded: timeout, connection failure, and never-sent cancellation
+are outcomes too. Missing terminal data, unknown/duplicate/conflicting identities, unavailable statuses, or exceeded bounds
+keep coverage false. Absence from an incomplete list never proves an input was not sent. Optional metadata getter
+failures leave only those fields null instead of erasing independently available identity/status.
+
+Both existing single-send tools add `responseState`:
+
+- `available`: a native response summary is readable; the body preview may still be bounded or omitted.
+- `no_response`: the native exchange or its response is null; this does **not** prove non-delivery.
+- `preview_failed`: a nonnull native response was observed, but its summary/preview could not be read.
+- `unavailable`: response presence could not be read.
+- null: no response observation is returned, including routing, not-started, and project-fence uncertainty paths.
+
+`status=ok` / `executionState=completed` still means the native action returned, not that HTTP succeeded. HTTP 4xx/5xx
+responses remain `available`; optional timing failure does not discard a readable response. `requestBytes` is the prepared
+request length, not final wire-byte evidence. The normal disabled-Site-Map-storage notice moves from `error` to `warning`;
+actual preview/accessor errors stay in `error`. `recordedInSiteMap=false` and `recordedRef=null` are unchanged. No raw
+result cache, automatic storage, or second send is introduced. Neither an observation state nor a warning grants retry.
+
+Native Request Execution callback/terminal behavior and exact-candidate Community/Professional checks are **NOT RUN**
+for this change. Deterministic mocks and MCP wire tests establish bridge behavior, not native Burp or agent performance.
 
 ### Tool discovery and retained contracts (unreleased)
 

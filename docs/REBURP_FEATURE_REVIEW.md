@@ -1,5 +1,25 @@
 # reburp feature and architecture selection
 
+## Current follow-up — result quality, not API surface (4.12.5 candidate)
+
+Review baseline: bridge `f8c28f8`; ReBurp remains `892e475cf3d74020cdb82cc1c6368187b5e69404` (1.1.15), and Montoya
+`2026.7` contracts were checked at `daccdcaafb47025eb9c6c6d61f7700e95059a719`. No upstream extension or target was run.
+Independent `openai/gpt-6.1-sol` plan and implementation reviews found no implementation blocker; a requested terminal
+project/lifecycle regression was added. This is development review, not release/native validation evidence.
+
+- Isolate optional execution-metadata failures rather than replacing every field with unavailable.
+- Use native echoed correlation labels for bounded per-input IDs while preserving original user labels in MCP results.
+  Read terminal `DROPPED` labels/statuses because Montoya does not deliver them to the response callback. Never infer
+  delivery or absence from allocated IDs, completion order, missing rows, or incomplete native observations.
+- Distinguish native-call completion, response presence and preview failure on existing sends. Keep prepared-request
+  length distinct from wire provenance, and move the normal no-Site-Map-storage notice to `warning` instead of `error`.
+- Keep 24/38 tools, existing approvals/fences/limits, no automatic retry, no raw-result cache and no automatic Site Map
+  recording. ReBurp's returned request/response pairing is useful inspiration, not a final-wire identity guarantee.
+
+The new accessor regression failed on the baseline before the fix. Mock/service and MCP wire tests cover the changes;
+actual Burp execution/representation and model-task/performance evidence remain **NOT RUN**. The proposed broader
+send-result evidence store remains deferred pending retention, approval and project-atomicity design.
+
 ## Current follow-up — reference batches and marked issue evidence
 
 Reference: [forefy/reburp 1.1.15 at `892e475cf3d74020cdb82cc1c6368187b5e69404`](https://github.com/forefy/reburp/tree/892e475cf3d74020cdb82cc1c6368187b5e69404),

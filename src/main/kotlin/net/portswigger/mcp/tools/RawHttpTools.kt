@@ -119,7 +119,7 @@ data class RouteRawHttpRequest(
 
 @Serializable
 data class RawHttpActionResult(
-    @JsonSchemaMetadata(description = "Success requires status=ok and executionState=completed, not just isError=false.")
+    @JsonSchemaMetadata(description = "ok/completed means the native action returned; inspect responseState for HTTP observations, not isError alone.")
     val status: HttpMessageActionStatus,
     @JsonSchemaMetadata(description = TOOL_EXECUTION_STATE_DESCRIPTION)
     val executionState: HttpMessageExecutionState,
@@ -128,6 +128,7 @@ data class RawHttpActionResult(
     val target: HttpActionTarget,
     @JsonSchemaMetadata(description = "Project current when execution started; null when capture failed.")
     val projectId: String? = null,
+    @JsonSchemaMetadata(description = "Prepared request length, not a final wire-byte observation.")
     val requestBytes: Int? = null,
     @JsonSchemaMetadata(description = "Supplied caption, not a tab ID.")
     val tabName: String? = null,
@@ -135,6 +136,10 @@ data class RawHttpActionResult(
     val recordedInSiteMap: Boolean? = null,
     val recordedRef: HttpMessageReference? = null,
     val error: String? = null,
+    @JsonSchemaMetadata(description = HTTP_RESPONSE_STATE_DESCRIPTION)
+    val responseState: HttpResponseState? = null,
+    @JsonSchemaMetadata(description = "Non-failure storage notice; never a reason to retry.", maxLength = 512)
+    val warning: String? = null,
 )
 
 internal class RawHttpActionService(
@@ -256,18 +261,8 @@ internal class RawHttpActionService(
             target,
             prepared.requestBytes,
         )?.let { return it }
-        var warning = siteMapRecordingWarning(api, exchange)
-        val response = try {
-            exchange?.response()?.toActionSummary(bodyLimit, encoding)?.copy(
-                timing = readHttpTiming { exchange.timingData().orElse(null) },
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val previewWarning = "request completed but its response preview could not be created: ${safeExceptionSummary(e)}"
-            warning = listOfNotNull(warning, previewWarning).joinToString("; ").take(512)
-            null
-        }
+        val warning = siteMapRecordingWarning(api, exchange)
+        val observed = observeHttpActionResponse(exchange, bodyLimit, encoding)
         postExecutionProjectResult(
             expectedProjectId,
             input.protocol,
@@ -283,10 +278,12 @@ internal class RawHttpActionService(
             target = target,
             projectId = expectedProjectId.take(MAX_HTTP_REFERENCE_PROJECT_ID_CHARS),
             requestBytes = prepared.requestBytes,
-            response = response,
+            response = observed.summary,
             recordedInSiteMap = false,
             recordedRef = null,
-            error = warning,
+            error = observed.error,
+            responseState = observed.state,
+            warning = warning,
         )
     }
 

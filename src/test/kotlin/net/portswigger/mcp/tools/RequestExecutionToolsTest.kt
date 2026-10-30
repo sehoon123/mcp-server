@@ -5,6 +5,7 @@ import burp.api.montoya.core.ByteArray as MontoyaByteArray
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.execution.*
+import burp.api.montoya.http.execution.Retention
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.http.message.responses.HttpResponse
@@ -31,7 +32,10 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RequestExecutionToolsTest {
@@ -95,7 +99,7 @@ class RequestExecutionToolsTest {
 
         val request = request(120)
         stubHistory(proxyItem(7, request))
-        every { engine.queue(request) } returns Unit
+        every { engine.queue(request, any()) } returns Unit
         every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
         every { lifetime.finished() } returns false
         val started = service.start(StartHttpRequestExecution(
@@ -116,10 +120,10 @@ class RequestExecutionToolsTest {
         val item = proxyItem(7, request)
         stubHistory(item)
         val handler = slot<ResponseHandler>()
-        every { engine.queue(request, "first") } returns Unit
+        every { engine.queue(request, "mcp-request-0") } returns Unit
         every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
         every { lifetime.finished() } returns false
-        every { execution.queue(request, "second") } returns Unit
+        every { execution.queue(request, "mcp-request-1") } returns Unit
         every { lifetime.pause() } returns Unit
         val service = HttpRequestExecutionService(api, config())
 
@@ -138,7 +142,8 @@ class RequestExecutionToolsTest {
         assertEquals(NativeToolStatus.OK, started.status)
         val executionId = assertNotNull(started.executionId)
         assertTrue(executionId.startsWith("reqexec-"))
-        verify(exactly = 1) { engine.queue(request, "first") }
+        verify(exactly = 1) { engine.queue(request, "mcp-request-0") }
+        assertEquals(0, started.firstRequestId)
 
         val response = response(240)
         val exchange = mockk<HttpRequestResponse>()
@@ -146,7 +151,7 @@ class RequestExecutionToolsTest {
         every { exchange.response() } returns response
         val requestResult = mockk<RequestResult>()
         every { requestResult.requestResponse() } returns exchange
-        every { requestResult.label() } returns "first"
+        every { requestResult.label() } returns "mcp-request-0"
         every { requestResult.status() } returns RequestStatus.RESPONDED
         assertEquals(
             burp.api.montoya.http.execution.Retention.DROP,
@@ -155,6 +160,7 @@ class RequestExecutionToolsTest {
 
         val completion = mockk<RequestExecutionResult>()
         every { completion.cancelled() } returns false
+        every { completion.results() } returns emptyList()
         every { lifetime.finished() } returns true
         every { lifetime.awaitCompletion() } returns completion
         every { stats.completed() } returns 1
@@ -166,6 +172,9 @@ class RequestExecutionToolsTest {
         assertEquals(120, status.results.single().requestBytes)
         assertEquals(240, status.results.single().responseBytes)
         assertEquals(200, status.results.single().responseStatusCode)
+        assertEquals(0, status.results.single().requestId)
+        assertEquals("first", status.results.single().label)
+        assertTrue(status.resultsComplete)
 
         every { lifetime.finished() } returns false
         val queued = service.queue(
@@ -177,7 +186,8 @@ class RequestExecutionToolsTest {
         )
         assertEquals(NativeToolStatus.OK, queued.status)
         assertEquals(1, queued.queued)
-        verify(exactly = 1) { execution.queue(request, "second") }
+        verify(exactly = 1) { execution.queue(request, "mcp-request-1") }
+        assertEquals(1, queued.firstRequestId)
 
         val paused = service.control(
             ControlHttpRequestExecution("project-1", executionId, HttpRequestExecutionControl.PAUSE)
@@ -192,13 +202,61 @@ class RequestExecutionToolsTest {
     }
 
     @Test
+    fun `result accessor failures preserve independently available metadata`() = runBlocking {
+        for (failure in listOf("label", "status", "exchange", "requestBytes", "response", "statusCode", "responseBytes")) {
+            val request = request(120)
+            val response = response(240)
+            stubHistory(proxyItem(7, request))
+            val nativeLabel = slot<String>()
+            val handler = slot<ResponseHandler>()
+            every { engine.queue(request, capture(nativeLabel)) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            every { lifetime.finished() } returns false
+            val service = HttpRequestExecutionService(api, config())
+            val started = service.start(StartHttpRequestExecution(
+                "project-1",
+                listOf(HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)), label = "item")),
+            ))
+            val exchange = mockk<HttpRequestResponse>()
+            every { exchange.request() } returns request
+            every { exchange.response() } returns response
+            val result = mockk<RequestResult>()
+            every { result.label() } answers { nativeLabel.captured }
+            every { result.status() } returns RequestStatus.RESPONDED
+            every { result.requestResponse() } returns exchange
+            val error = IllegalStateException("private getter failure")
+            when (failure) {
+                "label" -> every { result.label() } throws error
+                "status" -> every { result.status() } throws error
+                "exchange" -> every { result.requestResponse() } throws error
+                "requestBytes" -> every { request.body() } throws error
+                "response" -> every { exchange.response() } throws error
+                "statusCode" -> every { response.statusCode() } throws error
+                "responseBytes" -> every { response.body() } throws error
+            }
+
+            assertEquals(Retention.DROP, handler.captured.onResponse(result, execution), failure)
+            val observed = service.get(GetHttpRequestExecution("project-1", assertNotNull(started.executionId)))
+                .results.single()
+            assertEquals(if (failure == "label") null else "item", observed.label, failure)
+            assertEquals(if (failure == "status") "unavailable" else "responded", observed.status, failure)
+            assertEquals(if (failure in listOf("exchange", "requestBytes")) null else 120, observed.requestBytes, failure)
+            assertEquals(if (failure in listOf("exchange", "response", "statusCode")) null else 200, observed.responseStatusCode, failure)
+            assertEquals(if (failure in listOf("exchange", "response", "responseBytes")) null else 240, observed.responseBytes, failure)
+            verify(exactly = 0) { request.toByteArray() }
+            verify(exactly = 0) { response.toByteArray() }
+            service.close()
+        }
+    }
+
+    @Test
     fun `execution byte budget is cumulative across queue calls`() = runBlocking {
         val request = request(MAX_ACTION_REQUEST_BYTES)
         stubHistory(proxyItem(7, request))
-        every { engine.queue(request) } returns Unit
+        every { engine.queue(request, any()) } returns Unit
         every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
         every { lifetime.finished() } returns false
-        every { execution.queue(request) } returns Unit
+        every { execution.queue(request, any()) } returns Unit
         val service = HttpRequestExecutionService(api, config())
         val started = service.start(
             StartHttpRequestExecution(
@@ -225,7 +283,7 @@ class RequestExecutionToolsTest {
 
         assertEquals(NativeToolStatus.OK, fill.status)
         assertEquals(NativeToolStatus.LIMIT_EXCEEDED, exceeded.status)
-        verify(exactly = 7) { execution.queue(request) }
+        verify(exactly = 7) { execution.queue(request, any()) }
     }
 
     @Test
@@ -342,7 +400,7 @@ class RequestExecutionToolsTest {
             val request = request(120)
             every { HttpService.httpService("example.test", 443, true) } returns nativeService
             every { HttpRequest.httpRequest(nativeService, any<String>()) } returns request
-            every { engine.queue(request, "raw") } returns Unit
+            every { engine.queue(request, "mcp-request-0") } returns Unit
             every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
             every { lifetime.finished() } returns false
             val service = HttpRequestExecutionService(api, config())
@@ -404,7 +462,7 @@ class RequestExecutionToolsTest {
     fun `delete retains cleanup reservation when post-cancel status fails`() = runBlocking {
         val request = request(120)
         stubHistory(proxyItem(7, request))
-        every { engine.queue(request) } returns Unit
+        every { engine.queue(request, any()) } returns Unit
         every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
         var finishedCalls = 0
         every { lifetime.finished() } answers {
@@ -443,7 +501,7 @@ class RequestExecutionToolsTest {
         val lifetimes = List(4) { mockk<RequestExecutionLifetime>() }
         every { http.createRequestEngine() } returnsMany engines
         engines.forEachIndexed { index, nativeEngine ->
-            every { nativeEngine.queue(request) } returns Unit
+            every { nativeEngine.queue(request, any()) } returns Unit
             every { nativeEngine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns executions[index]
             every { executions[index].lifetime() } returns lifetimes[index]
             every { executions[index].stats() } returns stats
@@ -473,7 +531,7 @@ class RequestExecutionToolsTest {
         every { project.id() } answers { currentProject }
         val request = request(120)
         stubHistory(proxyItem(7, request))
-        every { engine.queue(request) } answers { currentProject = "project-2" }
+        every { engine.queue(request, any()) } answers { currentProject = "project-2" }
         val service = HttpRequestExecutionService(api, config())
 
         val result = service.start(
@@ -492,7 +550,7 @@ class RequestExecutionToolsTest {
     fun `sendAll failure is uncertain and does not publish a handle`() = runBlocking {
         val request = request(120)
         stubHistory(proxyItem(7, request))
-        every { engine.queue(request) } returns Unit
+        every { engine.queue(request, any()) } returns Unit
         every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } throws IllegalStateException("private")
         val service = HttpRequestExecutionService(api, config())
 
@@ -508,6 +566,316 @@ class RequestExecutionToolsTest {
         assertEquals(null, result.executionId)
         assertTrue(!result.error.orEmpty().contains("private"))
     }
+
+    @Test
+    fun `internal identities survive missing empty and duplicate user labels and synchronous reverse completion`() = runBlocking {
+        val request = request(120)
+        stubHistory(proxyItem(7, request))
+        val nativeLabels = mutableListOf<String>()
+        val userLabels = listOf(null, "", "duplicate", "duplicate")
+        every { engine.queue(request, capture(nativeLabels)) } returns Unit
+        every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } answers {
+            val handler = firstArg<ResponseHandler>()
+            nativeLabels.asReversed().forEach { label ->
+                assertEquals(Retention.DROP, handler.onResponse(nativeResult(label, RequestStatus.RESPONDED, request), execution))
+            }
+            execution
+        }
+        every { lifetime.finished() } returns true
+        val completion = mockk<RequestExecutionResult>()
+        every { completion.cancelled() } returns false
+        every { completion.results() } returns emptyList()
+        every { lifetime.awaitCompletion() } returns completion
+        every { stats.requested() } returns 4
+        val service = HttpRequestExecutionService(api, config())
+        val started = service.start(StartHttpRequestExecution("project-1", userLabels.map {
+            HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)), label = it)
+        }))
+
+        assertEquals(0, started.firstRequestId)
+        assertEquals(4, nativeLabels.distinct().size)
+        val result = service.get(GetHttpRequestExecution("project-1", assertNotNull(started.executionId)))
+        assertEquals(listOf(3, 2, 1, 0), result.results.map { it.requestId })
+        assertEquals(userLabels.asReversed(), result.results.map { it.label })
+        assertTrue(result.resultsComplete)
+        assertFalse(result.resultsTruncated)
+        service.close()
+    }
+
+    @Test
+    fun `cancelled never-sent results reconcile without reading exchanges or mutating callback capture`() = runBlocking {
+        val request = request(120)
+        stubHistory(proxyItem(7, request))
+        val labels = mutableListOf<String>()
+        val handler = slot<ResponseHandler>()
+        every { engine.queue(request, capture(labels)) } returns Unit
+        every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+        val service = HttpRequestExecutionService(api, config())
+        val started = service.start(StartHttpRequestExecution("project-1", List(3) {
+            HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)), label = "item-$it")
+        }))
+        handler.captured.onResponse(nativeResult(labels[0], RequestStatus.RESPONDED, request), execution)
+        val dropped = labels.drop(1).map { nativeResult(it, RequestStatus.DROPPED) }
+        val completion = mockk<RequestExecutionResult>()
+        every { lifetime.finished() } returns true
+        every { lifetime.awaitCompletion() } returns completion
+        every { completion.cancelled() } returns true
+        every { completion.results() } returns dropped
+        every { stats.requested() } returns 3
+        every { stats.completed() } returns 1
+        every { stats.failed() } returns 2
+        val input = GetHttpRequestExecution("project-1", assertNotNull(started.executionId))
+        val first = service.get(input)
+        val second = service.get(input)
+
+        assertEquals(first, second)
+        assertTrue(first.resultsComplete)
+        assertEquals(listOf(0, 1, 2), first.results.map { it.requestId })
+        assertEquals(listOf("responded", "dropped", "dropped"), first.results.map { it.status })
+        first.results.drop(1).forEach { assertNull(it.requestBytes); assertNull(it.responseBytes) }
+        dropped.forEach { verify(exactly = 0) { it.requestResponse() } }
+        service.close()
+    }
+
+    @Test
+    fun `terminal metadata failures preserve callback evidence and never claim complete coverage`() = runBlocking {
+        for (failure in listOf("finished", "await", "cancelled", "results", "size", "row", "label", "status")) {
+            val request = request(120)
+            stubHistory(proxyItem(7, request))
+            val labels = mutableListOf<String>()
+            val handler = slot<ResponseHandler>()
+            every { engine.queue(request, capture(labels)) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            val service = HttpRequestExecutionService(api, config())
+            val started = service.start(StartHttpRequestExecution("project-1", List(2) {
+                HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)), label = "item-$it")
+            }))
+            handler.captured.onResponse(nativeResult(labels[0], RequestStatus.RESPONDED, request), execution)
+            val dropped = nativeResult(labels[1], RequestStatus.DROPPED)
+            val completion = mockk<RequestExecutionResult>()
+            every { lifetime.finished() } returns true
+            every { lifetime.awaitCompletion() } returns completion
+            every { completion.cancelled() } returns true
+            every { completion.results() } returns listOf(dropped)
+            every { stats.requested() } returns 2
+            val error = IllegalStateException("PRIVATE_TERMINAL")
+            when (failure) {
+                "finished" -> every { lifetime.finished() } throws error
+                "await" -> every { lifetime.awaitCompletion() } throws error
+                "cancelled" -> every { completion.cancelled() } throws error
+                "results" -> every { completion.results() } throws error
+                "size", "row" -> every { completion.results() } returns object : AbstractList<RequestResult>() {
+                    override val size: Int get() = if (failure == "size") throw error else 1
+                    override fun get(index: Int): RequestResult = throw error
+                }
+                "label" -> every { dropped.label() } throws error
+                "status" -> every { dropped.status() } throws error
+            }
+            val result = service.get(GetHttpRequestExecution("project-1", assertNotNull(started.executionId), waitMillis = 30_000))
+            assertEquals(NativeToolStatus.OK, result.status, failure)
+            assertFalse(result.resultsComplete, failure)
+            assertEquals(0, result.results.first().requestId, failure)
+            assertEquals("item-0", result.results.first().label, failure)
+            assertEquals("responded", result.results.first().status, failure)
+            verify(exactly = 0) { dropped.requestResponse() }
+            service.close()
+        }
+    }
+
+    @Test
+    fun `terminal getter project and lifecycle changes discard all partial result metadata`() = runBlocking {
+        for (change in listOf("project", "lifecycle")) {
+            var projectId = "project-1"
+            every { project.id() } answers { projectId }
+            val request = request(120)
+            stubHistory(proxyItem(7, request))
+            val label = slot<String>()
+            val handler = slot<ResponseHandler>()
+            every { engine.queue(request, capture(label)) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            val service = HttpRequestExecutionService(api, config())
+            val id = assertNotNull(service.start(StartHttpRequestExecution("project-1", listOf(
+                HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7))),
+            ))).executionId)
+            handler.captured.onResponse(nativeResult(label.captured, RequestStatus.RESPONDED, request), execution)
+            val completion = mockk<RequestExecutionResult>()
+            every { lifetime.finished() } returns true
+            every { lifetime.awaitCompletion() } returns completion
+            every { completion.cancelled() } returns false
+            every { completion.results() } answers {
+                if (change == "project") projectId = "project-2" else runBlocking { service.resetForProjectBoundary() }
+                throw IllegalStateException("terminal read failed after transition")
+            }
+            val result = service.get(GetHttpRequestExecution("project-1", id))
+            assertEquals(if (change == "project") NativeToolStatus.PROJECT_MISMATCH else NativeToolStatus.STALE_STATE,
+                result.status, change)
+            assertTrue(result.results.isEmpty(), change)
+            assertFalse(result.resultsComplete, change)
+            service.close()
+        }
+    }
+
+    @Test
+    fun `uncertain queue reserves the entire input identity range even when no queue call returned`() = runBlocking {
+        for (failAt in listOf(0, 1)) {
+            val request = request(120)
+            stubHistory(proxyItem(7, request))
+            val handler = slot<ResponseHandler>()
+            every { engine.queue(request, any()) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            every { lifetime.finished() } returns false
+            val service = HttpRequestExecutionService(api, config())
+            val item = HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)), label = "same")
+            val started = service.start(StartHttpRequestExecution("project-1", listOf(item)))
+            val id = assertNotNull(started.executionId)
+            var attempted = 0
+            every { execution.queue(request, any()) } answers {
+                handler.captured.onResponse(nativeResult(secondArg(), RequestStatus.RESPONDED, request), execution)
+                if (attempted++ == failAt) throw IllegalStateException("native queue may have accepted")
+            }
+            val uncertain = service.queue(QueueHttpRequestExecution("project-1", id, List(3) { item }))
+            assertEquals(NativeToolStatus.EXECUTION_UNCERTAIN, uncertain.status)
+            assertEquals(ToolRetryGuidance.DO_NOT_RETRY, uncertain.retry)
+            assertEquals(failAt, uncertain.queued)
+            assertEquals(1, uncertain.firstRequestId)
+            every { execution.queue(request, any()) } answers {
+                handler.captured.onResponse(nativeResult(secondArg(), RequestStatus.RESPONDED, request), execution)
+            }
+            val next = service.queue(QueueHttpRequestExecution("project-1", id, listOf(item)))
+            assertEquals(NativeToolStatus.OK, next.status)
+            assertEquals(4, next.firstRequestId)
+            val status = service.get(GetHttpRequestExecution("project-1", id))
+            assertEquals((1..failAt + 1).toList() + 4, status.results.map { it.requestId })
+            assertFalse(status.resultsComplete)
+            service.close()
+        }
+    }
+
+    @Test
+    fun `first queue fence failure allocates no identity and does not consume the next input range`() = runBlocking {
+        val request = request(120)
+        stubHistory(proxyItem(7, request))
+        every { engine.queue(request, any()) } returns Unit
+        every { engine.sendAll(any<ResponseHandler>(), any<java.time.Duration>()) } returns execution
+        val service = HttpRequestExecutionService(api, config())
+        val item = HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)))
+        val id = assertNotNull(service.start(StartHttpRequestExecution("project-1", listOf(item))).executionId)
+        var projectId = "project-1"
+        var checks = 0
+        every { project.id() } answers { projectId }
+        every { lifetime.finished() } answers {
+            if (++checks == 2) projectId = "project-2"
+            false
+        }
+        val rejected = service.queue(QueueHttpRequestExecution("project-1", id, listOf(item)))
+        assertEquals(NativeToolStatus.PROJECT_MISMATCH, rejected.status)
+        assertEquals(StandardExecutionState.NOT_STARTED, rejected.executionState)
+        assertNull(rejected.firstRequestId)
+        verify(exactly = 0) { execution.queue(any(), any()) }
+        projectId = "project-1"
+        every { execution.queue(request, "mcp-request-1") } returns Unit
+        val next = service.queue(QueueHttpRequestExecution("project-1", id, listOf(item)))
+        assertEquals(NativeToolStatus.OK, next.status)
+        assertEquals(1, next.firstRequestId)
+        service.close()
+    }
+
+    @Test
+    fun `unknown duplicate missing and conflicting identities cannot manufacture complete results`() = runBlocking {
+        for (case in listOf("unknown", "duplicate", "missing", "conflict", "terminal_duplicate")) {
+            val request = request(120)
+            stubHistory(proxyItem(7, request))
+            val labels = mutableListOf<String>()
+            val handler = slot<ResponseHandler>()
+            every { engine.queue(request, capture(labels)) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            val service = HttpRequestExecutionService(api, config())
+            val id = assertNotNull(service.start(StartHttpRequestExecution("project-1", List(2) {
+                HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7)))
+            })).executionId)
+            handler.captured.onResponse(nativeResult(labels[0], RequestStatus.RESPONDED, request), execution)
+            if (case == "unknown" || case == "duplicate") {
+                val label = if (case == "unknown") labels[1] + "x".repeat(128) else labels[0]
+                handler.captured.onResponse(nativeResult(label, RequestStatus.RESPONDED, request), execution)
+            }
+            val completion = mockk<RequestExecutionResult>()
+            every { lifetime.finished() } returns true
+            every { lifetime.awaitCompletion() } returns completion
+            every { completion.cancelled() } returns false
+            every { completion.results() } returns when (case) {
+                "conflict" -> listOf(nativeResult(labels[0], RequestStatus.DROPPED))
+                "terminal_duplicate" -> List(2) { nativeResult(labels[1], RequestStatus.DROPPED) }
+                else -> emptyList()
+            }
+            every { stats.requested() } returns 2
+            val result = service.get(GetHttpRequestExecution("project-1", id))
+            assertFalse(result.resultsComplete, case)
+            if (case == "unknown") { assertNull(result.results.last().requestId); assertNull(result.results.last().label) }
+            service.close()
+        }
+    }
+
+    @Test
+    fun `terminal inspection is bounded and native requested count is never clamped into completeness`() = runBlocking {
+        val request = request(120)
+        stubHistory(proxyItem(7, request))
+        val labels = mutableListOf<String>()
+        val handler = slot<ResponseHandler>()
+        every { engine.queue(request, capture(labels)) } returns Unit
+        every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+        every { execution.queue(request, capture(labels)) } returns Unit
+        every { lifetime.finished() } returns false
+        val service = HttpRequestExecutionService(api, config())
+        val batch = List(16) { HttpRequestExecutionItem(stored = StoredRequestExecutionSource(ref(7))) }
+        val id = assertNotNull(service.start(StartHttpRequestExecution("project-1", batch)).executionId)
+        repeat(3) { assertEquals((it + 1) * 16, service.queue(QueueHttpRequestExecution("project-1", id, batch)).firstRequestId) }
+        labels.forEach { handler.captured.onResponse(nativeResult(it, RequestStatus.RESPONDED, request), execution) }
+        val exceeded = service.queue(QueueHttpRequestExecution("project-1", id, batch.take(1)))
+        assertEquals(NativeToolStatus.LIMIT_EXCEEDED, exceeded.status)
+        assertNull(exceeded.firstRequestId)
+        val completion = mockk<RequestExecutionResult>()
+        every { lifetime.finished() } returns true
+        every { lifetime.awaitCompletion() } returns completion
+        every { completion.cancelled() } returns false
+        every { completion.results() } returns emptyList()
+        val input = GetHttpRequestExecution("project-1", id)
+        for (requested in listOf(64, 65, -1)) {
+            every { stats.requested() } returns requested
+            val result = service.get(input)
+            assertEquals(64, result.results.size)
+            assertEquals(requested == 64, result.resultsComplete)
+        }
+        var inspected = 0
+        every { completion.results() } returns object : AbstractList<RequestResult>() {
+            override val size = 65
+            override fun get(index: Int): RequestResult {
+                inspected++
+                return nativeResult(labels[index], RequestStatus.DROPPED)
+            }
+        }
+        val truncated = service.get(input)
+        assertEquals(64, inspected)
+        assertEquals(64, truncated.results.size)
+        assertTrue(truncated.resultsTruncated)
+        assertFalse(truncated.resultsComplete)
+        every { completion.results() } throws kotlinx.coroutines.CancellationException("cancelled read")
+        assertFailsWith<kotlinx.coroutines.CancellationException> { service.get(input) }
+        service.close()
+    }
+
+    private fun nativeResult(label: String, status: RequestStatus, request: HttpRequest? = null): RequestResult =
+        mockk<RequestResult>().also { result ->
+            every { result.label() } returns label
+            every { result.status() } returns status
+            if (request == null) {
+                every { result.requestResponse() } throws AssertionError("terminal reconciliation must not read an exchange")
+            } else {
+                val exchange = mockk<HttpRequestResponse>()
+                every { exchange.request() } returns request
+                every { exchange.response() } returns response(240)
+                every { result.requestResponse() } returns exchange
+            }
+        }
 
     private fun config(requireDataApproval: Boolean = false): McpConfig {
         val storage = mockk<PersistedObject>(relaxed = true)

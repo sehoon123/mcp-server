@@ -1,7 +1,7 @@
 # Active release roadmap
 
 **Status date:** 2026-09-21<br>
-**Current candidate build:** `4.12.4` / BApp SerialVersion 23 (stable promotion of the RC1 → RC5 line; verification evidence comes from the tagged workflows)<br>
+**Current candidate build:** `4.12.5` / BApp SerialVersion 24 (result-quality follow-up; native validation NOT RUN and publication not implied)<br>
 **Last stable baseline:** `v4.7.0` / `a1579834995d90be62c269b0b602e6c789bf3a14`<br>
 **Historical release candidate:** immutable `v4.11.0-rc.7` / `3eb0ff3bab614c1fe173b1c95c11dd5c3ee48121`; separate promotion track retired<br>
 **Next stable target:** main-based successor, blocked pending reviewed identity/pin migration and fresh release evidence<br>

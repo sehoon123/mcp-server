@@ -13,6 +13,7 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.RedirectionMode
 import burp.api.montoya.http.RequestOptions
+import burp.api.montoya.http.execution.*
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
@@ -309,8 +310,8 @@ class ToolsKtTest {
         val inputBytes = wireTools.sumOf { it.getValue("inputSchema").toString().toByteArray(Charsets.UTF_8).size }
         val outputBytes = wireTools.sumOf { it.getValue("outputSchema").toString().toByteArray(Charsets.UTF_8).size }
         println("CATALOG_BYTES edition=$edition total=$catalogBytes input=$inputBytes output=$outputBytes")
-        // Reviewed marker input measures 138,245/206,569 bytes; Community and all runtime limits stay unchanged.
-        assertTrue(catalogBytes <= if (edition == "Community") 139_000 else 207_000, "Review catalog byte-budget growth")
+        // Reviewed result-quality fields measure 140,589/210,711 bytes; tool counts and runtime limits are unchanged.
+        assertTrue(catalogBytes <= if (edition == "Community") 141_000 else 211_000, "Review catalog byte-budget growth")
         tools.filter { it.name in setOf("get_http_message", "get_websocket_message_by_id", "get_scanner_issue_by_id") }
             .forEach { tool ->
                 val limit = tool.inputSchema.properties!!.getValue("limit").jsonObject
@@ -680,11 +681,11 @@ class ToolsKtTest {
 
         fun description(name: String) = requireNotNull(tools[name]).description.orEmpty()
         tools.values.forEach(::assertCatalogToolContract)
-        assertCatalogContract("Community", tools.values, "6fdff03f697e3d2c026970814cf3cb91dd8807ad99e0ddcf80d58526b765dbc6")
+        assertCatalogContract("Community", tools.values, "4f9a4e39ba02b9fe5439710578b78506acc4156d960b1b7b022241b9537f5527")
         assertCatalogFingerprint(
             "Community",
             tools.values,
-            "313e0a30681fb388f268bfd27dd2d4c769771d0bfca47b802cf7d6d861a96448",
+            "e1c3ad07a44b9fc6d2df066370ba2c823b70e17809a7b3648fb830483c65e415",
         )
         assertEquals(MCP_SERVER_INSTRUCTIONS, client.serverInstructions())
         assertTrue(MCP_SERVER_INSTRUCTIONS.contains("send_http_request_from_id"))
@@ -722,7 +723,7 @@ class ToolsKtTest {
             assertEquals(false, tool.annotations?.openWorldHint)
             assertTrue(tool.outputSchema!!.properties!!.getValue("tabName").toString().contains("not a tab ID"))
             assertTrue(tool.outputSchema!!.properties!!.getValue("status").toString()
-                .contains("Success requires status=ok and executionState=completed, not just isError=false"))
+                .contains("inspect responseState for HTTP observations, not isError alone"))
         }
         assertTrue(tools.getValue("route_raw_http_request").inputSchema.properties!!.getValue("usesHttps")
             .toString().contains("no connection is made"))
@@ -815,6 +816,15 @@ class ToolsKtTest {
         assertTrue(description("route_http_message_from_id").contains("no network traffic or attack is started"))
         assertTrue(tools.getValue("route_http_message_from_id").outputSchema!!.properties!!.getValue("preservedResponseInOrganizer")
             .toString().contains("unchanged source response"))
+        for (name in listOf("send_raw_http_request", "send_http_request_from_id", "route_raw_http_request", "route_http_message_from_id")) {
+            val output = tools.getValue(name).outputSchema!!.properties!!
+            val stateSchema = output.getValue("responseState").toString()
+            for (state in listOf("available", "no_response", "preview_failed", "unavailable", "null")) {
+                assertTrue(stateSchema.contains(state), "$name responseState omits $state")
+            }
+            assertTrue(output.getValue("requestBytes").toString().contains("not a final wire-byte observation"))
+            assertTrue(output.getValue("warning").toString().contains("\"maxLength\":512"))
+        }
         assertTrue(description("send_raw_http_request").contains("independent outbound-target policy"))
         assertTrue(description("send_http_request_from_id").contains("independent outbound-target policy"))
         assertTrue(description("search_websocket_messages").contains("items=[] with hasMore=true"))
@@ -1132,6 +1142,8 @@ class ToolsKtTest {
             assertEquals("ok", result?.structuredContent?.get("status")?.jsonPrimitive?.content)
             assertEquals("completed", result?.structuredContent?.get("executionState")?.jsonPrimitive?.content)
             assertEquals("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", content.captured)
+            assertEquals("no_response", result?.structuredContent?.get("responseState")?.jsonPrimitive?.content)
+            assertNull(result?.structuredContent?.get("warning"))
             verify(exactly = 1) { options.withRedirectionMode(RedirectionMode.NEVER) }
             verify(exactly = 1) { http.sendRequest(request, options) }
         }
@@ -2728,17 +2740,92 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `execution identities and terminal cancellation survive the MCP wire`() = runBlocking {
+            val http = mockk<Http>()
+            val engine = mockk<RequestExecutionEngine>()
+            val execution = mockk<RequestExecution>()
+            val lifetime = mockk<RequestExecutionLifetime>()
+            val stats = mockk<ExecutionStats>()
+            val completion = mockk<RequestExecutionResult>()
+            val request = mockk<HttpRequest>()
+            val emptyBody = montoyaBytes(byteArrayOf())
+            val labels = mutableListOf<String>()
+            val handler = slot<ResponseHandler>()
+            every { api.http() } returns http
+            every { http.createRequestEngine() } returns engine
+            every { HttpRequest.httpRequest(any(), any<String>()) } returns request
+            every { request.bodyOffset() } returns 48
+            every { request.body() } returns emptyBody
+            every { engine.queue(request, capture(labels)) } returns Unit
+            every { execution.queue(request, capture(labels)) } returns Unit
+            every { engine.sendAll(capture(handler), any<java.time.Duration>()) } returns execution
+            every { execution.lifetime() } returns lifetime
+            every { execution.stats() } returns stats
+            every { lifetime.finished() } returns false
+            every { lifetime.cancel() } returns Unit
+            every { stats.requested() } answers { labels.size }
+            every { stats.completed() } returns 0
+            every { stats.failed() } returns 3
+            every { stats.inFlight() } returns 0
+            every { stats.pending() } returns 0
+            every { stats.elapsed() } returns java.time.Duration.ofMillis(1)
+            val item = mapOf("raw" to mapOf(
+                "protocol" to "http_1", "http1" to mapOf("content" to "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"),
+                "targetHostname" to "example.test", "targetPort" to 443, "usesHttps" to true,
+            ), "label" to "same")
+            val started = client.callTool("start_http_request_execution", mapOf(
+                "projectId" to collaboratorProjectId, "requests" to listOf(item, item),
+            ))
+            assertEquals(false, started?.isError)
+            val startData = requireNotNull(started?.structuredContent)
+            assertEquals(0, startData.getValue("firstRequestId").jsonPrimitive.int)
+            val id = startData.getValue("executionId").jsonPrimitive.content
+            val queued = client.callTool("queue_http_request_execution", mapOf(
+                "projectId" to collaboratorProjectId, "executionId" to id, "requests" to listOf(item),
+            ))
+            assertEquals(2, queued?.structuredContent?.get("firstRequestId")?.jsonPrimitive?.int)
+            val exchange = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            every { exchange.request() } returns request
+            every { exchange.response() } returns null
+            val timedOut = mockk<RequestResult>()
+            every { timedOut.label() } returns labels[0]
+            every { timedOut.status() } returns RequestStatus.TIMED_OUT
+            every { timedOut.requestResponse() } returns exchange
+            handler.captured.onResponse(timedOut, execution)
+            val dropped = labels.drop(1).map { label -> mockk<RequestResult>().also {
+                every { it.label() } returns label
+                every { it.status() } returns RequestStatus.DROPPED
+                every { it.requestResponse() } throws AssertionError("dropped exchange must not be read")
+            } }
+            every { lifetime.finished() } returns true
+            every { lifetime.awaitCompletion() } returns completion
+            every { completion.cancelled() } returns true
+            every { completion.results() } returns dropped
+            val result = client.callTool("get_http_request_execution", mapOf(
+                "projectId" to collaboratorProjectId, "executionId" to id,
+            ))
+            assertEquals(false, result?.isError)
+            val data = requireNotNull(result?.structuredContent)
+            assertEquals(true, data.getValue("resultsComplete").jsonPrimitive.boolean)
+            val rows = data.getValue("results").jsonArray.map { it.jsonObject }
+            assertEquals(listOf(0, 1, 2), rows.map { it.getValue("requestId").jsonPrimitive.int })
+            assertEquals(listOf("same", "same", "same"), rows.map { it.getValue("label").jsonPrimitive.content })
+            assertEquals(listOf("timed_out", "dropped", "dropped"), rows.map { it.getValue("status").jsonPrimitive.content })
+            dropped.forEach { verify(exactly = 0) { it.requestResponse() } }
+        }
+
+        @Test
         fun `Professional Scanner Collaborator and issue search tools expose bounded schemas`() = runBlocking {
             val tools = client.listTools()
             assertEquals(38, tools.size)
             assertEquals(EXPECTED_PROFESSIONAL_TOOL_NAMES, tools.mapTo(mutableSetOf()) { it.name })
             assertTrue(tools.all { it.outputSchema != null }, "Every Professional tool must advertise an output schema")
             tools.forEach(::assertCatalogToolContract)
-            assertCatalogContract("Professional", tools, "a8b7f68e5da62d4c7d6ab56606dd1479b742d85b2235434490404e8d2b0f103c")
+            assertCatalogContract("Professional", tools, "cd60d70c6b79a6811c611f419bef9e66b2a6c5c63fb2db8a8f51ff52e7d04f3f")
             assertCatalogFingerprint(
                 "Professional",
                 tools,
-                "e20e57ae46dc849f3cfe731934b7bd930cf6c4a11e4a86302ab3f8a6b1ba61f4",
+                "02b2a26d56e84b427db0291496e284952a0db00466da3a532863d8d0be86647f",
             )
             val executionStart = tools.single { it.name == "start_http_request_execution" }
             assertEquals(false, executionStart.annotations?.readOnlyHint)
@@ -2748,6 +2835,14 @@ class ToolsKtTest {
             val executionGet = tools.single { it.name == "get_http_request_execution" }
             assertEquals(true, executionGet.annotations?.readOnlyHint)
             assertTrue(executionGet.outputSchema?.properties?.get("results").toString().contains("\"maxItems\":64"))
+            assertTrue(executionGet.outputSchema!!.required.orEmpty().contains("resultsComplete"))
+            assertTrue(executionGet.outputSchema?.properties?.get("results").toString().contains("\"requestId\""))
+            for (name in listOf("start_http_request_execution", "queue_http_request_execution", "control_http_request_execution")) {
+                val firstId = tools.single { it.name == name }.outputSchema!!.properties!!.getValue("firstRequestId").toString()
+                assertTrue(firstId.contains("\"minimum\":0"))
+                assertTrue(firstId.contains("\"maximum\":63"))
+                assertTrue(firstId.contains("not proof of acceptance or delivery"))
+            }
             val bambdaImport = tools.single { it.name == "import_bambda" }
             assertEquals(false, bambdaImport.annotations?.readOnlyHint)
             assertEquals(true, bambdaImport.annotations?.openWorldHint)
