@@ -13,7 +13,7 @@ burp-montoya = "2026.7"
 mockk = "1.14.6"
 byte-buddy = "1.17.6"
 json-schema-validator = "3.0.6"
-jackson-test = "3.1.5"
+jackson-test = "3.1.7"
 
 [libraries]
 # Kotlin

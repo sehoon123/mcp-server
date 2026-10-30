@@ -350,8 +350,8 @@ jobs:
             --source-commit "$SOURCE_COMMIT" \
             --proxy-commit "$PROXY_COMMIT" \
             --repository "$GITHUB_REPOSITORY" \
-            --expected-count 204 \
-            --expected-sha256 2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51
+            --expected-count 206 \
+            --expected-sha256 db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816
 
       - name: Upload exact vulnerability evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -488,7 +488,7 @@ jobs:
             <(printf '%s\n' "$actual_vulnerability")
           cmp security/release-maven-coordinates.txt "$vulnerability/OSV-COORDINATES.txt"
           [[ $(sha256sum "$vulnerability/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
-            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+            db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816 ]]
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg releaseTag "$RELEASE_TAG" \
@@ -499,8 +499,8 @@ jobs:
             .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and
             .proxyCommit == $proxyCommit and
-            .coordinateSet.count == 204 and
-            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .coordinateSet.count == 206 and
+            .coordinateSet.sha256 == "db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816" and
             .osv.queried == 204 and .osv.findings == 0 and
             .npmAudit.high == 0 and .npmAudit.critical == 0 and
             .result == "pass"
@@ -572,7 +572,7 @@ jobs:
             printf -- '- Immutable draft run: %s\n' "$RUN_URL"
             printf -- '- JDK: Temurin 21\n'
             printf -- '- Two isolated no-build-cache JAR/SBOM builds compared byte-for-byte\n'
-            printf -- '- Exact 204-coordinate OSV query and reviewed npm audit policy passed\n'
+            printf -- '- Exact 206-coordinate OSV query and reviewed npm audit policy passed\n'
             printf -- '- JAR SHA-256: `%s`\n' "$jar_sha"
             printf -- '- SBOM SHA-256: `%s`\n' "$bom_sha"
             printf -- '- Vulnerability evidence SHA-256: `%s`\n\n' "$vulnerability_evidence_sha"
@@ -811,7 +811,7 @@ jobs:
           [[ $(jq -r '.artifacts.vulnerabilityEvidenceSha256' "$stage/SOURCE_IDENTITY.json") == \
             "$(sha256sum "$stage/VULNERABILITY_EVIDENCE.json" | cut -d' ' -f1)" ]]
           [[ $(sha256sum "$stage/OSV-COORDINATES.txt" | cut -d' ' -f1) == \
-            2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51 ]]
+            db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816 ]]
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg releaseTag "$RELEASE_TAG" \
@@ -819,8 +819,8 @@ jobs:
             --arg proxyCommit "$EXPECTED_PROXY_COMMIT" '
             .schemaVersion == 1 and .repository == $repository and .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and .proxyCommit == $proxyCommit and
-            .coordinateSet.count == 204 and
-            .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .coordinateSet.count == 206 and
+            .coordinateSet.sha256 == "db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816" and
             .osv.queried == 204 and .osv.findings == 0 and
             .npmAudit.high == 0 and .npmAudit.critical == 0 and .result == "pass"
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null

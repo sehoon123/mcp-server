@@ -101,7 +101,7 @@ jobs:
             --arg sourceCommit "$SOURCE_COMMIT" '
             .repository == $repository and .releaseTag == $releaseTag and
             .sourceCommit == $sourceCommit and .result == "pass" and
-            .coordinateSet.count == 204 and .coordinateSet.sha256 == "2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51" and
+            .coordinateSet.count == 206 and .coordinateSet.sha256 == "db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816" and
             .osv.findings == 0 and .npmAudit.high == 0 and .npmAudit.critical == 0
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
           expected_version=$(jq -r '.version' "$stage/SOURCE_IDENTITY.json")

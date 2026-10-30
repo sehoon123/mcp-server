@@ -185,7 +185,7 @@ checkout; matrix and package jobs must not independently resolve a movable ref.
 
 - checkout the emitted server SHA and the proxy SHA named by its embedded provenance;
 - resolve both exact Gradle project-plugin graphs and add the reviewed settings-plugin implementations to both locked dependency graphs;
-- require exact equality with canonical `security/release-maven-coordinates.txt` (204 coordinates, SHA-256 `2253cc639c78b44cd2c8356dd868e4e95287ca03af5a7cabce85495517a02d51`);
+- require exact equality with canonical `security/release-maven-coordinates.txt` (206 coordinates, SHA-256 `db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816`);
 - submit that exact set to OSV and fail on a missing response, count mismatch, malformed response, or any vulnerability;
 - run dev-inclusive lock-only npm audit without lifecycle scripts and reject high, critical, or unreviewed package nodes;
 - accept only the checked-in moderate conformance dependency chain when it is present; and
