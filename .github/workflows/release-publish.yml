@@ -199,10 +199,10 @@ jobs:
             .sourceCommit == $sourceCommit and (.proxyCommit | test("^[a-f0-9]{40}$")) and
             .coordinateSet.count == 206 and
             .coordinateSet.sha256 == "db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816" and
-            .osv.queried == 204 and .osv.findings == 0 and
+            .osv.queried == 206 and .osv.findings == 0 and
             .npmAudit.high == 0 and .npmAudit.critical == 0 and .result == "pass"
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
-          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+          jq -e '.results | length == 206 and all(.[]; ((.vulns // []) | length) == 0)' \
             "$stage/OSV-RESPONSE.json" >/dev/null
           grep -Fx "**Source commit:** \`$SOURCE_COMMIT\`<br>" "$stage/VULNERABILITY_REPORT.md" >/dev/null
           jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
@@ -697,10 +697,10 @@ jobs:
             .sourceCommit == $sourceCommit and (.proxyCommit | test("^[a-f0-9]{40}$")) and
             .coordinateSet.count == 206 and
             .coordinateSet.sha256 == "db331e7bc6b3a922c2528782a955d18147dc98a7ffbccf3bb1c6a30184283816" and
-            .osv.queried == 204 and .osv.findings == 0 and
+            .osv.queried == 206 and .osv.findings == 0 and
             .npmAudit.high == 0 and .npmAudit.critical == 0 and .result == "pass"
           ' "$stage/VULNERABILITY_EVIDENCE.json" >/dev/null
-          jq -e '.results | length == 204 and all(.[]; ((.vulns // []) | length) == 0)' \
+          jq -e '.results | length == 206 and all(.[]; ((.vulns // []) | length) == 0)' \
             "$stage/OSV-RESPONSE.json" >/dev/null
           jq -j '.body' <<<"$release_json" > "$RUNNER_TEMP/release-body"
           cmp "$RUNNER_TEMP/release-body" "$stage/RELEASE_NOTES.md"
