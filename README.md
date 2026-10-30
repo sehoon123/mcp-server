@@ -6,14 +6,13 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0-rc.5` (BApp SerialVersion 18) — a test candidate with consistent resource URIs and
-cooperative read cancellation, not a published stable release.**
-See the [RC5 changes and release gates](docs/releases/4.12.0-rc.5.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
-RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache HttpClient5 `5.6.4` /
-HttpCore5 `5.4.3` stack to clear the fresh OSV pre-tag blockers; it adds no request, scan, or execution capability.
-The embedded proxy is `2.2.1`, also using Kotlin `2.4.20`. Tagging requires a fresh check of the exact committed
-206-coordinate [candidate graph](security/README.md); formal publication remains separately gated. The signed RC1/RC2
-candidates and their uploaded bytes remain unchanged; the signed RC4 test candidate is preserved too.
+**Current source version: `4.12.0` (BApp SerialVersion 19) — the stable candidate promoted from the v4.12.0 RC line.**
+See the [v4.12.0 release notes](docs/releases/4.12.0.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
+v4.12 adds the five-client Setup Center, bounded native utilities, opt-in execution workflows, and human-reviewed
+issue reporting. RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache
+HttpClient5 `5.6.4` / HttpCore5 `5.4.3` stack; it adds no request, scan, or execution capability. The embedded proxy is
+`2.2.1`, also using Kotlin `2.4.20`. Publication evidence for this version comes from the tagged workflows, not from this
+summary; earlier signed candidates and their uploaded bytes remain unchanged.
 
 This independent fork of [PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) uses the modern
 **Streamable HTTP**

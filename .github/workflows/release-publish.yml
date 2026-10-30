@@ -16,17 +16,17 @@ on:
         required: true
         type: string
       rc_observation_run_id:
-        description: Successful seven-day RC observation run ID; required only for a stable tag
+        description: Retired RC observation run ID; verified only when supplied
         required: false
         default: ''
         type: string
       observed_rc_tag:
-        description: Published immutable RC tag observed for the stable line; required only for a stable tag
+        description: RC tag recorded by a supplied observation run; verified only when supplied
         required: false
         default: ''
         type: string
       observed_rc_source_sha:
-        description: Exact source commit targeted by the observed RC; required only for a stable tag
+        description: Source commit recorded by a supplied observation run; verified only when supplied
         required: false
         default: ''
         type: string
@@ -94,14 +94,18 @@ jobs:
             expected_prerelease=false
             [[ "$RELEASE_TAG" != *+* ]]
             [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
-            [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-            [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
-            rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-            [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
-            [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
-            if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
-              [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
-              [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+            # The RC observation window is retired, so stable publication no longer requires it. Supplied observation
+            # inputs are still verified so the historical v4.11 evidence stays interpretable.
+            if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
+              [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+              [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
+              [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+              if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+                [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
+                [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+              fi
             fi
           fi
 
@@ -262,7 +266,7 @@ jobs:
             ([.scenarios[]] | all(. == "pass"))
           ' "$smoke_dir/record/smoke-result.json" >/dev/null
 
-          if [[ "$expected_prerelease" == false ]]; then
+          if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
             jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
               .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
@@ -614,14 +618,18 @@ jobs:
             expected_prerelease=false
             [[ "$RELEASE_TAG" != *+* ]]
             [[ "$GITHUB_SHA" == "$SOURCE_COMMIT" ]]
-            [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-            [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
-            rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-            [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
-            [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
-            if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
-              [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
-              [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+            # The RC observation window is retired, so stable publication no longer requires it. Supplied observation
+            # inputs are still verified so the historical v4.11 evidence stays interpretable.
+            if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
+              [[ "$RC_OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              [[ "$OBSERVED_RC_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+              rc_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+              [[ "$OBSERVED_RC_TAG" =~ $rc_semver ]]
+              [[ "${OBSERVED_RC_TAG#v}" == "${RELEASE_TAG#v}-rc."* ]]
+              if [[ "$RELEASE_TAG" == "$V411_RELEASE_TAG" ]]; then
+                [[ "$OBSERVED_RC_TAG" == "$V411_RC_TAG" ]]
+                [[ "$OBSERVED_RC_SOURCE_COMMIT" == "$V411_RC_SOURCE_SHA" ]]
+              fi
             fi
           fi
 
@@ -746,7 +754,7 @@ jobs:
             ([.scenarios[]] | all(. == "pass"))
           ' "$RUNNER_TEMP/smoke/record/smoke-result.json" >/dev/null
 
-          if [[ "$expected_prerelease" == false ]]; then
+          if [[ -n "$RC_OBSERVATION_RUN_ID" ]]; then
             observation_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_OBSERVATION_RUN_ID")
             jq -e --arg actor "$AUTHORIZED_TESTER_LOGIN" --arg branch "$expected_workflow_branch" '
               .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and

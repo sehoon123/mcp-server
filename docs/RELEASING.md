@@ -17,10 +17,10 @@ integrates on protected `main`; integration and CI test bundles do not constitut
 plan is retired. References below to that branch, its RC7 observation, or v4.11 stable promotion describe the historical
 contract only and are **not instructions to recreate the branch or dispatch that retired sequence**.
 
-No old evidence is rebound to main or a successor version. The checked-in legacy workflow identity gates remain
-fail-closed, including refusal of unpinned successors and versions above v4.11.0. A future main-based release requires
-reviewed successor pins and fresh evidence. All tag signatures, vulnerability checks, exact-byte real Burp smoke,
-provenance, and immutable-publication requirements below remain in force.
+No old evidence is rebound to main or a successor version. The single-use v4.11 predecessor bridge and the RC
+observation gate are retired, so a main-based candidate is admitted by the exact-tag signature, ancestry,
+`SerialVersion` ceiling, and previous-published-release checks alone. All tag signatures, vulnerability checks,
+exact-byte real Burp smoke, provenance, and immutable-publication requirements below remain in force.
 
 ## Release principles
 
@@ -96,8 +96,8 @@ old trust ref. Never repurpose the historical `release/v4.11-stability-gate` PR 
 ## Version and source preparation
 
 A new release candidate starts from a reviewed, clean commit on protected `main`. The historical RC7-to-v4.11 promotion
-is retired, not transferred onto advancing main. Existing identity refusals must remain until exact successor source,
-predecessor, and serial pins are separately reviewed; this policy change itself authorizes no new release identity.
+is retired, not transferred onto advancing main. The retired identity refusals for main-line successors are gone; only
+the exact-tag, ancestry, serial-ceiling, and previous-release checks remain.
 
 ### 1. Select the version
 
@@ -488,10 +488,10 @@ contract must instead be superseded by a reviewed main-based successor contract 
 - [ ] Version, BApp metadata, tag, manifest, reports, and notes agree.
 - [ ] Source and proxy checkouts are clean and pinned to reviewed full SHAs.
 - [ ] Full tests, client matrix, conformance, and required manual Burp matrix pass.
-- [ ] Preserve the retired v4.11 anchor in main history. The draft identity job still refuses every release above
-  v4.11.0 and every newly drafted non-exact v4.11.0 identity. Replace that refusal only through a reviewed successor
-  migration with exact source-SHA, actual predecessor, and serial pins revalidated by every consuming job. Never invent
-  a published v4.11.0 predecessor or treat this branch retirement as successful stable promotion.
+- [ ] Preserve the retired v4.11 anchor in main history. The single-use predecessor bridge is retired with the RC
+  observation gate, so the draft identity job no longer refuses releases above v4.11.0; a main-based candidate is now
+  admitted by the same exact-tag, ancestry, `SerialVersion` ceiling, and previous-published-release checks every other
+  release uses. Never invent a published v4.11.0 predecessor or relabel this retirement as a v4.11.0 promotion.
 - [ ] Two isolated builds produce identical JAR and SBOM bytes.
 - [ ] Wrapper, Gradle/npm dependencies, JDK/container, and Actions are integrity-pinned.
 - [ ] SBOM schema, hashes, relationships, and explicit licenses validate.
