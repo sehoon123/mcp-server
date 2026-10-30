@@ -682,37 +682,39 @@ jobs:
           PY
           )
           jq -e --arg jar_sha "$jar_sha" --arg version "$VERSION" --argjson expected_proxy_deps "$proxy_dependency_refs" '
-            .bomFormat == "CycloneDX" and .specVersion == "1.6" and .version == 1 and
-            .metadata.component.name == "independent-mcp-bridge" and
-            .metadata.component.version == $version and
-            .metadata.component.hashes == [{"alg":"SHA-256","content":$jar_sha}] and
-            (.components | type == "array" and length > 0) and
-            (all(.components[];
-              (."bom-ref" | type == "string" and length > 0) and
-              (.purl == ."bom-ref") and
-              (.hashes | type == "array" and length == 1) and
-              (.hashes[0].alg == "SHA-256") and
-              (.hashes[0].content | test("^[a-f0-9]{64}$")) and
-              (.licenses | type == "array" and length == 1) and
-              (.licenses[0].license.id == "Apache-2.0" or
-               .licenses[0].license.id == "MIT" or
-               .licenses[0].license.id == "GPL-3.0-only")
-            )) and
-            ((.components | map(."bom-ref") | unique | length) == (.components | length)) and
             (.components | map(."bom-ref") | sort) as $component_refs |
             .metadata.component."bom-ref" as $root_ref |
             (.components[] | select(.name == "independent-mcp-bridge-stdio-proxy") | ."bom-ref") as $proxy_ref |
-            (.dependencies | type == "array" and length == 2) and
-            ((.dependencies | map(.ref) | sort) == ([$root_ref, $proxy_ref] | sort)) and
             (.dependencies[] | select(.ref == $root_ref) | .dependsOn) as $root_deps |
             (.dependencies[] | select(.ref == $proxy_ref) | .dependsOn) as $proxy_deps |
             ([.components[] |
               select(any(.properties[]?; .name == "embeddedVia" and .value == "independent-mcp-bridge-stdio-proxy")) |
               ."bom-ref"] | sort) as $proxy_only_refs |
-            (($root_deps | sort) == (($component_refs - $proxy_only_refs) | sort)) and
-            (($proxy_deps | sort) == ($expected_proxy_deps | sort)) and
-            (($root_deps | index($proxy_ref)) != null) and
-            (all(($root_deps + $proxy_deps)[]; . as $ref | ($component_refs | index($ref)) != null))
+            (
+              .bomFormat == "CycloneDX" and .specVersion == "1.6" and .version == 1 and
+              .metadata.component.name == "independent-mcp-bridge" and
+              .metadata.component.version == $version and
+              .metadata.component.hashes == [{"alg":"SHA-256","content":$jar_sha}] and
+              (.components | type == "array" and length > 0) and
+              (all(.components[];
+                (."bom-ref" | type == "string" and length > 0) and
+                (.purl == ."bom-ref") and
+                (.hashes | type == "array" and length == 1) and
+                (.hashes[0].alg == "SHA-256") and
+                (.hashes[0].content | test("^[a-f0-9]{64}$")) and
+                (.licenses | type == "array" and length == 1) and
+                (.licenses[0].license.id == "Apache-2.0" or
+                 .licenses[0].license.id == "MIT" or
+                 .licenses[0].license.id == "GPL-3.0-only")
+              )) and
+              ((.components | map(."bom-ref") | unique | length) == (.components | length)) and
+              (.dependencies | type == "array" and length == 2) and
+              ((.dependencies | map(.ref) | sort) == ([$root_ref, $proxy_ref] | sort)) and
+              (($root_deps | sort) == (($component_refs - $proxy_only_refs) | sort)) and
+              (($proxy_deps | sort) == ($expected_proxy_deps | sort)) and
+              (($root_deps | index($proxy_ref)) != null) and
+              (all(($root_deps + $proxy_deps)[]; . as $ref | ($component_refs | index($ref)) != null))
+            )
           ' "$stage/bom.cdx.json" >/dev/null
 
           checksum_tmp="$RUNNER_TEMP/SHA256SUMS"
