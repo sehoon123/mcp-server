@@ -6,8 +6,8 @@ Integrate Burp Suite with AI clients through the Model Context Protocol (MCP).
 > [SH Jung (`sehoon123`)](https://github.com/sehoon123). It is not published, endorsed, or supported by PortSwigger.
 > Source and support belong to this repository, not to PortSwigger.
 
-**Current source version: `4.12.0` (BApp SerialVersion 19) — the stable candidate promoted from the v4.12.0 RC line.**
-See the [v4.12.0 release notes](docs/releases/4.12.0.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
+**Current source version: `4.12.1` (BApp SerialVersion 20) — the stable candidate promoted from the v4.12.0 RC line.**
+See the [v4.12.1 release notes](docs/releases/4.12.1.md) and [reburp feature review](docs/REBURP_FEATURE_REVIEW.md).
 v4.12 adds the five-client Setup Center, bounded native utilities, opt-in execution workflows, and human-reviewed
 issue reporting. RC4 updated Kotlin to `2.4.20` (build plugins and runtime stdlib) and pins the test-only Apache
 HttpClient5 `5.6.4` / HttpCore5 `5.4.3` stack; it adds no request, scan, or execution capability. The embedded proxy is
